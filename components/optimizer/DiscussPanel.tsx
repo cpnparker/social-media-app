@@ -1,0 +1,1361 @@
+"use client";
+
+/**
+ * Talking to Engine AI about the draft, beside the draft.
+ *
+ * ── WHY IT IS HERE AND NOT IN A CHAT THREAD ─────────────────────────────────
+ *
+ * "Ask" used to navigate away to a conversation. That answered the question and
+ * lost the point: the writer left the document to ask about the document, got
+ * prose in another tab, and retyped it by hand. The discussion is the half of
+ * the Writer that matters most, and a discussion held somewhere else is a
+ * different product.
+ *
+ * ── WHAT MAKES IT WORTH USING ───────────────────────────────────────────────
+ *
+ * Three things this panel has that a chat tab cannot:
+ *
+ *   THE DRAFT, live. Every question carries what is on screen right now, not
+ *   what was last saved — so "is that better?" is answered about the rewrite
+ *   the writer just typed rather than the version before it.
+ *
+ *   THE SELECTION. Highlight a paragraph and the question is about THAT
+ *   paragraph. Without it a model asked about "this bit" picks one, and
+ *   answering confidently about the wrong paragraph is the failure that reads
+ *   as stupidity rather than as missing information.
+ *
+ *   THE BUTTON. Words meant for the piece come back marked, and land in the
+ *   document at one click — replacing the selection they were written for.
+ *
+ * The marking is the model's job, not a guess made here. Inferring "this looks
+ * like a suggestion" from prose fails in both directions, and the expensive
+ * direction pastes an explanation into somebody's article.
+ */
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { toast } from "sonner";
+import { CornerDownLeft, Eraser, Loader2, Quote, RefreshCw, Sparkles, Check } from "lucide-react";
+import { parseDiscussReply, pointKeyOf, pointSlotOf, anchorKeyOf, anchorSlotOf, repliesForPoint, isPointReply, type DiscussTurn } from "@/lib/optimizer/discuss";
+import { houseStyleFlags, mechanicalDedash } from "@/lib/optimizer/house-style";
+
+interface Props {
+  /** Which marks this piece is under, from markPolicyFor. The conversation must
+   *  work under the same one as the document, or the two contradict each other
+   *  about the same piece in front of the writer. */
+  lens: "engine" | "plain";
+  sessionId: string;
+  workspaceId: string | null;
+  /** Read at submit time, so the model sees what is on screen — not the last save. */
+  getDraftHtml: () => string;
+  /** Can this quoted passage still be found in the draft as it stands? */
+  resolveQuote: (quote: string) => boolean;
+  /** Jump to it. Returns false if it could not be found. */
+  onRevealQuote: (quote: string) => boolean;
+  /**
+   * Every passage the conversation has pointed at, in order, so the page can
+   * draw a margin marker beside each.
+   *
+   * Lifted rather than drawn here because the marks live in the DOCUMENT and
+   * the conversation lives in the panel — and the panel is unmounted whenever
+   * the writer switches to Background or Suggestions, which would take the
+   * markers with it.
+   */
+  onAnchorsChanged: (anchors: { quote: string; turn: number }[]) => void;
+  /** A margin marker was clicked: scroll to what was said about that passage.
+   *  Carries a nonce so clicking the same marker twice still scrolls. */
+  focusTurn: { turn: number; nonce: number } | null;
+  /**
+   * A question asked from somewhere else in the studio — the selection toolbar
+   * in the editor. Carries a nonce so the same action twice still fires.
+   *
+   * Routed through here rather than given its own request path so a rewrite
+   * started from the document lands in the SAME conversation as everything
+   * else: the writer can see what was asked, argue with the answer, and the
+   * next question still has the thread behind it.
+   */
+  pendingAsk: { text: string; nonce: number } | null;
+  /** The selected passage, for showing the writer what they are asking about. */
+  selection: string;
+  /**
+   * Whether ANYTHING is selected. Separate from `selection` on purpose: a
+   * selection over an image yields no text, and deciding the button's label
+   * from the text made it promise "Add to the end" while the editor replaced.
+   */
+  hasSelection: boolean;
+  /** Put text into the document. Returns what it actually did, so the report is true. */
+  onApply: (text: string, anchor?: string) => "replaced" | "appended" | "failed";
+}
+
+/**
+ * Split a streaming reply at an UNCLOSED draft fence.
+ *
+ * The parser treats an unclosed fence as commentary, which is right for a
+ * finished reply — but mid-stream that is every draft block for the second or
+ * two it takes to arrive, and it would render the literal ```draft marker into
+ * the prose and then snap. Handled here rather than in the parser because it is
+ * a display concern: the stored reply is always parsed the strict way.
+ */
+function splitLive(text: string): { settled: string; partial: string | null } {
+  const open = text.lastIndexOf("```draft");
+  if (open < 0) return { settled: text, partial: null };
+  const close = text.indexOf("```", open + 8);
+  if (close >= 0) return { settled: text, partial: null };
+  return { settled: text.slice(0, open), partial: text.slice(open + 8).replace(/^\n/, "") };
+}
+
+/**
+ * The passage a point is about, as a link into the document.
+ *
+ * Resolution is attempted up front rather than on click, so a passage the
+ * writer has since rewritten reads as unavailable instead of inviting a click
+ * that does nothing. That distinction is the whole point: a dead link that
+ * looks live is worse than a link that says it is dead.
+ */
+function AnchorChip({
+  quote,
+  resolveQuote,
+  onRevealQuote,
+  onFix,
+  superseded,
+  pointKey,
+  done,
+  onDone,
+  busy,
+  children,
+}: {
+  quote: string;
+  resolveQuote: (q: string) => boolean;
+  onRevealQuote: (q: string) => boolean;
+  /** Absent when this point already carries a rewrite of its own. */
+  onFix?: (quote: string, pointKey?: string) => void;
+  superseded?: boolean;
+  /** This anchor's address, so its answer can be rendered under it. */
+  pointKey?: string;
+  done?: boolean;
+  onDone?: (next: boolean) => void;
+  busy?: boolean;
+  /** The exchange that answers this anchor, already rendered. */
+  children?: React.ReactNode;
+}) {
+  const found = resolveQuote(quote);
+  const short = quote.length > 90 ? `${quote.slice(0, 90)}…` : quote;
+
+  if (done) {
+    return (
+      <div className="mb-1 flex items-start gap-2 rounded-md px-1.5 py-1 bg-muted/40">
+        <Check className="h-3 w-3 text-muted-foreground shrink-0 mt-0.5" />
+        <p className="flex-1 min-w-0 text-[11px] text-muted-foreground line-clamp-1">&ldquo;{short}&rdquo;</p>
+        <button onClick={() => onDone?.(false)} className="text-[10.5px] text-primary hover:underline shrink-0">
+          Undo
+        </button>
+      </div>
+    );
+  }
+
+  if (!found) {
+    return (
+      <p className="text-[11px] text-muted-foreground/70 italic leading-snug mb-1">
+        &ldquo;{short}&rdquo; —{" "}
+        {/* On an earlier pass, a passage that no longer exists is USUALLY one
+            the writer has since dealt with, and saying "already changed" is
+            both more likely and more useful than reporting a lookup failure.
+            On the current pass it really is a miss, and says so. */}
+        {superseded
+          ? "this has already changed since."
+          : "couldn\u2019t find that passage in the draft as it stands."}
+      </p>
+    );
+  }
+
+  return (
+    <div className="group/anchor mb-1 rounded-md border-l-2 border-primary/40 bg-muted/40 pl-2 pr-2 py-1">
+      <button
+        onClick={() => onRevealQuote(quote)}
+        className="block w-full text-left"
+        title="Show me this passage"
+      >
+        <span className="text-[11px] text-muted-foreground leading-snug">&ldquo;{short}&rdquo;</span>
+      </button>
+      <div className="mt-1 flex items-center gap-2.5">
+        <button
+          onClick={() => onRevealQuote(quote)}
+          className="text-[10.5px] font-medium text-primary hover:underline underline-offset-2"
+        >
+          Show me
+        </button>
+        {onFix && (
+          // Only where the point does NOT already carry a rewrite. A reply that
+          // identifies six problems is not made to write six replacements
+          // nobody asked for — that is six times the output tokens, and it
+          // presumes the writer wants the model's words rather than their own.
+          // The button is the offer; the click is the request.
+          <button
+            onClick={() => onFix(quote, pointKey)}
+            disabled={busy}
+            className="text-[10.5px] font-medium text-muted-foreground hover:text-foreground hover:underline underline-offset-2 disabled:opacity-40"
+          >
+            {busy ? "Working…" : "Suggest a fix"}
+          </button>
+        )}
+        {onDone && (
+          <button
+            onClick={() => onDone(true)}
+            className="text-[10.5px] font-medium text-muted-foreground hover:text-foreground hover:underline underline-offset-2"
+          >
+            Done
+          </button>
+        )}
+      </div>
+      {/* The answer to THIS passage, under this passage. */}
+      {children && <div className="mt-1.5 space-y-1.5">{children}</div>}
+    </div>
+  );
+}
+
+/**
+ * One point of prose, with an action.
+ *
+ * The most useful criticism in a reply is often the kind with NOTHING to
+ * underline — "the structure follows your CV, not the job", "the AuthorityOn.ai
+ * paragraph is buried sixth", "you never say what you think their challenge
+ * is". Those carry no anchor by design: inventing a passage for a point about
+ * the shape of the whole piece would send the writer somewhere confidently
+ * wrong. But having no anchor was leaving them with no action either, which
+ * left the best observations in the reply as the only ones you could not do
+ * anything about.
+ *
+ * So the action is offered per POINT rather than per anchor. Asking for a fix
+ * routes back through the anchored path, so whatever comes back is applicable
+ * even though the point that prompted it was not.
+ *
+ * Hover-revealed, and only on substantial paragraphs: a button under every line
+ * of a six-point reply is clutter, and clutter is what the owner objected to in
+ * the first place.
+ */
+const MIN_ACTIONABLE_POINT = 60;
+
+/**
+ * One point in a reply, with everything that belongs to it underneath it.
+ *
+ * ── WHY THE ANSWER LIVES HERE ───────────────────────────────────────────────
+ *
+ * "Suggest a fix" used to append its answer to the foot of the conversation and
+ * scroll there. A writer working down a six-point reply therefore lost their
+ * place on every fix they asked for, and had to scroll back to find it. The
+ * answer to a point belongs to that point, so it renders under it and the panel
+ * stays where it is.
+ *
+ * ── AND WHY A POINT CAN BE FINISHED ─────────────────────────────────────────
+ *
+ * Reviewing a long reply is a list to work down, and a list you cannot cross
+ * off is one you re-read. A finished point collapses to a single dim line with
+ * an undo, so what is left on screen is what is left to do.
+ */
+function PointParagraph({
+  text,
+  onFix,
+  pointKey,
+  done,
+  onDone,
+  children,
+  busy,
+}: {
+  text: string;
+  onFix?: (point: string, pointKey?: string) => void;
+  pointKey?: string;
+  done?: boolean;
+  onDone?: (next: boolean) => void;
+  /** The exchange that answers this point, already rendered. */
+  children?: React.ReactNode;
+  /** True while this point's own answer is arriving. */
+  busy?: boolean;
+}) {
+  const actionable = !!onFix && text.trim().length >= MIN_ACTIONABLE_POINT && !/\?\s*$/.test(text.trim());
+
+  if (done) {
+    return (
+      <div className="flex items-start gap-2 rounded-md px-1.5 py-1 bg-muted/40">
+        <Check className="h-3 w-3 text-muted-foreground shrink-0 mt-0.5" />
+        <p className="flex-1 min-w-0 text-[11.5px] text-muted-foreground line-clamp-1">{text}</p>
+        <button
+          onClick={() => onDone?.(false)}
+          className="text-[10.5px] text-primary hover:underline shrink-0"
+        >
+          Undo
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="group/point">
+      <p className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{text}</p>
+      <div className="mt-0.5 flex items-center gap-2.5">
+        {actionable && (
+          <button
+            onClick={() => onFix!(text, pointKey)}
+            disabled={busy}
+            className="text-[10.5px] font-medium text-muted-foreground opacity-0 group-hover/point:opacity-100 focus:opacity-100 hover:text-foreground hover:underline underline-offset-2 disabled:opacity-40"
+          >
+            {busy ? "Working…" : "Suggest a fix"}
+          </button>
+        )}
+        {onDone && (
+          <button
+            onClick={() => onDone(true)}
+            className="text-[10.5px] font-medium text-muted-foreground opacity-0 group-hover/point:opacity-100 focus:opacity-100 hover:text-foreground hover:underline underline-offset-2"
+          >
+            Done
+          </button>
+        )}
+      </div>
+      {/* Indented and ruled, so an answer is visibly subordinate to its point
+          rather than reading as the next point in the list. */}
+      {children && (
+        <div className="mt-1.5 ml-1 border-l-2 border-primary/25 pl-2.5 space-y-1.5">{children}</div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A point's answer while it is still arriving.
+ *
+ * Parsed, not printed raw. The reply's fences are a wire format: shown
+ * unparsed, the writer watches ```anchor and ```draft scroll past, which reads
+ * as the tool leaking its own plumbing. The main conversation has always parsed
+ * its live buffer; this is the same treatment where the answer now appears.
+ */
+function InlineStream({
+  text,
+  hasSelection,
+  onApply,
+}: {
+  text: string | null;
+  hasSelection: boolean;
+  onApply: (text: string, anchor?: string) => "replaced" | "appended" | "failed";
+}) {
+  if (!text) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">
+        <Loader2 className="h-3 w-3 animate-spin" /> Working on this point
+      </span>
+    );
+  }
+  // The same split the main conversation uses: what has definitely arrived, and
+  // the fence that may still be half-written.
+  const live = splitLive(text);
+  const parsed = parseDiscussReply(live.settled);
+  return (
+    <div className="space-y-1.5">
+      {parsed.segments.map((seg, i) =>
+        seg.type === "draft" ? (
+          // `pending` while the fence may still be half-arrived: a button over a
+          // partial sentence would insert a partial sentence.
+          <DraftBlock key={i} text={seg.text} hasSelection={hasSelection} onApply={onApply} pending />
+        ) : seg.type === "anchor" ? null : (
+          <p key={i} className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{seg.text}</p>
+        )
+      )}
+      {live.partial !== null && (
+        <DraftBlock text={live.partial} hasSelection={hasSelection} onApply={onApply} pending />
+      )}
+    </div>
+  );
+}
+
+function DraftBlock({
+  text,
+  hasSelection,
+  onApply,
+  pending,
+  anchor,
+  anchorFound,
+  dismissed,
+  onDismiss,
+}: {
+  text: string;
+  hasSelection: boolean;
+  onApply: (text: string, anchor?: string) => "replaced" | "appended" | "failed";
+  pending?: boolean;
+  /** The passage this rewrite was written for, if the model named one. */
+  anchor?: string;
+  anchorFound?: boolean;
+  /** Waved away earlier, and remembered. Undefined where dismissal is not
+   *  offered at all, which is the case for a block still streaming. */
+  dismissed?: boolean;
+  onDismiss?: (next: boolean) => void;
+}) {
+  // Confirmed ON the block rather than in a toast. The rail's composer is
+  // bottom-right and so is sonner, so a toast fired from here covers the input
+  // the writer is about to type in — proven by elementFromPoint, not guessed.
+  // It also reads better: the confirmation sits on the thing that was applied.
+  const [applied, setApplied] = useState<null | "replaced" | "appended">(null);
+
+  /**
+   * The writer's version of the suggestion.
+   *
+   * A suggestion is a starting point far more often than it is an answer, and
+   * before this the only two moves were take it whole or retype it in the
+   * editor. Kept in state seeded from the model's text, so what gets applied is
+   * whatever is in the box at the moment the button is pressed.
+   *
+   * NOT persisted. An edit that is never applied is lost on reload, which is
+   * the right trade for now: the edit exists to be applied, and storing every
+   * keystroke of an abandoned rewrite would mean a write per keystroke on a
+   * column the conversation also lives in.
+   */
+  const [edited, setEdited] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const body = edited ?? text;
+  const flags = houseStyleFlags(body);
+
+  if (dismissed) {
+    return (
+      <div className="mt-2 rounded-lg border border-dashed px-2.5 py-1.5 flex items-center gap-2">
+        <span className="text-[11.5px] text-muted-foreground flex-1">Suggestion dismissed</span>
+        <button
+          onClick={() => onDismiss?.(false)}
+          className="text-[11.5px] text-primary hover:underline"
+        >
+          Undo
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-2 rounded-lg border border-primary/30 bg-primary/[0.04] overflow-hidden">
+      <div className="px-2.5 py-1.5 border-b border-primary/20 flex items-center gap-1.5">
+        <Quote className="h-3 w-3 text-primary/70" />
+        <span className="text-[10.5px] font-medium uppercase tracking-wide text-primary/80 flex-1">
+          For the piece
+        </span>
+        {/* What the house style catches, on the block itself. The prompt asks
+            for none of this; the flag is what happens when the ask was not
+            enough, and it names what it found rather than saying "style issue". */}
+        {!pending && !flags.clean && (
+          <span className="text-[10.5px] text-amber-700 dark:text-amber-500">
+            {flags.dashes > 0 && `${flags.dashes} dash${flags.dashes === 1 ? "" : "es"}`}
+            {flags.dashes > 0 && flags.tropes.length > 0 && ", "}
+            {flags.tropes.length > 0 && flags.tropes.slice(0, 2).join(", ")}
+          </span>
+        )}
+        {!pending && flags.dashes > 0 && (
+          <button
+            // Puts the mechanical result in the EDIT box rather than applying
+            // it. There is no substitution for a dash that is always right, so
+            // the writer reads it before it reaches their piece.
+            onClick={() => { setEdited(mechanicalDedash(body)); setEditing(true); }}
+            className="text-[10.5px] text-primary hover:underline"
+          >
+            Fix dashes
+          </button>
+        )}
+      </div>
+
+      {editing ? (
+        <textarea
+          value={body}
+          onChange={(e) => setEdited(e.target.value)}
+          rows={Math.min(14, Math.max(3, body.split("\n").length + Math.floor(body.length / 90)))}
+          className="w-full px-2.5 py-2 text-[12.5px] leading-relaxed bg-background/60 border-0 resize-y focus:outline-none focus:ring-1 focus:ring-primary/40"
+          autoFocus
+        />
+      ) : (
+        <p className="px-2.5 py-2 text-[12.5px] leading-relaxed whitespace-pre-wrap">{body}</p>
+      )}
+
+      {!pending && (
+        <div className="px-2.5 pb-2 flex items-center gap-1.5 flex-wrap">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-[11.5px]"
+            onClick={() => {
+              // Whatever is in the box, not what the model wrote. Applying the
+              // original after someone edited it would be the worst of both.
+              const what = onApply(body, anchorFound ? anchor : undefined);
+              // Reported from what actually happened. A confirmation shown
+              // before the fact is how a writer comes to believe text landed in
+              // a document it never reached. An outright failure still toasts:
+              // that one is not redundant, and it is worth interrupting for.
+              if (what === "failed") toast.error("Could not place that. The editor is not ready");
+              else { setApplied(what); setEditing(false); }
+            }}
+          >
+            {/* The label says what will happen, which depends on whether
+                anything is selected RIGHT NOW. A button reading "Replace
+                selection" that appends instead is a small lie the writer only
+                catches after it has moved their text. */}
+            {/* A rewrite the model wrote FOR a passage replaces that passage,
+                whatever happens to be selected — the writer clicked Show me,
+                read it, and came back; their cursor is not the instruction. */}
+            {anchorFound ? "Replace that passage" : hasSelection ? "Replace selection" : "Add to the end"}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 text-[11.5px] px-2"
+            onClick={() => setEditing((v) => !v)}
+          >
+            {editing ? "Done" : "Edit"}
+          </Button>
+          {onDismiss && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 text-[11.5px] px-2 text-muted-foreground"
+              onClick={() => onDismiss(true)}
+            >
+              Dismiss
+            </Button>
+          )}
+          {edited !== null && edited !== text && !applied && (
+            <span className="text-[11px] text-muted-foreground">Edited</span>
+          )}
+          {applied && (
+            <span className="text-[11px] text-muted-foreground">
+              {applied === "replaced"
+                ? anchorFound ? "Replaced that passage" : "Replaced your selection"
+                : "Added to the end"}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, resolveQuote, onRevealQuote, onAnchorsChanged, focusTurn, pendingAsk, selection, hasSelection, onApply, lens }: Props) {
+  const [turns, setTurns] = useState<DiscussTurn[]>([]);
+  const [question, setQuestion] = useState("");
+  const [streamed, setStreamed] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  /**
+   * The point an in-flight ask belongs to, so its tokens stream UNDER that
+   * point rather than at the foot of the conversation.
+   *
+   * Null for an ordinary question, which is still the common case and still
+   * behaves exactly as it did.
+   */
+  const [activePoint, setActivePoint] = useState<string | null>(null);
+
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  /**
+   * Which run's tokens are allowed to reach the screen.
+   *
+   * A stream takes seconds, and three things can happen inside that window —
+   * the writer opens a different piece, clears the conversation, or asks again.
+   * With nothing tracking WHICH run is current, all three end badly: piece A's
+   * reply is appended to piece B's conversation (and Apply then inserts A's
+   * text into B's document), a Clear the writer watched succeed silently fills
+   * back up, and a second question's tokens interleave with the first's.
+   *
+   * Every commit below is gated on this token still being the live one. It is
+   * bumped on unmount, on a session change, on Clear, and at the start of each
+   * ask — so a superseded run finishes quietly and writes nothing.
+   */
+  const runRef = useRef(0);
+  /** The last marker click acted on, so a new reply cannot re-trigger an old one. */
+  const handledNonce = useRef<number | null>(null);
+  /** Same guard for asks arriving from the editor's selection toolbar. */
+  const handledAsk = useRef<number | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  // Abandon anything in flight when the piece changes or the panel goes away.
+  // Without the abort the request keeps running to completion, which also means
+  // the SERVER still writes the answer to the row it belongs to — correct, and
+  // the reason this only has to silence the CLIENT.
+  useEffect(() => {
+    return () => {
+      runRef.current++;
+      if (abortRef.current) abortRef.current.abort();
+    };
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!sessionId || !workspaceId) { setLoaded(true); return; }
+    let cancelled = false;
+    // Cleared FIRST, not when the fetch resolves: otherwise the previous
+    // piece's conversation stays on screen against the new document for as
+    // long as the round trip takes, and anything applied from it during that
+    // window lands in the wrong article.
+    setTurns([]);
+    setStreamed(null);
+    setLoaded(false);
+    fetch(`/api/optimizer/sessions/${encodeURIComponent(sessionId)}/discuss?workspaceId=${encodeURIComponent(workspaceId)}`)
+      .then((r) => r.json())
+      .then((d) => { if (!cancelled && d.turns) setTurns(d.turns); })
+      .catch(() => { /* an unreachable history is an empty one, not an error state */ })
+      .finally(() => { if (!cancelled) setLoaded(true); });
+    return () => { cancelled = true; };
+  }, [sessionId, workspaceId]);
+
+  /**
+   * Publish the conversation's anchors upward whenever the thread changes.
+   *
+   * Derived from the STORED turns only, never from the streaming buffer: a
+   * half-arrived quote resolves to nothing, and a marker that appears, moves
+   * and vanishes while tokens land is worse than one that appears when the
+   * reply is finished.
+   */
+  useEffect(() => {
+    const out: { quote: string; turn: number }[] = [];
+    for (let i = 0; i < turns.length; i++) {
+      if (turns[i].role !== "assistant") continue;
+      const segs = parseDiscussReply(turns[i].content).segments;
+      const seen: { [q: string]: true } = {};
+      for (let j = 0; j < segs.length; j++) {
+        const a = segs[j].anchor;
+        if (!a || seen[a]) continue;
+        seen[a] = true;
+        out.push({ quote: a, turn: i });
+      }
+    }
+    onAnchorsChanged(out);
+  }, [turns, onAnchorsChanged]);
+
+  /**
+   * Pinned to the newest message, including as tokens arrive — EXCEPT when the
+   * answer is going to appear somewhere else.
+   *
+   * A point-scoped reply renders under its point, which is usually well above
+   * the fold. Scrolling to the bottom then moved the writer away from both the
+   * point they asked about and the answer they asked for, and they had to
+   * scroll back to find their place in a six-point reply. Reported from real
+   * use, and the reason `activePoint` exists.
+   */
+  useEffect(() => {
+    if (activePoint) return;
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [turns, streamed, activePoint]);
+
+  /**
+   * Scroll to the reply a margin marker points at, and flash it.
+   *
+   * The flash matters: the writer clicked something in the DOCUMENT and the
+   * answer arrives in a panel they may not have been looking at, several
+   * paragraphs of prose long. Landing them beside it silently leaves them
+   * hunting for what changed.
+   *
+   * DEPENDS ON `turns`, and that is the whole correctness of it. The panel is
+   * unmounted whenever the rail is on Background or Suggestions — which is
+   * exactly when a margin marker is most useful — so a click mounts it fresh
+   * and this effect first runs before the conversation has been fetched. The
+   * turn element does not exist yet, the effect bails, and with `focusTurn`
+   * alone in the dependencies it would never run again: the scroll silently
+   * did nothing in the main case. Re-running when the turns arrive is the
+   * retry.
+   *
+   * The nonce is then recorded as handled so a later reply landing in `turns`
+   * cannot drag the writer back to an old marker they clicked minutes ago.
+   */
+  useEffect(() => {
+    if (!focusTurn) return;
+    if (handledNonce.current === focusTurn.nonce) return;
+    const root = scrollRef.current;
+    if (!root) return;
+    const el = root.querySelector(`[data-turn="${focusTurn.turn}"]`) as HTMLElement | null;
+    if (!el) return; // not loaded yet — `turns` will bring us back
+    handledNonce.current = focusTurn.nonce;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("ring-2", "ring-primary/40", "rounded-lg");
+    const t = setTimeout(() => el.classList.remove("ring-2", "ring-primary/40", "rounded-lg"), 1400);
+    return () => clearTimeout(t);
+  }, [focusTurn, turns]);
+
+  const ask = useCallback(async (explicit?: string, pointKey?: string) => {
+    // An explicit question comes from a button, not the box. Passed as an
+    // argument rather than via setQuestion-then-send: state is not readable in
+    // the same tick, so that shape sends the PREVIOUS question every time.
+    const q = (typeof explicit === "string" ? explicit : question).trim();
+    if (!q || busy) return;
+    if (!workspaceId) { toast.error("Select a workspace first"); return; }
+
+    // The question joins the thread immediately. Waiting for the round trip
+    // leaves the writer looking at an input that just emptied itself.
+    const asked: DiscussTurn = {
+      role: "user",
+      content: q,
+      at: new Date().toISOString(),
+      ...(pointKey ? { pointKey } : {}),
+    };
+    setTurns((t) => t.concat([asked]));
+    setQuestion("");
+    setStreamed("");
+    setBusy(true);
+    setActivePoint(pointKey || null);
+
+    // This run's ticket. Every write below checks it is still the live one.
+    const myRun = ++runRef.current;
+    const live = () => runRef.current === myRun;
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const res = await fetch(`/api/optimizer/sessions/${encodeURIComponent(sessionId)}/discuss`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          workspaceId,
+          question: q,
+          draftHtml: getDraftHtml(),
+          selection: selection || null,
+          pointKey: pointKey || undefined,
+          // The same lens the marks are using. Sent rather than re-derived,
+          // because `surface` is a property of the page the writer has open and
+          // the server cannot see it — and because two derivations of one fact
+          // is how the panel and the document came to disagree in the first
+          // place.
+          lens,
+        }),
+      });
+
+      if (!live()) return;
+      if (!res.ok || !res.body) {
+        const err = await res.json().catch(() => ({}));
+        toast.error(err.error || "Could not answer just now");
+        // The question is rolled back off the thread. Leaving it there with no
+        // reply reads as an answer that is still coming and never arrives.
+        setTurns((t) => t.filter((x) => x !== asked));
+        setQuestion(q);
+        return;
+      }
+
+      // Frames are `data: {...}\n\n` with a bare `data: [DONE]` that is not
+      // JSON. Splitting the buffer on "\n\n" is load-bearing — a frame can
+      // arrive split across two reads.
+      // The server's identity for the turn it is about to store. Stamping our
+      // own here is how dismissal used to address a turn that did not exist.
+      const assistantAt = res.headers.get("X-Discuss-At") || "";
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let full = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        // Superseded mid-stream: stop reading and write nothing. The server
+        // still finishes and stores the answer against its own piece.
+        if (!live()) return;
+        buffer += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buffer.indexOf("\n\n")) !== -1) {
+          const frame = buffer.slice(0, nl);
+          buffer = buffer.slice(nl + 2);
+          for (const line of frame.split("\n")) {
+            if (!line.startsWith("data: ")) continue;
+            const payload = line.slice(6);
+            if (payload === "[DONE]") continue;
+            try {
+              const data = JSON.parse(payload);
+              if (typeof data.token === "string") {
+                full += data.token;
+                if (live()) setStreamed(full);
+              } else if (data.error) {
+                toast.error(String(data.error));
+              }
+            } catch { /* a malformed frame is not worth failing the stream over */ }
+          }
+        }
+      }
+
+      if (!live()) return;
+      if (full.trim()) {
+        setTurns((t) => t.concat([{
+          role: "assistant",
+          content: full,
+          at: assistantAt || new Date().toISOString(),
+          ...(pointKey ? { pointKey } : {}),
+        }]));
+      } else {
+        toast.error("That came back empty");
+        setTurns((t) => t.filter((x) => x !== asked));
+        setQuestion(q);
+      }
+    } catch (e: any) {
+      // An abort is this component tidying up after itself, not a failure the
+      // writer needs to be told about.
+      if (e && e.name === "AbortError") return;
+      if (!live()) return;
+      toast.error("Could not answer just now");
+      setTurns((t) => t.filter((x) => x !== asked));
+      setQuestion(q);
+    } finally {
+      if (live()) {
+        setStreamed(null);
+        setBusy(false);
+        setActivePoint(null);
+      }
+    }
+  }, [question, busy, workspaceId, sessionId, getDraftHtml, selection, lens]);
+
+  /**
+   * Ask for a rewrite of one passage.
+   *
+   * Offered as a BUTTON rather than baked into the prompt, so a reply that
+   * identifies six problems is not forced to write six rewrites nobody asked
+   * for — six rewrites is six times the output tokens and presumes the writer
+   * wants the model's words rather than their own. The button is the offer; the
+   * click is the request.
+   */
+  const askForFix = useCallback(
+    (quote: string, pointKey?: string) => {
+      ask(
+        `Rewrite this passage to fix what you just said about it:\n\n"${quote}"\n\n` +
+          `Put the passage in an anchor block and the replacement in a draft block, so I can apply it in place.\n` +
+          `Answer this passage only, and keep it short: the writer is working down a list and this reply ` +
+          `sits underneath the passage itself.`,
+        pointKey
+      );
+    },
+    [ask]
+  );
+
+  /**
+   * Act on a point that has no passage to point at.
+   *
+   * Routed back through the anchored path on purpose: the point may be about
+   * the shape of the whole piece, but whatever comes back should still land in
+   * the document at one click rather than being another paragraph of advice.
+   */
+  const askForPointFix = useCallback(
+    (point: string, pointKey?: string) => {
+      ask(
+        `Act on this point:\n\n${point}\n\n` +
+          `Show me the concrete change in the draft. Where it replaces something that is already ` +
+          `there, quote that in an anchor block and put the replacement in a draft block so I can ` +
+          `apply it in place. If it is something to add, say exactly where it goes.\n` +
+          `Answer this point only, and keep it short: the writer is working down a list and this ` +
+          `reply sits underneath the point itself.`,
+        pointKey
+      );
+    },
+    [ask]
+  );
+
+  /**
+   * Mark a point finished, or bring it back.
+   *
+   * The same optimistic-then-written shape as a dismissed block, and for the
+   * same reason: waiting for a round trip feels broken on a list you are
+   * working through, and a failure is visible because the point comes back.
+   */
+  const setPointDone = useCallback(async (at: string, slot: string, next: boolean) => {
+    if (!workspaceId) return;
+    const patch = (on: boolean) =>
+      setTurns((cur) =>
+        cur.map((t) => {
+          if (t.role !== "assistant" || t.at !== at) return t;
+          const list = t.donePoints || [];
+          const updated = on
+            ? (list.indexOf(slot) < 0 ? list.concat([slot]) : list)
+            : list.filter((p) => p !== slot);
+          return { ...t, donePoints: updated };
+        })
+      );
+    patch(next);
+    try {
+      const res = await fetch(`/api/optimizer/sessions/${encodeURIComponent(sessionId)}/discuss`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId, at, point: slot, dismissed: next }),
+      });
+      if (!res.ok) throw new Error();
+    } catch {
+      patch(!next);
+      toast.error(next ? "Could not mark that done" : "Could not bring that back");
+    }
+  }, [sessionId, workspaceId]);
+
+  /**
+   * Read the whole piece again, as it stands now.
+   *
+   * The conversation sees the live draft on every question, but only answers
+   * the question it was asked — so after applying three fixes there is nothing
+   * that says "and now?". This is that. Phrased to acknowledge the earlier
+   * pass, because a fresh review that repeats four points the writer has
+   * already dealt with reads as not having looked.
+   */
+  /**
+   * Read the piece for the first time in this conversation.
+   *
+   * Distinct from `reanalyse`, and the difference is not cosmetic: re-analyse
+   * says "take account of what has already changed since your earlier notes",
+   * which is a lie to a model that has no earlier notes and invites it to
+   * pretend it had some. This is the version for an empty panel.
+   *
+   * It exists because Clear used to leave nothing behind: both the Re-analyse
+   * and Clear buttons are gated on there being turns, so clearing the
+   * conversation removed the one control a writer wants next. Reported from
+   * real use, by someone who had just pasted a revised draft in.
+   */
+  const analyse = useCallback(() => {
+    ask(
+      "Read the whole piece as it stands and tell me what is wrong with it. " +
+        "Quote each passage you mean in an anchor block."
+    );
+  }, [ask]);
+
+  const reanalyse = useCallback(() => {
+    ask(
+      "Read the whole piece again as it now stands and tell me what is still wrong. " +
+        "Take account of what has already changed since your earlier notes — do not repeat points " +
+        "that no longer apply, and say so if something you raised before has been fixed. " +
+        "Quote each passage you mean in an anchor block."
+    );
+  }, [ask]);
+
+  // An ask from the editor. Guarded by nonce for the reason the marker scroll
+  // is: this panel unmounts whenever the rail shows another tab, so the effect
+  // re-runs on mount and would otherwise re-send the last request every time
+  // the writer came back to the conversation.
+  useEffect(() => {
+    if (!pendingAsk) return;
+    if (handledAsk.current === pendingAsk.nonce) return;
+    handledAsk.current = pendingAsk.nonce;
+    ask(pendingAsk.text);
+  }, [pendingAsk, ask]);
+
+  /**
+   * Wave a suggestion away, and remember it.
+   *
+   * Optimistic, then written. A dismissal that waits for a round trip feels
+   * broken on a list you are working through, and the failure case is visible:
+   * the block comes back and says why.
+   */
+  const setDismissed = useCallback(async (at: string, index: number, next: boolean) => {
+    if (!workspaceId) return;
+    setTurns((cur) =>
+      cur.map((t) => {
+        if (t.role !== "assistant" || t.at !== at) return t;
+        const list = t.dismissed || [];
+        const updated = next
+          ? (list.indexOf(index) < 0 ? list.concat([index]) : list)
+          : list.filter((n) => n !== index);
+        return { ...t, dismissed: updated };
+      })
+    );
+    try {
+      const res = await fetch(`/api/optimizer/sessions/${encodeURIComponent(sessionId)}/discuss`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId, at, index, dismissed: next }),
+      });
+      if (!res.ok) throw new Error();
+    } catch {
+      // Put it back rather than leaving the writer believing it is saved.
+      setTurns((cur) =>
+        cur.map((t) => {
+          if (t.role !== "assistant" || t.at !== at) return t;
+          const list = t.dismissed || [];
+          const reverted = next ? list.filter((n) => n !== index) : list.concat([index]);
+          return { ...t, dismissed: reverted };
+        })
+      );
+      toast.error(next ? "Could not dismiss that" : "Could not bring that back");
+    }
+  }, [sessionId, workspaceId]);
+
+  /**
+   * Everything that answers one point, rendered underneath it.
+   *
+   * The question is deliberately NOT shown: the writer pressed a button whose
+   * label already said what it would ask, and repeating the generated prompt
+   * back at them is four lines of noise above the answer they wanted.
+   */
+  const renderPointReplies = useCallback((key: string): React.ReactNode => {
+    if (!key) return null;
+    const mine = repliesForPoint(turns, key).filter((t) => t.role === "assistant");
+    const streamingHere = activePoint === key && streamed !== null;
+    if (mine.length === 0 && !streamingHere) return null;
+    return (
+      <>
+        {mine.map((t, n) => (
+          <AssistantTurn
+            key={`${t.at}-${n}`}
+            turnIndex={-1}
+            content={t.content}
+            turnAt={t.at}
+            dismissed={t.dismissed}
+            onDismiss={setDismissed}
+            hasSelection={hasSelection}
+            onApply={onApply}
+            resolveQuote={resolveQuote}
+            onRevealQuote={onRevealQuote}
+            onFix={askForFix}
+            // No nesting. A fix suggested on a point can be applied or
+            // dismissed, but asking for a fix to a fix is a thread, and a
+            // thread inside a point is a place to get lost in.
+            onPointFix={() => {}}
+          />
+        ))}
+        {streamingHere && <InlineStream text={streamed} hasSelection={hasSelection} onApply={onApply} />}
+      </>
+    );
+  }, [turns, activePoint, streamed, setDismissed, hasSelection, onApply, resolveQuote, onRevealQuote, askForFix]);
+
+
+  const clear = useCallback(async () => {
+    if (!workspaceId) return;
+    try {
+      const res = await fetch(
+        `/api/optimizer/sessions/${encodeURIComponent(sessionId)}/discuss?workspaceId=${encodeURIComponent(workspaceId)}`,
+        { method: "DELETE" }
+      );
+      if (!res.ok) { toast.error("Could not clear that"); return; }
+      // Bumped so an answer already in flight cannot fill the conversation back
+      // up the moment it lands — which is exactly what a Clear during a stream
+      // used to do, silently, after the writer had watched it succeed.
+      runRef.current++;
+      if (abortRef.current) abortRef.current.abort();
+      setTurns([]);
+      setStreamed(null);
+      setBusy(false);
+    } catch {
+      toast.error("Could not clear that");
+    }
+  }, [sessionId, workspaceId]);
+
+  /**
+   * Where the current reading starts: the last question asked, and everything
+   * after it.
+   *
+   * Not "the last assistant turn" — the question that prompted it belongs with
+   * it, and separating them would put a heading between a question and its
+   * answer. While a reply is streaming there is no completed exchange below, so
+   * the marker sits on the question being answered right now.
+   */
+  const latestStart = (() => {
+    for (let i = turns.length - 1; i >= 0; i--) if (turns[i].role === "user") return i;
+    return turns.length > 0 ? turns.length - 1 : 0;
+  })();
+
+  const live = streamed !== null ? splitLive(streamed) : null;
+  const liveParsed = live ? parseDiscussReply(live.settled) : null;
+
+  return (
+    <div className="h-full flex flex-col min-h-0">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">
+        {loaded && turns.length === 0 && streamed === null && (
+          <div className="rounded-xl border bg-card p-3.5">
+            <h3 className="text-[13px] font-semibold mb-1.5">Talk it through</h3>
+            <p className="text-[12px] text-muted-foreground leading-relaxed">
+              Engine AI can see the draft as it stands, the brief and everything you have attached.
+              Select a passage first to ask about that passage. Anything it offers for the piece
+              lands in the document at one click.
+            </p>
+            {/* Sends immediately rather than filling the box, because it is the
+                one thing here with no wording to decide. The three below are
+                prompts to edit; this is an action. */}
+            <button
+              onClick={analyse}
+              disabled={busy}
+              className="mt-2.5 inline-flex items-center gap-1.5 text-[12px] font-medium text-primary bg-primary/10 hover:bg-primary/15 disabled:opacity-50 rounded-md px-2.5 py-1.5"
+            >
+              <RefreshCw className="h-3 w-3" /> Read the whole piece
+            </button>
+            <div className="mt-2.5 space-y-1">
+              {["Is the opening doing its job?", "This paragraph is flabby, tighten it", "What is this piece missing?"].map((s) => (
+                <button
+                  key={s}
+                  onClick={() => { setQuestion(s); inputRef.current?.focus(); }}
+                  className="block w-full text-left text-[12px] text-muted-foreground hover:text-foreground rounded-md px-2 py-1 hover:bg-muted/60"
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {turns.map((t, i) => {
+          // A point's exchange renders under that point, not here. Leaving it
+          // in the flow too would show the same answer twice, once where it
+          // belongs and once where it used to be.
+          if (isPointReply(t)) return null;
+          const superseded = i < latestStart;
+          const opensLatest = i === latestStart && turns.length > 2;
+          return (
+            <div key={i}>
+              {opensLatest && (
+                // ── WHERE THE CURRENT READING STARTS ──────────────────────
+                //
+                // A re-analysis lands at the bottom of one continuous scroll,
+                // so a point from three passes ago looked exactly like one made
+                // thirty seconds ago — and the writer had no way to tell which
+                // recommendations still stood. The rule says where the current
+                // pass begins; everything above it is dimmed rather than
+                // hidden, because an earlier point can still be right and
+                // deleting the record of what was said would be worse than
+                // leaving it ambiguous.
+                <div className="flex items-center gap-2 pt-2 pb-1">
+                  <span className="h-px flex-1 bg-primary/30" />
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-primary/80">
+                    Latest
+                  </span>
+                  <span className="h-px flex-1 bg-primary/30" />
+                </div>
+              )}
+              {i === 0 && latestStart > 0 && turns.length > 2 && (
+                <div className="flex items-center gap-2 pb-1">
+                  <span className="h-px flex-1 bg-border" />
+                  <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+                    Earlier
+                  </span>
+                  <span className="h-px flex-1 bg-border" />
+                </div>
+              )}
+              <div className={cn(superseded && "opacity-55 hover:opacity-100 transition-opacity")}>
+                {t.role === "user" ? (
+                  <div className="flex justify-end">
+                    <p className="max-w-[85%] rounded-xl rounded-br-sm bg-muted px-2.5 py-1.5 text-[12.5px] leading-relaxed whitespace-pre-wrap">
+                      {t.content}
+                    </p>
+                  </div>
+                ) : (
+                  <AssistantTurn
+                    turnIndex={i}
+                    content={t.content}
+                    turnAt={t.at}
+                    dismissed={t.dismissed}
+                    onDismiss={setDismissed}
+                    donePoints={t.donePoints}
+                    onPointDone={setPointDone}
+                    activePoint={activePoint}
+                    renderPointReplies={renderPointReplies}
+                    hasSelection={hasSelection}
+                    onApply={onApply}
+                    resolveQuote={resolveQuote}
+                    onRevealQuote={onRevealQuote}
+                    onFix={askForFix}
+                    onPointFix={askForPointFix}
+                    superseded={superseded}
+                  />
+                )}
+              </div>
+            </div>
+          );
+        })}
+
+        {live && (
+          <div className="space-y-1.5">
+            {liveParsed && liveParsed.segments.map((seg, i) => (
+              <div key={i}>
+                {seg.anchor && seg.anchor !== liveParsed.segments[i - 1]?.anchor && (
+                  <AnchorChip quote={seg.anchor} resolveQuote={resolveQuote} onRevealQuote={onRevealQuote} />
+                )}
+                {seg.type === "draft" ? (
+                  <DraftBlock
+                    text={seg.text}
+                    hasSelection={hasSelection}
+                    onApply={onApply}
+                    anchor={seg.anchor}
+                    anchorFound={!!seg.anchor && resolveQuote(seg.anchor)}
+                  />
+                ) : (
+                  <p className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{seg.text}</p>
+                )}
+              </div>
+            ))}
+            {live.partial !== null && (
+              <DraftBlock text={live.partial} hasSelection={hasSelection} onApply={onApply} pending />
+            )}
+            {!streamed && (
+              <span className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" /> Reading your draft
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="shrink-0 border-t p-2.5">
+        {selection && (
+          // Shown because it changes the question. A writer who thinks nothing
+          // is selected, and asks "make this shorter", should be able to see
+          // what "this" is before they send it.
+          <div className="mb-1.5 flex items-start gap-1.5 rounded-md bg-muted/60 px-2 py-1.5">
+            <Quote className="h-3 w-3 mt-0.5 shrink-0 text-muted-foreground" />
+            <p className="text-[11px] text-muted-foreground leading-snug line-clamp-2">
+              {selection.length > 160 ? `${selection.slice(0, 160)}…` : selection}
+            </p>
+          </div>
+        )}
+        <div className="relative">
+          <textarea
+            ref={inputRef}
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); }
+            }}
+            placeholder={selection ? "Ask about the selected passage…" : "Ask about the draft…"}
+            rows={2}
+            disabled={busy}
+            className="w-full text-[12.5px] bg-transparent border rounded-lg pl-2.5 pr-9 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
+          />
+          <button
+            onClick={() => ask()}
+            disabled={busy || !question.trim()}
+            className="absolute right-2 bottom-2 text-muted-foreground hover:text-foreground disabled:opacity-40"
+            title="Ask"
+          >
+            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CornerDownLeft className="h-3.5 w-3.5" />}
+          </button>
+        </div>
+        <div className="mt-1.5 flex items-center justify-between gap-2">
+          <span className="text-[10.5px] text-muted-foreground inline-flex items-center gap-1 min-w-0">
+            <Sparkles className="h-2.5 w-2.5 shrink-0" />
+            <span className="truncate">Sees the draft, the brief and your background</span>
+          </span>
+          <span className="inline-flex items-center gap-2.5 shrink-0">
+          {turns.length > 0 && (
+            <button
+              onClick={reanalyse}
+              disabled={busy}
+              className="text-[10.5px] text-muted-foreground hover:text-foreground inline-flex items-center gap-1 disabled:opacity-40"
+              title="Read the whole piece again as it now stands"
+            >
+              <RefreshCw className="h-2.5 w-2.5" /> Re-analyse
+            </button>
+          )}
+          {turns.length > 0 && (
+            <button
+              onClick={clear}
+              className="text-[10.5px] text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+              title="Clear this conversation — the piece is untouched"
+            >
+              <Eraser className="h-2.5 w-2.5" /> Clear
+            </button>
+          )}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AssistantTurn({
+  turnIndex,
+  content,
+  turnAt,
+  dismissed,
+  onDismiss,
+  donePoints,
+  onPointDone,
+  activePoint,
+  renderPointReplies,
+  hasSelection,
+  onApply,
+  resolveQuote,
+  onRevealQuote,
+  onFix,
+  onPointFix,
+  superseded,
+}: {
+  turnIndex: number;
+  content: string;
+  /** The turn's timestamp, which is how a dismissal addresses one of its
+   *  blocks. Positions shift when the stored conversation passes its cap. */
+  turnAt: string;
+  dismissed?: number[];
+  onDismiss?: (at: string, index: number, next: boolean) => void;
+  /** Points in this reply the writer has finished with, as "segment.paragraph". */
+  donePoints?: string[];
+  onPointDone?: (at: string, slot: string, next: boolean) => void;
+  /** The point whose answer is arriving right now, if any. */
+  activePoint?: string | null;
+  /** Renders the exchange that answers one point, underneath it. */
+  renderPointReplies?: (key: string) => React.ReactNode;
+  hasSelection: boolean;
+  onApply: (text: string, anchor?: string) => "replaced" | "appended" | "failed";
+  resolveQuote: (q: string) => boolean;
+  onRevealQuote: (q: string) => boolean;
+  onFix: (q: string, pointKey?: string) => void;
+  onPointFix: (point: string, pointKey?: string) => void;
+  /** From an earlier pass. Its points may already have been acted on. */
+  superseded?: boolean;
+}) {
+  // Rendered from SEGMENTS, in the order the model wrote them. Rendering the
+  // prose and then the blocks — which is what the flat shape invited — put a
+  // sentence ending "delete the setup and you lose nothing:" above nothing, and
+  // the sentence that followed the block above the block it referred back to.
+  const parsed = parseDiscussReply(content);
+  // Which anchors already have a rewrite. An anchor scopes a RUN, so a draft
+  // block anywhere in that run means the point is already answered and the
+  // offer would duplicate it.
+  const answered: { [quote: string]: true } = {};
+  for (let i = 0; i < parsed.segments.length; i++) {
+    const seg = parsed.segments[i];
+    if (seg.type === "draft" && seg.anchor) answered[seg.anchor] = true;
+  }
+  return (
+    <div className="space-y-1.5 transition-shadow" data-turn={turnIndex}>
+      {parsed.segments.map((seg, i) => (
+        <div key={i}>
+          {/* Once per RUN. An anchor now scopes every point until the next one,
+              so showing it above each would repeat the writer's own sentence
+              back at them two or three times in a row. */}
+          {seg.anchor && seg.anchor !== parsed.segments[i - 1]?.anchor && (
+            <AnchorChip
+              quote={seg.anchor}
+              resolveQuote={resolveQuote}
+              onRevealQuote={onRevealQuote}
+              onFix={answered[seg.anchor] ? undefined : onFix}
+              superseded={superseded}
+              pointKey={turnAt ? anchorKeyOf(turnAt, i) : undefined}
+              done={(donePoints || []).indexOf(anchorSlotOf(i)) >= 0}
+              onDone={turnAt && onPointDone ? (next) => onPointDone(turnAt, anchorSlotOf(i), next) : undefined}
+              busy={!!turnAt && activePoint === anchorKeyOf(turnAt, i)}
+            >
+              {renderPointReplies ? renderPointReplies(turnAt ? anchorKeyOf(turnAt, i) : "") : null}
+            </AnchorChip>
+          )}
+          {seg.type === "draft" ? (
+            <DraftBlock
+              text={seg.text}
+              hasSelection={hasSelection}
+              onApply={onApply}
+              anchor={seg.anchor}
+              anchorFound={!!seg.anchor && resolveQuote(seg.anchor)}
+              // Indexed among the turn's SEGMENTS, which is what the writer is
+              // looking at. Indexing among the draft blocks alone would drift
+              // the moment a reply's prose and blocks interleave differently.
+              dismissed={(dismissed || []).indexOf(i) >= 0}
+              onDismiss={turnAt && onDismiss ? (next) => onDismiss(turnAt, i, next) : undefined}
+            />
+          ) : (
+            // Split into paragraphs so each POINT carries its own action. One
+            // action for a six-point reply would be an action for none of them.
+            <div className="space-y-1.5">
+              {seg.text.split(/\n{2,}/).map((para, k) =>
+                para.trim() ? (
+                  <PointParagraph
+                    key={k}
+                    text={para.trim()}
+                    onFix={seg.anchor ? undefined : onPointFix}
+                    pointKey={turnAt ? pointKeyOf(turnAt, i, k) : undefined}
+                    done={(donePoints || []).indexOf(pointSlotOf(i, k)) >= 0}
+                    onDone={turnAt && onPointDone ? (next) => onPointDone(turnAt, pointSlotOf(i, k), next) : undefined}
+                    busy={!!turnAt && activePoint === pointKeyOf(turnAt, i, k)}
+                  >
+                    {renderPointReplies ? renderPointReplies(turnAt ? pointKeyOf(turnAt, i, k) : "") : null}
+                  </PointParagraph>
+                ) : null
+              )}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}

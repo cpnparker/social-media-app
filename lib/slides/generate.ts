@@ -1,0 +1,6227 @@
+/**
+ * Build a branded Google Slides deck in the user's own Drive.
+ *
+ * Shape of the operation: presentations.create makes an empty deck owned by the
+ * user, then ONE batchUpdate lays down every slide. Batching matters — a deck
+ * built over N round-trips can fail halfway and leave a visibly broken file in
+ * somebody's Drive, whereas batchUpdate is applied atomically by Google.
+ *
+ * Every slide is a BLANK layout with explicit shapes rather than a predefined
+ * layout with placeholders. Placeholders would inherit from Slides' own default
+ * master, which is not branded, and re-styling the master through the API is
+ * considerably more work than positioning the boxes ourselves — especially with
+ * exact geometry already extracted (lib/slides/brand.ts). The trade-off is that
+ * the generated deck has no reusable layouts; see docs/tce-slide-brand.md.
+ */
+
+import {
+  COLOR, GRID, CANVAS, TYPE, NOTE, STAT_MAX, STAT_GRID_MIN, STAT_GRID, TIMELINE, TIMELINE_PARALLEL, TRACK_COLORS, IMAGE, CHART,
+  SERIES_LIGHT, SERIES_DARK, CARDS, QUOTE, PROCESS, LOGO_WALL, RULE, LAYOUT_STYLE, LOGO_PLACEMENT, SECTION, VENN,
+  rgb, logoUrl, textOn, type SlideLayout, type TypeStyle, type LayoutStyle,
+} from "@/lib/slides/brand";
+import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "@/lib/slides/token";
+import { captureThumbnails } from "@/lib/slides/preview";
+import {
+  resolveImage, selectImageSource, bakeImageSource, attachmentImageSource,
+  type ImageGenerator, type ImageSource, type ImageRequest, type TextBand,
+} from "@/lib/slides/images";
+import { resolveIcon } from "@/lib/slides/icons";
+import { SLIDES_TEXT_INSET, BULLET_INDENT } from "@/lib/slides/preview-style";
+import { refreshSignedMediaUrl } from "@/lib/media/signed";
+
+const SLIDES_API = "https://slides.googleapis.com/v1/presentations";
+const DRIVE_API = "https://www.googleapis.com/drive/v3/files";
+
+export interface Milestone {
+  /** Shown above the axis, e.g. "3 July" or "18–24 August". */
+  date: string;
+  /** Shown below the marker. */
+  title: string;
+  /** Optional supporting line under the title. */
+  detail?: string;
+  /** Draws a larger marker — for the phase that is current or next. */
+  highlight?: boolean;
+}
+
+export interface TrackPhase {
+  /** ISO date, YYYY-MM-DD. Required — proportional positioning is the whole
+   *  point of this layout, and it cannot be derived from "late August". */
+  start: string;
+  /** ISO date. Omit for a single-day milestone, which renders as a dot. */
+  end?: string;
+  label: string;
+}
+
+export interface Track {
+  name: string;
+  phases: TrackPhase[];
+}
+
+export interface SlideInput {
+  layout?: SlideLayout;
+  title?: string;
+  subtitle?: string;
+  eyebrow?: string;
+  body?: string;
+  bodyRight?: string;
+  /** Headers for the two-column comparison — "Before"/"After", "Us"/"Them". */
+  columns?: { left?: string; right?: string };
+  /** SWOT: four quadrants of bullet lines. */
+  swot?: { strengths?: string[]; weaknesses?: string[]; opportunities?: string[]; threats?: string[] };
+  /** A 2x2 quadrant matrix — impact/effort, risk/reward. Items are placed by
+   *  x and y in 0..1 (0 = left/bottom, 1 = right/top). */
+  matrix?: {
+    xAxis?: [string, string]; yAxis?: [string, string];
+    quadrants?: [string, string, string, string];   // TL, TR, BL, BR
+    items?: { label: string; x: number; y: number; highlight?: boolean }[];
+  };
+  /** A comparison table: a header row of options, then criterion rows. A cell
+   *  of "yes"/"no" draws a tick or cross; anything else prints as text. */
+  comparison?: { columns?: string[]; rows?: { label: string; cells: string[]; highlight?: boolean }[] };
+  /** A scatter plot — two continuous axes, points optionally grouped by a
+   *  named series (each series its own colour). */
+  scatter?: {
+    xAxis?: string; yAxis?: string;
+    points?: { x: number; y: number; label?: string; group?: string }[];
+  };
+  /** A data table: a header row and rows of cells. The comparison layout is a
+   *  table too, but a judgement one — four options at most, a third of the
+   *  width given to the criterion, cells centred and yes/no drawn as ticks.
+   *  A keyword table with six columns of numbers needs none of that and wants
+   *  the one thing comparison will not do: figures right-aligned under their
+   *  heading, so the eye can run down a column. */
+  table?: {
+    columns?: string[];
+    rows?: string[][];
+    /** Per column. Inferred from the cells when absent, which is right often
+     *  enough that asking is the exception. */
+    align?: ("left" | "right")[];
+    /** Row indices drawn on a tint — the rows that carry the argument. */
+    highlight?: number[];
+  };
+  /** A stacked layer diagram — the "AI is a new LAYER" picture: horizontal
+   *  bands top to bottom with connector arrows between them, each band either
+   *  one full-width box or a row of small cells. The only way to say
+   *  "everything below feeds the thing above". Up to 5 layers. */
+  layers?: {
+    title?: string;
+    /** One sentence inside the band, under the title. */
+    caption?: string;
+    /** A row of cells instead of a caption: [{title, text?}], up to 8. */
+    cells?: { title?: string; text?: string }[];
+    /** "blue" (solid brand blue, white ink), "dashed" (outlined emphasis),
+     *  or a tint: "teal" | "lav" | "grey" | "coral" | "amber". */
+    style?: string;
+    /** The connector under this band: "down" (default), "up" when the band
+     *  BENEATH feeds this one — brands push into the channels, the AI layer
+     *  reads across them — or "none". `false` is the old spelling of "none"
+     *  and still works. */
+    arrow?: boolean | "up" | "down" | "none";
+  }[];
+  /** A full-width band under a cards row — the source deck's "SXO in detail"
+   *  device: a spanning tinted panel holding a title and a row of small
+   *  labelled cells that elaborate ONE of the cards above. */
+  strip?: { title?: string; items?: { title?: string; text?: string }[] };
+  /** Tinted panels behind the two columns, with the column header inked to
+   *  match: `["coral","teal"]` is the source deck's negative/positive pair
+   *  ("What AIO does not do" in rose, "What AIO is good for" in mint). Also
+   *  "blue", "amber" and "grey". Omit for the plain hairline treatment. */
+  tones?: string[];
+  /** The takeaway bar along the foot of the slide: the "Why this matters:"
+   *  sentence the source deck puts on nearly every page. A leading "Lead-in:"
+   *  is drawn bold. Works on every layout, and shortens the content band so it
+   *  can never overlap what is above it. */
+  note?: string;
+  /** The master template's panel: a rounded card beside the prose, blue with
+   *  white ink or the soft lavender variant, carrying a short titled list. The
+   *  device the JERA master uses for "The Content Engine is a combination of:".
+   *  Drawn on the content family; a slide with a panel gives up its photo rail,
+   *  because the master's split has either a panel or an image, never both. */
+  panel?: {
+    title?: string;
+    items?: { title?: string; text?: string }[];
+    /** "blue" (default) or "soft" — lavender with navy ink, for when a blue
+     *  panel would make three blue elements fight on one slide. */
+    style?: string;
+  };
+  /** A Venn diagram — two or three overlapping sets. */
+  venn?: { sets?: { label: string }[]; overlap?: string };
+  milestones?: Milestone[];
+  tracks?: Track[];
+  /** What this slide should be a picture OF, or an exact image to use, or one
+   *  the USER attached (optionally cropped to a region of it). Resolved before
+   *  the deck is built, so the preview shows the real photograph. */
+  image?: {
+    url?: string;
+    query?: string;
+    /** 1-based index into the images the user attached to the conversation. */
+    attachment?: number;
+    /** A region of that attachment, in percentages of its width and height. */
+    region?: { x: number; y: number; width: number; height: number };
+  };
+  /** Filled in by resolution — not supplied by the model. */
+  resolvedImage?: { url: string; scrim: number; credit?: string; logo?: "white" | "navy" };
+  /** Set when resolution ran and found nothing, so publishing does not quietly
+   *  search again and build a deck different from the one that was approved. */
+  imageUnavailable?: boolean;
+  /** Why the picture could not be used, when it was found but could not be
+   *  prepared. Reported to the model so it can tell the user. */
+  imageError?: string;
+  /** How many grid thumbnails were asked for and not found. */
+  imagesDropped?: number;
+  /** The layout name the model asked for, when it was not one we have. */
+  layoutAsked?: string;
+  /** This slide is the tail of one the splitter cut in two. It takes the
+   *  picture from the slide it came from rather than asking for its own. */
+  continuation?: boolean;
+  /** Thumbnails for the image-grid layout. */
+  images?: { url?: string; query?: string; caption?: string }[];
+  resolvedImages?: { url: string; caption?: string }[];
+  /** Repeated blocks. Every part is optional: a marker alone gives numbered
+   *  items, a thumbnail gives a product grid, neither gives labelled columns. */
+  cards?: {
+    /** "01", or a short label like "STRATEGY". Drawn as a brand chip. */
+    marker?: string;
+    /** Tints this card and draws a coloured accent bar across its top —
+     *  "blue", "teal", "coral", "amber" or "grey". The source deck's
+     *  discipline cards (AEO / GEO / SXO) each carry their own colour; a card
+     *  without a tone keeps the plain treatment. */
+    tone?: string;
+    title?: string;
+    body?: string;
+    /** A Lucide icon name — "target", "line-chart", "users". Drawn small above
+     *  the heading, in brand navy. Cheaper and far more consistent than a
+     *  photograph when the card is about an idea rather than a thing. */
+    icon?: string;
+    image?: { url?: string; query?: string };
+    resolvedImage?: { url: string };
+    resolvedIcon?: string;
+  }[];
+  /** A pull quote and who said it. */
+  quote?: { text: string; name?: string; role?: string; image?: { url?: string; query?: string }; resolvedImage?: { url: string } };
+  /** Stages, left to right. Three to five reads best. */
+  /** `name`/`caption` is the original shape; `title`/`body` is accepted too,
+   *  because every SIBLING layout (cards, layers, panel) uses title/body and a
+   *  process slide written that way drew four empty blue boxes and said
+   *  nothing — the deck shipped with them. */
+  stages?: { name?: string; caption?: string; title?: string; body?: string }[];
+  /** The footer's text — the deck's own name, stamped by the builder. A slide
+   *  never chooses this; it is the one line that must read the same on every
+   *  page, and a model writing it per slide would not. */
+  footer?: string;
+  /** Client marks for logo-wall. Fitted whole, never cropped. */
+  logos?: { url?: string; query?: string; name?: string; resolvedUrl?: string }[];
+  /** Big numbers for the stat layout — three at most, or none of them lands. */
+  /** Headline figures for the stat layout, one to eight. One is a hero, two
+   *  or three are the navy row, four or more are a grid of cards on the
+   *  light ground — rows of up to four, the reference deck's 4-then-3.
+   *  `tone` ("grey" | "blue" | "teal" | "coral" | "amber") colours a card so
+   *  the grid GROUPS its figures: the reference sets its landscape figures
+   *  on grey and its opportunity figures on mint, which is what lets the
+   *  takeaway say "the green numbers are the upside". */
+  stats?: { value: string; label: string; detail?: string; primary?: boolean; tone?: string }[];
+  /** Data for bar-chart and line-chart. */
+  chart?: {
+    series: { name: string; points: { label: string; value: number }[] }[];
+    /** Printed under the plot. A chart without one invites the question. */
+    source?: string;
+    /** The points are a TIME SERIES — draw them in the given order, do not sort
+     *  by value. A monthly trend sorted by value is a scrambled line. */
+    sequence?: boolean;
+    /** Index of the one bar that IS the point — drawn in the accent, the rest
+     *  muted, so the chart argues instead of merely presenting. */
+    highlight?: number;
+    /** A target or reference line drawn across the plot — "industry average",
+     *  "our goal" — so a bar reads as above or below it, not just as a length. */
+    benchmark?: { value: number; label?: string };
+    /** A short annotation tied to one bar — the reason behind the number. */
+    callout?: { point: number; text: string };
+    /** What the y axis measures — "Net profit (CHF)", "Users". Drawn above the
+     *  axis values on a line chart. There was no field for this at all, so a
+     *  request to label the axis had nowhere to go and the model answered it by
+     *  claiming a label it could not set. */
+    yAxisLabel?: string;
+  };
+  /** A deck-wide art-direction note threaded into every PHOTOGRAPH query, so a
+   *  deck's images read as one commission rather than a stock grab-bag. Never
+   *  applied to logos, icons or a named person's portrait. */
+  imageStyle?: string;
+  /** ISO date for the "today" rule. Defaults to the real today; drawn only if
+   *  it falls inside the plotted range. */
+  today?: string;
+  notes?: string;
+}
+
+export interface SlidesResult {
+  ok: boolean;
+  url?: string;
+  presentationId?: string;
+  title?: string;
+  slideCount?: number;
+  error?: string;
+  /** Set only when the failure is a connection state the user can fix. The
+   *  chat layer uses it to offer a reconnect button instead of an error. */
+  reason?: SlidesAuthFailure;
+  /** True when an existing deck was edited rather than a new one created. */
+  updated?: boolean;
+  /** The deck to update could not be opened — caller may create instead. */
+  notFound?: boolean;
+  /** Slide thumbnails, in order, for the in-chat preview. */
+  thumbnails?: string[];
+}
+
+/* ─────────────── Request builders ─────────────── */
+
+type Req = Record<string, any>;
+
+function pt(magnitude: number) {
+  return { magnitude, unit: "PT" };
+}
+
+function textStyleRequest(objectId: string, style: TypeStyle): Req {
+  // weightedFontFamily rather than fontFamily + bold: when both are set the
+  // weighted one wins anyway, so setting only it avoids a contradictory pair.
+  const weight = style.weight ?? (style.bold ? 700 : 400);
+  return {
+    updateTextStyle: {
+      objectId,
+      textRange: { type: "ALL" },
+      style: {
+        weightedFontFamily: { fontFamily: style.font, weight },
+        fontSize: pt(style.size),
+        foregroundColor: { opaqueColor: { rgbColor: rgb(style.color) } },
+      },
+      fields: "weightedFontFamily,fontSize,foregroundColor",
+    },
+  };
+}
+
+interface BoxOptions {
+  align?: "START" | "CENTER" | "END";
+  bullets?: boolean;
+  lineSpacing?: number;
+  /** Points after each paragraph. Raised on a short list so four bullets use
+   *  the band they are given instead of pooling under the title with half the
+   *  slide empty beneath them. */
+  spaceBelow?: number;
+  /** Centre the text vertically inside its box.
+   *
+   *  This is how a short slide stops leaving its bottom third empty without
+   *  anyone having to measure text. The box is given the whole band it may
+   *  occupy and Slides centres whatever lands in it, so three bullets sit in
+   *  the middle of the space and eight fill it — no estimating line heights,
+   *  and no drift between what we predicted and what Google laid out. */
+  vCenter?: boolean;
+  /** Sit the text at the BOTTOM of its box.
+   *
+   *  For a heading in a band sized to the tallest heading in its row: a
+   *  one-line title in a three-line box left a visible hole between itself and
+   *  the body underneath, and the body could not move up without breaking the
+   *  row's shared baseline. Bottom-aligning puts the slack ABOVE the heading,
+   *  under the chip, where it reads as spacing rather than as a gap. */
+  vBottom?: boolean;
+}
+
+/** A positioned text box: create, fill, style. Returns [] for empty text so a
+ *  missing optional field doesn't produce an empty box (or an insertText error,
+ *  which is what an empty string actually causes). */
+/** Markdown links in a plain string: `[label](https://…)`.
+ *
+ *  A syntax rather than a structured field because body copy is one string that
+ *  the model already writes markdown into everywhere else in this product, and
+ *  because links belong to phrases inside a sentence — a parallel array of
+ *  urls could not say WHICH words are the link.
+ *
+ *  Returns the text with the markup removed, plus where each link now falls.
+ *  Offsets are computed against the stripped string because that is what
+ *  Slides will hold. */
+function extractLinks(raw: string): { text: string; links: { start: number; end: number; url: string }[] } {
+  const links: { start: number; end: number; url: string }[] = [];
+  let text = "";
+  let rest = raw;
+  const re = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/;
+  for (let guard = 0; guard < 200; guard++) {
+    const m = re.exec(rest);
+    if (!m) break;
+    text += rest.slice(0, m.index);
+    const start = text.length;
+    text += m[1];
+    links.push({ start, end: text.length, url: m[2] });
+    rest = rest.slice(m.index + m[0].length);
+  }
+  return { text: text + rest, links };
+}
+
+/**
+ * The tinted-panel palette for a two-column slide.
+ *
+ * The source deck almost never sets two columns as bare lists: it puts each in
+ * a soft tinted card with the heading inked to match, and uses rose against
+ * mint to carry "what does not work / what does". The tints and their inks are
+ * the validated pairs already used by SWOT and table rows, so contrast is
+ * settled rather than guessed.
+ */
+const TONES: { [k: string]: { tint: string; ink: string } } = {
+  coral: { tint: COLOR.tintCoral, ink: COLOR.inkCoral },
+  teal:  { tint: COLOR.tintTeal,  ink: COLOR.inkTeal },
+  blue:  { tint: COLOR.tintBlue,  ink: COLOR.inkBlue },
+  amber: { tint: COLOR.tintAmber, ink: COLOR.inkAmber },
+  grey:  { tint: COLOR.tintGrey,  ink: COLOR.navy },
+};
+function toneAt(tones: string[] | undefined, i: number) {
+  const key = String((tones || [])[i] || "").toLowerCase();
+  return TONES[key];
+}
+
+/** How tall the takeaway bar needs to be for its text. */
+function noteHeight(note: string | undefined): number {
+  const text = (note || "").trim();
+  if (!text) return 0;
+  const lines = estimateLines(text, GRID.contentWidth - NOTE.pad * 2, NOTE.fontSize);
+  return Math.min(NOTE.maxHeight, Math.max(NOTE.minHeight, lines * NOTE.lineHeight + NOTE.pad * 2));
+}
+
+/**
+ * The content band, shortened when a takeaway bar is present.
+ *
+ * Every layout that centres a self-contained block — stats, a plot, a card row
+ * — measures against this rather than GRID.bandHeight, so adding a note moves
+ * the content up instead of drawing the bar on top of it.
+ */
+/** Every slide gets the deck's name in its footer. Called by both entry
+ *  points — the Drive build and the chat draft — so the preview and the deck
+ *  carry the same line. */
+export function stampFooter(slides: SlideInput[], title: string | undefined): SlideInput[] {
+  const t = String(title || "").replace(/[{}]/g, "").trim();
+  const footer = t ? `The Content Engine \u00b7 ${t}` : "The Content Engine";
+  for (const s of slides) if (s && !s.footer) s.footer = footer;
+  return slides;
+}
+
+export function bandHeightFor(slide: Pick<SlideInput, "note">): number {
+  const h = noteHeight(slide.note);
+  if (!h) return GRID.bandHeight;
+  return Math.max(90, NOTE.bottom - h - NOTE.gap - GRID.bodyY);
+}
+
+/**
+ * The takeaway bar: the "Why this matters:" sentence along the foot.
+ *
+ * The device the source deck uses on nearly every page. Our engine had nowhere
+ * to put it, so it went into `subtitle` — competing with the standfirst — or
+ * into `body`, where it read as one more bullet, and the most quotable line on
+ * the page lost its emphasis.
+ */
+function noteRequests(
+  page: string, id: (s: string) => string, note: string | undefined, onDark: boolean,
+  below?: number
+): Req[] {
+  const text = (note || "").trim();
+  if (!text) return [];
+  const h = noteHeight(text);
+  // UNDER THE CONTENT, not at the foot of the page. The reference deck sets
+  // its takeaway bar a few points beneath the boxes it comments on, and lets
+  // the empty space fall BELOW it; pinned to the bottom, the bar sat up to
+  // 150pt under the last bullet, so the room's eye had to cross a void of
+  // tinted card to find the sentence the presenter was reading out. A layout
+  // that knows where its content ends passes it here; one that does not gets
+  // the old pin.
+  const y = below !== undefined ? Math.min(below, NOTE.bottom - h) : NOTE.bottom - h;
+  const out: Req[] = [
+    ...filledShape(id("noteBar"), page, "ROUND_RECTANGLE", onDark ? COLOR.white : COLOR.tintBlue, {
+      x: GRID.margin, y, width: GRID.contentWidth, height: h,
+    }, onDark ? 0.1 : 1),
+    ...textBox(id("noteTxt"), page, text,
+      { font: "Roboto", size: NOTE.fontSize, weight: 300, color: onDark ? COLOR.greyLight : COLOR.navy }, {
+        x: GRID.margin + NOTE.pad, y: y + NOTE.pad - 3,
+        width: GRID.contentWidth - NOTE.pad * 2, height: h - NOTE.pad,
+      }, { lineSpacing: 1.15 }),
+  ];
+  // The bold lead-in, when the note opens with one. Drawn as a RUN rather than
+  // a second box, so the sentence still wraps as one paragraph — which is what
+  // makes it read as a sentence and not a heading.
+  const colon = text.indexOf(":");
+  if (colon > 0 && colon <= 46) {
+    out.push({
+      updateTextStyle: {
+        objectId: id("noteTxt"),
+        textRange: { type: "FIXED_RANGE", startIndex: 0, endIndex: colon + 1 },
+        style: { bold: true, foregroundColor: { opaqueColor: { rgbColor: rgb(onDark ? COLOR.lime : COLOR.blue) } } },
+        fields: "bold,foregroundColor",
+      },
+    });
+  }
+  return out;
+}
+
+/**
+ * The brand's accent phrase: braces in a headline mark one italic phrase.
+ *
+ *     "Great storytelling can {change the world}"
+ *
+ * On light grounds the phrase turns italic; on dark grounds it turns italic AND
+ * lime, while the roman part stays off-white — the colour flip the design
+ * system calls the brand's strongest recognisable detail. The braces are
+ * MARKUP: they are stripped before the text reaches the slide, and the ranges
+ * they marked are what the styling is applied to.
+ *
+ * Applied to Playfair fields only. Playfair is the headline voice, which is
+ * exactly where the brand says the accent belongs; body copy in Roboto passes
+ * braces through untouched, so user content is never silently rewritten.
+ */
+export function parseAccents(source: string): { text: string; ranges: { start: number; end: number }[] } {
+  const ranges: { start: number; end: number }[] = [];
+  let text = "";
+  let i = 0;
+  while (i < source.length) {
+    const open = source.indexOf("{", i);
+    if (open < 0) { text += source.slice(i); break; }
+    const close = source.indexOf("}", open + 1);
+    if (close < 0) { text += source.slice(i); break; }   // unmatched brace stays literal
+    text += source.slice(i, open);
+    const start = text.length;
+    text += source.slice(open + 1, close);
+    // An empty pair marks nothing and is dropped rather than recorded.
+    if (text.length > start) ranges.push({ start, end: text.length });
+    i = close + 1;
+  }
+  return { text, ranges };
+}
+
+/**
+ * Markdown bold, as ranges: "**Focus:** entity authority" strips the markers
+ * and returns where the bold runs sit. The source decks open almost every
+ * bullet with a bold lead-in — the label that makes a card scannable — and a
+ * pipeline that flattens them to uniform weight turns five comparable cards
+ * into five paragraphs. Same shape as parseAccents, same reason it exists.
+ */
+export function parseBold(source: string): { text: string; ranges: { start: number; end: number }[] } {
+  const ranges: { start: number; end: number }[] = [];
+  let text = "";
+  let i = 0;
+  while (i < source.length) {
+    const open = source.indexOf("**", i);
+    if (open < 0) { text += source.slice(i); break; }
+    const close = source.indexOf("**", open + 2);
+    if (close < 0) { text += source.slice(i); break; }   // unmatched stays literal
+    text += source.slice(i, open);
+    const start = text.length;
+    text += source.slice(open + 2, close);
+    if (text.length > start) ranges.push({ start, end: text.length });
+    i = close + 2;
+  }
+  return { text, ranges };
+}
+
+/** Light inks mean a dark ground, which is where the accent goes lime. Derived
+ *  from the ink rather than passed in, so no call site can get it wrong. */
+function accentColorFor(style: TypeStyle): string | undefined {
+  return style.color === COLOR.white || style.color === COLOR.greyLight ? COLOR.lime : undefined;
+}
+
+function textBox(
+  objectId: string,
+  pageObjectId: string,
+  text: string | undefined,
+  style: TypeStyle,
+  box: { x: number; y: number; width: number; height: number },
+  options: BoxOptions = {}
+): Req[] {
+  const source = (text ?? "").trim();
+  if (!source) return [];
+  const { text: content, links } = extractLinks(source);
+  if (!content) return [];
+  // A blank line between bullets is how people type a list, and Slides turns
+  // every paragraph into a bullet — including the empty ones, which drew a disc
+  // with nothing after it. The 6pt paragraph spacing is what separates them.
+  const collapsed = options.bullets
+    ? content.split("\n").map((l) => l.trim()).filter(Boolean).join("\n")
+    : content;
+  if (!collapsed) return [];
+  let rendered = style.caps ? collapsed.toUpperCase() : collapsed;
+
+  // The accent phrase, on Playfair fields only. Skipped when the box also
+  // carries markdown links: both index into the final text and stripping braces
+  // would shift the link ranges — a headline carrying both is not a real case,
+  // and leaving the braces visible is more honest than styling the wrong words.
+  let accentRanges: { start: number; end: number }[] = [];
+  const accented = style.font === "Playfair Display" && links.length === 0 && rendered.indexOf("{") >= 0;
+  if (accented) {
+    const parsed = parseAccents(rendered);
+    rendered = parsed.text;
+    accentRanges = parsed.ranges;
+  }
+  // Bold runs, on any field that is not already carrying links or accents —
+  // both index into the final string, and stripping markers under them would
+  // shift their ranges onto the wrong words.
+  let boldRanges: { start: number; end: number }[] = [];
+  if (!accented && links.length === 0 && rendered.indexOf("**") >= 0) {
+    const pb = parseBold(rendered);
+    rendered = pb.text;
+    boldRanges = pb.ranges;
+  }
+
+  const requests: Req[] = [
+    {
+      createShape: {
+        objectId,
+        shapeType: "TEXT_BOX",
+        elementProperties: {
+          pageObjectId,
+          size: { width: pt(box.width), height: pt(box.height) },
+          transform: { scaleX: 1, scaleY: 1, translateX: box.x, translateY: box.y, unit: "PT" },
+        },
+      },
+    },
+    { insertText: { objectId, text: rendered, insertionIndex: 0 } },
+    textStyleRequest(objectId, style),
+    {
+      updateParagraphStyle: {
+        objectId,
+        textRange: { type: "ALL" },
+        style: {
+          alignment: options.align ?? "START",
+          lineSpacing: (options.lineSpacing ?? 1.15) * 100,
+          spaceBelow: pt(options.spaceBelow ?? 6),
+        },
+        fields: "alignment,lineSpacing,spaceBelow",
+      },
+    },
+  ];
+
+  for (let bi = 0; bi < boldRanges.length; bi++) {
+    const r = boldRanges[bi];
+    requests.push({
+      updateTextStyle: {
+        objectId,
+        textRange: { type: "FIXED_RANGE", startIndex: r.start, endIndex: r.end },
+        style: { bold: true },
+        fields: "bold",
+      },
+    });
+  }
+
+  const accentColor = accentColorFor(style);
+  for (let ai = 0; ai < accentRanges.length; ai++) {
+    const r = accentRanges[ai];
+    requests.push({
+      updateTextStyle: {
+        objectId,
+        textRange: { type: "FIXED_RANGE", startIndex: r.start, endIndex: r.end },
+        style: {
+          italic: true,
+          ...(accentColor ? { foregroundColor: { opaqueColor: { rgbColor: rgb(accentColor) } } } : {}),
+        },
+        fields: accentColor ? "italic,foregroundColor" : "italic",
+      },
+    });
+  }
+
+  // Links LAST, and carrying the brand colour with them. Setting a link makes
+  // Slides apply its theme hyperlink colour and an underline, so a link applied
+  // after the run style silently repaints that phrase blue — every linked
+  // portfolio caption would stop looking like the deck around it.
+  for (const [li, link] of links.map((l, i) => [i, l] as const)) {
+    requests.push({
+      updateTextStyle: {
+        objectId,
+        textRange: { type: "FIXED_RANGE", startIndex: link.start, endIndex: link.end },
+        style: {
+          link: { url: link.url },
+          foregroundColor: { opaqueColor: { rgbColor: rgb(style.color) } },
+          underline: true,
+        },
+        fields: "link,foregroundColor,underline",
+      },
+    });
+    void li;
+  }
+
+  if (options.vCenter || options.vBottom) {
+    requests.push({
+      updateShapeProperties: {
+        objectId,
+        shapeProperties: { contentAlignment: options.vBottom ? "BOTTOM" : "MIDDLE" },
+        fields: "contentAlignment",
+      },
+    });
+  }
+
+  // Bullets only when there is genuinely a list. A single paragraph rendered
+  // with a disc reads as a stray bullet rather than a list of one.
+  if (options.bullets && rendered.includes("\n")) {
+    requests.push({
+      createParagraphBullets: {
+        objectId,
+        textRange: { type: "ALL" },
+        bulletPreset: "BULLET_DISC_CIRCLE_SQUARE",
+      },
+    });
+  }
+  return requests;
+}
+
+function logoRequests(
+  objectId: string, pageObjectId: string, style: LayoutStyle, slide?: SlideInput
+): Req[] {
+  // The STYLE, not the layout: a stat slide's ground is decided per instance
+  // (slideStyle), and the lockup has to follow the ground it actually sits on.
+  if (!style.logo) return [];
+  const place = LOGO_PLACEMENT[style.logoPlacement];
+  // The picture only gets a say where the logo actually SITS on it — the
+  // full-bleed layouts. On image-split the photograph fills the left half while
+  // the lockup sits top-right over off-white, so letting a dark photo ask for
+  // the white mark put a white logo on a near-white ground: invisible, and
+  // introduced by the fix for the opposite problem.
+  const overPhoto = style.background === null;
+  const variant = (overPhoto && slide?.resolvedImage?.logo) || style.logo;
+  return [
+    {
+      createImage: {
+        objectId,
+        url: logoUrl(variant),
+        elementProperties: {
+          pageObjectId,
+          size: { width: pt(place.width), height: pt(place.height) },
+          transform: { scaleX: 1, scaleY: 1, translateX: place.x, translateY: place.y, unit: "PT" },
+        },
+      },
+    },
+  ];
+}
+
+/** A filled shape with no outline — the axis rule and the milestone markers.
+ *  Slides gives new shapes a default border, which reads as a stray hairline at
+ *  this size, so the outline is explicitly turned off rather than left. */
+function filledShape(
+  objectId: string,
+  pageObjectId: string,
+  shapeType: "RECTANGLE" | "ROUND_RECTANGLE" | "ELLIPSE" | "RIGHT_ARROW",
+  color: string,
+  box: { x: number; y: number; width: number; height: number },
+  /** 0–1. A hairline at full strength is a line; at a fifth it is structure. */
+  alpha?: number,
+  /** A solid hairline edge — the stat card's border. Absent, the default
+   *  border Slides gives a new shape is turned OFF, not left. */
+  outline?: { color: string; alpha?: number; weight: number }
+): Req[] {
+  return [
+    {
+      createShape: {
+        objectId,
+        shapeType,
+        elementProperties: {
+          pageObjectId,
+          size: { width: pt(box.width), height: pt(box.height) },
+          transform: { scaleX: 1, scaleY: 1, translateX: box.x, translateY: box.y, unit: "PT" },
+        },
+      },
+    },
+    {
+      updateShapeProperties: {
+        objectId,
+        shapeProperties: {
+          shapeBackgroundFill: {
+            solidFill: {
+              color: { rgbColor: rgb(color) },
+              ...(typeof alpha === "number" ? { alpha } : {}),
+            },
+          },
+          outline: outline
+            ? {
+                outlineFill: { solidFill: {
+                  color: { rgbColor: rgb(outline.color) },
+                  ...(typeof outline.alpha === "number" ? { alpha: outline.alpha } : {}),
+                } },
+                weight: pt(outline.weight),
+              }
+            : { propertyState: "NOT_RENDERED" },
+        },
+        fields: (typeof alpha === "number" ? "shapeBackgroundFill.solidFill" : "shapeBackgroundFill.solidFill.color")
+          + (outline ? ",outline" : ",outline.propertyState"),
+      },
+    },
+  ];
+}
+
+/** A straight line segment from (x1,y1) to (x2,y2), drawn as a thin rectangle
+ *  rotated by the affine transform.
+ *
+ *  Slides has no polyline, so a line chart is built from these. The transform
+ *  maps the rectangle's local mid-left onto the first point and mid-right onto
+ *  the second — verified exact for every direction. The preview reads the same
+ *  transform, so a sloped line looks identical in both.
+ */
+function segment(
+  objectId: string, page: string, color: string,
+  x1: number, y1: number, x2: number, y2: number, thickness: number, alpha?: number
+): Req[] {
+  const dx = x2 - x1, dy = y2 - y1;
+  const L = Math.hypot(dx, dy) || 1;
+  const c = dx / L, sn = dy / L;
+  const T = thickness;
+  return [
+    {
+      createShape: {
+        objectId, shapeType: "RECTANGLE",
+        elementProperties: {
+          pageObjectId: page,
+          size: { width: pt(L), height: pt(T) },
+          transform: {
+            scaleX: c, scaleY: c, shearX: -sn, shearY: sn,
+            translateX: x1 + sn * (T / 2), translateY: y1 - c * (T / 2), unit: "PT",
+          },
+        },
+      },
+    },
+    {
+      updateShapeProperties: {
+        objectId,
+        shapeProperties: {
+          shapeBackgroundFill: {
+            solidFill: { color: { rgbColor: rgb(color) }, ...(typeof alpha === "number" ? { alpha } : {}) },
+          },
+          outline: { propertyState: "NOT_RENDERED" },
+        },
+        fields: typeof alpha === "number"
+          ? "shapeBackgroundFill.solidFill,outline.propertyState"
+          : "shapeBackgroundFill.solidFill.color,outline.propertyState",
+      },
+    },
+  ];
+}
+
+/** A real horizontal timeline: one axis, evenly spaced markers, labels above
+ *  and below. Milestones are spaced by slot rather than by date, because these
+ *  decks show sequence and ownership, not duration — proportional spacing would
+ *  crush three August dates against one another to no benefit. */
+function timelineRequests(
+  page: string,
+  id: (s: string) => string,
+  milestones: Milestone[]
+): Req[] {
+  const requests: Req[] = [];
+  // Bounded, because the columns are the canvas width divided by the count and
+  // nothing else gives. At eight the column is 84pt — about nine characters of
+  // 12pt Playfair — so "Questionnaire" wraps to three lines and runs straight
+  // through the detail beneath it, on every one of the eight.
+  const shown = milestones.filter(Boolean).slice(0, TIMELINE.maxMilestones);
+  const droppedMilestones = milestones.length - shown.length;
+  const n = shown.length;
+  if (!n) return requests;
+
+  requests.push(
+    ...filledShape(id("axis"), page, "RECTANGLE", COLOR.periwinkle, {
+      x: GRID.margin,
+      y: TIMELINE.axisY - TIMELINE.axisThickness / 2,
+      width: GRID.contentWidth,
+      height: TIMELINE.axisThickness,
+    })
+  );
+
+  const slot = GRID.contentWidth / n;
+  const labelWidth = slot - TIMELINE.slotGutter;
+
+  // The name's band grows to fit the longest name, and the detail starts under
+  // it. Both were fixed constants, so a two-line name overlapped its own
+  // detail rather than pushing it down.
+  let titleLines = 1;
+  for (let i = 0; i < n; i++) {
+    titleLines = Math.max(titleLines, estimateLines(shown[i].title, labelWidth, TYPE.milestoneName.size));
+  }
+  const titleHeight = Math.max(TIMELINE.titleHeight, drawnTextHeight(titleLines, TYPE.milestoneName.size));
+  const detailY = TIMELINE.titleY + titleHeight + TIMELINE.bandGap;
+  const noteReserve = droppedMilestones > 0 ? 20 : 0;
+  const detailHeight = Math.max(24, CANVAS.height - GRID.margin - noteReserve - detailY);
+
+  shown.forEach((m, i) => {
+    const centre = GRID.margin + slot * (i + 0.5);
+    const size = m.highlight ? TIMELINE.markerSizeHighlight : TIMELINE.markerSize;
+    const labelX = centre - labelWidth / 2;
+
+    requests.push(
+      ...filledShape(id(`dot${i}`), page, "ELLIPSE", m.highlight ? COLOR.blue : COLOR.navy, {
+        x: centre - size / 2,
+        y: TIMELINE.axisY - size / 2,
+        width: size,
+        height: size,
+      }),
+      ...textBox(id(`d${i}`), page, m.date, TYPE.milestoneDate, {
+        x: labelX, y: TIMELINE.dateY, width: labelWidth, height: TIMELINE.dateHeight,
+      }, { align: "CENTER" }),
+      ...textBox(id(`t${i}`), page, m.title, TYPE.milestoneName, {
+        x: labelX, y: TIMELINE.titleY, width: labelWidth, height: titleHeight,
+      }, { align: "CENTER" }),
+      ...textBox(id(`x${i}`), page, m.detail, TYPE.milestoneText, {
+        x: labelX, y: detailY, width: labelWidth, height: detailHeight,
+      }, { align: "CENTER" }),
+    );
+  });
+
+  if (droppedMilestones > 0) {
+    requests.push(...noteBox(
+      id("mdrop"), page,
+      `Showing ${n} of ${milestones.length} milestones`,
+      CANVAS.height - GRID.margin - 16
+    ));
+  }
+  return requests;
+}
+
+/** Parse an ISO date to a UTC timestamp. UTC deliberately: these are calendar
+ *  dates, and a local-midnight reading shifts them a day either side of the
+ *  meridian, which would silently move a milestone on the chart. */
+export function isoDate(s: string | undefined): number | null {
+  if (!s) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s.trim());
+  if (!m) return null;
+  const y = +m[1], mo = +m[2], d = +m[3];
+  const t = Date.UTC(y, mo - 1, d);
+  if (!Number.isFinite(t)) return null;
+  // Date.UTC NORMALISES rather than rejects: "2026-13-05" becomes 5 Jan 2027
+  // and "2026-02-30" becomes 2 March. Read it back — a date that does not
+  // round-trip is not the date the text says, and plotting it puts a confident
+  // wrong mark on an axis every other track is then scaled against.
+  //
+  // The prefix match stays unanchored on purpose, so "2026-08-19T10:30:00Z"
+  // still parses; a model emits those.
+  const back = new Date(t);
+  if (back.getUTCFullYear() !== y || back.getUTCMonth() !== mo - 1 || back.getUTCDate() !== d) {
+    return null;
+  }
+  return t;
+}
+
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+/** The tick label's box, and the room one label needs to itself. */
+const TICK_LABEL_WIDTH = 48;
+const TICK_MIN_GAP = 56;
+const AVG_MONTH = (365.2425 / 12) * 86400000;
+
+/** Ticks across the range at the finest grain whose labels do not collide —
+ *  months, then 2, 3 or 6 months, then years, then decades.
+ *
+ *  A fixed month grain was both unreadable AND incomplete on a long programme:
+ *  a seven-year plan drew sixty labels five points apart in forty-eight point
+ *  boxes, and then stopped, so everything past the fifth year had no axis at
+ *  all. The grain is chosen from the space available instead. */
+function monthTicks(
+  min: number, max: number, plotW: number
+): { t: number; label: string }[] {
+  const out: { t: number; label: string }[] = [];
+  const span = max - min;
+  if (!(span > 0) || !(plotW > 0)) return out;
+
+  const needMonths = (TICK_MIN_GAP / plotW) * (span / AVG_MONTH);
+  const STEPS = [1, 2, 3, 6, 12, 24, 60, 120, 300, 600, 1200];
+  let step = 0;
+  for (let i = 0; i < STEPS.length; i++) {
+    if (STEPS[i] >= needMonths) { step = STEPS[i]; break; }
+  }
+  if (!step) step = Math.ceil(needMonths / 12) * 12;
+
+  // Walk an absolute month index snapped up to the step grid, so quarters land
+  // on Jan/Apr/Jul/Oct and year steps land on Januaries.
+  const start = new Date(min);
+  let index = start.getUTCFullYear() * 12 + start.getUTCMonth();
+  if (start.getUTCDate() !== 1) index += 1;
+  index = Math.ceil(index / step) * step;
+
+  for (let guard = 0; guard < 400; guard++) {
+    const y = Math.floor(index / 12), mo = index % 12;
+    const t = Date.UTC(y, mo, 1);
+    if (t > max) break;
+    if (t >= min) {
+      // Year only in January (and on the first tick), so the axis does not
+      // repeat "26" six times — and so "Jul 26" is never misread as a date.
+      // At a year-or-coarser grain every label carries its year.
+      const withYear = step >= 12 || mo === 0 || out.length === 0;
+      out.push({ t, label: withYear ? `${MONTHS[mo]} ${y}` : MONTHS[mo] });
+    }
+    index += step;
+  }
+  // A range shorter than a month can produce no boundary at all. An axis with
+  // no labels is a rule with no meaning, so fall back to naming its ends.
+  if (out.length < 2) {
+    const label = (t: number) => {
+      const d = new Date(t);
+      return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
+    };
+    return [{ t: min, label: label(min) }, { t: max, label: label(max) }];
+  }
+  return out;
+}
+
+/** Two or more workstreams on one shared, date-proportional axis.
+ *
+ *  Two things make this readable rather than merely correct:
+ *
+ *  1. Phases that overlap in time are packed onto SUB-ROWS within their track.
+ *     Drawn on one row they simply cover each other, which hides the overlap —
+ *     the one thing the slide exists to show.
+ *  2. A phase label goes INSIDE its bar when the bar is wide enough for it, and
+ *     to the right when it is not, bounded by the next bar's start. Labels
+ *     floated above collide as soon as two phases begin close together.
+ */
+function parallelTimelineRequests(
+  page: string,
+  id: (s: string) => string,
+  tracks: Track[],
+  todayIso?: string
+): Req[] {
+  const requests: Req[] = [];
+  const P = TIMELINE_PARALLEL;
+
+  interface Placed {
+    start: number; end: number | null; label: string; row: number;
+    barX: number; barW: number; isPoint: boolean;
+    inside: boolean; labelX: number; labelW: number; footprintEnd: number;
+    /** A label pushed to the LEFT of its bar reads from the bar outwards, so it
+     *  is set right-aligned against it. */
+    alignEnd: boolean;
+  }
+
+  const stamps: number[] = [];
+  let droppedPhases = 0;
+  const parsed = tracks.map((tr) => {
+    const items = tr.phases
+      .map((ph) => {
+        const s = isoDate(ph.start);
+        // An end that was SUPPLIED but does not parse, or that falls before its
+        // start, is not a phase that can be placed. Letting it fall through to
+        // `end: null` drew it as a dot on its start date — claiming a
+        // single-day milestone the input never described — and its stamp still
+        // stretched the shared axis every other track is scaled against.
+        const e = ph.end ? isoDate(ph.end) : null;
+        if (s === null || (ph.end && (e === null || e < s))) { droppedPhases += 1; return null; }
+        stamps.push(s);
+        if (e !== null) stamps.push(e);
+        return { start: s, end: e !== null && e > s ? e : null, label: ph.label };
+      })
+      .filter(Boolean) as { start: number; end: number | null; label: string }[];
+    items.sort((a, b) => a.start - b.start);
+    return { name: tr.name, items };
+  });
+
+  // Without at least two distinct dates there is no range to be proportional
+  // to. Nothing is drawn rather than something wrong.
+  if (stamps.length < 2) return requests;
+  let min = Math.min(...stamps);
+  let max = Math.max(...stamps);
+  if (max === min) return requests;
+  const pad = (max - min) * P.rangePad;
+  min -= pad; max += pad;
+
+  const plotX = GRID.margin + P.labelGutter;
+  const plotW = GRID.contentWidth - P.labelGutter;
+  const x = (t: number) => plotX + ((t - min) / (max - min)) * plotW;
+
+  // Roboto at this size averages a little over half the point size per
+  // character; good enough to decide inside-vs-outside without font metrics.
+  const textWidth = (s: string) => s.length * 4.3;
+
+  // Packing happens in PIXELS, not dates, and against each phase's FOOTPRINT —
+  // the bar plus whatever room its label needs beside it. Packing on dates
+  // alone was not enough: a one-day phase produces an eight-point bar whose
+  // label is ten times wider, so two phases a week apart do not overlap as
+  // dates and collide badly as drawn.
+  const placedTracks = parsed.map((tr) => {
+    const rowEnds: number[] = [];
+    const items: Placed[] = tr.items.map((it) => {
+      const isPoint = it.end === null;
+      const barX = isPoint ? x(it.start) - P.pointSize / 2 : x(it.start);
+      const barW = isPoint ? P.pointSize : Math.max(P.minBarWidth, x(it.end!) - x(it.start));
+      const natural = textWidth(it.label) + 10;
+      const inside = !isPoint && barW >= natural + 4;
+      let labelX = barX + barW + 6;
+      let labelW = inside ? barW - 12 : Math.min(natural, 150);
+      let alignEnd = false;
+
+      // A late phase has no room to its right: its label was drawn from the bar
+      // outwards and ran off the canvas — 790pt on a 720pt slide, so the last
+      // milestone in a plan was the one nobody could read. Put it on the other
+      // side of the bar instead, and only clip it if there is no room there
+      // either.
+      if (!inside) {
+        const rightEdge = GRID.margin + GRID.contentWidth;
+        if (labelX + labelW > rightEdge) {
+          const roomLeft = barX - 6 - plotX;
+          if (roomLeft >= 40) {
+            labelW = Math.min(labelW, roomLeft);
+            labelX = barX - 6 - labelW;
+            alignEnd = true;
+          } else {
+            labelW = Math.max(24, rightEdge - labelX);
+          }
+        }
+      }
+      const footprintEnd = inside ? barX + barW : Math.max(barX + barW, labelX + labelW);
+
+      let row = rowEnds.findIndex((end) => barX >= end);
+      if (row === -1) { row = rowEnds.length; rowEnds.push(footprintEnd + 8); }
+      else rowEnds[row] = footprintEnd + 8;
+
+      return { ...it, row, barX, barW, isPoint, inside, labelX, labelW, footprintEnd, alignEnd };
+    });
+    return { name: tr.name, items, rows: Math.max(1, rowEnds.length) };
+  });
+
+  // NOTHING may grow past the bottom of the slide. Tracks were laid out at a
+  // fixed 30pt per row with no ceiling, so five tracks — or one track whose
+  // phases packed onto six rows — pushed the shared date axis, and every tick
+  // on it, clean off the canvas. The axis is the thing the layout exists for.
+  //
+  // Rows compress first, then the gap between tracks, and only then is a track
+  // dropped — and a dropped track is said out loud.
+  const MIN_TRACK_ROW = 18;
+  const MIN_TRACK_GAP = 10;
+  const tailHeight = P.axisGap + P.axisThickness + 5 + P.tickLabelHeight;
+  let shown = placedTracks;
+  let trackGap: number = P.trackGap;
+  let rowHeight: number = P.rowHeight;
+  let noteReserve = droppedPhases > 0 ? 16 : 0;
+  for (let guard = 0; guard < 24; guard += 1) {
+    const rows = shown.reduce((n, t) => n + t.rows, 0) || 1;
+    const budget =
+      CANVAS.height - GRID.margin - P.bandY - tailHeight - noteReserve - trackGap * (shown.length - 1);
+    rowHeight = Math.min(P.rowHeight, budget / rows);
+    if (rowHeight >= MIN_TRACK_ROW) break;
+    if (trackGap > MIN_TRACK_GAP) { trackGap = MIN_TRACK_GAP; continue; }
+    if (shown.length > 1) { shown = shown.slice(0, -1); noteReserve = 16; continue; }
+    break;
+  }
+  rowHeight = Math.max(MIN_TRACK_ROW, Math.floor(rowHeight * 10) / 10);
+  const barHeight = Math.max(12, rowHeight - (P.rowHeight - P.barHeight));
+  const droppedTracks = placedTracks.length - shown.length;
+
+  let cursorY = P.bandY;
+  shown.forEach((tr, ti) => {
+    const color = TRACK_COLORS[ti % TRACK_COLORS.length];
+    const trackHeight = tr.rows * rowHeight;
+
+    // A white band behind each track, with the slide's off-white showing
+    // through the gap between. Without it, a track that packs onto three rows
+    // reads as six loose bars rather than as two workstreams.
+    requests.push(
+      ...filledShape(id(`band${ti}`), page, "RECTANGLE", COLOR.white, {
+        x: GRID.margin,
+        y: cursorY - P.bandPadding,
+        width: GRID.contentWidth,
+        height: trackHeight + P.bandPadding,
+      })
+    );
+
+    requests.push(
+      // Centred in the track's own band rather than hand-offset by half its
+      // box: a two-line workstream name drawn from a computed top sits high
+      // in its band, which is the fault the label rule exists to stop.
+      ...textBox(id(`tn${ti}`), page, tr.name, TYPE.trackName, {
+        x: GRID.margin,
+        y: cursorY,
+        width: P.labelGutter - 12,
+        height: trackHeight,
+      }, { vCenter: true })
+    );
+
+    tr.items.forEach((it, pi) => {
+      const barY = cursorY + it.row * rowHeight;
+
+      requests.push(
+        ...filledShape(
+          id(`p${ti}_${pi}`), page,
+          it.isPoint ? "ELLIPSE" : "ROUND_RECTANGLE", color,
+          {
+            x: it.barX,
+            y: it.isPoint ? barY + barHeight / 2 - P.pointSize / 2 : barY,
+            width: it.barW,
+            height: it.isPoint ? P.pointSize : barHeight,
+          }
+        ),
+        ...textBox(
+          id(`pl${ti}_${pi}`), page, it.label,
+          // Inside the bar the label sits on the TRACK's colour, so the colour
+          // is measured against it. White was hard-coded and is 2.95:1 on the
+          // coral track.
+          it.inside ? { ...TYPE.phaseInBar, color: textOn(color) } : TYPE.phaseLabel,
+          // The label box is the BAR's rect, and the text centres inside it.
+          // It used to be nudged down 4pt while keeping the bar's full height,
+          // so it hung 4pt past the bar's bottom edge and an 8pt line in a
+          // 12pt bar sat half outside the shape it labels.
+          {
+            x: it.inside ? it.barX + 6 : it.labelX,
+            y: barY,
+            width: it.labelW,
+            height: barHeight,
+          },
+          it.alignEnd ? { align: "END", vCenter: true } : { vCenter: true }
+        )
+      );
+    });
+
+    cursorY += trackHeight + trackGap;
+  });
+
+  const axisY = cursorY - trackGap + P.axisGap;
+  requests.push(
+    ...filledShape(id("paxis"), page, "RECTANGLE", COLOR.periwinkle, {
+      x: plotX, y: axisY, width: plotW, height: P.axisThickness,
+    })
+  );
+  monthTicks(min, max, plotW).forEach((tick, i) => {
+    requests.push(
+      ...textBox(id(`tick${i}`), page, tick.label, TYPE.axisTick, {
+        x: x(tick.t) - TICK_LABEL_WIDTH / 2, y: axisY + 5, width: TICK_LABEL_WIDTH,
+        height: P.tickLabelHeight,
+      }, { align: "CENTER" })
+    );
+  });
+
+  const noteParts: string[] = [];
+  if (droppedTracks > 0) noteParts.push(`${shown.length} of ${placedTracks.length} tracks`);
+  if (droppedPhases > 0) {
+    noteParts.push(`${droppedPhases} phase${droppedPhases === 1 ? "" : "s"} with unusable dates omitted`);
+  }
+  if (noteParts.length) {
+    requests.push(...noteBox(
+      id("pdrop"), page, `Showing ${noteParts.join(" · ")}`, axisY + 5 + P.tickLabelHeight
+    ));
+  }
+
+  // "Today" rule last, so it sits above the bars.
+  const now = new Date();
+  const today = isoDate(todayIso) ??
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  if (today > min && today < max) {
+    const tx = x(today);
+    requests.push(
+      ...filledShape(id("today"), page, "RECTANGLE", COLOR.coralDeep, {
+        x: tx, y: P.bandY - 8, width: 1.4, height: axisY - P.bandY + 8,
+      }),
+      ...textBox(id("todaylbl"), page, "Today", TYPE.todayLabel, {
+        x: tx - 22, y: P.bandY - 22, width: 44, height: 14,
+      }, { align: "CENTER" })
+    );
+  }
+  return requests;
+}
+
+/** Grid geometry, computed in ONE place.
+ *
+ *  Resolution has to know the cell's shape to crop an image to it, and drawing
+ *  has to know it to place the image — and a cell is 1.70 wide with four across
+ *  but nothing like that with two. Two copies of this arithmetic would drift,
+ *  and the symptom would be the letterboxing this exists to prevent. */
+export function gridGeometry(count: number, captioned: boolean) {
+  const shown = Math.min(count, 12);
+  // The band is a fixed 671x230pt, so the arrangement decides the cell shape
+  // and neither obvious rule gives a good one: filling a row makes four images
+  // 0.70 slivers, squaring off makes eight images 3.07 strips. Instead try
+  // every arrangement up to four across and keep the one whose cell is closest
+  // to a photographic 1.4 — measured in log space, so half and double are
+  // penalised equally.
+  const IDEAL = 1.4;
+  let cols = 1, best = Infinity;
+  for (let c = 1; c <= Math.min(4, shown); c++) {
+    const r = Math.ceil(shown / c);
+    const w = (GRID.contentWidth - IMAGE.gridGap * (c - 1)) / c;
+    const h = (IMAGE.gridHeight - IMAGE.gridGap * (r - 1)) / r - (captioned ? IMAGE.gridCaptionHeight : 0);
+    if (h <= 8) continue; // too many rows to show anything
+    const score = Math.abs(Math.log((w / h) / IDEAL));
+    if (score < best) { best = score; cols = c; }
+  }
+  const rows = Math.ceil(shown / cols);
+  const cellW = (GRID.contentWidth - IMAGE.gridGap * (cols - 1)) / cols;
+  const cellH = (IMAGE.gridHeight - IMAGE.gridGap * (rows - 1)) / rows
+    - (captioned ? IMAGE.gridCaptionHeight : 0);
+  return { cols, rows, cellW, cellH, aspect: cellW / Math.max(1, cellH) };
+}
+
+/** Up to twelve thumbnails on one row-and-column grid, sized so the set always
+ *  fills the band rather than leaving a ragged last row. */
+function gridRequests(
+  page: string, id: (s: string) => string,
+  images: { url: string; caption?: string }[]
+): Req[] {
+  if (!images.length) return [];
+  const shown = images.slice(0, 12);
+  const captioned = shown.some((i) => i.caption);
+  const { cols, cellW, cellH } = gridGeometry(shown.length, captioned);
+
+  const out: Req[] = [];
+  shown.forEach((img, i) => {
+    const c = i % cols, r = Math.floor(i / cols);
+    const x = GRID.margin + c * (cellW + IMAGE.gridGap);
+    const y = IMAGE.gridY + r * (cellH + IMAGE.gridGap + (captioned ? IMAGE.gridCaptionHeight : 0));
+    out.push({
+      createImage: {
+        objectId: id(`g${i}`),
+        url: img.url,
+        elementProperties: {
+          pageObjectId: page,
+          size: { width: pt(cellW), height: pt(cellH) },
+          transform: { scaleX: 1, scaleY: 1, translateX: x, translateY: y, unit: "PT" },
+        },
+      },
+    });
+    out.push(...textBox(id(`gc${i}`), page, img.caption, TYPE.gridCaption, {
+      x, y: y + cellH + 2, width: cellW, height: IMAGE.gridCaptionHeight,
+    }));
+  });
+  return out;
+}
+
+/** A full-bleed photograph with its scrim, drawn before anything else so text
+ *  and the logo sit on top. Returns [] when no image resolved, which is what
+ *  makes every photo layout degrade to its solid brand background. */
+function backdropRequests(
+  page: string, id: (s: string) => string, slide: SlideInput
+): Req[] {
+  // The image arrives pre-cropped to the canvas and with its gradient already
+  // burnt in, so there is no scrim shape here any more — see lib/slides/images.
+  const img = slide.resolvedImage;
+  if (!img) return [];
+  return [
+    {
+      createImage: {
+        objectId: id("bg"),
+        url: img.url,
+        elementProperties: {
+          pageObjectId: page,
+          size: { width: pt(CANVAS.width), height: pt(CANVAS.height) },
+          transform: { scaleX: 1, scaleY: 1, translateX: 0, translateY: 0, unit: "PT" },
+        },
+      },
+    },
+    ...creditRequests(id("credit"), page, img.credit, { x: GRID.margin, width: GRID.contentWidth }, true),
+  ];
+}
+
+/** The photographer's line.
+ *
+ *  Its own helper because the split layout needs it too and did not have it:
+ *  the resolver produced a credit for every Unsplash photograph and only the
+ *  full-bleed path ever drew one, so half the stock pictures in a deck went out
+ *  uncredited. textBox returns [] for an empty string, so owned, supplied and
+ *  generated images still draw nothing. */
+function creditRequests(
+  objectId: string, page: string, credit: string | undefined,
+  box: { x: number; width: number }, onDark: boolean
+): Req[] {
+  return textBox(objectId, page, credit, onDark ? TYPE.credit : TYPE.creditOnLight, {
+    x: box.x, y: IMAGE.creditY, width: box.width, height: IMAGE.creditHeight,
+  }, { align: "END" });
+}
+
+/** Format a number the way a reader says it, not the way a machine stores it. */
+function formatValue(v: number): string {
+  const abs = Math.abs(v);
+  if (abs >= 1_000_000_000) return `${(v / 1_000_000_000).toFixed(1).replace(/\.0$/, "")}bn`;
+  if (abs >= 1_000_000) return `${(v / 1_000_000).toFixed(1).replace(/\.0$/, "")}m`;
+  if (abs >= 1_000) return `${(v / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
+  return String(Number(v.toFixed(2)));
+}
+
+/* ─────────────── The stat card grid (four or more figures) ─────────────── */
+
+type StatIn = { value: string; label: string; detail?: string; primary?: boolean; tone?: string };
+
+/** Four or more figures are drawn as a grid of cards on the LIGHT ground. */
+export function isStatGrid(stats: { value: string }[] | undefined): boolean {
+  return (stats || []).filter(Boolean).length >= STAT_GRID_MIN;
+}
+
+/** The ground a slide is actually drawn on.
+ *
+ *  LAYOUT_STYLE fixes background, lockup and ink per LAYOUT, and `stat` is the
+ *  one layout whose ground depends on the INSTANCE: up to three figures are
+ *  the navy hero row, four or more are a card grid on off-white — the
+ *  reference deck's page 3. On navy the grid was a 10% white wash between two
+ *  light pages, which the room read as a section break that was not one.
+ *
+ *  EVERY reader of onDark, background or logo goes through here —
+ *  buildSlideRequests, the lockup, the rhythm advisor, the image baker and
+ *  the layout check — so no reader can answer for the layout while the slide
+ *  is drawn on the other ground. */
+const STAT_GRID_STYLE: LayoutStyle = { background: COLOR.offWhite, logo: "navy", logoPlacement: "content", onDark: false };
+export function slideStyle(slide: Pick<SlideInput, "layout" | "stats">, index: number): LayoutStyle {
+  const layout = layoutOf(slide.layout, index);
+  return layout === "stat" && isStatGrid(slide.stats) ? STAT_GRID_STYLE : LAYOUT_STYLE[layout];
+}
+
+/** The FIGURE's ink per tone. TONES carries each tint and its heading ink; the
+ *  number on a grey card is brand blue — the reference's own ink for its
+ *  landscape figures, 4.8:1 on tintGrey, enough for a 16pt-plus figure. */
+const STAT_VALUE_INK: { [k: string]: string } = {
+  grey: COLOR.blue, blue: COLOR.blue, teal: COLOR.inkTeal, coral: COLOR.inkCoral, amber: COLOR.inkAmber,
+};
+
+/** Which card a figure takes. An explicit tone wins; `primary` with no tone
+ *  keeps the mint card it always took, so a spec written before tones existed
+ *  draws exactly as it did; everything else is the quiet grey card. */
+function statTone(sx: { primary?: boolean; tone?: string }): string {
+  const key = String(sx.tone || "").toLowerCase();
+  if (TONES[key]) return key;
+  return sx.primary ? "teal" : "grey";
+}
+
+type StatRung = { value: number; label: number; pad: number; rowGap: number; sources: boolean };
+interface StatPlan {
+  rung: StatRung; rows: number; perRow: number;
+  /** Cell width per ROW — a short last row stretches to the measure. */
+  cellW: number[];
+  cardH: number; vSize: number; vH: number; labelH: number; srcH: number;
+  /** Grid plus the declaration line, when one is needed. */
+  height: number; extra: number;
+}
+
+/** Measure one grid at one rung: rows of up to four, a short last row
+ *  STRETCHED to the full measure (the reference's 4-then-3, where the wider
+ *  second row is what gives its longest label two lines instead of three),
+ *  every card the height of the tallest content in the grid. */
+function planStatGrid(stats: StatIn[], rung: StatRung, extra: number): StatPlan {
+  const G = STAT_GRID;
+  const n = stats.length;
+  const rows = Math.ceil(n / G.perRow);
+  const perRow = Math.ceil(n / rows);
+  const cellW: number[] = [];
+  for (let r = 0; r < rows; r++) {
+    const inRow = Math.min(perRow, n - r * perRow);
+    cellW.push((GRID.contentWidth - G.gap * (inRow - 1)) / inRow);
+  }
+  const innerOf = (i: number) => cellW[Math.floor(i / perRow)] - G.padX * 2;
+  // ONE size for every figure, solved from the narrowest cell and the longest
+  // value: Poppins runs ~0.62 of the size per character, and the box carries
+  // its own horizontal inset.
+  let longest = 1, narrowest = Infinity;
+  for (let i = 0; i < n; i++) {
+    longest = Math.max(longest, stats[i].value.length);
+    narrowest = Math.min(narrowest, innerOf(i));
+  }
+  const vSize = Math.max(G.valueMin, Math.min(rung.value, Math.floor((narrowest - TEXT_INSET_X) / (longest * 0.62))));
+  const vH = drawnTextHeight(1, vSize, 0, 1, G.valueLead);
+  let labelH = 0, srcH = 0;
+  for (let i = 0; i < n; i++) {
+    labelH = Math.max(labelH, drawnTextHeight(estimateLines(stats[i].label, innerOf(i), rung.label), rung.label, 0, 1, G.labelLead));
+    if (rung.sources && stats[i].detail?.trim()) {
+      srcH = Math.max(srcH, drawnTextHeight(
+        estimateLines(stats[i].detail, innerOf(i), TYPE.statCardSource.size), TYPE.statCardSource.size, 0, 1, G.sourceLead));
+    }
+  }
+  const cardH = rung.pad + vH + labelH + (srcH ? G.sourceGap + srcH : 0) + rung.pad;
+  const height = rows * cardH + (rows - 1) * rung.rowGap + extra;
+  return { rung, rows, perRow, cellW, cardH, vSize, vH, labelH, srcH, height, extra };
+}
+
+/** The grid, and where it ends.
+ *
+ *  COMPRESS BEFORE DROPPING: every rung at the full count — the last rung
+ *  gives up the source lines — and only then one figure fewer, the rule every
+ *  plot in this file follows. Whatever goes is DECLARED on the slide; a note
+ *  line is part of the height being fitted, or it is the thing that overflows. */
+function statGridRequests(
+  page: string, id: (s: string) => string, all: StatIn[], band: number, topAlign: boolean
+): { reqs: Req[]; height: number; bottom: number } {
+  const G = STAT_GRID;
+  const DECL_H = 14;
+  const hasSources = (list: StatIn[]) => list.some((s) => !!s.detail?.trim());
+  let shown = all.slice(0, STAT_MAX);
+  let plan: StatPlan | null = null;
+  for (let count = shown.length; count >= STAT_GRID_MIN && !plan; count--) {
+    const subset = all.slice(0, count);
+    for (let r = 0; r < G.rungs.length; r++) {
+      const rung = G.rungs[r];
+      const declares = count < all.length || (!rung.sources && hasSources(subset));
+      const p = planStatGrid(subset, rung, declares ? DECL_H : 0);
+      if (p.height <= band + 0.01) { plan = p; shown = subset; break; }
+    }
+  }
+  if (!plan) {
+    // Four figures at the last rung do not fit the band's 90pt floor. Not
+    // reachable through today's bands (a 3-line label with no sources is
+    // 68pt); a guard, drawn rather than nothing.
+    shown = all.slice(0, STAT_GRID_MIN);
+    plan = planStatGrid(shown, G.rungs[G.rungs.length - 1], DECL_H);
+  }
+  const dropped = all.length - shown.length;
+  const top = GRID.bodyY + (topAlign ? 0 : Math.max(0, (band - plan.height) / 2));
+  const border = { color: COLOR.navy, alpha: G.borderAlpha, weight: G.borderWeight };
+  const out: Req[] = [];
+  for (let i = 0; i < shown.length; i++) {
+    const sx = shown[i];
+    const row = Math.floor(i / plan.perRow), col = i % plan.perRow;
+    const cellW = plan.cellW[row];
+    const inner = cellW - G.padX * 2;
+    const x = GRID.margin + col * (cellW + G.gap);
+    const y = top + row * (plan.cardH + plan.rung.rowGap);
+    const tone = statTone(sx);
+    out.push(...filledShape(id(`sc${i}`), page, "ROUND_RECTANGLE", TONES[tone].tint,
+      { x, y, width: cellW, height: plan.cardH }, undefined, border));
+    out.push(...textBox(id(`sv${i}`), page, sx.value,
+      { ...TYPE.statCardValue, size: plan.vSize, color: STAT_VALUE_INK[tone] },
+      { x: x + G.padX, y: y + plan.rung.pad, width: inner, height: plan.vH },
+      { align: "CENTER", lineSpacing: G.valueLead }));
+    // One height for every label in the grid, so the sources sit on one
+    // baseline — and the label CENTRED in it, or a one-line label under a
+    // two-line neighbour hangs off the top of its own slot.
+    out.push(...textBox(id(`sl${i}`), page, sx.label,
+      { ...TYPE.statCardLabel, size: plan.rung.label, color: TONES[tone].ink },
+      { x: x + G.padX, y: y + plan.rung.pad + plan.vH, width: inner, height: plan.labelH },
+      { align: "CENTER", lineSpacing: G.labelLead, vCenter: true }));
+    // The source sits at the FOOT of the card, so the slack a shorter label
+    // leaves falls between label and source — where the reference puts it —
+    // and never between the figure and its caption.
+    if (plan.srcH && sx.detail?.trim()) {
+      out.push(...textBox(id(`sd${i}`), page, sx.detail, TYPE.statCardSource,
+        { x: x + G.padX, y: y + plan.cardH - plan.rung.pad - plan.srcH, width: inner, height: plan.srcH },
+        { align: "CENTER", lineSpacing: G.sourceLead, vCenter: true }));
+    }
+  }
+  // A slide that drops data says so, on the slide.
+  const gridBottom = top + plan.height - plan.extra;
+  const said: string[] = [];
+  if (!plan.rung.sources && hasSources(shown)) said.push("Sources omitted for room");
+  if (dropped > 0) said.push(`Showing ${shown.length} of ${all.length} figures`);
+  if (said.length) {
+    out.push(...textBox(id("sdrop"), page, said.join(" · "), TYPE.statCardSource, {
+      x: GRID.margin, y: gridBottom + 4, width: GRID.contentWidth, height: 10,
+    }, { align: "END" }));
+  }
+  return { reqs: out, height: plan.height, bottom: top + plan.height };
+}
+
+/** Up to three headline numbers.
+ *
+ *  Often the honest answer when a deck reaches for a chart: a single figure
+ *  with a caption carries a point that a plot of one bar only decorates. */
+/** One number, as big as it can be drawn, centred on the ground. The crescendo
+ *  slide is allowed to shout when it carries a single thing. */
+function heroStat(
+  page: string, id: (s: string) => string,
+  stat: { value: string; label: string; detail?: string },
+  band: number = GRID.bandHeight
+): Req[] {
+  // Poppins runs ~0.62 of the point size per character; solve the size that
+  // fills the content width, floored so a short value does not become absurd
+  // and capped so a long one still fits with the box insets.
+  const INSET = 20;
+  const labelH = 26;
+  const detailH = stat.detail ? 40 : 0;
+  const LEAD = 1.5;   // one Poppins line's drawn height as a fraction of the size
+  // Bounded by BOTH the content width AND the vertical band — a short value
+  // ("0", "64 GW") would otherwise scale so large it ran off the bottom.
+  const byWidth = (GRID.contentWidth - INSET) / (Math.max(stat.value.length, 1) * 0.62);
+  const byHeight = (band - labelH - (detailH ? detailH + 8 : 0)) / LEAD;
+  const size = Math.max(54, Math.min(150, Math.floor(Math.min(byWidth, byHeight))));
+  const valueH = size * LEAD;
+  const groupH = valueH + labelH + (detailH ? detailH + 8 : 0);
+  const top = GRID.bodyY + Math.max(0, (band - groupH) / 2);
+  const out: Req[] = [
+    ...textBox(id("sv0"), page, stat.value, { ...TYPE.statValue, size }, {
+      x: GRID.margin, y: top, width: GRID.contentWidth, height: valueH,
+    }, { align: "CENTER" }),
+    ...textBox(id("sl0"), page, stat.label, TYPE.statLabel, {
+      x: GRID.margin, y: top + valueH, width: GRID.contentWidth, height: labelH,
+    }, { align: "CENTER" }),
+  ];
+  if (stat.detail) {
+    out.push(...textBox(id("sd0"), page, stat.detail, TYPE.statDetail, {
+      x: GRID.margin, y: top + valueH + labelH + 8, width: GRID.contentWidth, height: detailH,
+    }, { align: "CENTER" }));
+  }
+  return out;
+}
+
+/** The figures, and the height they actually took.
+ *
+ *  The height is RETURNED rather than assumed by the caller. The stat band was
+ *  a flat 56% of the content band and the body was placed at that mark, so the
+ *  moment labels were measured honestly — and the block grew — the source lines
+ *  were drawn straight through the first body bullet. A block whose height
+ *  depends on its content cannot have its neighbour placed by a constant. */
+function statRequests(
+  page: string, id: (s: string) => string,
+  stats: StatIn[],
+  band: number = GRID.bandHeight,
+  onDark = false,
+  topAlign = false
+): { reqs: Req[]; height: number; bottom: number } {
+  // EIGHT, not three.
+  //
+  // This said slice(0, 3), and a source page carrying SEVEN figures with their
+  // sources was rendered as three with four silently gone — the single worst
+  // failure in a conversion, because the slide looks finished. Seven fits
+  // comfortably as two tinted rows, which is exactly how the source deck draws
+  // it. Past eight a figure stops being a headline number and the slide wants
+  // a table, so eight is the ceiling and anything beyond it is DECLARED.
+  const all = stats.filter(Boolean);
+  if (!all.length) return { reqs: [], height: 0, bottom: GRID.bodyY };
+  // FOUR OR MORE take the card grid on the LIGHT ground — see slideStyle()
+  // and statGridRequests. The two-row grid used to live below, on navy at a
+  // 10% white wash, and only from five: at four the figures were a 54pt hero
+  // row with the rest of a source page demoted to bullets beneath it, so the
+  // takeaway's "note the second row" pointed at a row that did not exist.
+  if (isStatGrid(all)) return statGridRequests(page, id, all, band, topAlign);
+  const shown = all;
+
+  // A SINGLE stat is the moment the slide exists for — the fee, the headline
+  // number — and it earns the whole canvas. statRequests used to size every
+  // value to the longest string and cap at 54pt, so a lone "CHF 12,500" sat
+  // small in a sea of navy. One stat is drawn big and centred.
+  //
+  // `primary` among several does NOT drop the others (that would lose data);
+  // it tints that column so the eye lands on it. The single-stat hero is the
+  // real fix for the ask slide the audit flagged.
+  if (shown.length === 1) return { reqs: heroStat(page, id, shown[0], band), height: band, bottom: GRID.bodyY + band };
+
+  const out: Req[] = [];
+
+  // Two or three: the navy hero row, one figure per column.
+  const cell = (GRID.contentWidth - CHART.statGap * (shown.length - 1)) / shown.length;
+  let groupH = CHART.statValueHeight + CHART.statLabelHeight + CHART.statDetailHeight + 4;
+  let top = GRID.bodyY + (topAlign ? 0 : Math.max(0, (band - groupH) / 2));
+
+  // Size the number to its column instead of trusting one fixed size.
+  //
+  // "92.5 GW" at 54pt is wider than a third of the slide, so it wrapped, and a
+  // two-line value in a one-line box overflowed downward straight through its
+  // own label and detail. Poppins runs about 0.58 of the point size per
+  // character, so the size that fits is solvable rather than guessable.
+  //
+  // Two corrections after seeing this rendered by Google rather than estimated:
+  // a text box carries a default inset of 0.1in on each side, so the usable
+  // width is ~15pt less than the box; and Poppins runs nearer 0.62 of the point
+  // size per character than the 0.58 first assumed. At 0.58 with no inset
+  // allowance, "92.5 GW" was computed to fit at 50pt and wrapped anyway.
+  const INSET = 15;
+  const PER_CHAR = 0.62;
+  const longest = Math.max(...shown.map((sx) => sx.value.length), 1);
+
+  const fitted = Math.floor((cell - INSET) / (longest * PER_CHAR));
+  const valueStyle = { ...TYPE.statValue, size: Math.max(22, Math.min(TYPE.statValue.size, fitted)) };
+
+  // MEASURE THE LABEL. It used to get a fixed 0.3in and the source line was
+  // placed immediately below that, so a label wrapping to three lines — "MORE
+  // CLICKS WHEN YOU ARE CITED IN THE AI OVERVIEW" — had its last line drawn
+  // through by its own source. The labels are caps, which is why the naive
+  // estimate said two lines and Google drew three.
+  //
+  // One height for the whole row, taken from the tallest label: the columns
+  // are read across, so their source lines must sit on one baseline.
+  const labelH = Math.max(
+    CHART.statLabelHeight,
+    ...shown.map((sx) => drawnTextHeight(
+      estimateLines(sx.label, cell, TYPE.statLabel.size, false, !!TYPE.statLabel.caps),
+      TYPE.statLabel.size)),
+  );
+  const detailLines = Math.max(0,
+    ...shown.map((sx) => estimateLines(sx.detail, cell, TYPE.statDetail.size)));
+  // One value for the box AND for the height the caller is told about. They
+  // used to differ — the box took a 0.7in floor while the group height took
+  // the measurement — which is the same class of mistake as the fixed label.
+  const detailH = detailLines
+    ? Math.max(drawnTextHeight(detailLines, TYPE.statDetail.size), TYPE.statDetail.size * 1.45 + TEXT_INSET_Y)
+    : 0;
+
+  groupH = CHART.statValueHeight + labelH + (detailH ? detailH + 4 : 0);
+  top = GRID.bodyY + (topAlign ? 0 : Math.max(0, (band - groupH) / 2));
+
+  shown.forEach((sx, i) => {
+    const x = GRID.margin + i * (cell + CHART.statGap);
+    // The primary column keeps the others' size but takes the lime accent, so
+    // one of three numbers reads as THE number without shrinking the rest.
+    const thisValue = sx.primary ? { ...valueStyle, color: COLOR.lime } : valueStyle;
+    out.push(
+      ...textBox(id(`sv${i}`), page, sx.value, thisValue, {
+        x, y: top, width: cell, height: CHART.statValueHeight,
+      }),
+      ...textBox(id(`sl${i}`), page, sx.label, TYPE.statLabel, {
+        x, y: top + CHART.statValueHeight, width: cell, height: labelH,
+      }),
+      ...textBox(id(`sd${i}`), page, sx.detail, TYPE.statDetail, {
+        x, y: top + CHART.statValueHeight + labelH + 4,
+        width: cell, height: detailH,
+      }),
+    );
+  });
+  return { reqs: out, height: groupH, bottom: top + groupH };
+}
+
+/** Fit a heading into the room above the body, growing UPWARD and shrinking
+ *  only when it must.
+ *
+ *  The title box was a fixed 45pt and the body began the instant it ended — no
+ *  gap at all — and Slides does not shrink text to fit a box: it draws it and
+ *  lets it run. So a three-line title was drawn straight through the first two
+ *  lines of its own body, on a slide that looked fine in code and was
+ *  unreadable in Drive. Nothing caught it, because the BOXES did not overlap;
+ *  the ink did.
+ *
+ *  Upward, because the space between the eyebrow and the title is dead — 48pt
+ *  of it — while everything below the title is spoken for by charts, plots and
+ *  columns that are positioned from the grid. Growing up costs nothing and
+ *  needs no layout to change. The font only shrinks when even that is not
+ *  enough, and never below a size a room can read.
+ */
+const TITLE_GAP = 12;
+const TITLE_MIN_SIZE = 14;
+
+export function fitHeading(
+  text: string | undefined,
+  style: TypeStyle,
+  width: number,
+  opts: { bottom: number; minTop: number; minHeight: number; minSize?: number; lineSpacing?: number }
+): { style: TypeStyle; y: number; height: number } {
+  const floor = opts.minSize ?? TITLE_MIN_SIZE;
+  const room = Math.max(opts.minHeight, opts.bottom - opts.minTop);
+  // Measured at the spacing the caller will DRAW at. The section divider sets
+  // its title at 110% rather than the 115% default; fitted at the default the
+  // box carried 2pt of slack per line that the subtitle was then stacked
+  // beneath. Undefined keeps LINE_LEAD, so every other caller is unchanged.
+  const measure = (at: number) =>
+    drawnTextHeight(Math.max(1, estimateLines(text, width, at)), at, 0, 1, opts.lineSpacing);
+  let size = style.size;
+  let need = measure(size);
+  while (need > room && size > floor) {
+    size -= 1;
+    need = measure(size);
+  }
+  const height = Math.min(Math.max(need, opts.minHeight), room);
+  return { style: size === style.size ? style : { ...style, size }, y: opts.bottom - height, height };
+}
+
+/** The layout to draw, from whatever the model actually said.
+ *
+ *  `LAYOUT_STYLE[slide.layout]` was read straight from the tool argument, so a
+ *  name outside the enum returned undefined and the next line threw — taking
+ *  out the WHOLE deck, not one slide, and surfacing as "Google Slides creation
+ *  failed" for a call that never reached Google. The aliases are the sibling
+ *  .pptx tool's enum, which the model sees in the same turn and reaches for. */
+const LAYOUT_ALIASES: Record<string, SlideLayout> = {
+  title: "cover", blank: "content", bullets: "content", text: "content",
+  image: "feature", photo: "feature", chart: "bar-chart", divider: "section",
+  agenda: "content", "thank-you": "closing", end: "closing",
+};
+
+export function layoutOf(raw: string | undefined, index: number): SlideLayout {
+  if (raw && Object.prototype.hasOwnProperty.call(LAYOUT_STYLE, raw)) return raw as SlideLayout;
+  return LAYOUT_ALIASES[(raw || "").toLowerCase()] ?? (index === 0 ? "cover" : "content");
+}
+
+/** A deliberately generous estimate of how many lines a string takes in a box,
+ *  and how far down the box its last line reaches.
+ *
+ *  Generous because the consequence of under-estimating is text running off the
+ *  slide, and the consequence of over-estimating is a little white space. Slides
+ *  does not reflow or shrink to fit — it draws and lets it run — so nothing
+ *  downstream corrects a bad guess.
+ *
+ *  Exported so the layout check measures with the same primitive the layout
+ *  does; two estimators would drift and the check would stop meaning anything. */
+export const TEXT_INSET_X = SLIDES_TEXT_INSET.x * 2;
+export const TEXT_INSET_Y = SLIDES_TEXT_INSET.y * 2;
+/** The footer line's top: its text sits ~15pt clear of the bottom edge, which
+ *  is outside the overscan of the projectors this deck is shown on. */
+export const FOOTER_Y = CANVAS.height - 24;
+const PER_CHAR = 0.55;              // widest average advance across the deck's faces
+const LINE_LEAD = 1.45;             // 115% paragraph spacing on a ~1.26em face
+/** How much wider an all-caps run runs than that mixed-case average. Measured
+ *  against Google's own render of the deck's caps labels and status pills. */
+export const CAPS_WIDEN = 1.2;
+
+/** The lower edge a layout may draw to: its own natural bottom, or the content
+ *  band's, whichever is higher.
+ *
+ *  Every analysis layout — swot, matrix, comparison, scatter, venn — measured
+ *  down to `CANVAS.height - GRID.margin`, the page edge, and so knew nothing
+ *  about the takeaway bar sitting above it. On the comparison slide the seventh
+ *  row was drawn UNDERNEATH the bar: present in the file, invisible on the
+ *  slide, and no warning anywhere. `table` had already been fixed this way one
+ *  layout at a time; this is the same fix applied to the rest of them at once. */
+function floorBand(natural: number, bandBottom?: number, reserve = 0): number {
+  // `reserve` is the room a layout draws BELOW its own bottom — an axis label
+  // sits under the plot, not inside it. The natural bottom already keeps that
+  // room back from the page edge; clamping to the band without subtracting it
+  // again simply moved the label under the bar instead of the row.
+  return Math.min(natural, bandBottom === undefined ? Infinity : bandBottom - reserve);
+}
+
+/** How wide a status capsule must be to hold its token on ONE line.
+ *
+ *  The width used to be the token's advance plus a flat 16pt, which did not
+ *  even cover the text box's own 14.4pt of horizontal inset — and the token is
+ *  bold caps, wider again than the mixed-case average PER_CHAR assumes. Every
+ *  capsule on the channel scorecard wrapped inside itself: "MED" drawn as
+ *  "ME / D", "NONE" as "NON / E".
+ *
+ *  Exported because the decision it feeds — capsule, or plain text when even
+ *  this will not fit — is NOT reachable through a real table: fitColumnWidths
+ *  never leaves a status column that narrow, so a check driving the table only
+ *  ever sees the capsule branch and the fallback would be pinned by nothing.
+ *  This function is the seam where both answers can be asked for. */
+export function pillWidth(token: string, size: number): number {
+  return token.length * size * PER_CHAR * CAPS_WIDEN + TEXT_INSET_X + 10;
+}
+
+export function estimateLines(
+  text: string | undefined, boxWidth: number, size: number, bullets = false, caps = false
+): number {
+  const s = (text ?? "").trim();
+  if (!s) return 0;
+  const usable = Math.max(size, boxWidth - TEXT_INSET_X - (bullets ? BULLET_INDENT : 0));
+  // CAPITALS ARE WIDER. PER_CHAR is a mixed-case average, and a `caps: true`
+  // style draws every glyph at its widest — a stat label measured as two lines
+  // came back from Google as three, and the source line underneath it was drawn
+  // straight through the third. The line COUNT changes; the leading does not,
+  // so callers still ask drawnTextHeight for the height at the real size.
+  const perLine = Math.max(1, Math.floor(usable / (size * PER_CHAR * (caps ? CAPS_WIDEN : 1))));
+  const paras = s.split("\n");
+  let lines = 0;
+  for (let i = 0; i < paras.length; i++) {
+    lines += Math.max(1, Math.ceil(paras[i].trim().length / perLine));
+  }
+  return lines;
+}
+
+/** Where the last line's ink lands, measured from the top of the box.
+ *
+ *  `paragraphs` is separate from `lines` because Slides' 6pt spaceBelow falls
+ *  between PARAGRAPHS, not between wrapped lines — counting it per line
+ *  over-estimated a wrapping body by a third and split slides that fitted. */
+export function drawnTextHeight(
+  lines: number, size: number, spaceBelow = 0, paragraphs = 1, lineSpacing?: number
+): number {
+  if (lines <= 0) return 0;
+  // LINE_LEAD is 115% paragraph spacing on a ~1.26em face. A box drawn at a
+  // DIFFERENT spacing — table cells sit at 105% — was still measured at 145%,
+  // so every table row carried 18% of height it never used, and nine rows
+  // that fit were judged not to and split across two slides.
+  const lead = lineSpacing ? 1.26 * lineSpacing : LINE_LEAD;
+  return TEXT_INSET_Y + lines * size * lead + Math.max(0, paragraphs - 1) * spaceBelow;
+}
+
+/** How many rows a chart may draw, and how tall each may be.
+ *
+ *  Nothing on a slide is allowed to grow past the canvas. The bar chart used to
+ *  cap at eight and place its source line wherever the eighth bar ended, which
+ *  was 8pt below the bottom edge; the stacked chart capped at nothing at all,
+ *  so a ten-category series ran two rows and an entire legend off the slide,
+ *  invisible in the deck AND in the preview, with nothing saying data was lost.
+ *
+ *  Rows are COMPRESSED to fit before any are dropped — losing a little bar
+ *  height costs nothing a reader would notice, and losing a category costs them
+ *  the data. Only when compression hits a floor is the set truncated, and the
+ *  slide then says so out loud. */
+const MAX_BARS = 8;
+/** Gap plus the source line under a plot. */
+const SOURCE_BLOCK = 24;
+/** The right-hand slot on the source line, held for the truncation note. */
+const NOTE_WIDTH = 168;
+const MIN_ROW_HEIGHT = 20;
+/** Legend row plus the source line under a stacked plot. A second legend row is
+ *  reserved unconditionally: whether the names wrap is not known until they are
+ *  laid out, and a budget that assumes they will not is how the legend left the
+ *  slide in the first place. */
+const LEGEND_ROWS = 2;
+const LEGEND_ROW_HEIGHT = 16;
+const STACK_TAIL = 42 + LEGEND_ROW_HEIGHT;
+
+function fitRows(
+  total: number, cap: number, baseBarH: number, baseGap: number, tailBlock: number,
+  bandTop: number = GRID.bodyY
+): { count: number; rowH: number; barH: number } {
+  const room = CANVAS.height - GRID.margin - bandTop - tailBlock;
+  const baseRow = baseBarH + baseGap;
+  let count = Math.max(1, Math.min(total, cap));
+  let rowH = Math.min(baseRow, room / count);
+  while (rowH < MIN_ROW_HEIGHT && count > 1) {
+    count -= 1;
+    rowH = Math.min(baseRow, room / count);
+  }
+  rowH = Math.floor(rowH * 10) / 10;
+  const gap = Math.min(baseGap, Math.max(4, rowH * 0.3));
+  return { count, rowH, barH: Math.max(10, Math.round((rowH - gap) * 10) / 10) };
+}
+
+/** "Showing the top 8 of 12" — on the source line, right-aligned, in the slot
+ *  the source box gives up when there is something to say.
+ *
+ *  Its own box with no spec path, so it is never editable and never written
+ *  back into the source string. Silence here was the real defect: a deck that
+ *  quietly drops four categories reads as the whole picture. */
+/** Wide enough for its own text, so a two-clause note is not clipped by a
+ *  fixed slot. Right-aligned to the content edge, so growing it grows leftwards
+ *  and it can never leave the canvas. */
+function noteWidth(text: string): number {
+  if (!text) return 0;
+  const measured = Math.ceil(text.length * TYPE.chartAxis.size * 0.55 + 15);
+  return Math.min(GRID.contentWidth - 140, Math.max(NOTE_WIDTH, measured));
+}
+
+function noteBox(objectId: string, page: string, text: string, y: number): Req[] {
+  if (!text) return [];
+  const w = noteWidth(text);
+  return textBox(objectId, page, text, TYPE.chartAxis, {
+    x: GRID.margin + GRID.contentWidth - w, y, width: w, height: 16,
+  }, { align: "END" });
+}
+
+function clip(s: string, n: number): string {
+  return s.length <= n ? s : `${s.slice(0, n - 1)}…`;
+}
+
+/** What a bar chart is NOT showing, in one line.
+ *
+ *  Both clauses matter and neither was said. Truncation to the top eight was
+ *  silent, and a second series was discarded entirely — this layout draws one
+ *  series by design, and a model that sends two got a slide that looked like
+ *  the whole picture. */
+export function barChartNote(
+  chart: NonNullable<SlideInput["chart"]>, total: number, drawn: number
+): string {
+  const parts: string[] = [];
+  const supplied = chart.series?.length || 0;
+  if (supplied > 1) {
+    parts.push(`“${clip(chart.series?.[0]?.name || "the first series", 18)}” of ${supplied} series`);
+  }
+  if (total > drawn) parts.push(`${supplied > 1 ? "" : "the "}top ${drawn} of ${total}`);
+  return parts.length ? `Showing ${parts.join(" · ")}` : "";
+}
+
+/**
+ * Round values to label a y axis with, and the reason this exists.
+ *
+ * A line chart of monthly profit that dips to -25k and climbs to +17k was drawn
+ * with ONE horizontal rule, at the bottom of the plot — which is the padded
+ * MINIMUM, about -28k, not zero. Every month including the four loss-making
+ * ones therefore sat above the only line on the chart, and January read as the
+ * low point of a rising line rather than as a loss. Zero was 149px above that
+ * rule with nothing marking it, and no y value was drawn anywhere: the layout
+ * reserved 34px at the left for labels it never wrote.
+ *
+ * Ticks are round numbers, not evenly-divided ends: an axis labelled -28,360 /
+ * -12,180 / 4,000 is arithmetic nobody reads. Zero is always among them when it
+ * is in range, because 0 is a multiple of every step, which is the property the
+ * zero rule depends on.
+ *
+ * Pure and exported so the check can drive it directly rather than infer the
+ * scale from a rendered box.
+ */
+export function niceTicks(lo: number, hi: number, count = 5): number[] {
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return [];
+  const raw = (hi - lo) / Math.max(1, count);
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag;
+  const out: number[] = [];
+  // Start at the first step boundary inside the range and walk up. Bounded
+  // rather than while(true): a pathological span once produced a step of 0 and
+  // an infinite loop is a worse failure than a missing axis.
+  const first = Math.ceil(lo / step) * step;
+  // first + i*step, NOT v += step. Accumulating a fractional step compounds its
+  // own error: a 0.5-to-0.9 axis came out labelled 0.7999999999999999.
+  const decimals = Math.min(10, Math.max(0, -Math.floor(Math.log10(step)) + 1));
+  for (let i = 0; i < 24; i++) {
+    const v = first + i * step;
+    if (v > hi + step * 1e-9) break;
+    const r = Number(v.toFixed(decimals));
+    // -0 prints as "-0". It is the same number and reads as a mistake.
+    out.push(Object.is(r, -0) ? 0 : r);
+  }
+  return out;
+}
+
+/** A line chart: change over time. The one device the bar layouts cannot give,
+ *  because a trend is a shape, not a set of lengths.
+ *
+ *  Points are spaced evenly by INDEX across the plot, not by date — the points
+ *  carry free-text x labels ("Jan", "Q1", "2024"), and spacing them by a parsed
+ *  date would break the moment a label is not a date. Y is scaled from the data
+ *  (padded, and including zero when the range is close to it, so a line does not
+ *  float in a misleading crop). Up to three series, each its own colour with a
+ *  legend; segments are rotated rectangles because Slides has no polyline.
+ */
+function lineChartRequests(
+  page: string, id: (s: string) => string,
+  chart: NonNullable<SlideInput["chart"]>, onDark: boolean, bandTop: number = GRID.bodyY,
+  band: number = GRID.bandHeight
+): Req[] {
+  const series = (chart.series || []).filter((sx) => sx.points?.length).slice(0, 3);
+  if (!series.length) return [];
+  const palette = onDark ? SERIES_DARK : SERIES_LIGHT;
+  const axisColor = onDark ? COLOR.periwinkle : COLOR.greyLight;
+
+  // X labels come from the FIRST series; a shorter series simply stops early.
+  const labels = series[0].points.map((p) => p.label);
+  const n = labels.length;
+  if (n < 2) return [];   // a single point is not a line
+
+  const allValues = series.flatMap((sx) => sx.points.map((p) => p.value));
+  const bench = chart.benchmark && Number.isFinite(chart.benchmark.value) ? chart.benchmark : null;
+  if (bench) allValues.push(bench.value);
+  // The RAW extremes, kept before any snapping or padding. The zero rule is
+  // decided on the data, not on the scale: padding pushes `lo` below zero on a
+  // chart whose values are all positive (120..340 snaps lo to 0, then pads it
+  // to -17.6), and testing the padded scale drew a "zero" rule a few pixels
+  // above the baseline on charts that never cross zero.
+  const rawLo = Math.min(...allValues);
+  const rawHi = Math.max(...allValues);
+  let lo = rawLo;
+  let hi = rawHi;
+  // Include zero when the data sits near it, so the line is not floated on a
+  // cropped axis that exaggerates the slope.
+  if (lo > 0 && lo < hi * 0.5) lo = 0;
+  if (hi < 0 && hi > lo * 0.5) hi = 0;
+  const pad = (hi - lo) * 0.08 || 1;
+  lo -= pad; hi += pad;
+  const span = hi - lo || 1;
+
+  const legendH = series.length > 1 ? 20 : 0;
+  const plotX = GRID.margin + 34;                       // room for y at the left
+  const plotW = GRID.contentWidth - 34;
+  // Ends above the footer, with the source line between them; it used to run
+  // 2pt short of the bottom margin, which put the source on top of the
+  // footer once the footer came up off the bezel.
+  const bandBottom = FOOTER_Y - 18;
+  const plotTop = bandTop + 6;
+  const plotBottom = bandBottom - 18 - legendH;         // room for x labels + legend
+  const plotH = Math.max(40, plotBottom - plotTop);
+
+  const xAt = (i: number) => plotX + (n === 1 ? 0 : (i / (n - 1)) * plotW);
+  const yAt = (v: number) => plotBottom - ((v - lo) / span) * plotH;
+
+  const out: Req[] = [];
+
+  // A faint baseline/axis along the bottom.
+  out.push(...filledShape(id("laxis"), page, "RECTANGLE", axisColor, {
+    x: plotX, y: plotBottom, width: plotW, height: CHART.axisThickness,
+  }));
+
+  // The y axis: round values in the 34px this layout has always reserved for
+  // them and never used. Without these the plot has no scale at all — the only
+  // number on it is the last point's own label.
+  const ticks = niceTicks(lo, hi);
+  for (let i = 0; i < ticks.length; i++) {
+    const v = ticks[i];
+    const ty = yAt(v);
+    // Skip a tick that would collide with the x labels sitting under the axis.
+    if (ty > plotBottom - 3) continue;
+    out.push(...textBox(id(`lyt${i}`), page, formatValue(v),
+      { ...TYPE.chartAxis, color: onDark ? COLOR.periwinkle : COLOR.ink }, {
+        x: GRID.margin - 4, y: ty - 6, width: 34, height: 12,
+      }, { align: "END" }));
+  }
+
+  // THE ZERO RULE. This is the fix: on a chart that crosses zero, the bottom
+  // baseline is the padded minimum, so a loss was drawn above the only line on
+  // the plot and read as a small positive. Drawn only when the data actually
+  // crosses zero — otherwise the baseline IS the floor and a second rule there
+  // is redundant ink, which is the same rule the bar chart follows.
+  if (rawLo < 0 && rawHi > 0) {
+    // Navy, not the baseline's light grey: the bottom rule is a frame and this
+    // one is the number the reader is being asked to compare against, so it has
+    // to be the stronger of the two.
+    out.push(...filledShape(id("lzero"), page, "RECTANGLE", onDark ? COLOR.periwinkle : COLOR.navy, {
+      x: plotX, y: yAt(0), width: plotW, height: 1.2,
+    }));
+  }
+
+  // What the axis is measuring, when the caller says. Horizontal, above the
+  // ticks: Slides can rotate a text box, but a rotated label in a 34px gutter
+  // is unreadable at deck scale and the rotation is one more thing to get
+  // wrong in the preview.
+  if (chart.yAxisLabel?.trim()) {
+    out.push(...textBox(id("lylab"), page, chart.yAxisLabel.trim(),
+      { ...TYPE.chartAxis, color: onDark ? COLOR.periwinkle : COLOR.ink }, {
+        x: GRID.margin - 4, y: plotTop - 14, width: 120, height: 12,
+      }));
+  }
+
+  // The benchmark, if any — a reference rule across the plot.
+  if (bench) {
+    out.push(...filledShape(id("lbmk"), page, "RECTANGLE", COLOR.coralDeep, {
+      x: plotX, y: yAt(bench.value), width: plotW, height: 1.2,
+    }));
+    if (bench.label?.trim()) {
+      out.push(...textBox(id("lbml"), page, bench.label, TYPE.benchmarkLabel, {
+        x: plotX, y: yAt(bench.value) - 12, width: 150, height: 12,
+      }));
+    }
+  }
+
+  // X labels under the axis.
+  labels.forEach((lab, i) => {
+    out.push(...textBox(id(`lx${i}`), page, lab, TYPE.axisTick, {
+      x: xAt(i) - 24, y: plotBottom + 4, width: 48, height: 14,
+    }, { align: "CENTER" }));
+  });
+
+  // Each series: segments, then dots on top, then endpoint value labels.
+  series.forEach((sx, si) => {
+    const color = palette[si % palette.length];
+    const pts = sx.points.slice(0, n);
+    for (let i = 0; i < pts.length - 1; i++) {
+      out.push(...segment(id(`ls${si}_${i}`), page, color,
+        xAt(i), yAt(pts[i].value), xAt(i + 1), yAt(pts[i + 1].value), 2.4));
+    }
+    pts.forEach((p, i) => {
+      const focus = typeof chart.highlight === "number" && chart.highlight === i;
+      const r = focus ? 5 : 3.5;
+      out.push(...filledShape(id(`ld${si}_${i}`), page, "ELLIPSE", color, {
+        x: xAt(i) - r, y: yAt(p.value) - r, width: r * 2, height: r * 2,
+      }));
+    });
+    // Label the LAST point (and the highlighted one) — not every point, which
+    // would be a wall of numbers.
+    const lastI = pts.length - 1;
+    const labelAt = (i: number) => {
+      const p = pts[i];
+      const above = i === 0 || p.value >= pts[i - 1].value;
+      out.push(...textBox(id(`lv${si}_${i}`), page, formatValue(p.value),
+        { ...TYPE.chartValue, color: onDark ? COLOR.white : COLOR.navy }, {
+          x: Math.min(xAt(i) - 20, GRID.margin + GRID.contentWidth - 44),
+          y: above ? yAt(p.value) - 18 : yAt(p.value) + 6, width: 44, height: 14,
+        }, { align: i === lastI ? "END" : "CENTER" }));
+    };
+    labelAt(lastI);
+    if (typeof chart.highlight === "number" && chart.highlight !== lastI && chart.highlight < pts.length) {
+      labelAt(chart.highlight);
+    }
+  });
+
+  // Legend for multiple series.
+  if (series.length > 1) {
+    let lx = plotX;
+    const ly = plotBottom + 20;
+    series.forEach((sx, si) => {
+      const w = Math.min(120, Math.max(34, (sx.name || "").length * 4.6 + 16));
+      out.push(
+        ...filledShape(id(`lk${si}`), page, "RECTANGLE", palette[si % palette.length], {
+          x: lx, y: ly + 3, width: 10, height: 3,
+        }),
+        ...textBox(id(`ln${si}`), page, sx.name, TYPE.chartAxis, {
+          x: lx + 14, y: ly, width: w, height: 14,
+        }),
+      );
+      lx += 14 + w + 10;
+    });
+  }
+
+  out.push(...textBox(id("lsrc"), page, chart.source, TYPE.chartAxis, {
+    x: GRID.margin, y: bandBottom + 2, width: GRID.contentWidth, height: 14,
+  }));
+  return out;
+}
+
+/** Horizontal bars, sorted, with the value printed at the end of each.
+ *
+ *  Horizontal because category names are words, and words fit beside a bar but
+ *  not under one. Sorted because the ranking IS the message; input order makes
+ *  the reader do the sorting. Values printed directly, so no axis scale is
+ *  needed and the gridlines that would carry it can go — ink belongs to data. */
+function barChartRequests(
+  page: string, id: (s: string) => string,
+  chart: NonNullable<SlideInput["chart"]>, onDark: boolean, bandTop: number = GRID.bodyY,
+  band: number = GRID.bandHeight
+): Req[] {
+  const series = chart.series?.[0];
+  if (!series?.points?.length) return [];
+  const palette = onDark ? SERIES_DARK : SERIES_LIGHT;
+  // Carry each point's ORIGINAL index through the sort. The object id has to
+  // name the point in the spec, not its rank on the slide — otherwise editing
+  // "Bar 1" edits whichever row happened to be first in the input, and any deck
+  // whose data was not already sorted gets the wrong bar changed.
+  // A TIME SERIES keeps its order — sorting a monthly trend by value scrambles
+  // the line the chart exists to show. A ranking sorts, and carries each
+  // point's ORIGINAL index through the sort so the object id names the point in
+  // the spec, not its rank on the slide (editing "Bar 1" must not move a row).
+  const indexed = series.points.map((p, orig) => ({ ...p, orig }));
+  const ranked = chart.sequence ? indexed : indexed.slice().sort((a, b) => b.value - a.value);
+
+  // The source line is part of the block, so it has to be inside the budget.
+  // It was not: eight bars pushed it to y=397 on a 405pt canvas, where the
+  // attribution for the numbers simply did not exist in the built deck.
+  const fit = fitRows(ranked.length, MAX_BARS, CHART.barHeight, CHART.barGap, SOURCE_BLOCK, bandTop);
+  // A ranking truncated to the top N drops the SMALLEST; a sequence truncated
+  // from the front would drop the earliest months and lie about where the line
+  // starts, so a sequence keeps its most recent points instead.
+  const points = chart.sequence ? ranked.slice(-fit.count) : ranked.slice(0, fit.count);
+
+  // A zero BASELINE, not an absolute-value scale. Drawing |value| made a -100
+  // the longest bar on a slide whose whole message is the ranking — the reader
+  // saw the biggest bar against the worst number. With a baseline, a negative
+  // bar runs left from zero and reads as the loss it is.
+  const bench = chart.benchmark && Number.isFinite(chart.benchmark.value) ? chart.benchmark : null;
+  const lo = Math.min(0, ...points.map((p) => p.value), bench ? bench.value : 0);
+  const hi = Math.max(0, ...points.map((p) => p.value), bench ? bench.value : 0);
+  const span = hi - lo || 1;
+
+  const plotX = GRID.margin + CHART.labelGutter;
+  const plotW = GRID.contentWidth - CHART.labelGutter - 52;
+  const at = (v: number) => plotX + ((v - lo) / span) * plotW;
+  const out: Req[] = [];
+  // Same treatment as the stats: five bars centre in the band, eight fill it.
+  const bandH = GRID.bodyY + band - bandTop;
+  const plotTop = bandTop +
+    Math.max(0, (bandH - (points.length * fit.rowH + SOURCE_BLOCK)) / 2);
+
+  // A highlighted bar is the whole point of the slide: it is drawn in the
+  // accent and every other bar is muted to a neutral, so the eye lands on the
+  // one that carries the argument instead of reading six equal blues. With no
+  // highlight the chart is uniform, as before.
+  const hasFocus = typeof chart.highlight === "number" &&
+    chart.highlight >= 0 && chart.highlight < series.points.length;
+  const muted = onDark ? COLOR.periwinkle : COLOR.greyLight;
+  const focusFill = onDark ? COLOR.tealSoft : COLOR.blue;
+
+  points.forEach((p, i) => {
+    const y = plotTop + i * fit.rowH;
+    const x0 = at(Math.min(p.value, 0));
+    const w = Math.max(2, Math.abs(at(p.value) - at(0)));
+    const isFocus = hasFocus && p.orig === chart.highlight;
+    const barFill = hasFocus ? (isFocus ? focusFill : muted) : palette[0];
+    const labelStyle = isFocus ? { ...TYPE.chartValue, color: onDark ? COLOR.tealSoft : COLOR.blue } : TYPE.chartValue;
+    out.push(
+      ...textBox(id(`bl${p.orig}`), page, p.label, TYPE.chartCategory, {
+        x: GRID.margin, y: y + 4, width: CHART.labelGutter - 10, height: fit.barH,
+      }),
+      ...filledShape(id(`bb${p.orig}`), page, "RECTANGLE", barFill, {
+        x: x0, y, width: w, height: fit.barH,
+      }),
+      // The value goes just past the bar's right-hand end, for a negative bar
+      // as much as a positive one. Putting it at the far end of a negative bar
+      // would drive it into the category name in the left gutter, and the minus
+      // sign already says which way the bar runs.
+      ...textBox(id(`bv${p.orig}`), page, formatValue(p.value), labelStyle, {
+        x: x0 + w + CHART.valueGap, y: y + 4, width: 60, height: fit.barH,
+      }),
+    );
+  });
+
+  // A benchmark: a vertical rule across the whole plot at its value, with a
+  // small caps label above it, so every bar reads as above or below the target.
+  // Drawn in the deep coral so it is plainly a REFERENCE, not one of the bars.
+  if (bench) {
+    const bx = at(bench.value);
+    const plotBottom = plotTop + points.length * fit.rowH;
+    out.push(...filledShape(id("bmk"), page, "RECTANGLE", COLOR.coralDeep, {
+      x: bx, y: plotTop - 10, width: 1.4, height: plotBottom - plotTop + 10,
+    }));
+    if (bench.label?.trim()) {
+      // The label sits above the rule, clamped so it cannot leave the canvas on
+      // either side — the plot's right edge is where a naive placement overran.
+      const lw = Math.min(150, Math.max(40, bench.label.length * 4.4 + 10));
+      const lx = Math.min(GRID.margin + GRID.contentWidth - lw, Math.max(GRID.margin, bx - lw / 2));
+      out.push(...textBox(id("bml"), page, bench.label, TYPE.benchmarkLabel, {
+        x: lx, y: plotTop - 22, width: lw, height: 14,
+      }, { align: bx - lw / 2 < GRID.margin ? "START" : "CENTER" }));
+    }
+  }
+
+  // A zero rule, only when the data crosses it — otherwise the left edge of the
+  // plot IS zero and a line there is redundant ink.
+  if (lo < 0) {
+    out.push(...filledShape(id("bzero"), page, "RECTANGLE", onDark ? COLOR.periwinkle : COLOR.greyLight, {
+      x: at(0), y: plotTop - 4, width: CHART.axisThickness,
+      height: points.length * fit.rowH + 4,
+    }));
+  }
+
+  const srcY = plotTop + points.length * fit.rowH + 8;
+  const note = barChartNote(chart, ranked.length, points.length);
+  out.push(...textBox(id("csrc"), page, chart.source, TYPE.chartAxis, {
+    x: GRID.margin, y: srcY,
+    width: GRID.contentWidth - (note ? noteWidth(note) : 0), height: 16,
+  }));
+  out.push(...noteBox(id("cdrop"), page, note, srcY));
+
+  // A callout: one short line explaining a single bar, drawn to the RIGHT of
+  // that bar's value in the deep coral, clamped to the canvas. Only when the
+  // bar is actually on the slide (a callout on a truncated bar has nowhere to
+  // point). The audit's warning was that a naive placement after the longest
+  // value box ran off at 711pt; this clamps the width to the room that is left
+  // and skips the callout, with a note, when there is too little.
+  if (chart.callout && typeof chart.callout.point === "number" && chart.callout.text?.trim()) {
+    const idx = points.findIndex((p) => p.orig === chart.callout!.point);
+    if (idx >= 0) {
+      const p = points[idx];
+      const y = plotTop + idx * fit.rowH;
+      const valueEnd = at(p.value) + CHART.valueGap + 44;   // past the value box
+      const rightEdge = GRID.margin + GRID.contentWidth;
+      const room = rightEdge - valueEnd;
+      if (room >= 60) {
+        out.push(...textBox(id("cnote"), page, chart.callout.text, TYPE.calloutText, {
+          x: valueEnd, y: y + 3, width: room, height: fit.barH,
+        }));
+      } else {
+        // No room beside the bar — the finding still gets said, on the source
+        // line's own slot, rather than silently dropped.
+        out.push(...noteBox(id("cnote"), page, chart.callout.text, srcY + 18));
+      }
+    }
+  }
+  return out;
+}
+
+/** One stacked bar per category — composition, not ranking.
+ *
+ *  A single row per category rather than a grid of them, because the question
+ *  a stacked bar answers is "what is this made of", and stacking is the only
+ *  encoding that shows the parts and the whole at once.
+ *
+ *  A 2pt gap is left between segments. Without it adjacent fills of similar
+ *  lightness merge into one shape and the boundary the chart exists to show
+ *  disappears — the surface showing through IS the separator. */
+function stackedBarRequests(
+  page: string, id: (s: string) => string,
+  chart: NonNullable<SlideInput["chart"]>, onDark: boolean, bandTop: number = GRID.bodyY,
+  band: number = GRID.bandHeight
+): Req[] {
+  const supplied = (chart.series || []).filter((s) => s.points?.length);
+  if (!supplied.length) return [];
+  const palette = onDark ? SERIES_DARK : SERIES_LIGHT;
+
+  // A stacked bar cannot draw a negative part — there is no direction for it to
+  // go — so negatives leave the DRAWING and the TOTAL alike, and are counted so
+  // the slide can say so. Counting them in the total while skipping them in the
+  // drawing was worse than either: the printed total contradicted the bar
+  // beside it, and because the scale came from those totals a single negative
+  // could push a bar clean off the right-hand edge of the slide.
+  let negatives = 0;
+  const valuesOf = (list: typeof supplied) => {
+    const m = new Map<string, number>();
+    for (let i = 0; i < list.length; i++) {
+      const pts = list[i].points || [];
+      for (let j = 0; j < pts.length; j++) {
+        if (pts[j].value < 0) { negatives += 1; continue; }
+        // Duplicate labels SUM. `find` returned the first and lost the rest, so
+        // [{Other,10},{Other,15}] drew 10 twice and printed a total short by 15.
+        m.set(pts[j].label, (m.get(pts[j].label) || 0) + pts[j].value);
+      }
+    }
+    return m;
+  };
+
+  // Five colours in the palette, and `palette[si % length]` would paint a sixth
+  // part in the FIRST part's blue. Dropping the sixth instead left a printed
+  // total that excluded it — a wrong number on the slide, not just a missing
+  // one. So the remainder is grouped, which is coarser but true.
+  const MAX_PARTS = palette.length;
+  const folded = Math.max(0, supplied.length - MAX_PARTS);
+  const parts: { name: string; values: Map<string, number> }[] = [];
+  for (let i = 0; i < Math.min(supplied.length, MAX_PARTS); i++) {
+    parts.push({ name: supplied[i].name, values: valuesOf([supplied[i]]) });
+  }
+  if (folded > 0) parts.push({ name: "Other", values: valuesOf(supplied.slice(MAX_PARTS)) });
+  const series = parts;
+  // "Other" is not a series, so it does not take a series colour.
+  const fillFor = (si: number) => (si < MAX_PARTS ? palette[si] : (onDark ? COLOR.greyLight : COLOR.ink));
+
+  // Categories are the UNION of every part's labels, in first-appearance order.
+  // Taking them from the first series alone dropped any category the first
+  // series happened not to carry — silently, and from the totals as well.
+  // Derived from the aggregation rather than a second pass over the raw points,
+  // so a label carried only by negative values cannot enter as an empty row.
+  const union = new Map<string, number>();
+  for (let i = 0; i < series.length; i++) {
+    const keys = Array.from(series[i].values.keys());
+    for (let j = 0; j < keys.length; j++) union.set(keys[j], 1);
+  }
+  const allCategories = Array.from(union.keys());
+  // The legend and the source line sit under the plot, so both are inside the
+  // budget the rows have to fit. There was no budget at all before: ten
+  // categories put two rows and the whole legend off the bottom of the slide.
+  const fit = fitRows(allCategories.length, MAX_BARS, CHART.barHeight, CHART.barGap, STACK_TAIL, bandTop);
+  const categories = allCategories.slice(0, fit.count);
+
+  const partOf = (cat: string, s: (typeof series)[number]) => s.values.get(cat) ?? 0;
+  const totals = categories.map((c) => series.reduce((sum, s) => sum + partOf(c, s), 0));
+  const max = Math.max(...totals) || 1;
+
+  const plotX = GRID.margin + CHART.labelGutter;
+  const plotW = GRID.contentWidth - CHART.labelGutter - 52;
+  const rowH = fit.rowH;
+  const bandH = GRID.bodyY + band - bandTop;
+  const plotTop = bandTop +
+    Math.max(0, (bandH - (categories.length * rowH + STACK_TAIL)) / 2);
+  const GAP = 2;
+
+  const out: Req[] = [];
+  categories.forEach((cat, ci) => {
+    const y = plotTop + ci * rowH;
+    let x = plotX;
+    out.push(...textBox(id(`kl${ci}`), page, cat, TYPE.chartCategory, {
+      x: GRID.margin, y: y + 4, width: CHART.labelGutter - 10, height: fit.barH,
+    }));
+    series.forEach((s, si) => {
+      const v = partOf(cat, s);
+      if (v <= 0) return;
+      const w = (v / max) * plotW;
+      const segW = Math.max(1, w - GAP);
+      const fill = fillFor(si);
+      out.push(...filledShape(id(`kb${ci}_${si}`), page, "RECTANGLE", fill, {
+        x, y, width: segW, height: fit.barH,
+      }));
+
+      // THE SPLIT, WRITTEN ON THE SPLIT.
+      //
+      // Only the total was ever labelled, which on this deck's budget slide
+      // meant two bars showing different compositions and both labelled 12k —
+      // the one number a stacked bar exists to show was the one number missing,
+      // and the reader was left estimating segment widths by eye. A stacked bar
+      // answers "what is this made of"; the parts have to carry their values.
+      //
+      // Drawn only where the segment can actually hold it. A label wider than
+      // its own segment spills across the neighbouring colour and reads as
+      // belonging to that one instead — worse than no label. Measured with the
+      // Slides text insets included, as everywhere else in this file.
+      const label = formatValue(v);
+      const needed = Math.ceil(label.length * TYPE.chartValue.size * 0.62) + TEXT_INSET_X;
+      if (segW >= needed) {
+        out.push(...textBox(
+          id(`kv${ci}_${si}`), page, label,
+          { ...TYPE.chartValue, color: textOn(fill) },
+          { x, y, width: segW, height: fit.barH },
+          { align: "CENTER", vCenter: true }
+        ));
+      }
+      x += w;
+    });
+    out.push(...textBox(id(`kt${ci}`), page, formatValue(totals[ci]), TYPE.chartValue, {
+      x: x + CHART.valueGap, y: y + 4, width: 60, height: fit.barH,
+    }));
+  });
+
+  // A legend is required here and cannot be replaced by direct labels: a
+  // segment is often too narrow to hold its own name.
+  //
+  // It WRAPS. Five series with ordinary names — "Sponsored articles",
+  // "Infographics and charts" — ran the last entries off the right-hand edge of
+  // the slide, because the row only ever advanced and never asked whether the
+  // next entry still fit.
+  const legendRight = GRID.margin + GRID.contentWidth;
+  const legendTop = plotTop + categories.length * rowH + 6;
+  let lx = GRID.margin;
+  let legendRow = 0;
+  series.forEach((s, si) => {
+    // The label's box and the advance to the next entry are the SAME width.
+    // Giving every label a fixed 110pt box while advancing by its text width
+    // overlapped each legend entry with the one after it.
+    // Sized with the text-box insets included. Without them a nine-character
+    // series name wrapped to two lines inside a box one line tall, and the
+    // second line landed on the source attribution underneath.
+    const labelW = Math.min(
+      132, Math.max(34, Math.ceil(s.name.length * TYPE.chartAxis.size * 0.55) + TEXT_INSET_X)
+    );
+    if (lx + 13 + labelW > legendRight && lx > GRID.margin && legendRow < LEGEND_ROWS - 1) {
+      legendRow += 1;
+      lx = GRID.margin;
+    }
+    const ly = legendTop + legendRow * LEGEND_ROW_HEIGHT;
+    out.push(
+      ...filledShape(id(`kk${si}`), page, "RECTANGLE", fillFor(si), {
+        x: lx, y: ly + 4, width: 9, height: 9,
+      }),
+      ...textBox(id(`kn${si}`), page, s.name, TYPE.chartAxis, {
+        x: lx + 13, y: ly, width: Math.min(labelW, Math.max(28, legendRight - lx - 13)), height: 16,
+      }),
+    );
+    lx += 13 + labelW + 12;
+  });
+  const legendY = legendTop + legendRow * LEGEND_ROW_HEIGHT;
+
+  const srcY = legendY + 20;
+  const note = stackedNote(allCategories.length, categories.length, supplied.length, folded, negatives);
+  out.push(...textBox(id("ksrc"), page, chart.source, TYPE.chartAxis, {
+    x: GRID.margin, y: srcY, width: GRID.contentWidth - (note ? noteWidth(note) : 0), height: 16,
+  }));
+  out.push(...noteBox(id("kdrop"), page, note, srcY));
+  return out;
+}
+
+/** What a stacked bar is not showing, in one line and in priority order —
+ *  a dropped category first, then a folded part, then a negative. Only the
+ *  first that applies is said: the slot is one line, and three clauses read as
+ *  a disclaimer rather than a fact. */
+export function stackedNote(
+  categories: number, drawn: number, suppliedParts: number, folded: number, negatives: number
+): string {
+  if (categories > drawn) return `Showing the top ${drawn} of ${categories}`;
+  if (folded > 0) return `Showing ${suppliedParts - folded} of ${suppliedParts} parts, rest as “Other”`;
+  if (negatives > 0) return "Negative values not shown";
+  return "";
+}
+
+/** Does this slide show the reader something other than words?
+ *
+ *  Read by the audit that tells the model how visual a deck is, so a miscount
+ *  is not cosmetic: cards, logo walls, process diagrams and quotes were all
+ *  counted as prose, so a deck that was five-sixths visual was reported as
+ *  "ONLY 1 of 6 (17%)" and the model dutifully told the user it was flat and
+ *  offered to fix slides that were already fine. */
+export function isVisualSlide(slide: SlideInput | undefined): boolean {
+  if (!slide) return false;
+  const cards = slide.cards || [];
+  const logos = slide.logos || [];
+  return Boolean(
+    slide.resolvedImage ||
+    (slide.resolvedImages && slide.resolvedImages.length) ||
+    slide.chart ||
+    (slide.stats && slide.stats.length) ||
+    (slide.milestones && slide.milestones.length) ||
+    (slide.tracks && slide.tracks.length) ||
+    // The process layout draws its chevrons from the stages alone, and a quote
+    // is a designed slide on navy whether or not it carries a portrait.
+    (slide.stages && slide.stages.length) ||
+    slide.quote ||
+    cards.some((c) => (c.resolvedImage && c.resolvedImage.url) || c.resolvedIcon || c.marker) ||
+    logos.some((l) => l.resolvedUrl || l.name)
+  );
+}
+
+/** Keys whose strings are instructions to the builder, not words on the slide:
+ *  a photo search, a URL, a colour token. Comparing these against drawn text
+ *  would report a finding on every slide that has a picture. */
+const NON_CONTENT_KEYS = new Set([
+  "layout", "layoutAsked", "tone", "tones", "style", "color", "colour",
+  "url", "src", "query", "resolvedUrl", "resolvedIcon", "imageError",
+  "presentationId", "fidelity", "align", "id", "font",
+]);
+
+const contentKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+/** Text a slide CARRIES that its layout never DRAWS.
+ *
+ *  ── WHY THIS IS NOT A TABLE OF WHICH LAYOUT READS WHICH FIELD ──────────────
+ *
+ *  Because that table is the thing that drifts. This builds the slide and asks
+ *  the only question that matters: is each string in the spec somewhere in the
+ *  text the deck will actually contain? A field the layout ignores, a field
+ *  spelled the way a SIBLING layout spells it, a field that only applies in a
+ *  branch this slide did not take — all three answer the same way, and a new
+ *  layout is covered the day it is written.
+ *
+ *  Three real drops, all of them silent, all of them in one delivered deck:
+ *    - `stages: [{ title, body }]` on a process slide, where the renderer read
+ *      `name`/`caption`. Four empty blue boxes, published to Drive.
+ *    - `venn.overlap` with THREE sets, which only the two-set branch draws.
+ *    - `eyebrow` and `body` on a cover, which draws title and subtitle only.
+ *
+ *  Every one of them passed tsc, passed `unrenderableSlides` (the slide had
+ *  the key its layout requires), passed the whole geometry battery, and
+ *  rendered a slide that looked deliberate. Nothing else in this file can
+ *  catch a field that is READ FROM THE WRONG NAME.
+ *
+ *  Compared on a five-word normalised prefix, so the transformations the
+ *  builder legitimately makes — upper-casing, brace-stripping, `fitCell`'s
+ *  ellipsis, a wrapped label — do not read as losses. */
+export function droppedContent(slide: SlideInput, index: number): string[] {
+  let drawn = "";
+  try {
+    const reqs = buildSlideRequests(slide, index, "audit") as any[];
+    const parts: string[] = [];
+    for (const r of reqs) if (r.insertText?.text) parts.push(String(r.insertText.text));
+    drawn = contentKey(parts.join(" \u00b7 "));
+  } catch {
+    return [];   // a slide that cannot build is a different report's problem
+  }
+  const missing: string[] = [];
+  const seen: { [k: string]: true } = {};
+  const walk = (v: any, key: string) => {
+    if (typeof v === "string") {
+      if (NON_CONTENT_KEYS.has(key)) return;
+      const probe = contentKey(v).split(" ").slice(0, 5).join(" ");
+      if (probe.length <= 10) return;          // too short to match reliably
+      if (drawn.indexOf(probe) !== -1) return;
+      if (seen[probe]) return;
+      seen[probe] = true;
+      missing.push(v.trim());
+      return;
+    }
+    if (Array.isArray(v)) { for (const x of v) walk(x, key); return; }
+    if (v && typeof v === "object") { for (const k of Object.keys(v)) walk(v[k], k); }
+  };
+  const any = slide as any;
+  for (const k of Object.keys(any)) walk(any[k], k);
+  return missing;
+}
+
+/** What the deck could not do, in a sentence the model can relay.
+ *
+ *  The slide says it too — a truncated chart carries its own note — but the
+ *  model is the one having the conversation, and a user who is told "four of
+ *  your six pictures could not be found" can supply them. Silence here meant
+ *  the model described a deck that was quietly missing things. */
+export function deckWarnings(slides: SlideInput[]): string {
+  const notes: string[] = [];
+  for (let i = 0; i < slides.length; i++) {
+    const s = slides[i];
+    const n = i + 1;
+    if (s.layoutAsked) notes.push(`slide ${n} asked for layout "${s.layoutAsked}", drawn as "${s.layout}"`);
+    if (s.imageUnavailable) notes.push(`slide ${n} has no photograph — ${s.imageError || "none could be found"}`);
+    if (s.imagesDropped) {
+      const asked = (s.images || []).length;
+      notes.push(`slide ${n} shows ${asked - s.imagesDropped} of ${asked} thumbnails; the rest could not be found`);
+    }
+    // Words that are in the slide and will not be on it. Named with the text
+    // itself, because "slide 24 drops a field" is not actionable and
+    // "slide 24 never draws 'We refine together'" is.
+    const lost = droppedContent(s, i);
+    if (lost.length) {
+      const shown = lost.slice(0, 3).map((t) => `"${t.length > 48 ? t.slice(0, 45) + "..." : t}"`).join(", ");
+      notes.push(
+        `slide ${n} carries text its ${s.layout || "content"} layout never draws — ${shown}` +
+        `${lost.length > 3 ? ` and ${lost.length - 3} more` : ""}. Put it in a field this layout uses, or change the layout` +
+        ` — do NOT describe that content as being in the deck`
+      );
+    }
+  }
+  // GROUND RHYTHM, from the design system: roughly 70% light, dark slides as
+  // punctuation, and two dark slides in a row reads as a mistake. Advisory —
+  // the model is told, the deck still builds.
+  const grounds = slides.map((sl, i) => slideStyle(sl, i).onDark);
+  const darkShare = grounds.length ? grounds.filter(Boolean).length / grounds.length : 0;
+  if (slides.length >= 6 && darkShare > 0.45) {
+    notes.push(`${Math.round(darkShare * 100)}% of the deck is on dark grounds — the house ratio is roughly 70% light, with dark slides as punctuation`);
+  }
+  const adjacentDark: number[] = [];
+  for (let i = 1; i < grounds.length; i++) {
+    if (grounds[i] && grounds[i - 1]) adjacentDark.push(i + 1);
+  }
+  if (adjacentDark.length) {
+    notes.push(`slides ${adjacentDark.join(", ")} each follow another dark slide — two dark grounds in a row reads as a mistake in this brand`);
+  }
+  // The house dash rule. Em and en dashes are not part of TCE materials.
+  const dashed: number[] = [];
+  for (let i = 0; i < slides.length; i++) {
+    if (/[\u2013\u2014]/.test(JSON.stringify(slides[i]))) dashed.push(i + 1);
+  }
+  if (dashed.length) {
+    notes.push(`slide${dashed.length > 1 ? "s" : ""} ${dashed.join(", ")} use em or en dashes — house style is hyphens, rewrite those lines`);
+  }
+  if (!notes.length) return "";
+  return ` TELL THE USER, briefly and without apologising: ${notes.join("; ")}.`;
+}
+
+/** Where a prose slide's picture goes: down the right, bleeding to the right
+ *  and bottom edges.
+ *
+ *  A content slide with an `image.query` resolved a photograph, cropped it,
+ *  baked a gradient into it and uploaded it to Blob — and then drew nothing,
+ *  because only the full-bleed layouts call backdropRequests. The picture was
+ *  paid for and discarded, AND isVisualSlide counted the slide as visual on the
+ *  strength of it, so the audit reported a deck as illustrated when every slide
+ *  was text. */
+export function railBox(
+  slide: SlideInput
+): { url: string; x: number; y: number; width: number; height: number } | null {
+  const url = slide.resolvedImage?.url;
+  const layout = slide.layout;
+  if (!url || (layout !== "content" && layout !== "case-study")) return null;
+  const x = GRID.margin + GRID.proseNarrow + IMAGE.railGap;
+  return { url, x, y: GRID.bodyY, width: CANVAS.width - x, height: CANVAS.height - GRID.bodyY };
+}
+
+/** The rule under a title: a short accent segment, then a hairline. */
+function ruleRequests(
+  objectId: string, page: string, y: number, width: number, onDark: boolean
+): Req[] {
+  const accent = onDark ? COLOR.tealSoft : COLOR.blue;
+  const hair = onDark ? COLOR.greyLight : COLOR.navy;
+  return [
+    ...filledShape(`${objectId}a`, page, "RECTANGLE", accent, {
+      x: GRID.margin, y, width: RULE.accentWidth, height: RULE.thickness,
+    }),
+    ...filledShape(`${objectId}b`, page, "RECTANGLE", hair, {
+      x: GRID.margin + RULE.accentWidth, y: y + (RULE.thickness - RULE.hairlineThickness) / 2,
+      width: Math.max(0, width - RULE.accentWidth), height: RULE.hairlineThickness,
+    }, RULE.hairlineAlpha),
+  ];
+}
+
+/** Card geometry, computed in ONE place — the thumbnail's box decides the crop
+ *  at resolution time and the placement at draw time.
+ *
+ *  The thumbnail is a fraction of the card's HEIGHT rather than a square of its
+ *  width. Square-by-width overflowed: with four cards the picture ate so much
+ *  of the card that the body was pushed out of the bottom of its own panel. */
+export function cardGeometry(count: number, wide = false) {
+  // FIVE OR SIX CARDS WRAP TO TWO ROWS. One row of six gave each card 103pt of
+  // width — a heading wrapped to four lines over a body squeezed to a word a
+  // line — while the source decks set the same content as a 2x3 grid. Four
+  // cards and fewer stay on one row, which is where a row still reads as one.
+  // WIDE: two columns, however many rows. Six cards in three columns gave each
+  // body a 190pt measure, so sentences that sat on two lines in the reference
+  // deck's two-column grid wrapped to three and ran off the card. Chosen by
+  // the caller from the measured bodies, never by count alone.
+  const rows = wide ? Math.ceil(count / 2) : count >= 5 ? 2 : 1;
+  const cols = Math.max(1, Math.min(6, wide ? Math.min(2, count) : rows === 2 ? Math.ceil(count / 2) : count));
+  const cellW = (GRID.contentWidth - CARDS.gap * (cols - 1)) / cols;
+  const innerW = cellW - CARDS.padding * 2;
+  const thumbH = CARDS.height * 0.42;
+  // Bound how wide a thumbnail may get relative to its height, and centre it
+  // when the card is wider than that. Spanning the full card put a 3.4:1 strip
+  // on a two-card slide — the same swing that made the image grid pick bad
+  // crops before its arrangement was chosen by cell shape.
+  const thumbW = Math.min(innerW, thumbH * 2.2);
+  return { cols, rows, cellW, innerW, thumbW, thumbH, aspect: thumbW / thumbH };
+}
+
+/** Repeated blocks across the band.
+ *
+ *  Deliberately ONE function rather than the three layouts the source deck
+ *  appears to use. Its slide 4 is a label chip over body text with no card
+ *  behind it, its slide 6 is a white card holding a thumbnail and a caption,
+ *  and its slide 12 is a number beside a description. Those are not three
+ *  arrangements — they are the same arrangement with different parts present,
+ *  and building them separately would have produced three sets of geometry to
+ *  keep in step.
+ *
+ *  The card panel is only drawn when there is something to hold: a thumbnail,
+ *  or a body long enough to read as a block. A chip and a heading floating on
+ *  the slide ground is what their pillars slide does, and boxing it would make
+ *  it look heavier than they draw it.
+ */
+function cardsRequests(
+  page: string, id: (s: string) => string,
+  cards: NonNullable<SlideInput["cards"]>,
+  top: number = CARDS.y,
+  height: number = CARDS.height,
+  meta?: { bottom: number }
+): Req[] {
+  const shown = cards.filter(Boolean).slice(0, 6);
+  if (!shown.length) return [];
+
+  const bulletsFor = (c: { body?: string }) =>
+    (c.body || "").split("\n").filter((l) => l.trim()).length >= 2;
+  const paragraphsOf = (c: { body?: string }) => (c.body || "").trim().split("\n").filter((l) => l.trim()).length;
+  const panelled = shown.some((c) => c.resolvedImage?.url);
+  const anyToned = shown.some((c) => toneAt([c.tone || ""], 0));
+  const boxedAll = anyToned || panelled;
+
+  // A FIT LADDER, not one rule. Bodies are measured at the drawn size and
+  // leading, row by row, against each grid in turn; the first arrangement
+  // whose rows all fit their share of the band wins. Choosing "wide" from the
+  // narrow measure alone gave four E-E-A-T cards a 2x2 grid whose rows were
+  // then capped by the band, and every second line fell out of its card.
+  //   1. narrow grid, 9pt at 1.3       — the reference's own card text
+  //   2. narrow grid, 8pt at 1.3       — the floor
+  //   3. wide grid (two columns), 9 then 8
+  //   4. tighter leading as the last resort before anything is cut
+  type Plan = { wide: boolean; size: number; lead: number; titleSize: number };
+  const T = TYPE.cardTitle.size;
+  const LADDER: Plan[] = [
+    { wide: false, size: TYPE.cardBody.size, lead: 1.3, titleSize: T }, { wide: false, size: 8, lead: 1.3, titleSize: T },
+    { wide: true, size: TYPE.cardBody.size, lead: 1.3, titleSize: T }, { wide: true, size: 8, lead: 1.3, titleSize: T },
+    { wide: false, size: 8, lead: 1.15, titleSize: T }, { wide: true, size: 8, lead: 1.15, titleSize: T },
+    // A two-line heading costs every card in the row 45pt; one step down on
+    // the heading is cheaper than losing a body line.
+    { wide: false, size: 8, lead: 1.15, titleSize: 11.5 }, { wide: true, size: 8, lead: 1.15, titleSize: 11.5 },
+  ];
+  const measurePlan = (p: Plan) => {
+    const g = cardGeometry(shown.length, p.wide);
+    // BESIDE the heading in a grid three across or fewer; ABOVE it in a
+    // four-across grid, where a 100pt card cannot spare half its measure and
+    // "Training data - the slow clock" wrapped to four lines beside its chip.
+    // The reference stacks on its four-card pages and sets the number inline
+    // on its six-card ones, for the same reason.
+    const inlineChips = g.cols <= 3;
+    const chipWidth = (marker: string) => Math.min(g.innerW * 0.5,
+      Math.max(34, Math.ceil(marker.length * TYPE.cardMarker.size * 0.6) + TEXT_INSET_X + 10));
+    const tBlock = shown.reduce((tallest, c) => {
+      if (!c.title) return tallest;
+      const w = g.innerW - (c.marker && inlineChips ? chipWidth(c.marker) + 6 : 0);
+      return Math.max(tallest, drawnTextHeight(estimateLines(c.title, w, p.titleSize), p.titleSize));
+    }, 0.42 * 72);
+    const bodyH = (c: (typeof shown)[number], innerW: number) => {
+      const t = (c.body || "").trim();
+      if (!t) return 0;
+      return drawnTextHeight(estimateLines(t, innerW, p.size, bulletsFor(c)), p.size, 4, paragraphsOf(c), p.lead);
+    };
+    const contentH = (card: (typeof shown)[number]) => {
+      const tone = toneAt([card.tone || ""], 0);
+      const boxed = !!(tone || boxedAll);
+      let h = boxed ? CARDS.padding + (tone || anyToned ? 3 : 0) : 0;
+      if (card.resolvedImage?.url) h += g.thumbH + CARDS.titleGap;
+      else if (card.resolvedIcon) h += CARDS.iconSize + CARDS.titleGap;
+      // A marker sits BESIDE the heading when there is one — "01 · Tier-1
+      // press" — and costs no row of its own; six cards with a chip row, a
+      // heading and a body could not fit under a takeaway bar at 8pt, and the
+      // reference deck never stacks them.
+      const beside = !!(card.marker && card.title && inlineChips);
+      if (card.marker && !beside) h += CARDS.markerHeight + CARDS.titleGap;
+      h += Math.max(tBlock, beside ? CARDS.markerHeight : 0) + 4;
+      h += bodyH(card, boxed ? g.cellW - CARDS.padding * 2 : g.cellW);
+      h += boxed ? CARDS.padding : 0;
+      return h;
+    };
+    // ROWS NEED NOT BE EQUAL. Each row is as tall as its tallest card, and the
+    // GRID fits when the rows and their gaps fit the band — a first row of
+    // three-line bodies over a second of one-liners is not two rows of the
+    // taller. Capping every row at an equal share put the second lines of a
+    // five-card set outside their cards while a third of the band sat empty.
+    const rowHs: number[] = [];
+    for (let r = 0; r < g.rows; r++) {
+      let tallest = 0;
+      for (let i = r * g.cols; i < Math.min(shown.length, (r + 1) * g.cols); i++) tallest = Math.max(tallest, contentH(shown[i]));
+      rowHs.push(Math.max(40, tallest));
+    }
+    const total = rowHs.reduce((a, b) => a + b, 0) + CARDS.gap * (g.rows - 1);
+    return { g, tBlock, rowHs, total, inlineChips, fits: total <= height + 0.5 };
+  };
+  let plan = LADDER[0];
+  let measured = measurePlan(plan);
+  for (let k = 1; k < LADDER.length && !measured.fits; k++) { plan = LADDER[k]; measured = measurePlan(plan); }
+  if (!measured.fits) {
+    // Nothing fits whole: take the plan that misses by least, and scale its
+    // rows to the band so the grid at least ends where it should. The text
+    // then runs a little past its card — declared by deckWarnings, never
+    // hidden — rather than the LAST plan's rows, which were the tallest.
+    let best = measurePlan(LADDER[0]), bestPlan = LADDER[0];
+    for (const p of LADDER) { const m = measurePlan(p); if (m.total < best.total) { best = m; bestPlan = p; } }
+    plan = bestPlan; measured = best;
+    const k = Math.max(0.5, (height - CARDS.gap * (measured.g.rows - 1)) / (measured.total - CARDS.gap * (measured.g.rows - 1)));
+    measured.rowHs = measured.rowHs.map((h) => h * k);
+  }
+  const BODY_LEAD = plan.lead;
+  const bodySize = plan.size;
+  const titleSize = plan.titleSize;
+  const { cols, rows: gridRows, cellW, thumbW, thumbH } = measured.g;
+  const titleBlockH = measured.tBlock;
+  const rowHs = measured.rowHs;
+  const inlineChips = measured.inlineChips;
+  const rowTops: number[] = [];
+  { let acc = top; for (const h of rowHs) { rowTops.push(acc); acc += h + CARDS.gap; } }
+
+  const out: Req[] = [];
+  shown.forEach((card, i) => {
+    const col = i % cols;
+    const gridRow = Math.floor(i / cols);
+    // A short last row is CENTRED: five cards in a three-wide grid left a hole
+    // at the bottom right that the room read as a sixth card missing.
+    const inRow = Math.min(cols, shown.length - gridRow * cols);
+    const rowW = inRow * cellW + (inRow - 1) * CARDS.gap;
+    const x = GRID.margin + (GRID.contentWidth - rowW) / 2 + col * (cellW + CARDS.gap);
+    const rowTop = rowTops[gridRow];
+    const rowH = rowHs[gridRow];
+    let y = rowTop;
+
+    const tone = toneAt([card.tone || ""], 0);
+    if (tone || boxedAll) {
+      out.push(...filledShape(id(`cp${i}`), page, "ROUND_RECTANGLE",
+        tone ? tone.tint : COLOR.white, {
+        x, y, width: cellW, height: rowH,
+      }));
+      if (tone) {
+        const ACCENT: { [k: string]: string } = {
+          coral: COLOR.coralDeep, teal: COLOR.inkTeal, blue: COLOR.blue,
+          amber: COLOR.inkAmber, grey: COLOR.navy,
+        };
+        out.push(...filledShape(id(`ca${i}`), page, "RECTANGLE",
+          ACCENT[String(card.tone).toLowerCase()] || COLOR.blue, {
+          x: x + 6, y: y, width: cellW - 12, height: 3,
+        }));
+      }
+    }
+    const boxed = !!(tone || boxedAll);
+    const innerX = boxed ? x + CARDS.padding : x;
+    const innerW = boxed ? cellW - CARDS.padding * 2 : cellW;
+    if (boxed) y += CARDS.padding + (tone || anyToned ? 3 : 0);
+
+    if (card.resolvedImage?.url) {
+      out.push({
+        createImage: {
+          objectId: id(`ci${i}`),
+          url: card.resolvedImage.url,
+          elementProperties: {
+            pageObjectId: page,
+            size: { width: pt(thumbW), height: pt(thumbH) },
+            transform: {
+              scaleX: 1, scaleY: 1,
+              translateX: innerX + (innerW - thumbW) / 2, translateY: y, unit: "PT",
+            },
+          },
+        },
+      });
+      y += thumbH + CARDS.titleGap;
+    }
+
+    if (card.resolvedIcon && !card.resolvedImage) {
+      const size = CARDS.iconSize;
+      out.push({
+        createImage: {
+          objectId: id(`cn${i}`),
+          url: card.resolvedIcon,
+          elementProperties: {
+            pageObjectId: page,
+            size: { width: pt(size), height: pt(size) },
+            transform: { scaleX: 1, scaleY: 1, translateX: innerX, translateY: y, unit: "PT" },
+          },
+        },
+      });
+      y += size + CARDS.titleGap;
+    }
+
+    const inline = !!(card.marker && card.title && inlineChips);
+    let titleX = innerX, titleW = innerW;
+    if (card.marker) {
+      const chipW = Math.min(
+        inline ? innerW * 0.5 : innerW,
+        Math.max(34, Math.ceil(card.marker.length * TYPE.cardMarker.size * 0.6) + TEXT_INSET_X + 10)
+      );
+      out.push(
+        ...filledShape(id(`cm${i}`), page, "RECTANGLE", COLOR.blue, {
+          x: innerX, y, width: chipW, height: CARDS.markerHeight,
+        }),
+        ...textBox(id(`cmt${i}`), page, card.marker, TYPE.cardMarker, {
+          x: innerX, y, width: chipW, height: CARDS.markerHeight,
+        }, { align: "CENTER", vCenter: true }),
+      );
+      if (inline) { titleX = innerX + chipW + 6; titleW = innerW - chipW - 6; }
+      else y += CARDS.markerHeight + CARDS.titleGap;
+    }
+
+    // The title sits at the TOP of its block, beside its chip when it has
+    // one. The block is still the tallest title's height so every body in a
+    // row starts on one baseline — but the slack now falls between a short
+    // title and its body, not above it.
+    const blockH = Math.max(titleBlockH, inline ? CARDS.markerHeight : 0);
+    if (card.title) {
+      // CENTRED in the row's shared block. The block is the tallest heading's
+      // height so every body in the row starts on one line; a one-line
+      // heading in a two-line block was drawn hard against the top of it,
+      // with 19pt of tint under the words. Bottom-aligning it (the first
+      // attempt) put the hole between the chip and the heading instead —
+      // both read as a mistake, and centring is what the eye expects.
+      out.push(...textBox(id(`ct${i}`), page, card.title,
+        { ...TYPE.cardTitle, size: titleSize, ...(tone ? { color: tone.ink } : {}) }, {
+        x: titleX, y: inline ? y - 3 : y, width: titleW, height: blockH,
+      }, { vCenter: true }));
+    }
+    y += blockH + 4;
+
+    if (card.body) {
+      const remaining = rowTop + rowH - y - (boxed ? CARDS.padding : 0);
+      // Bullets stay bullets. Three points written on three lines were being
+      // drawn as one paragraph, and the presenter could not count them.
+      out.push(...textBox(id(`cb${i}`), page, card.body,
+        { ...TYPE.cardBody, size: bodySize, ...(tone ? { color: COLOR.ink } : {}) }, {
+        x: innerX, y, width: innerW, height: Math.max(20, remaining),
+      }, { bullets: bulletsFor(card), lineSpacing: BODY_LEAD, spaceBelow: 4 }));
+    }
+  });
+  if (meta) meta.bottom = rowTops[rowTops.length - 1] + rowHs[rowHs.length - 1];
+  return out;
+}
+
+/**
+ * The spanning sub-band under a cards row — "SXO in detail": a full-width
+ * tinted panel with a short title and a row of small labelled cells, each
+ * elaborating a part of ONE card above. The device that turns three discipline
+ * cards plus six sub-disciplines into one slide instead of two.
+ */
+function stripRequests(
+  page: string, id: (s: string) => string,
+  strip: NonNullable<SlideInput["strip"]>, top: number, height: number
+): Req[] {
+  const items = (strip.items || []).filter((it) => it && (it.title?.trim() || it.text?.trim())).slice(0, 6);
+  if (!items.length && !strip.title?.trim()) return [];
+  const out: Req[] = [
+    ...filledShape(id("strip"), page, "ROUND_RECTANGLE", COLOR.lav, {
+      x: GRID.margin, y: top, width: GRID.contentWidth, height,
+    }),
+  ];
+  const PAD = 10;
+  let cursor = top + PAD - 2;
+  if (strip.title?.trim()) {
+    out.push(...textBox(id("stt"), page, strip.title,
+      { font: "Roboto", size: 8.5, weight: 600, color: COLOR.blue }, {
+      x: GRID.margin + PAD, y: cursor, width: GRID.contentWidth - PAD * 2, height: 13,
+    }));
+    cursor += 16;
+  }
+  if (items.length) {
+    const gap = 8;
+    const cellW = (GRID.contentWidth - PAD * 2 - gap * (items.length - 1)) / items.length;
+    const cellH = Math.max(24, top + height - cursor - PAD + 2);
+    // Measured, same as the layer cells: the fixed 12pt title box was shorter
+    // than one drawn line of 8pt text.
+    const cellTitleH = items.reduce((tall, it) => it.title?.trim()
+      ? Math.max(tall, drawnTextHeight(estimateLines(it.title, cellW - 8, 8), 8))
+      : tall, 0);
+    items.forEach((it, i) => {
+      const x = GRID.margin + PAD + i * (cellW + gap);
+      out.push(...filledShape(id(`stc${i}`), page, "ROUND_RECTANGLE", COLOR.white, {
+        x, y: cursor, width: cellW, height: cellH,
+      }));
+      if (it.title?.trim()) {
+        out.push(...textBox(id(`sth${i}`), page, it.title,
+          { font: "Roboto", size: 8, weight: 600, color: COLOR.blue }, {
+          x: x + 4, y: cursor + 3, width: cellW - 8, height: cellTitleH,
+        }, { align: "CENTER" }));
+      }
+      if (it.text?.trim()) {
+        out.push(...textBox(id(`stx${i}`), page, it.text,
+          { font: "Roboto", size: 6.5, weight: 300, color: COLOR.ink }, {
+          x: x + 4, y: cursor + 3 + cellTitleH + 1, width: cellW - 8,
+          height: Math.max(8, cellH - cellTitleH - 8),
+        }, { align: "CENTER", lineSpacing: 1.05 }));
+      }
+    });
+  }
+  return out;
+}
+
+/** The stacked layer diagram, drawn the way the reference page draws it.
+ *
+ *  Each band is sized to its own words and centred; the widths step with the
+ *  content — the audience band is the widest single-line box, the dashed
+ *  synthesis band spans wider than the bands it sits between, and a band whose
+ *  connector points UP into the band above adopts that band's width so the
+ *  pair reads as one unit. A cells band draws its title as a small band and
+ *  its cells as a FREE grid beneath it, four to a row, wrapping past four: one
+ *  row of eight is what forced the cell type under 8pt. Heading size is keyed
+ *  by style so the stack steps down (12.5 / 10 / 9.5 / 8.5 / 10) and the room
+ *  can tell the audience from the plumbing.
+ *
+ *  Measured at the natural metrics first; when the stack does not fit the
+ *  room it steps down a ladder — chrome, then type, then a single row of
+ *  cells, then the secondary lines — and the last rung SAYS what it dropped.
+ *  Nothing on any rung is below 7.5pt. Leftover room goes into the gaps, a
+ *  little each, never into a band. */
+type LayerArrow = "down" | "up" | "none";
+function layerArrow(v: unknown): LayerArrow {
+  if (v === false || v === "none" || v === "false") return "none";
+  return v === "up" ? "up" : "down";
+}
+
+/** A caption's paragraphs. A newline is one; so is the " - " that follows a
+ *  "·"-separated list, because the reference sets its engine list and the
+ *  gloss on it as two lines and the model writes them as one string. A plain
+ *  sentence with a hyphen in it is left alone. Exported for the battery. */
+export function captionParagraphs(caption: string | undefined): string[] {
+  const s = (caption || "").trim();
+  if (!s) return [];
+  if (s.indexOf("\n") >= 0) return s.split("\n").map((l) => l.trim()).filter(Boolean);
+  const lastDot = s.lastIndexOf(" · ");
+  const dash = lastDot >= 0 ? s.indexOf(" - ", lastDot) : -1;
+  if (dash > lastDot) return [s.slice(0, dash).trim(), s.slice(dash + 3).trim()];
+  return [s];
+}
+
+/** Per-style chrome. `head` is the heading size, keyed by style so the stack
+ *  steps DOWN; `minW` is the band's floor width as a share of the content
+ *  width — the audience band is the hero, the dashed band spans wider than
+ *  its neighbours, everything else hugs its title with a 30% floor. */
+const LAYER_STYLE: { [k: string]: { fill: string; ink: string; sub: string; outline?: boolean; head: number; minW: number } } = {
+  blue:   { fill: COLOR.blue,      ink: COLOR.white,    sub: COLOR.greyLight, head: 12.5, minW: 0.42 },
+  dashed: { fill: COLOR.tintBlue,  ink: COLOR.inkBlue,  sub: COLOR.inkBlue,   head: 10,   minW: 0.60, outline: true },
+  teal:   { fill: COLOR.tintTeal,  ink: COLOR.inkTeal,  sub: COLOR.ink,       head: 10,   minW: 0.30 },
+  lav:    { fill: COLOR.lav,       ink: COLOR.navy,     sub: COLOR.ink,       head: 9.5,  minW: 0.30 },
+  grey:   { fill: COLOR.tintGrey,  ink: COLOR.navy,     sub: COLOR.ink,       head: 8.5,  minW: 0.30 },
+  coral:  { fill: COLOR.tintCoral, ink: COLOR.inkCoral, sub: COLOR.ink,       head: 9.5,  minW: 0.30 },
+  amber:  { fill: COLOR.tintAmber, ink: COLOR.inkAmber, sub: COLOR.ink,       head: 9.5,  minW: 0.30 },
+};
+
+/** The fit ladder: each rung is a complete metric set, and the builder draws
+ *  at the first rung that fits. Chrome gives way before type, type before the
+ *  second row of cells, the secondary lines last. padY and the cell pad stay
+ *  >= TEXT_INSET_Y / 2 on every rung so a text box never leaves its band. */
+interface LayerMetrics {
+  padY: number; rowGap: number; arrowH: number; arrowGap: number;
+  headScale: number; caption: number; cellTitle: number; cellText: number;
+  cellGap: number; cellRowGap: number; oneRow: boolean; secondary: boolean;
+}
+const LAYER_RUNG_0: LayerMetrics = {
+  padY: 6, rowGap: 6, arrowH: 7, arrowGap: 1.5, headScale: 1, caption: 8,
+  cellTitle: 8, cellText: 7.5, cellGap: 12, cellRowGap: 6, oneRow: false, secondary: true,
+};
+const LAYER_RUNG_1: LayerMetrics = { ...LAYER_RUNG_0, padY: 4, rowGap: 4, arrowH: 6, arrowGap: 1, cellRowGap: 4 };
+const LAYER_RUNG_2: LayerMetrics = { ...LAYER_RUNG_1, headScale: 0.92, caption: 7.5, cellTitle: 7.5 };
+const LAYER_RUNG_3: LayerMetrics = { ...LAYER_RUNG_2, oneRow: true, cellGap: 6 };
+const LAYER_RUNG_4: LayerMetrics = { ...LAYER_RUNG_3, secondary: false };
+const LAYER_RUNGS: LayerMetrics[] = [LAYER_RUNG_0, LAYER_RUNG_1, LAYER_RUNG_2, LAYER_RUNG_3, LAYER_RUNG_4];
+
+function layersRequests(
+  page: string, id: (s: string) => string,
+  layers: NonNullable<SlideInput["layers"]>, top: number, room: number
+): { requests: Req[]; bottom: number } {
+  const shown = layers.filter((l) => l && (l.title?.trim() || (l.cells || []).length)).slice(0, 5);
+  if (!shown.length) return { requests: [], bottom: top };
+  const PADX = 30;          // ink inset from a band's side
+  const CELL_PADX = 8;
+  const CELL_PADY = 4;      // >= TEXT_INSET_Y / 2, so a cell's boxes stay inside the cell
+  const ARROW_W = 12;
+  const ADMISSION_H = 18;   // the "Showing names only" line, when the last rung draws it
+  const centre = GRID.margin + GRID.contentWidth / 2;
+  const cellsOf = (l: (typeof shown)[number]) =>
+    (l.cells || []).filter((c) => c && (c.title?.trim() || c.text?.trim())).slice(0, 8);
+  const inkW = (lines: string[], size: number) =>
+    lines.reduce((w, l) => Math.max(w, l.trim().length * size * PER_CHAR), 0);
+  const styles = shown.map((l) => LAYER_STYLE[String(l.style || "").toLowerCase()] || LAYER_STYLE.lav);
+
+  const plan = (m: LayerMetrics, bonus: number) => {
+    const out: Req[] = [];
+    const heads = styles.map((st) => Math.max(8, Math.round(st.head * m.headScale * 2) / 2));
+    const paras = shown.map((l) => (cellsOf(l).length || !m.secondary) ? [] : captionParagraphs(l.caption));
+    // Widths from the words: the widest line plus the side inset, floored per
+    // style, never past the content width. A band whose connector points UP
+    // into the band above adopts that band's width when its own is narrower.
+    const widths = shown.map((l, i) => {
+      const need = Math.max(inkW([l.title || ""], heads[i]), inkW(paras[i], m.caption)) + PADX * 2;
+      return Math.min(GRID.contentWidth, Math.max(styles[i].minW * GRID.contentWidth, need));
+    });
+    for (let i = 1; i < shown.length; i++) {
+      if (layerArrow(shown[i - 1].arrow) === "up") widths[i] = Math.max(widths[i], widths[i - 1]);
+    }
+    let y = top;
+    let gaps = 0;
+    let dropped = 0;
+    shown.forEach((layer, li) => {
+      const st = styles[li];
+      const head = heads[li];
+      const W = widths[li];
+      const bx = centre - W / 2;
+      const cells = cellsOf(layer);
+      const title = (layer.title || "").trim();
+      const capText = paras[li].join("\n");
+      // The ink spans W - 2*PADX; the box is that plus Slides' own inset, so
+      // the box sits PADX - 7.2 inside the band and the glyphs sit at PADX.
+      const textW = W - PADX * 2 + TEXT_INSET_X;
+      const tx = bx + PADX - TEXT_INSET_X / 2;
+      const titleLines = title ? estimateLines(title, textW, head) : 0;
+      const titleInk = titleLines * head * 1.26;                 // lineSpacing 1.0
+      const capLines = capText ? estimateLines(capText, textW, m.caption) : 0;
+      const capInk = capLines * m.caption * 1.26 * 1.1;          // lineSpacing 1.1
+      const H = m.padY * 2 + titleInk + (capInk ? 1 + capInk : 0);
+      out.push(...filledShape(id(`ly${li}`), page, "ROUND_RECTANGLE", st.fill, { x: bx, y, width: W, height: H }));
+      if (st.outline) {
+        out.push({
+          updateShapeProperties: {
+            objectId: id(`ly${li}`),
+            shapeProperties: {
+              outline: { outlineFill: { solidFill: { color: { rgbColor: rgb(COLOR.blue) } } }, weight: pt(1.5), dashStyle: "DASH" },
+            },
+            fields: "outline",
+          },
+        });
+      }
+      let cy = y + m.padY;
+      if (title) {
+        out.push(...textBox(id(`lyt${li}`), page, title,
+          { font: "Roboto", size: head, weight: 600, color: st.ink }, {
+          x: tx, y: cy - TEXT_INSET_Y / 2, width: textW, height: drawnTextHeight(titleLines, head, 0, 1, 1.0),
+        }, { align: "CENTER", lineSpacing: 1.0 }));
+        cy += titleInk;
+      }
+      if (capText) {
+        out.push(...textBox(id(`lyc${li}`), page, capText,
+          { font: "Roboto", size: m.caption, weight: 300, color: st.sub }, {
+          x: tx, y: cy + 1 - TEXT_INSET_Y / 2, width: textW,
+          height: drawnTextHeight(capLines, m.caption, 0, paras[li].length, 1.1),
+        }, { align: "CENTER", lineSpacing: 1.1, spaceBelow: 0 }));
+      } else if (!m.secondary && !cells.length && layer.caption?.trim()) {
+        dropped += 1;
+      }
+      y += H;
+      if (cells.length) {
+        // A FREE grid under the title band, four to a row, wrapping past four.
+        y += m.rowGap;
+        const perRow = (m.oneRow || cells.length <= 4) ? cells.length : Math.ceil(cells.length / 2);
+        const rows = Math.ceil(cells.length / perRow);
+        const cellW = (GRID.contentWidth - m.cellGap * (perRow - 1)) / perRow;
+        const cellTextW = cellW - CELL_PADX * 2 + TEXT_INSET_X;
+        for (let r = 0; r < rows; r++) {
+          const rowCells = cells.slice(r * perRow, (r + 1) * perRow);
+          const nameLines = rowCells.map((c) => c.title?.trim() ? estimateLines(c.title, cellTextW, m.cellTitle) : 0);
+          const textLines = rowCells.map((c) => (m.secondary && c.text?.trim()) ? estimateLines(c.text, cellTextW, m.cellText) : 0);
+          if (!m.secondary) dropped += rowCells.filter((c) => !!c.text?.trim()).length;
+          // One name band and one text band per row, so the cells share a baseline.
+          const nameInk = Math.max(...nameLines) * m.cellTitle * 1.26;
+          const textInk = Math.max(...textLines) * m.cellText * 1.26;
+          const cellH = CELL_PADY * 2 + nameInk + (textInk ? 1 + textInk : 0);
+          // A short last row is centred, like the reference's 4 + 3 stat cards.
+          const rowW = rowCells.length * cellW + (rowCells.length - 1) * m.cellGap;
+          const x0 = centre - rowW / 2;
+          rowCells.forEach((c, ci) => {
+            const cx = x0 + ci * (cellW + m.cellGap);
+            const cid = `${li}_${r * perRow + ci}`;
+            out.push(...filledShape(id(`lyc${cid}`), page, "ROUND_RECTANGLE", COLOR.tintBlue, { x: cx, y, width: cellW, height: cellH }));
+            if (nameLines[ci]) {
+              out.push(...textBox(id(`lyh${cid}`), page, c.title,
+                { font: "Roboto", size: m.cellTitle, weight: 600, color: COLOR.navy }, {
+                x: cx + CELL_PADX - TEXT_INSET_X / 2, y: y + CELL_PADY - TEXT_INSET_Y / 2, width: cellTextW,
+                height: drawnTextHeight(nameLines[ci], m.cellTitle, 0, 1, 1.0),
+              }, { align: "CENTER", lineSpacing: 1.0 }));
+            }
+            if (textLines[ci]) {
+              out.push(...textBox(id(`lyx${cid}`), page, c.text,
+                { font: "Roboto", size: m.cellText, weight: 300, color: COLOR.ink }, {
+                x: cx + CELL_PADX - TEXT_INSET_X / 2, y: y + CELL_PADY + nameInk + 1 - TEXT_INSET_Y / 2, width: cellTextW,
+                height: drawnTextHeight(textLines[ci], m.cellText, 0, 1, 1.0),
+              }, { align: "CENTER", lineSpacing: 1.0 }));
+            }
+          });
+          y += cellH + (r < rows - 1 ? m.cellRowGap : 0);
+        }
+      }
+      if (li < shown.length - 1) {
+        const dir = layerArrow(layer.arrow);
+        gaps += 1;
+        if (dir === "none") {
+          y += m.rowGap + bonus;       // no connector still means a gap
+        } else {
+          // DOWN_ARROW, or UP_ARROW when the band beneath feeds this one.
+          // Inline rather than through filledShape, whose union has no arrows.
+          out.push({
+            createShape: {
+              objectId: id(`lya${li}`), shapeType: dir === "up" ? "UP_ARROW" : "DOWN_ARROW",
+              elementProperties: {
+                pageObjectId: page,
+                size: { width: pt(ARROW_W), height: pt(m.arrowH) },
+                transform: { scaleX: 1, scaleY: 1, translateX: centre - ARROW_W / 2, translateY: y + m.arrowGap + bonus / 2, unit: "PT" },
+              },
+            },
+          }, {
+            updateShapeProperties: {
+              objectId: id(`lya${li}`),
+              shapeProperties: {
+                shapeBackgroundFill: { solidFill: { color: { rgbColor: rgb(COLOR.navy) }, alpha: 0.55 } },
+                outline: { propertyState: "NOT_RENDERED" },
+              },
+              fields: "shapeBackgroundFill.solidFill,outline",
+            },
+          });
+          y += m.arrowH + m.arrowGap * 2 + bonus;
+        }
+      }
+    });
+    if (dropped) {
+      // The last rung SAYS what it dropped, right-aligned under the stack in
+      // the slot the other layouts use for "Showing N of M" — at 7.5pt, not
+      // the 7pt axis style, because nothing on this layout goes below the floor.
+      const text = `Showing names only - ${dropped} description${dropped > 1 ? "s" : ""} omitted to fit`;
+      const w = Math.min(GRID.contentWidth, text.length * 7.5 * PER_CHAR + TEXT_INSET_X + 4);
+      out.push(...textBox(id("lydrop"), page, text,
+        { font: "Roboto", size: 7.5, weight: 300, color: COLOR.ink }, {
+        x: GRID.margin + GRID.contentWidth - w, y: y + 2, width: w, height: ADMISSION_H - 2,
+      }, { align: "END", lineSpacing: 1.0 }));
+      y += ADMISSION_H;
+    }
+    return { out, bottom: y, gaps, metrics: m };
+  };
+
+  let chosen = plan(LAYER_RUNGS[0], 0);
+  for (let r = 1; r < LAYER_RUNGS.length && chosen.bottom - top > room; r++) chosen = plan(LAYER_RUNGS[r], 0);
+  // Leftover room goes into the GAPS, up to 12pt each; the rest is left at
+  // the foot, which is where the reference leaves it. A band never grows.
+  const slack = room - (chosen.bottom - top);
+  if (slack > 0 && chosen.gaps > 0) chosen = plan(chosen.metrics, Math.min(12, slack / chosen.gaps));
+  return { requests: chosen.out, bottom: chosen.bottom };
+}
+
+/** A pull quote, set large on navy with the speaker beneath.
+ *
+ *  Their deck names people — a Chief Sustainability Officer, a former CEO — and
+ *  had nowhere to put them; a testimonial buried in body copy is not a
+ *  testimonial. The change of ground is what makes this land as a moment
+ *  rather than as another content slide. */
+function quoteRequests(
+  page: string, id: (s: string) => string, q: NonNullable<SlideInput["quote"]>
+): Req[] {
+  // A quote is set to FIT rather than split or overflow.
+  //
+  // Splitting is wrong here — half a testimonial on each of two slides is not
+  // two slides — and overflowing runs the last line straight through the
+  // speaker's name, which is the one thing on the slide that has to stay
+  // legible. So the type comes down instead, and only as far as it must: a
+  // 180-character quote is untouched at 22pt.
+  const textWidth = q.resolvedImage ? QUOTE.textWidth - 2.1 * 72 : QUOTE.textWidth;
+  const CHAR_RATIO = 0.5;   // Playfair's average glyph, as a fraction of its size
+  const LINE = 1.15;
+  let quoteSize = TYPE.quoteText.size;
+  while (quoteSize > 13) {
+    const perLine = Math.max(12, Math.floor(textWidth / (quoteSize * CHAR_RATIO)));
+    const lines = Math.ceil((q.text?.length || 0) / perLine);
+    if (lines * quoteSize * LINE <= QUOTE.textHeight) break;
+    quoteSize -= 1;
+  }
+
+  const out: Req[] = [
+    ...textBox(id("qm"), page, "“", TYPE.quoteMark, {
+      x: QUOTE.markX, y: QUOTE.markY, width: QUOTE.markWidth, height: QUOTE.markHeight,
+    }),
+    ...textBox(id("qt"), page, q.text, { ...TYPE.quoteText, size: quoteSize }, {
+      x: QUOTE.textX, y: QUOTE.textY,
+      width: textWidth,
+      height: QUOTE.textHeight,
+    }),
+    ...textBox(id("qn"), page, q.name, TYPE.quoteName, {
+      x: QUOTE.textX, y: QUOTE.attributionY, width: QUOTE.textWidth, height: QUOTE.attributionHeight,
+    }),
+    ...textBox(id("qr"), page, q.role, TYPE.quoteRole, {
+      x: QUOTE.textX, y: QUOTE.roleY, width: QUOTE.textWidth, height: QUOTE.roleHeight,
+    }),
+  ];
+  if (q.resolvedImage?.url) {
+    out.push({
+      createImage: {
+        objectId: id("qp"), url: q.resolvedImage.url,
+        elementProperties: {
+          pageObjectId: page,
+          size: { width: pt(QUOTE.portrait.size), height: pt(QUOTE.portrait.size) },
+          transform: { scaleX: 1, scaleY: 1, translateX: QUOTE.portrait.x, translateY: QUOTE.portrait.y, unit: "PT" },
+        },
+      },
+    });
+  }
+  return out;
+}
+
+/** Numbered step cards carried left to right by arrows.
+ *
+ *  Each stage is a CARD: a coloured numeral circle, a bold name, the
+ *  description, and an "Owner: ..." line anchored to the card's foot. Drawn
+ *  rather than bulleted because a process has direction; drawn as cards
+ *  rather than pills because the pill was the loudest element on the slide
+ *  and carried the least information - 58pt of blue around a 9pt caps label,
+ *  the description that mattered set small and centred beneath it, and the
+ *  owner run into its last sentence. The presenter could not say "step
+ *  three" and point at a 3, and the client's team could not find who owns
+ *  what without reading every card to its end.
+ *
+ *  Cards hug their words: the row is as tall as its tallest card, starts on
+ *  the band's top edge, and reports where it ends so the takeaway bar
+ *  follows it instead of pinning to the foot of the band. */
+/** Five stages fill the width; a sixth would be a 100pt card with a two-word
+ *  caption. Bounded, and said out loud rather than quietly trimmed. */
+const MAX_STAGES = 5;
+
+/** One accent per step, cycled; the circle and the card's top rule share it.
+ *  Every one of these carries WHITE at 4.5:1 or better (blue 5.5, teal 6.2,
+ *  amber 6.7, coral 6.9, navy 13). The brand periwinkle that the reference's
+ *  purple suggests is 3.0:1 under white and is left out for that reason.
+ *  textOn() still decides the numeral's ink, so a palette edit cannot quietly
+ *  put white on a ground that will not hold it. */
+const STEP_ACCENTS = [COLOR.blue, COLOR.inkTeal, COLOR.inkAmber, COLOR.inkCoral, COLOR.navy];
+
+/** A TRAILING "Owner: TCE + your team" clause on a caption, split off into
+ *  the owner slot. The reference sets ownership as its own line at the
+ *  card's foot; the schema had nowhere to put it, so the model ran it into
+ *  the description's last sentence. An explicit `owner` wins, and the clause
+ *  is removed from the caption either way so nothing is drawn twice. Only a
+ *  trailing clause is read: "owner:" mid-sentence is prose. Exported so the
+ *  layout check can ask it directly. */
+const OWNER_CLAUSE = /(?:^|\s)\(?owner\s*:\s*([^\n]+?)\)?\s*$/i;
+export function splitStageOwner(caption: string, explicit?: string): { caption: string; owner: string } {
+  let text = (caption || "").trim();
+  let owner = (explicit || "").trim();
+  const m = OWNER_CLAUSE.exec(text);
+  if (m) {
+    if (!owner) owner = m[1].trim().replace(/[.\s]+$/, "");
+    text = text.slice(0, m.index).trim().replace(/[,;:\-]+$/, "").trim();
+  }
+  return { caption: text, owner };
+}
+
+function processRequests(
+  page: string, id: (s: string) => string, stages: NonNullable<SlideInput["stages"]>,
+  top: number = GRID.bodyY, room: number = GRID.bandHeight, meta?: { bottom: number }
+): Req[] {
+  const stageName = (st: any) => String(st?.name ?? st?.title ?? "").trim();
+  const stageCaption = (st: any) => String(st?.caption ?? st?.body ?? "").trim();
+  const shown = stages.filter((st) => st && stageName(st)).slice(0, MAX_STAGES);
+  if (!shown.length) return [];
+  const n = shown.length;
+  const gaps = n - 1;
+  const P = PROCESS;
+  const boxW = (GRID.contentWidth - gaps * P.connectorWidth) / n;
+  const parts = shown.map((st: any) => {
+    const split = splitStageOwner(stageCaption(st), st?.owner);
+    return { name: stageName(st), caption: split.caption, owner: split.owner };
+  });
+  let anyOwner = false;
+  for (let i = 0; i < parts.length; i++) if (parts[i].owner) anyOwner = true;
+
+  // The numeral BESIDE the name in four cards or fewer; ABOVE it in five,
+  // where a 115pt card cannot spare a third of its measure and
+  // "Commissioning" would break mid-word beside its circle. The same rule as
+  // the cards layout's inline chips.
+  const beside = n <= 4;
+  // Wide enough for one bold digit ON ONE LINE, inset included - pillWidth's
+  // arithmetic without its capsule padding. An 18pt box holds 3.6pt of glyph
+  // room once Slides' 14.4pt inset is paid, and a bold digit is 5.6.
+  const numeralW = Math.ceil(TEXT_INSET_X + TYPE.stageNumeral.size * PER_CHAR * CAPS_WIDEN);
+  const nameX = beside ? P.pad + P.numeral / 2 + numeralW / 2 : P.pad;
+  const nameW = boxW - nameX - P.pad;
+  const descW = boxW - P.pad * 2;
+  const ownerH = anyOwner ? drawnTextHeight(1, TYPE.stageOwner.size) : 0;
+
+  const nameHs = parts.map((p) =>
+    drawnTextHeight(estimateLines(p.name, nameW, TYPE.stageName.size), TYPE.stageName.size));
+  // ONE head block for the row, so every description starts on one line:
+  // the slack falls under a short name, not above its description.
+  let tallestName = 0;
+  for (let i = 0; i < nameHs.length; i++) tallestName = Math.max(tallestName, nameHs[i]);
+  const headH = beside ? Math.max(P.numeral, tallestName) : P.numeral + P.numeralGap + tallestName;
+  const descTop = top + P.pad + headH + P.headGap;
+
+  // A FIT LADDER for the description: the reference's 8pt at 1.3, then 8pt
+  // at 1.15. The name and the owner never step - 10.5 is the reference's
+  // size and 7.5 is this deck's floor.
+  const PLANS: { size: number; lead: number }[] = [{ size: 8, lead: 1.3 }, { size: 8, lead: 1.15 }];
+  const measure = (plan: { size: number; lead: number }) => {
+    const descHs = parts.map((p) => p.caption
+      ? drawnTextHeight(estimateLines(p.caption, descW, plan.size), plan.size, 4, 1, plan.lead)
+      : 0);
+    let tallest = 0;
+    for (let i = 0; i < descHs.length; i++) tallest = Math.max(tallest, descHs[i]);
+    const cardH = P.pad + headH + P.headGap + tallest + (anyOwner ? P.ownerGap + ownerH : 0) + P.padBottom;
+    return { descHs, cardH: Math.max(P.minHeight, cardH) };
+  };
+  let plan = PLANS[0];
+  let m = measure(plan);
+  for (let k = 1; k < PLANS.length && m.cardH > room + 0.5; k++) { plan = PLANS[k]; m = measure(plan); }
+  // Nothing fits whole: the card ends where the band does and the tightest
+  // plan's text runs a little past its slot - visible in the preview, never
+  // hidden under the bar. The same fallback cardsRequests makes.
+  const cardH = Math.min(m.cardH, room);
+  const cardBottom = top + cardH;
+  const ownerTop = cardBottom - P.padBottom - ownerH;
+  const midY = top + P.pad + P.numeral / 2;   // the numerals' centre line: where the arrows run
+
+  const out: Req[] = [];
+  for (let i = 0; i < n; i++) {
+    const p = parts[i];
+    const x = GRID.margin + i * (boxW + P.connectorWidth);
+    const accent = STEP_ACCENTS[i % STEP_ACCENTS.length];
+    const cx = x + P.pad + P.numeral / 2;
+    out.push(
+      ...filledShape(id(`pb${i}`), page, "ROUND_RECTANGLE", COLOR.tintGrey, {
+        x, y: top, width: boxW, height: cardH,
+      }),
+      // The top rule, inset by 6 like a toned card's so it does not poke out
+      // of the rounded corners; the reference runs it edge to edge on a
+      // square card.
+      ...filledShape(id(`pk${i}`), page, "RECTANGLE", accent, {
+        x: x + 6, y: top, width: boxW - 12, height: P.accent,
+      }),
+      ...filledShape(id(`pn${i}`), page, "ELLIPSE", accent, {
+        x: cx - P.numeral / 2, y: top + P.pad, width: P.numeral, height: P.numeral,
+      }),
+      // The digit's box is WIDER than its circle and centred on it: a text
+      // box the circle's own size would leave the glyph 3.6pt of room. It is
+      // transparent, so nothing shows but the digit.
+      ...textBox(id(`pnt${i}`), page, String(i + 1), { ...TYPE.stageNumeral, color: textOn(accent) }, {
+        x: cx - numeralW / 2, y: top + P.pad, width: numeralW, height: P.numeral,
+      }, { align: "CENTER", vCenter: true, spaceBelow: 0 }),
+      // Beside its circle and level with it: a one-line name shares the
+      // circle's centre; a two-line name is centred in its own taller box, so
+      // its first line sits ~2pt under the circle's centre and reads aligned.
+      ...textBox(id(`ps${i}`), page, p.name, TYPE.stageName, {
+        x: x + nameX,
+        y: beside ? top + P.pad : top + P.pad + P.numeral + P.numeralGap,
+        width: nameW,
+        height: beside ? Math.max(P.numeral, nameHs[i]) : nameHs[i],
+      }, beside ? { vCenter: true, spaceBelow: 0 } : { spaceBelow: 0 }),
+    );
+    if (p.caption) {
+      out.push(...textBox(id(`pc${i}`), page, p.caption, { ...TYPE.stageCaption, size: plan.size }, {
+        x: x + P.pad, y: descTop, width: descW,
+        // Its measured height when the plan fits; what is left above the
+        // owner slot when nothing did.
+        height: Math.max(12, Math.min(m.descHs[i],
+          (anyOwner ? ownerTop - P.ownerGap : cardBottom - P.padBottom) - descTop)),
+      }, { lineSpacing: plan.lead, spaceBelow: 4 }));
+    }
+    if (p.owner) {
+      // Anchored to the card's FOOT, on one baseline across the row - the
+      // line the client's team scans for.
+      out.push(...textBox(id(`po${i}`), page, `Owner: ${p.owner}`, TYPE.stageOwner, {
+        x: x + P.pad, y: ownerTop, width: descW, height: ownerH,
+      }, { spaceBelow: 0 }));
+    }
+
+    if (i < gaps) {
+      const cxr = x + boxW;
+      out.push(
+        ...filledShape(id(`pr${i}`), page, "RECTANGLE", COLOR.periwinkle, {
+          x: cxr + 3, y: midY - P.connectorThickness / 2,
+          width: P.connectorWidth - 6 - P.chevron, height: P.connectorThickness,
+        }),
+        // RIGHT_ARROW, not TRIANGLE. Slides draws a triangle pointing UP, so
+        // the first render had five arrowheads aimed at the ceiling on a
+        // left-to-right process - correct geometry, wrong direction.
+        ...filledShape(id(`pa${i}`), page, "RIGHT_ARROW", COLOR.periwinkle, {
+          x: cxr + P.connectorWidth - 3 - P.chevron,
+          y: midY - P.chevron / 2,
+          width: P.chevron, height: P.chevron,
+        }),
+      );
+    }
+  }
+
+  let bottom = cardBottom;
+  if (stages.length > shown.length) {
+    // UNDER THE CARDS, not at the foot of the page, where it sat underneath
+    // the takeaway bar whenever the slide had one.
+    out.push(...noteBox(
+      id("sdrop"), page, `Showing the first ${shown.length} of ${stages.length} stages`,
+      cardBottom + 2
+    ));
+    bottom = cardBottom + 18;
+  }
+  if (meta) meta.bottom = bottom;
+  return out;
+}
+
+/** Client marks on a clean ground, fitted whole. */
+function logoWallRequests(
+  page: string, id: (s: string) => string,
+  logos: NonNullable<SlideInput["logos"]>
+): Req[] {
+  // A client whose mark could not be found is still a client: their name is
+  // set instead. Dropping the cell silently shortened the credibility slide,
+  // and filling it with a stock photograph would have been worse.
+  const shown = logos.filter((l) => l && (l.resolvedUrl || l.name?.trim())).slice(0, 12);
+  if (!shown.length) return [];
+  const cols = Math.min(shown.length, shown.length <= 4 ? shown.length : shown.length <= 8 ? 4 : 6);
+  const rows = Math.ceil(shown.length / cols);
+  const cellW = (GRID.contentWidth - LOGO_WALL.gap * (cols - 1)) / cols;
+  const cellH = (LOGO_WALL.height - LOGO_WALL.gap * (rows - 1)) / rows;
+
+  return shown.flatMap((logo, i) => {
+    const c = i % cols, r = Math.floor(i / cols);
+    const x = GRID.margin + c * (cellW + LOGO_WALL.gap) + LOGO_WALL.inset;
+    const y = LOGO_WALL.y + r * (cellH + LOGO_WALL.gap) + LOGO_WALL.inset;
+    if (!logo.resolvedUrl) {
+      return textBox(id(`lw${i}`), page, logo.name, TYPE.logoWallName, {
+        x, y, width: cellW - LOGO_WALL.inset * 2, height: cellH - LOGO_WALL.inset * 2,
+      }, { align: "CENTER", vCenter: true });
+    }
+    return [{
+      createImage: {
+        objectId: id(`lw${i}`), url: logo.resolvedUrl!,
+        elementProperties: {
+          pageObjectId: page,
+          size: { width: pt(cellW - LOGO_WALL.inset * 2), height: pt(cellH - LOGO_WALL.inset * 2) },
+          transform: {
+            scaleX: 1, scaleY: 1,
+            translateX: GRID.margin + c * (cellW + LOGO_WALL.gap) + LOGO_WALL.inset,
+            translateY: LOGO_WALL.y + r * (cellH + LOGO_WALL.gap) + LOGO_WALL.inset,
+            unit: "PT",
+          },
+        },
+      },
+    }];
+  });
+}
+
+/** A scatter plot: two continuous axes, points placed by value and coloured by
+ *  an optional named group. The correlation device — a shape a bar chart cannot
+ *  show. Axes are scaled from the data (padded); labels are drawn only when the
+ *  cloud is sparse enough not to become a thicket. */
+function scatterRequests(
+  page: string, id: (s: string) => string,
+  sc: NonNullable<SlideInput["scatter"]>, onDark: boolean, bandTop: number, bandBottom?: number
+): Req[] {
+  const points = (sc.points || []).filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+  if (points.length < 2) return [];
+  const palette = onDark ? SERIES_DARK : SERIES_LIGHT;
+  const groups = Array.from(new Set(points.map((p) => p.group).filter(Boolean))) as string[];
+  const colourOf = (g?: string) => (g && groups.length ? palette[groups.indexOf(g) % palette.length] : palette[0]);
+
+  const left = GRID.margin + 40;
+  const right = GRID.margin + GRID.contentWidth - 8;
+  const legendH = groups.length > 1 ? 20 : 0;
+  const top = bandTop + 8;
+  const bottom = floorBand(CANVAS.height - GRID.margin - 18 - legendH, bandBottom, 18 + legendH);
+  const w = right - left, h = bottom - top;
+
+  const xs = points.map((p) => p.x), ys = points.map((p) => p.y);
+  const pad = (a: number[], lo: number, hi: number) => { const s = (hi - lo) * 0.08 || 1; return [lo - s, hi + s]; };
+  const [xlo, xhi] = pad(xs, Math.min(...xs), Math.max(...xs));
+  const [ylo, yhi] = pad(ys, Math.min(...ys), Math.max(...ys));
+  const xAt = (v: number) => left + ((v - xlo) / (xhi - xlo || 1)) * w;
+  const yAt = (v: number) => bottom - ((v - ylo) / (yhi - ylo || 1)) * h;
+
+  const axisColor = onDark ? COLOR.periwinkle : COLOR.greyLight;
+  const out: Req[] = [
+    ...filledShape(id("sxa"), page, "RECTANGLE", axisColor, { x: left, y: bottom, width: w, height: CHART.axisThickness }),
+    ...filledShape(id("sya"), page, "RECTANGLE", axisColor, { x: left, y: top, width: CHART.axisThickness, height: h }),
+  ];
+  // Axis labels.
+  if (sc.xAxis) out.push(...textBox(id("sxl"), page, sc.xAxis, TYPE.axisEnd, { x: left, y: bottom + 3, width: w, height: 12 }, { align: "CENTER" }));
+  if (sc.yAxis) out.push(...textBox(id("syl"), page, sc.yAxis, TYPE.axisEnd, { x: GRID.margin - 4, y: top - 16, width: 160, height: 12 }));
+
+  // Points. Labels only when there are few, so the plot does not become a
+  // thicket of overlapping text.
+  const label = points.length <= 8;
+  points.slice(0, 40).forEach((p, i) => {
+    const cx = xAt(p.x), cy = yAt(p.y);
+    const r = 4;
+    out.push(...filledShape(id(`sd${i}`), page, "ELLIPSE", colourOf(p.group), { x: cx - r, y: cy - r, width: r * 2, height: r * 2 }));
+    if (label && p.label) {
+      const lw = Math.min(120, Math.max(30, p.label.length * 4.4 + 6));
+      const lx = cx + r + 3 + lw > right ? cx - r - 3 - lw : cx + r + 3;
+      out.push(...textBox(id(`sl${i}`), page, p.label, TYPE.dotLabel, { x: Math.max(left, lx), y: cy - 7, width: lw, height: 14 }, lx < cx ? { align: "END" } : {}));
+    }
+  });
+
+  if (groups.length > 1) {
+    let lx = left;
+    const ly = bottom + 20;
+    groups.forEach((g, si) => {
+      const lw = Math.min(120, Math.max(34, g.length * 4.6 + 16));
+      out.push(
+        ...filledShape(id(`sk${si}`), page, "ELLIPSE", palette[si % palette.length], { x: lx, y: ly + 2, width: 8, height: 8 }),
+        ...textBox(id(`sn${si}`), page, g, TYPE.chartAxis, { x: lx + 12, y: ly, width: lw, height: 14 }),
+      );
+      lx += 12 + lw + 10;
+    });
+  }
+  return out;
+}
+
+/** "Name (gloss)", "Name - gloss", "Name – gloss", "Name: gloss" → the name and
+ *  its descriptor. The reference labels every set as a bold caps name over a
+ *  small gloss, and the model writes the pair with a dash or a colon as often
+ *  as with brackets: the page this was measured against used dashes, and the
+ *  bracket-only split drew all nine words as one Playfair name. */
+export function splitVennLabel(text: string): { name: string; desc: string } {
+  const t = (text || "").trim();
+  const paren = /^(.*?)\s*\((.*)\)\s*$/.exec(t);
+  if (paren) return { name: paren[1].trim(), desc: paren[2].trim() };
+  const dash = /^(.+?)(?:\s+[-–—]\s+|\s*[–—]\s*|:\s+)(.+)$/.exec(t);
+  if (dash) return { name: dash[1].trim(), desc: dash[2].trim() };
+  return { name: t, desc: "" };
+}
+
+/** Lines a run of words needs at an ink width, wrapping greedily by WORD on the
+ *  estimator's per-character advance. estimateLines wraps by character count,
+ *  which is right for prose and wrong for a label: "YOUR CONTENT PLAN" is two
+ *  lines by count and three by words in a 59pt lens, and Slides draws words.
+ *  Returns undefined when one word alone is wider than the box — Slides cannot
+ *  break it, so the label does not fit whatever the count says. */
+export function wrapLines(text: string, inkWidth: number, size: number, caps = false): number | undefined {
+  const cw = size * PER_CHAR * (caps ? CAPS_WIDEN : 1);
+  const paras = (text || "").trim().split("\n");
+  let lines = 0;
+  for (let p = 0; p < paras.length; p++) {
+    const words = paras[p].split(/\s+/).filter(Boolean);
+    if (!words.length) { lines += 1; continue; }
+    let cur = 0, count = 1;
+    for (let i = 0; i < words.length; i++) {
+      const ww = words[i].length * cw;
+      if (ww > inkWidth + 1e-6) return undefined;
+      const need = cur === 0 ? ww : cur + cw + ww;
+      if (need <= inkWidth + 1e-6) cur = need; else { count++; cur = ww; }
+    }
+    lines += count;
+  }
+  return lines;
+}
+
+/** Sizes a set name is tried at, one size for the whole diagram. */
+const VENN_NAME_SIZES: number[] = [8.5, 8];
+/** The descriptor box starts this far up inside the name box's bottom inset,
+ *  so the gloss sits 13pt under the name — the reference's pitch. */
+const VENN_DESC_TUCK = 4;
+
+export interface VennMeasure {
+  nameSize: number; nameLines: number; descLines: number;
+  nameH: number; descH: number; blockH: number; inkH: number; fits: boolean;
+}
+
+/** Whether a name-over-descriptor label fits an ink box, and how tall it draws. */
+export function measureVennLabel(
+  name: string, desc: string, inkWidth: number, inkHeight: number,
+  nameSize: number, maxNameLines = 3, maxDescLines = 4
+): VennMeasure {
+  const nl = wrapLines(name, inkWidth, nameSize, true);
+  const dl = desc ? wrapLines(desc, inkWidth, TYPE.vennDesc.size) : 0;
+  const nameLines = nl === undefined ? 1 : nl;
+  const descLines = dl === undefined ? 0 : dl;
+  const nameH = drawnTextHeight(nameLines, nameSize);
+  const descH = descLines ? drawnTextHeight(descLines, TYPE.vennDesc.size, 0, 1, 1.0) : 0;
+  const blockH = nameH + (descLines ? descH - VENN_DESC_TUCK : 0);
+  const inkH = blockH - TEXT_INSET_Y;
+  const fits = nl !== undefined && dl !== undefined
+    && nameLines <= maxNameLines && descLines <= maxDescLines && inkH <= inkHeight + 1e-6;
+  return { nameSize, nameLines, descLines, nameH, descH, blockH, inkH, fits };
+}
+
+/** Where a label sits inside its region, in units of R, relative to the
+ *  circle's centre. Solved as the largest inscribed rectangle of each region
+ *  for centres VENN.sep·R apart, then shortened where a taller box would touch
+ *  the centre label. */
+interface VennBox { dx: number; dy: number; w: number; h: number; trim?: boolean }
+const VENN_BOX = {
+  three: {
+    sets: [
+      { dx: -0.325, dy: -0.26, w: 0.93, h: 0.70 },
+      { dx: 0.325, dy: -0.26, w: 0.93, h: 0.70 },
+      { dx: 0, dy: 0.34, w: 1.45, h: 0.66 },
+    ] as VennBox[],
+    meet: { dx: 0, dy: 0, w: 1.10, h: 0.40 } as VennBox,
+  },
+  two: {
+    sets: [
+      { dx: -0.385, dy: 0, w: 0.95, h: 0.80, trim: true },
+      { dx: 0.385, dy: 0, w: 0.95, h: 0.80, trim: true },
+    ] as VennBox[],
+    meet: { dx: 0, dy: 0, w: 0.80, h: 0.58, trim: true } as VennBox,
+  },
+};
+
+interface VennSidebar { head: string; body: string; headH: number; bodyH: number; h: number }
+
+/** The takeaway as a callout beside the diagram. */
+function vennSidebarFor(note: string): VennSidebar {
+  const colon = note.indexOf(":");
+  const hasHead = colon > 0 && colon <= 46;
+  const head = hasHead ? note.slice(0, colon).trim() : "";
+  const body = (hasHead ? note.slice(colon + 1) : note).trim();
+  const innerW = VENN.side.width - VENN.side.pad * 2;
+  const headLines = head ? estimateLines(head, innerW, TYPE.noteHead.size) : 0;
+  const headH = headLines ? drawnTextHeight(headLines, TYPE.noteHead.size) : 0;
+  const paras = Math.max(1, body.split("\n").filter((l) => l.trim()).length);
+  const bodyLines = estimateLines(body, innerW, NOTE.fontSize);
+  const bodyH = bodyLines ? drawnTextHeight(bodyLines, NOTE.fontSize, 4, paras, 1.2) : 0;
+  return { head, body, headH, bodyH, h: VENN.side.pad * 2 + headH + bodyH };
+}
+
+/** A Venn diagram: two or three overlapping sets, drawn as translucent circles
+ *  so the overlaps blend.
+ *
+ *  Measured against the reference deck's page — 174pt circles with centres
+ *  ~100pt apart, every set labelled INSIDE its own region, the takeaway as a
+ *  callout beside the diagram. Ours sat 0.92R apart at 50% alpha with 14pt
+ *  serif labels outside: the three-way overlap covered most of each circle,
+ *  the centre went grey-purple, and the picture said "these three are the same
+ *  thing" — the opposite of "three arenas".
+ *  `meta.noteDrawn` tells the caller the note is on the slide already. */
+function vennRequests(
+  page: string, id: (s: string) => string,
+  venn: NonNullable<SlideInput["venn"]>, onDark: boolean, bandTop: number, bandBottom?: number,
+  note?: string, meta?: { noteDrawn: boolean }
+): Req[] {
+  const sets = (venn.sets || []).filter((sx) => sx?.label?.trim()).slice(0, 3);
+  if (sets.length < 2) return [];
+  const out: Req[] = [];
+  const n = sets.length;
+  const top = bandTop + 4;
+  const fullBottom = floorBand(CANVAS.height - GRID.margin, GRID.bodyY + GRID.bandHeight);
+  const barBottom = floorBand(CANVAS.height - GRID.margin, bandBottom);
+  const cxMid = GRID.margin + GRID.contentWidth / 2;
+  const sep = VENN.sep;
+  const sin60 = Math.sin(Math.PI / 3);
+  const unitW = 2 + sep;
+  const unitH = n === 2 ? 2 : 2 + sep * sin60;
+  const parsed = sets.map((s) => splitVennLabel(s.label));
+  const overlap = venn.overlap?.trim() ? splitVennLabel(venn.overlap) : undefined;
+  const boxes = n === 2 ? VENN_BOX.two : VENN_BOX.three;
+  const inkW = (b: VennBox, R: number) => b.w * R - (b.trim ? TEXT_INSET_X : 0);
+  const radiusFor = (bandH: number, availW: number, labelRoom: number) =>
+    Math.min((bandH - labelRoom) / unitH, availW / unitW, VENN.maxR);
+  const nameSizeFor = (R: number): number | undefined => {
+    for (let si = 0; si < VENN_NAME_SIZES.length; si++) {
+      let all = true;
+      for (let i = 0; i < n; i++) {
+        const b = boxes.sets[i];
+        if (!measureVennLabel(parsed[i].name, parsed[i].desc, inkW(b, R), b.h * R, VENN_NAME_SIZES[si]).fits) { all = false; break; }
+      }
+      if (all) return VENN_NAME_SIZES[si];
+    }
+    return undefined;
+  };
+
+  let R = radiusFor(fullBottom - top, GRID.contentWidth, 0);
+  let nameSize = nameSizeFor(R);
+  let bottom = fullBottom;
+  let side: VennSidebar | undefined;
+  const noteText = (note || "").trim();
+  if (nameSize !== undefined && noteText) {
+    const sb = vennSidebarFor(noteText);
+    if (sb.h <= fullBottom - top) side = sb;
+    else {
+      bottom = barBottom;
+      R = radiusFor(bottom - top, GRID.contentWidth, 0);
+      nameSize = nameSizeFor(R);
+    }
+  }
+  const inside = nameSize !== undefined;
+  let room = 0;
+  let outsideM: VennMeasure[] = [];
+  if (!inside) {
+    bottom = barBottom;
+    const availW = n === 2 ? GRID.contentWidth : GRID.contentWidth - 2 * VENN.outsideLabel;
+    R = radiusFor(bottom - top, availW, 46);
+    for (let pass = 0; pass < 2; pass++) {
+      if (n === 2) {
+        const lw = (1 + sep / 2) * R - 8;
+        outsideM = parsed.map((p) => measureVennLabel(p.name, p.desc, lw - TEXT_INSET_X, Infinity, VENN_NAME_SIZES[0], 9, 9));
+        room = Math.max(outsideM[0].blockH, outsideM[1].blockH) + 4;
+      } else {
+        const sideW = cxMid - (1 + sep / 2) * R - 8 - GRID.margin;
+        outsideM = [
+          measureVennLabel(parsed[0].name, parsed[0].desc, sideW - TEXT_INSET_X, Infinity, VENN_NAME_SIZES[0], 9, 9),
+          measureVennLabel(parsed[1].name, parsed[1].desc, sideW - TEXT_INSET_X, Infinity, VENN_NAME_SIZES[0], 9, 9),
+          measureVennLabel(parsed[2].name, parsed[2].desc, 4 * R - TEXT_INSET_X, Infinity, VENN_NAME_SIZES[0], 9, 9),
+        ];
+        room = outsideM[2].blockH + 6;
+      }
+      R = radiusFor(bottom - top, availW, room);
+    }
+  }
+
+  const clusterW = unitW * R, clusterH = unitH * R;
+  const sideX = GRID.margin + GRID.contentWidth - VENN.side.width;
+  const availRight = side ? sideX - VENN.side.gap : GRID.margin + GRID.contentWidth;
+  const cx = Math.min(cxMid, availRight - clusterW / 2);
+  const roomAbove = !inside && n === 2 ? room : 0;
+  const roomBelow = !inside && n === 3 ? room : 0;
+  const clusterTop = top + roomAbove + (bottom - top - roomAbove - roomBelow - clusterH) / 2;
+  const cy0 = clusterTop + R;
+  const centres: [number, number][] = [[cx - sep * R / 2, cy0], [cx + sep * R / 2, cy0]];
+  if (n === 3) centres.push([cx, cy0 + sep * R * sin60]);
+  const clusterBottom = centres[n - 1][1] + R;
+  const meetPt: [number, number] = n === 2 ? [cx, cy0] : [cx, cy0 + sep * R * sin60 / 3];
+
+  for (let i = 0; i < n; i++) {
+    out.push(...filledShape(id(`vc${i}`), page, "ELLIPSE", VENN.fills[i], {
+      x: centres[i][0] - R, y: centres[i][1] - R, width: R * 2, height: R * 2,
+    }, VENN.alpha));
+  }
+
+  const drawLabel = (
+    key: string, p: { name: string; desc: string }, m: VennMeasure,
+    box: { x: number; y: number; width: number }, align: "START" | "CENTER" | "END"
+  ) => {
+    const nameStyle: TypeStyle = { ...TYPE.vennName, size: m.nameSize };
+    out.push(...textBox(id(`vn${key}`), page, p.name, nameStyle,
+      { x: box.x, y: box.y, width: box.width, height: m.nameH }, { align, vCenter: true }));
+    if (p.desc && m.descLines) {
+      out.push(...textBox(id(`vd${key}`), page, p.desc, TYPE.vennDesc,
+        { x: box.x, y: box.y + m.nameH - VENN_DESC_TUCK, width: box.width, height: m.descH },
+        { align, lineSpacing: 1.0, vCenter: true }));
+    }
+  };
+
+  if (inside) {
+    for (let i = 0; i < n; i++) {
+      const b = boxes.sets[i], w = inkW(b, R);
+      const m = measureVennLabel(parsed[i].name, parsed[i].desc, w, b.h * R, nameSize as number);
+      const lx = centres[i][0] + b.dx * R, ly = centres[i][1] + b.dy * R;
+      drawLabel(String(i), parsed[i], m, { x: lx - (w + TEXT_INSET_X) / 2, y: ly - m.blockH / 2, width: w + TEXT_INSET_X }, "CENTER");
+    }
+  } else if (n === 2) {
+    const lw = (1 + sep / 2) * R - 8;
+    for (let i = 0; i < 2; i++) {
+      const x = i === 0 ? centres[0][0] - R : cx + 8;
+      drawLabel(String(i), parsed[i], outsideM[i], { x, y: cy0 - R - 4 - outsideM[i].blockH, width: lw }, "CENTER");
+    }
+  } else {
+    const leftEdge = centres[0][0] - R, rightEdge = centres[1][0] + R;
+    drawLabel("0", parsed[0], outsideM[0], { x: GRID.margin, y: cy0 - outsideM[0].blockH / 2, width: leftEdge - 8 - GRID.margin }, "END");
+    drawLabel("1", parsed[1], outsideM[1], { x: rightEdge + 8, y: cy0 - outsideM[1].blockH / 2, width: GRID.margin + GRID.contentWidth - rightEdge - 8 }, "START");
+    drawLabel("2", parsed[2], outsideM[2], { x: cx - 2 * R, y: centres[2][1] + R + 6, width: 4 * R }, "CENTER");
+  }
+
+  if (overlap) {
+    const mb = boxes.meet, w = inkW(mb, R), h = mb.h * R;
+    const ns = nameSize === undefined ? VENN_NAME_SIZES[0] : nameSize;
+    const maxName = n === 2 ? 3 : 1;
+    let desc = overlap.desc;
+    let m = measureVennLabel(overlap.name, desc, w, h, ns, maxName, 2);
+    if (!m.fits && desc) { desc = ""; m = measureVennLabel(overlap.name, "", w, h, ns, maxName, 0); }
+    if (m.fits) {
+      drawLabel("o", { name: overlap.name, desc }, m,
+        { x: meetPt[0] - (w + TEXT_INSET_X) / 2, y: meetPt[1] - m.blockH / 2, width: w + TEXT_INSET_X }, "CENTER");
+    }
+  }
+
+  if (side) {
+    const pad = VENN.side.pad, innerW = VENN.side.width - pad * 2;
+    const y = Math.max(top, Math.min(clusterBottom, NOTE.bottom) - side.h);
+    out.push(...filledShape(id("noteBar"), page, "ROUND_RECTANGLE", onDark ? COLOR.white : COLOR.tintBlue, {
+      x: sideX, y, width: VENN.side.width, height: side.h,
+    }, onDark ? 0.1 : 1));
+    let ty = y + pad - 3;
+    if (side.headH) {
+      out.push(...textBox(id("noteHead"), page, side.head, onDark ? TYPE.noteHeadDark : TYPE.noteHead, {
+        x: sideX + pad, y: ty, width: innerW, height: side.headH,
+      }));
+      ty += side.headH;
+    }
+    out.push(...textBox(id("noteTxt"), page, side.body,
+      { font: "Roboto", size: NOTE.fontSize, weight: 300, color: onDark ? COLOR.greyLight : COLOR.navy }, {
+        x: sideX + pad, y: ty, width: innerW, height: side.bodyH,
+      }, { lineSpacing: 1.2, spaceBelow: 4 }));
+    if (meta) meta.noteDrawn = true;
+  }
+  return out;
+}
+
+/** SWOT: four labelled quadrants of bullets on pale tints. A staple of the
+ *  strategy deck, and the model had no way to draw one — it fell to bullets. */
+function swotRequests(
+  page: string, id: (s: string) => string,
+  swot: NonNullable<SlideInput["swot"]>, bandTop: number, bandBottom?: number
+): Req[] {
+  const cells: { key: string; head: string; items: string[]; tint: string; ink: string }[] = [
+    { key: "s", head: "Strengths", items: swot.strengths || [], tint: COLOR.tintTeal, ink: COLOR.inkTeal },
+    { key: "w", head: "Weaknesses", items: swot.weaknesses || [], tint: COLOR.tintCoral, ink: COLOR.inkCoral },
+    { key: "o", head: "Opportunities", items: swot.opportunities || [], tint: COLOR.tintBlue, ink: COLOR.inkBlue },
+    { key: "t", head: "Threats", items: swot.threats || [], tint: COLOR.tintAmber, ink: COLOR.inkAmber },
+  ];
+  const gap = 10;
+  const top = bandTop;
+  const bottom = floorBand(CANVAS.height - GRID.margin, bandBottom);
+  const cw = (GRID.contentWidth - gap) / 2;
+  const ch = (bottom - top - gap) / 2;
+  const out: Req[] = [];
+  cells.forEach((c, i) => {
+    const cx = GRID.margin + (i % 2) * (cw + gap);
+    const cy = top + Math.floor(i / 2) * (ch + gap);
+    out.push(...filledShape(id(`q${c.key}`), page, "RECTANGLE", c.tint, { x: cx, y: cy, width: cw, height: ch }));
+    out.push(...textBox(id(`qh${c.key}`), page, c.head, { ...TYPE.quadHeader, color: c.ink }, {
+      x: cx + 12, y: cy + 10, width: cw - 24, height: 18,
+    }));
+    out.push(...textBox(id(`qi${c.key}`), page, c.items.join("\n"), TYPE.quadItem, {
+      x: cx + 12, y: cy + 32, width: cw - 24, height: ch - 42,
+    }, { bullets: true, spaceBelow: 4 }));
+  });
+  return out;
+}
+
+/** A 2x2 quadrant matrix — impact/effort, risk/reward. Two axes crossing at the
+ *  centre, quadrant labels in the corners, items plotted by x and y in 0..1. */
+function matrixRequests(
+  page: string, id: (s: string) => string,
+  m: NonNullable<SlideInput["matrix"]>, bandTop: number, bandBottom?: number
+): Req[] {
+  const top = bandTop + 6;
+  const bottom = floorBand(CANVAS.height - GRID.margin - 16, bandBottom, 16);
+  const left = GRID.margin + 46;
+  const right = GRID.margin + GRID.contentWidth - 12;
+  const w = right - left, h = bottom - top;
+  const midX = left + w / 2, midY = top + h / 2;
+  const out: Req[] = [];
+
+  // Quadrant tints (faint), then the crossing axes on top.
+  const tints = [COLOR.tintBlue, COLOR.tintTeal, COLOR.tintGrey, COLOR.tintAmber];
+  const quadBoxes = [[left, top], [midX, top], [left, midY], [midX, midY]];
+  quadBoxes.forEach(([qx, qy], i) => {
+    out.push(...filledShape(id(`mq${i}`), page, "RECTANGLE", tints[i], { x: qx, y: qy, width: w / 2, height: h / 2 }, 0.5));
+  });
+  out.push(
+    ...filledShape(id("mvx"), page, "RECTANGLE", COLOR.navy, { x: midX, y: top, width: 1, height: h }, 0.35),
+    ...filledShape(id("mhz"), page, "RECTANGLE", COLOR.navy, { x: left, y: midY, width: w, height: 1 }, 0.35),
+  );
+
+  // Axis end labels.
+  if (m.xAxis) {
+    out.push(
+      ...textBox(id("mxl"), page, m.xAxis[0], TYPE.axisEnd, { x: left, y: bottom + 2, width: w / 2, height: 12 }),
+      ...textBox(id("mxr"), page, m.xAxis[1], TYPE.axisEnd, { x: midX, y: bottom + 2, width: w / 2, height: 12 }, { align: "END" }),
+    );
+  }
+  if (m.yAxis) {
+    out.push(
+      ...textBox(id("myb"), page, m.yAxis[0], TYPE.axisEnd, { x: GRID.margin, y: bottom - 12, width: 44, height: 12 }),
+      ...textBox(id("myt"), page, m.yAxis[1], TYPE.axisEnd, { x: GRID.margin, y: top, width: 44, height: 12 }),
+    );
+  }
+  // Quadrant names are drawn as faint captions in the TOP-OUTER corners only
+  // — top-left flush left, top-right flush right — where a plotted item is least
+  // likely to sit, and never in the bottom corners, which collide with the axis
+  // labels and the densest cluster of items. The axes carry the rest.
+  if (m.quadrants) {
+    // Sized to the TEXT, not to the half-quadrant.
+    //
+    // These were w/2 - 12 wide with the right-hand one set END-aligned, so the
+    // top-right caption's BOX covered the entire right half of the plot while
+    // its visible words occupied a corner of it. Any item label up there
+    // overlapped it by geometry — which the overlap battery reports, correctly,
+    // because a box that wide is a claim on space the caption does not use.
+    const capW = (t: string) => Math.min(w / 2 - 12, Math.max(40, t.length * 4.8 + 10));
+    if (m.quadrants[0]) out.push(...textBox(id("mql0"), page, m.quadrants[0], TYPE.quadLabel, {
+      x: left + 6, y: top + 4, width: capW(m.quadrants[0]), height: 12,
+    }));
+    if (m.quadrants[1]) {
+      const cw = capW(m.quadrants[1]);
+      out.push(...textBox(id("mql1"), page, m.quadrants[1], TYPE.quadLabel, {
+        x: right - 6 - cw, y: top + 4, width: cw, height: 12,
+      }, { align: "END" }));
+    }
+  }
+
+  // Items: a dot at (x,y), label beside it. y is inverted (1 = top). A label
+  // that would land in the top strip where a quadrant caption sits is pushed
+  // BELOW its dot instead.
+  (m.items || []).slice(0, 12).forEach((it, i) => {
+    const px = left + Math.max(0, Math.min(1, it.x)) * w;
+    const py = bottom - Math.max(0, Math.min(1, it.y)) * h;
+    const r = it.highlight ? 6 : 4.5;
+    const fill = it.highlight ? COLOR.blue : COLOR.navy;
+    out.push(...filledShape(id(`md${i}`), page, "ELLIPSE", fill, { x: px - r, y: py - r, width: r * 2, height: r * 2 }));
+    // Label beside the dot, clamped inside the plot. Placed below the dot when
+    // the dot sits high (near a quadrant caption) and above when it sits low.
+    const lw = Math.min(140, Math.max(40, it.label.length * 4.6 + 8));
+    const lx = px + r + 4 + lw > right ? px - r - 4 - lw : px + r + 4;
+    // Clear of the quadrant caption strip (top+4 to top+16), not merely below
+    // the dot: a dot at the very top of the plot put its label straight into
+    // the caption. Only surfaced when the content band grew and the plot moved
+    // up with it, which is exactly what the overlap battery is for.
+    const ly = py < top + 22 ? Math.max(py + r + 3, top + 19) : py - 7;
+    out.push(...textBox(id(`ml${i}`), page, it.label, it.highlight ? { ...TYPE.dotLabel, bold: true } : TYPE.dotLabel, {
+      x: Math.max(left, lx), y: ly, width: lw, height: 14,
+    }, lx < px ? { align: "END" } : {}));
+  });
+  return out;
+}
+
+/** A comparison table: a header row of options, then criterion rows. A cell of
+ *  "yes"/"no" draws a tick or cross; anything else prints as text. */
+function comparisonRequests(
+  page: string, id: (s: string) => string,
+  cmp: NonNullable<SlideInput["comparison"]>, bandTop: number, bandBottom?: number
+): Req[] {
+  const cols = (cmp.columns || []).slice(0, 4);
+  const rows = (cmp.rows || []).slice(0, 8);
+  if (!cols.length || !rows.length) return [];
+  const out: Req[] = [];
+  const top = bandTop;
+  const labelW = GRID.contentWidth * 0.34;
+  const colW = (GRID.contentWidth - labelW) / cols.length;
+  const headH = 28;
+  const bottom = floorBand(CANVAS.height - GRID.margin, bandBottom);
+  const rowH = Math.min(40, (bottom - top - headH) / rows.length);
+
+  // Header: option names across the top, over a rule.
+  cols.forEach((c, j) => {
+    out.push(...textBox(id(`ch${j}`), page, c, TYPE.cellHead, {
+      x: GRID.margin + labelW + j * colW, y: top, width: colW, height: headH,
+    }, { align: "CENTER" }));
+  });
+  out.push(...filledShape(id("crh"), page, "RECTANGLE", COLOR.navy, {
+    x: GRID.margin, y: top + headH, width: GRID.contentWidth, height: RULE.hairlineThickness,
+  }, 0.4));
+
+  rows.forEach((r, i) => {
+    const ry = top + headH + 4 + i * rowH;
+    if (r.highlight) {
+      out.push(...filledShape(id(`crb${i}`), page, "RECTANGLE", COLOR.tintBlue, {
+        x: GRID.margin, y: ry, width: GRID.contentWidth, height: rowH,
+      }, 0.6));
+    }
+    out.push(...textBox(id(`crl${i}`), page, r.label, { ...TYPE.cellText, bold: true }, {
+      x: GRID.margin + 6, y: ry + rowH / 2 - 8, width: labelW - 12, height: 16,
+    }));
+    (r.cells || []).slice(0, cols.length).forEach((cell, j) => {
+      const cx = GRID.margin + labelW + j * colW;
+      const v = cell.trim().toLowerCase();
+      if (v === "yes" || v === "y" || v === "true" || v === "✓") {
+        out.push(...textBox(id(`cc${i}_${j}`), page, "\u2713", { ...TYPE.cellText, size: 13, bold: true, color: COLOR.inkTeal }, {
+          x: cx, y: ry + rowH / 2 - 9, width: colW, height: 18,
+        }, { align: "CENTER" }));
+      } else if (v === "no" || v === "n" || v === "false" || v === "\u2717" || v === "x") {
+        out.push(...textBox(id(`cc${i}_${j}`), page, "\u2717", { ...TYPE.cellText, size: 13, bold: true, color: COLOR.inkCoral }, {
+          x: cx, y: ry + rowH / 2 - 9, width: colW, height: 18,
+        }, { align: "CENTER" }));
+      } else {
+        out.push(...textBox(id(`cc${i}_${j}`), page, cell, TYPE.cellText, {
+          x: cx, y: ry + rowH / 2 - 8, width: colW, height: 16,
+        }, { align: "CENTER" }));
+      }
+    });
+    // A hairline between rows.
+    if (i < rows.length - 1) {
+      out.push(...filledShape(id(`crr${i}`), page, "RECTANGLE", COLOR.navy, {
+        x: GRID.margin, y: ry + rowH, width: GRID.contentWidth, height: RULE.hairlineThickness,
+      }, 0.15));
+    }
+  });
+  return out;
+}
+
+/** The most columns a slide can carry before the cells are too narrow to read,
+ *  and the most rows before it is a spreadsheet on a projector. */
+export const TABLE_MAX_COLS = 6;
+export const TABLE_MAX_ROWS = 12;
+
+/** The narrowest a column may be drawn. Below this even a three-character
+ *  figure loses characters to the ellipsis, which is worse than no table. */
+export const TABLE_MIN_COL = 46;
+
+/**
+ * Share the width between columns, narrow ones first.
+ *
+ * NOT proportional shrinking, which is what shipped and what a real ten-row
+ * action table exposed: with two long prose columns beside "#" and "Effort",
+ * every column lost the same PERCENTAGE, so "2 hours" was drawn as "2 ho…"
+ * while the prose columns still had two hundred pixels each. A column of
+ * figures is either complete or useless; a column of prose reads fine with an
+ * ellipsis on the end.
+ *
+ * So: find the widest any column may be, and cap at that. Columns needing less
+ * than the cap keep exactly what they need; the ones above it share what is
+ * left equally. Max-min fair, which is the standard answer to this and is the
+ * one that protects the narrow columns.
+ */
+export function fitColumnWidths(natural: number[], available: number): number[] {
+  const total = natural.reduce((a, b) => a + b, 0);
+  if (!natural.length) return [];
+  if (total <= available) {
+    // Room to spare: give it to the columns that can use it, in proportion to
+    // what they already take, so prose gets the space and "DR" stays narrow.
+    const slack = available - total;
+    return natural.map((w) => w + (w / (total || 1)) * slack);
+  }
+  // Binary search the cap. 40 iterations is far past the precision a slide can
+  // draw and cannot loop: the interval halves every pass.
+  let lo = 0, hi = Math.max(...natural);
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    const sum = natural.reduce((a, w) => a + Math.min(w, mid), 0);
+    if (sum > available) hi = mid; else lo = mid;
+  }
+  const cap = Math.max(lo, TABLE_MIN_COL);
+  return natural.map((w) => Math.min(w, cap));
+}
+
+/**
+ * Is this column numeric?
+ *
+ * Right-aligning figures is the whole reason this layout exists rather than
+ * reusing `comparison`: a column of centred numbers cannot be scanned, because
+ * the digits do not line up. Decided per column on the CELLS, by majority, so
+ * one "n/a" in a column of thousands does not left-align the lot.
+ */
+export function isNumericColumn(cells: string[]): boolean {
+  const filled = cells.map((c) => String(c ?? "").trim()).filter((c) => c !== "");
+  if (!filled.length) return false;
+  let numeric = 0;
+  for (const c of filled) {
+    // A figure, with optional currency, thousands separators, decimals, a
+    // percentage, a leading sign, or a multiplier suffix ("153x", "3.2k").
+    if (/^[-+(]?\s*[£$€]?\s*\d[\d,.\s]*\s*(%|x|k|m|bn)?\)?$/i.test(c)) numeric++;
+  }
+  return numeric * 2 > filled.length;
+}
+
+/**
+ * One cell, cut to the characters that fit on `lines` lines of its column.
+ *
+ * A TABLE CELL IS NOT A PARAGRAPH. Left to wrap, a long first-column label
+ * pushed its row into the one beneath it, and eight long headings ran the whole
+ * header block over the first three rows of data — caught by the overlap
+ * detector on the deliberately overloaded fixture, not by eye. Truncating is
+ * what a table does at this size; the alternative is a row height set by the
+ * worst cell in the table, which wastes the slide for every other row.
+ */
+export function fitCell(text: string, boxWidth: number, size: number, lines = 1): string {
+  const s = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (!s) return "";
+  const usable = Math.max(size, boxWidth - TEXT_INSET_X);
+  const perLine = Math.max(1, Math.floor(usable / (size * PER_CHAR)));
+  const budget = perLine * lines;
+  if (s.length <= budget) return s;
+  // A word boundary if one is close, so a cut does not land mid-word when it
+  // does not have to.
+  const cut = s.slice(0, Math.max(1, budget - 1));
+  const space = cut.lastIndexOf(" ");
+  return (space > budget * 0.6 ? cut.slice(0, space) : cut).trimEnd() + "…";
+}
+
+/** A data table: a header row and rows of cells, figures right-aligned. */
+/**
+ * A data table, optionally with a commentary rail beside it.
+ *
+ * The rail exists because of a real conversion: a source slide carried a
+ * baselines-and-targets table PLUS two analysis panels beside it ("Renegotiate
+ * the AI citation target", "Split the traffic target"). The table layout had
+ * nowhere to put them, so the model moved the analysis into speaker notes and
+ * spare closing slides, and the converted slide showed the numbers with none
+ * of the argument. The commentary is usually the whole point of such a slide.
+ */
+function tableRequests(
+  page: string, id: (s: string) => string,
+  spec: NonNullable<SlideInput["table"]>, bandTop: number,
+  rail?: string,
+  bandBottom?: number,
+  opts: { onDark?: boolean; meta?: { bottom: number } } = {}
+): Req[] {
+  const onDark = !!opts.onDark;
+  const columns = (spec.columns || []).map((c) => String(c ?? "")).slice(0, TABLE_MAX_COLS);
+  const allRows = (spec.rows || []).filter((r) => Array.isArray(r) && r.some((c) => String(c ?? "").trim() !== ""));
+  if (!columns.length || !allRows.length) return [];
+  // With a rail the table gives up a third of the width. Cells clip earlier,
+  // which is the trade: a table that fills the slide while its argument sits in
+  // the speaker notes is the failure this exists to fix.
+  const hasRail = !!rail?.trim();
+  const tableW = hasRail ? Math.floor(GRID.contentWidth * 0.63) : GRID.contentWidth;
+  const rows = allRows.slice(0, TABLE_MAX_ROWS).map((r) => columns.map((_, j) => String(r[j] ?? "")));
+
+  const out: Req[] = [];
+  const top = bandTop;
+  const dropped = allRows.length - rows.length;
+  const droppedCols = (spec.columns || []).length - columns.length;
+  // A dropped row is SAID, never silently cut: a table that quietly shows the
+  // first twelve of twenty reads as the whole set.
+  const note = dropped > 0 || droppedCols > 0;
+  // No SOURCE_BLOCK here: that constant reserves room for a chart's source
+  // line, which a table never draws. Reserving it anyway cost every table 24pt
+  // of band — precisely the difference between a ten-row scorecard fitting
+  // with wrapped cells at 7pt and falling back to single-line clipping.
+  const tail = note ? 14 : 2;
+
+  // COLUMN WIDTHS ARE MEASURED, NOT WEIGHTED — and now the TYPE is searched
+  // as well. A ten-row scorecard whose "Why" column wraps to two lines cannot
+  // physically fit at 9pt: the band holds ~240pt and ten rows of two-line
+  // cells need ~330, a third of it the fixed 7.2pt Slides inset charged per
+  // cell box. The source deck solves this the honest way — smaller type — so
+  // this engine now does too: it tries 9pt, then 8, 7, 6.5, each at a 3-line
+  // and then 2-line allowance, and commits to the FIRST combination where
+  // every cell fits whole. Only when none fits does it fall back to 9pt
+  // single-line clipping, which is the old behaviour as the floor instead of
+  // the default. Column widths are recomputed per candidate size, because
+  // PER_CHAR scales with the glyphs.
+  const aligns = columns.map((_, j) =>
+    spec.align?.[j] || (isNumericColumn(rows.map((r) => r[j])) ? "right" : "left")
+  );
+  const PAD = 0;
+  // The BAND's bottom, not the canvas's. The table measured itself against
+  // the page edge and ignored the takeaway bar entirely, so on a nine-row
+  // engine table the bar sat squarely on top of the ninth row — DeepSeek was
+  // drawn, and then painted over.
+  const bottom = Math.min(CANVAS.height - GRID.margin - tail, bandBottom ?? Infinity);
+  // Never into the footer: the "Showing N of M" line sits under the last row,
+  // and it was drawn 5pt into the footer once the footer came up off the bezel.
+  const bottomClear = Math.min(bottom, FOOTER_Y - 6 - ((spec.rows || []).length > TABLE_MAX_ROWS ? 14 : 0));
+
+  interface TablePlan {
+    size: number; headSize: number; cap: number;
+    widths: number[]; xs: number[]; inner: (j: number) => number;
+    heads: string[]; headH: number;
+    rowHs: number[]; rowCaps: number[]; fits: boolean;
+  }
+  /** Text sits 6pt in from a column's edge, so the header band and the zebra
+   *  have a margin and the label column does not touch the slide edge. The
+   *  width planner must know it, or a narrow value column loses exactly those
+   *  6pt and "2 hours" is cut to "2 hou…" — which the battery caught. */
+  const CELL_X = 6;
+  const planFor = (size: number, cap: number): TablePlan => {
+    const headSize = Math.max(8, Math.min(TYPE.cellHead.size, size + 0.5));
+    const natural = columns.map((c, j) => {
+      let cells = 0;
+      for (const r of rows) cells = Math.max(cells, r[j].length);
+      // The heading may wrap to two lines, so its width claim is half its
+      // length; a cell past ~35 characters claims at half rate too, because
+      // two measured lines are the design, not a failure.
+      const headW = Math.ceil(c.length / 2 + 1) * headSize * PER_CHAR;
+      const cellClaim = cells <= 35 ? cells : 35 + (cells - 35) / 2;
+      const cellW = cellClaim * size * PER_CHAR;
+      return Math.max(TABLE_MIN_COL + CELL_X, Math.max(headW, cellW) + TEXT_INSET_X + CELL_X);
+    });
+    const widths = fitColumnWidths(natural, tableW);
+    const xs: number[] = [];
+    let acc = GRID.margin;
+    for (const w of widths) { xs.push(acc); acc += w; }
+    // The column's TEXT width: its share of the table less the 6pt inset the
+    // cells are drawn with. Measured and drawn at the same number, or the
+    // planner passes a cell that the renderer then cuts — which is exactly
+    // what happened to "Master entity plus satellites…" in a three-row table
+    // with 140pt to spare.
+    const inner = (j: number) => Math.max(10, widths[j] - CELL_X);
+    const heads = columns.map((c, j) => fitCell(c, inner(j), headSize, 2));
+    const headLines = heads.reduce((n, h, j) => Math.max(n, estimateLines(h, inner(j), headSize)), 1);
+    const headH = Math.max(22, drawnTextHeight(headLines, headSize, 0, 1, 1.05));
+    const availRows = bottomClear - top - headH - 4;
+    const rowCaps = rows.map((r) => r.reduce((n, cell, j) => cell.trim()
+      ? Math.max(n, Math.min(cap, estimateLines(cell, inner(j), size)))
+      : n, 1));
+    // THE ROW PITCH EXCLUDES SLIDES' INSET. Every text box carries 7.2pt of
+    // vertical inset the API cannot switch off; paid per ROW, ten rows spent
+    // 72pt on nothing, and a scorecard that fits the reference's page at 7.8pt
+    // needed 268pt of rows here against 244 available. So a row is as tall as
+    // its LINES at the cells' own 105% leading plus a hair of air, and the
+    // cell's box (below) overhangs the row by half the inset top and bottom,
+    // its text centred: the boxes overlap their neighbours' empty inset, the
+    // glyphs never do. Two lines at 7.5pt come to 21.8pt — the reference's own
+    // 21.6.
+    const rowHs = rowCaps.map((n) => Math.max(size * 1.26 * 1.05 + 6, n * size * 1.26 * 1.05 + 2));
+    const total = rowHs.reduce((a, b) => a + b, 0);
+    return { size, headSize, cap, widths, xs, inner, heads, headH, rowHs, rowCaps, fits: total <= availRows };
+  };
+
+  let plan: TablePlan | null = null;
+  // 6pt is the floor: the source decks set dense tables at the equivalent of
+  // ~5pt, and a nine-row table with wrapped cells needs it. Small and whole
+  // beats large and cut mid-phrase.
+  // 7.5pt is the floor — "about 8", the user's own number. Below it the room
+  // cannot read the column that carries the argument; a table that will not
+  // fit at 7.5 declares the rows it drops rather than shrinking to 6.
+  outer: for (const trySize of [TYPE.cellText.size, 8.5, 8, 7.5]) {
+    for (const tryCap of [3, 2]) {
+      const cand = planFor(trySize, tryCap);
+      // A candidate only counts when nothing in it is clipped: every cell's
+      // measured lines within the cap, at this size.
+      const clipped = rows.some((r) => r.some((cell, j) =>
+        cell.trim() !== "" && estimateLines(cell, cand.inner(j), trySize) > tryCap));
+      if (process.env.TABLE_DEBUG) {
+        const total = cand.rowHs.reduce((a, b) => a + b, 0);
+        const worst = rows.reduce((n, r) => Math.max(n, ...r.map((cell, j) => cell.trim() ? estimateLines(cell, cand.inner(j), trySize) : 0)), 0);
+        console.log(`   [table] ${trySize}pt cap ${tryCap}: rows ${total.toFixed(0)} avail ${(bottomClear - top - cand.headH - 4).toFixed(0)} fits=${cand.fits} worstLines=${worst} clipped=${clipped}`);
+      }
+      if (cand.fits && !clipped) { plan = cand; break outer; }
+    }
+  }
+  if (!plan) {
+    plan = planFor(TYPE.cellText.size, 1);
+    const availRows = bottomClear - top - plan.headH - 4;
+    const total = plan.rowHs.reduce((a, b) => a + b, 0);
+    if (total > availRows) {
+      const k = availRows / total;
+      plan.rowHs = plan.rowHs.map((h) => Math.max(11, h * k));
+    }
+  } else {
+    // Deal the slack back, bounded, so the table breathes instead of huddling.
+    const availRows = bottomClear - top - plan.headH - 4;
+    const total = plan.rowHs.reduce((a, b) => a + b, 0);
+    // Rows hug their words. The slack used to be dealt back up to 12pt a row,
+    // which made a five-row table into five 60pt bands of tint with three
+    // lines in each — "waiting for a line that never comes".
+    const extra = Math.min(3, Math.max(0, (availRows - total) / rows.length));
+    plan.rowHs = plan.rowHs.map((h) => h + extra);
+  }
+  const { widths, xs, inner, heads, headH, rowHs, rowCaps } = plan;
+  const cellStyle = { ...TYPE.cellText, size: plan.size };
+  const headStyle = { ...TYPE.cellHead, size: plan.headSize };
+  const rowYs: number[] = [];
+  {
+    let acc2 = top + headH + 4;
+    for (const h of rowHs) { rowYs.push(acc2); acc2 += h; }
+  }
+
+  // A HEADER BAND: navy with white bold heads (inverted on a dark ground).
+  // Serif heads over a hairline read as a fourth row from the back, and the
+  // presenter had to say what the columns were.
+  out.push(...filledShape(id("thb"), page, "RECTANGLE", onDark ? COLOR.white : COLOR.navy, {
+    x: GRID.margin, y: top, width: tableW, height: headH,
+  }, onDark ? 0.92 : 1));
+  const bandHead = { ...headStyle, color: onDark ? COLOR.navy : COLOR.white };
+  heads.forEach((c, j) => {
+    out.push(...textBox(id(`th${j}`), page, c, bandHead, {
+      x: xs[j] + PAD + CELL_X, y: top, width: inner(j), height: headH,
+    }, { align: aligns[j] === "right" ? "END" : "START", vCenter: true, lineSpacing: 1.05 }));
+  });
+
+  const highlighted = new Set((spec.highlight || []).filter((n) => Number.isInteger(n)));
+
+  // Status and tier values render as COLOURED PILLS, the way the source decks
+  // draw them: a scorecard whose HIGH/MED/LOW all read in the same ink asks
+  // the reader to parse words where the original let them read colour.
+  const PILL: { [k: string]: { fill: string; ink: string } } = {
+    HIGH:   { fill: COLOR.tintTeal,  ink: COLOR.inkTeal },
+    MED:    { fill: COLOR.tintAmber, ink: COLOR.inkAmber },
+    MEDIUM: { fill: COLOR.tintAmber, ink: COLOR.inkAmber },
+    LOW:    { fill: COLOR.tintGrey,  ink: COLOR.ink },
+    NONE:   { fill: COLOR.tintCoral, ink: COLOR.inkCoral },
+    P1:     { fill: COLOR.blue,      ink: COLOR.white },
+    P2:     { fill: COLOR.lav,       ink: COLOR.navy },
+    P3:     { fill: COLOR.tintGrey,  ink: COLOR.ink },
+  };
+  const pillFor = (cell: string) => {
+    const m = cell.trim().toUpperCase().match(/^(HIGH|MEDIUM|MED|LOW|NONE|P[1-3])(?:\s*[·—-].*)?$/);
+    return m ? { key: m[1], spec: PILL[m[1]] } : null;
+  };
+
+  /** The capsule is 16pt tall and Slides insets 7.2pt of that, so a label only
+   *  sits inside it up to about 7.5pt. Above that the glyphs ride out of their
+   *  own pill. */
+  const PILL_H = 16;
+  const PILL_MAX_SIZE = 7.5;
+  const PILL_MIN_SIZE = 6;
+
+  /** ONE size per pilled column, chosen by that column's LONGEST token.
+   *
+   *  The tier column asked for 9pt. Its widest token, "P3 · LONG TAIL", needed
+   *  108pt of an 84pt column, so it fell through to the plain-text branch —
+   *  while "P1 · CORE" fitted and drew as a capsule. Three rows of one column
+   *  rendered two different ways, which reads as a broken slide rather than as
+   *  a considered fallback.
+   *
+   *  A pill column is a single visual device: it steps down until its longest
+   *  token fits, and if even the floor will not fit it draws NO pills at all.
+   *  Sizing each cell independently would be worse than either — a column of
+   *  capsules in three different type sizes. */
+  const pillSize: (number | null)[] = columns.map((_, j) => {
+    const tokens: string[] = [];
+    for (const r of rows) {
+      const cell = r[j];
+      if (!cell || !cell.trim()) continue;
+      const p = pillFor(cell);
+      if (!p) continue;
+      // A label column is never a status pill — but a TIER token (P1/P2/P3) is
+      // the row's identity, and the source draws exactly that as a pill in its
+      // first column. Status words stay barred there.
+      if (j === 0 && !/^P[1-3]$/.test(p.key)) continue;
+      tokens.push(cell.trim());
+    }
+    if (!tokens.length) return null;
+    const start = Math.min(cellStyle.size, PILL_MAX_SIZE);
+    for (let sz = start; sz >= PILL_MIN_SIZE; sz -= 0.5) {
+      let all = true;
+      for (const t of tokens) if (pillWidth(t, sz) > inner(j)) { all = false; break; }
+      if (all) return sz;
+    }
+    return null;
+  });
+
+  rows.forEach((r, i) => {
+    const ry = rowYs[i];
+    const rowH = rowHs[i];
+    if (highlighted.has(i)) {
+      out.push(...filledShape(id(`trb${i}`), page, "RECTANGLE", COLOR.tintBlue, {
+        x: GRID.margin, y: ry, width: tableW, height: rowH,
+      }, 0.6));
+    } else if (i % 2 === 1) {
+      // Zebra: the eye tracks a row across four columns on the tint, and slips
+      // a row without it. Alternate rows, light, under everything in the row.
+      out.push(...filledShape(id(`tz${i}`), page, "RECTANGLE", onDark ? COLOR.white : COLOR.tintBlue, {
+        x: GRID.margin, y: ry, width: tableW, height: rowH,
+      }, onDark ? 0.06 : 0.45));
+    }
+    r.forEach((cell, j) => {
+      if (!cell.trim()) return;
+      const pill = (() => {
+        const p = pillFor(cell);
+        if (!p) return null;
+        return j > 0 || /^P[1-3]$/.test(p.key) ? p : null;
+      })();
+      const psize = pill ? pillSize[j] : null;
+      if (pill && psize) {
+        const label = cell.trim();
+        const pw = pillWidth(label, psize);
+        const px = aligns[j] === "right" ? xs[j] + inner(j) - pw : xs[j] + CELL_X;
+        const capsule = { x: px, y: ry + rowH / 2 - PILL_H / 2, width: pw, height: PILL_H };
+        out.push(...filledShape(id(`tp${i}_${j}`), page, "ROUND_RECTANGLE", pill.spec.fill, capsule));
+        // vCenter, because the label and the capsule are the SAME rectangle:
+        // Slides top-aligns text and insets it 3.6pt, so without this the word
+        // sits high in its own pill with an empty band beneath it. An offset
+        // would be a guess at centring; contentAlignment is the answer.
+        out.push(...textBox(id(`tc${i}_${j}`), page, label,
+          { ...cellStyle, size: psize, bold: true, color: pill.spec.ink },
+          capsule, { align: "CENTER", vCenter: true }));
+        return;
+      }
+      const style = j === 0 ? { ...cellStyle, bold: true } : cellStyle;
+      const capForCell = rowCaps[i];
+      // Never taller than the row that holds it: when the whole table is
+      // squeezed to fit, a full-height text box in a scaled-down row overlaps
+      // the neighbour below — the exact collision the battery's stress table
+      // caught the moment this engine landed.
+      // The cell is the row's full height and its text centres in it — so a
+      // one-line cell sits level with its row's pill and with the first line
+      // of a two-line neighbour, instead of a computed offset that put
+      // "P1 · CORE" level with the third line of its own description.
+      out.push(...textBox(id(`tc${i}_${j}`), page, fitCell(cell, inner(j), style.size, capForCell), style, {
+        x: xs[j] + PAD + CELL_X, y: ry - TEXT_INSET_Y / 2, width: inner(j), height: rowH + TEXT_INSET_Y,
+      }, { align: aligns[j] === "right" ? "END" : "START", lineSpacing: 1.05, vCenter: true }));
+    });
+    if (i < rows.length - 1) {
+      out.push(...filledShape(id(`trr${i}`), page, "RECTANGLE", COLOR.navy, {
+        x: GRID.margin, y: ry + rowH, width: tableW, height: RULE.hairlineThickness,
+      }, 0.15));
+    }
+  });
+
+  const lastRowBottom = rowYs[rowYs.length - 1] + rowHs[rowHs.length - 1];
+  if (opts.meta) opts.meta.bottom = lastRowBottom + (note ? 16 : 0);
+  if (note) {
+    const parts: string[] = [];
+    if (dropped > 0) parts.push(`${rows.length} of ${allRows.length} rows`);
+    if (droppedCols > 0) parts.push(`${columns.length} of ${(spec.columns || []).length} columns`);
+    out.push(...textBox(id("tdrop"), page, `Showing ${parts.join(" and ")}`, TYPE.chartAxis, {
+      x: GRID.margin, y: rowYs[rowYs.length - 1] + rowHs[rowHs.length - 1] + 4, width: tableW, height: 12,
+    }));
+  }
+
+  if (hasRail) {
+    const railX = GRID.margin + tableW + 22;
+    const railW = GRID.contentWidth - tableW - 22;
+    out.push(...textBox(id("trail"), page, String(rail).trim(), TYPE.cellText, {
+      x: railX, y: top, width: railW, height: CANVAS.height - GRID.margin - top,
+    }, { bullets: true }));
+  }
+  return out;
+}
+
+/** The kit's density budget: three panel items read comfortably, four is the
+ *  ceiling. Anything past that is dropped and said, never silently cut. */
+export const PANEL_MAX_ITEMS = 4;
+
+/** The master template's rounded panel beside the prose. */
+function panelRequests(
+  page: string, id: (s: string) => string,
+  spec: NonNullable<SlideInput["panel"]>, box: { x: number; y: number; width: number; height: number },
+  meta?: { bottom: number }
+): Req[] {
+  const soft = spec.style === "soft";
+  const fill = soft ? COLOR.lav : COLOR.blue;
+  const inkTitle = soft ? COLOR.navy : COLOR.white;
+  const inkBody = soft ? COLOR.ink : COLOR.white;
+  const allItems = (spec.items || []).filter((it) => it && (it.title?.trim() || it.text?.trim()));
+  const items = allItems.slice(0, PANEL_MAX_ITEMS);
+
+  const out: Req[] = [];
+  // The panel shape is pushed once its height is known — see below.
+
+  const PAD = 15;                       // the master's 26px inner padding, minus a step for our tighter canvas
+  const innerW = box.width - PAD * 2;
+
+  // MEASURED AGAINST THE BOX, not paid out and hoped for.
+  //
+  // The cursor walked down at fixed sizes and never looked at box.height, so a
+  // fourth item whose text wrapped to two lines wrote its last line out through
+  // the bottom of the panel and onto the slide — "…that link back to / you."
+  // with "you." below the rounded corner. Panels are the one place a layout has
+  // a hard, drawn edge, which is exactly why it has to be measured.
+  //
+  // The ladder tightens type and gaps before it drops anything; a drop is the
+  // last resort and is declared on the panel.
+  const PLANS = [
+    { gap: 8, head: 8.5, body: 8,   lead: 1.1 },
+    { gap: 6, head: 8,   body: 7.5, lead: 1.05 },
+    { gap: 5, head: 7.5, body: 7,   lead: 1.0 },
+    { gap: 4, head: 7,   body: 6.5, lead: 1.0 },
+  ];
+  const textW = innerW - 11;
+  const titleStyle: TypeStyle = { font: "Roboto", size: 11, weight: 600, color: inkTitle };
+  const titleH = spec.title?.trim()
+    ? drawnTextHeight(estimateLines(spec.title, innerW, titleStyle.size), titleStyle.size) + 8
+    : 0;
+  const stackHeight = (plan: typeof PLANS[number], n: number) => {
+    let h = titleH;
+    for (let i = 0; i < n; i++) {
+      const it = items[i];
+      if (it.title?.trim()) h += drawnTextHeight(estimateLines(it.title, textW, plan.head), plan.head) + 1;
+      if (it.text?.trim()) h += drawnTextHeight(estimateLines(it.text, textW, plan.body), plan.body);
+      h += plan.gap;
+    }
+    return h;
+  };
+  const room = box.height - PAD * 2;
+  let plan = PLANS[0];
+  let count = items.length;
+  const fitting = PLANS.find((p) => stackHeight(p, items.length) <= room);
+  if (fitting) {
+    plan = fitting;
+  } else {
+    // Nothing fits whole: take the tightest plan and the most items it holds,
+    // keeping back the line that says so — a declaration drawn over the last
+    // item would be its own version of this bug.
+    plan = PLANS[PLANS.length - 1];
+    count = items.length;
+    while (count > 1 && stackHeight(plan, count) > room - 14) count--;
+  }
+  const drawn = items.slice(0, count);
+  const shortfall = allItems.length - drawn.length;
+  // AS TALL AS ITS STACK. The panel used to fill the whole column beside the
+  // prose — 48pt of void between its heading and first item, 61pt under the
+  // last — and read as padding. It is now the height of what it holds.
+  const usedH = Math.min(box.height, PAD + titleH + stackHeight(plan, count) + PAD);
+  out.push(...filledShape(id("pnl"), page, "ROUND_RECTANGLE", fill, { ...box, height: usedH }));
+  if (meta) meta.bottom = box.y + usedH;
+
+  let cursor = box.y + PAD;
+  if (spec.title?.trim()) {
+    out.push(...textBox(id("pnt"), page, spec.title, titleStyle, {
+      x: box.x + PAD, y: cursor, width: innerW, height: titleH - 8,
+    }));
+    cursor += titleH;
+  }
+  drawn.forEach((it, i) => {
+    // The dotted circular marker from the master, as a small open ring.
+    out.push({
+      createShape: {
+        objectId: id(`pnm${i}`), shapeType: "ELLIPSE",
+        elementProperties: {
+          pageObjectId: page,
+          size: { width: pt(5), height: pt(5) },
+          transform: { scaleX: 1, scaleY: 1, translateX: box.x + PAD, translateY: cursor + 2, unit: "PT" },
+        },
+      },
+    }, {
+      updateShapeProperties: {
+        objectId: id(`pnm${i}`),
+        shapeProperties: {
+          shapeBackgroundFill: { solidFill: { color: { rgbColor: rgb(soft ? COLOR.blue : COLOR.lime) } } },
+          outline: { outlineFill: { solidFill: { color: { rgbColor: rgb(soft ? COLOR.blue : COLOR.lime) } } }, weight: pt(1) },
+        },
+        fields: "shapeBackgroundFill.solidFill.color,outline",
+      },
+    });
+    const textX = box.x + PAD + 11;
+    if (it.title?.trim()) {
+      const hStyle: TypeStyle = { font: "Roboto", size: plan.head, weight: 600, color: inkTitle };
+      const h = drawnTextHeight(estimateLines(it.title, textW, hStyle.size), hStyle.size);
+      out.push(...textBox(id(`pnh${i}`), page, it.title, hStyle, {
+        x: textX, y: cursor, width: textW, height: h,
+      }, { spaceBelow: 0 }));
+      cursor += h + 1;
+    }
+    if (it.text?.trim()) {
+      const bStyle: TypeStyle = { font: "Roboto", size: plan.body, weight: 300, color: inkBody };
+      const h = drawnTextHeight(estimateLines(it.text, textW, bStyle.size), bStyle.size);
+      out.push(...textBox(id(`pnb${i}`), page, it.text, bStyle, {
+        x: textX, y: cursor, width: textW, height: h,
+      }, { spaceBelow: 0, lineSpacing: plan.lead }));
+      cursor += h;
+    }
+    cursor += plan.gap;
+  });
+  if (shortfall > 0) {
+    out.push(...textBox(id("pnd"), page, `Showing ${drawn.length} of ${allItems.length} items`, { font: "Roboto", size: 6, weight: 300, color: inkBody }, {
+      x: box.x + PAD, y: box.y + box.height - 14, width: innerW, height: 10,
+    }));
+  }
+  return out;
+}
+
+/** One slide → its full request list. Exported so the layout geometry can be
+ *  exercised without a Google round-trip; nothing else should call it. */
+export function buildSlideRequests(slide: SlideInput, index: number, run = "r0"): Req[] {
+  const layout: SlideLayout = layoutOf(slide.layout, index);
+  // The ground per INSTANCE, not per layout: four or more figures put a stat
+  // slide on off-white. Everything below — onDark, the page fill, the ink and
+  // the lockup — follows this one decision.
+  const style = slideStyle(slide, index);
+  // Object ids are scoped to this RUN, not just the slide index. On an update
+  // the deck still holds the previous run's shapes when the new ones are
+  // created, and Slides rejects a batch that reuses an existing objectId.
+  const page = `${run}_s${index}`;
+  const id = (suffix: string) => `${run}_s${index}_${suffix}`;
+
+  const requests: Req[] = [
+    {
+      createSlide: {
+        objectId: page,
+        insertionIndex: index,
+        slideLayoutReference: { predefinedLayout: "BLANK" },
+      },
+    },
+    {
+      updatePageProperties: {
+        objectId: page,
+        pageProperties: {
+          // A photo-led layout with no image supplied falls back to navy —
+          // neutral and on-brand, where a default white slide would not be.
+          pageBackgroundFill: {
+            solidFill: { color: { rgbColor: rgb(style.background ?? COLOR.navy) } },
+          },
+        },
+        fields: "pageBackgroundFill.solidFill.color",
+      },
+    },
+  ];
+
+  // Photograph first, so every text box lands on top of it. A section divider
+  // is photo-led when it has a picture (the prompt asks for one) and falls back
+  // to the flat blue ground when it does not — the image used to be resolved,
+  // and paid for, then never drawn.
+  const sectionPhoto = layout === "section" && !!slide.resolvedImage;
+  if (style.background === null || layout === "feature" || sectionPhoto) {
+    requests.push(...backdropRequests(page, id, slide));
+  }
+  /** Where this slide's content ENDS, set by layouts that size their boxes to
+   *  their words. The takeaway bar sits just beneath it. Left unset, the bar
+   *  keeps its old place at the foot of the band. */
+  let contentBottom: number | undefined;
+  /** Set by a layout that has already drawn the note on the slide itself —
+   *  the Venn's sidebar — so the generic bar is not drawn as well. */
+  let noteDrawn = false;
+
+  const onDark = style.onDark;
+  const bodyStyle = onDark ? TYPE.bodyDark : TYPE.body;
+  const eyebrowStyle = onDark ? TYPE.eyebrowDark : TYPE.eyebrow;
+
+  // The heading, fitted to the room it actually has. Every layout below draws
+  // its title from THIS, not from the grid constants, so a long title can never
+  // again be drawn through the body underneath it.
+  // Prose layouts set their title on the same measure as their body, so the
+  // two align and the heading is fitted to the width it will actually occupy.
+  const isProse = layout === "content" || layout === "case-study" || layout === "dark-index";
+  // A panel narrows the prose exactly as a rail does — the title has to be
+  // measured against the width it will actually be drawn in, or fitHeading
+  // fits it to a column the panel is about to take a third of.
+  // The content band, shortened when a takeaway bar is present. Computed once
+  // here so every layout below measures against the same number.
+  const band = bandHeightFor(slide);
+  const hasPanel = !!(slide.panel && ((slide.panel.items || []).length || slide.panel.title?.trim()));
+  const proseColumn = isProse
+    ? (railBox(slide) || hasPanel ? GRID.proseNarrow : GRID.proseWidth)
+    : GRID.contentWidth;
+  const titleWidth = layout === "image-split" ? IMAGE.splitTextWidth : proseColumn;
+  // image-split sets its title in a HALF-WIDTH column, so the same words take
+  // roughly twice the lines. Measuring it against the full-width title band
+  // was survivable while that band was tall; once it tightened, a two-line
+  // title in a narrow column ran out of its box and onto the body beneath.
+  // Its body starts under the title rather than at a fixed y, so the extra
+  // room costs nothing.
+  const split = layout === "image-split";
+  const heading = fitHeading(slide.title, onDark ? TYPE.slideTitleDark : TYPE.slideTitle, titleWidth, {
+    bottom: GRID.bodyY - TITLE_GAP + (split ? 34 : 0),
+    minTop: GRID.eyebrowY + GRID.eyebrowHeight + 6,
+    minHeight: GRID.titleHeight,
+  });
+  const titleStyle = heading.style;
+  const titleBox = { y: heading.y, height: heading.height };
+
+  if (layout === "cover") {
+    if (!slide.resolvedImage) {
+      // A COVER WITH NO PHOTOGRAPH used to be a plain navy slide with a title in
+      // the corner — the dullest possible opening. Designed instead: an accent
+      // rule, a centred title, the kicker beneath, on navy. The photo cover is
+      // still the default (the prompt asks for an image.query), but the deck no
+      // longer opens on nothing when there is not one.
+      // The accent rule is drawn 22pt above the title, so the TITLE's ceiling
+      // is what keeps the rule off the logo. At a 0.24-height ceiling the rule
+      // landed at y=103 while the logo runs 55.4 to 111.6 — a lime bar struck
+      // straight through the wordmark on the cover of a client deck, and no
+      // geometry check looked at the logo because nothing else on a cover goes
+      // near it. The ceiling is now derived from the logo's own box, and the
+      // floor drops to make room for the title that has to fit under it.
+      const logoFloor = LOGO_PLACEMENT.cover.y + LOGO_PLACEMENT.cover.height;
+      const np = fitHeading(slide.title, TYPE.coverTitle, GRID.contentWidth, {
+        bottom: CANVAS.height * 0.62, minTop: logoFloor + 10 + 22,
+        minHeight: GRID.coverTitleHeight, minSize: 22,
+      });
+      requests.push(
+        ...filledShape(id("crule"), page, "RECTANGLE", COLOR.lime, {
+          x: (CANVAS.width - RULE.accentWidth) / 2, y: np.y - 22, width: RULE.accentWidth, height: RULE.thickness,
+        }),
+        ...textBox(id("title"), page, slide.title, np.style, {
+          x: GRID.margin, y: np.y, width: GRID.contentWidth, height: np.height,
+        }, { align: "CENTER" }),
+        ...textBox(id("sub"), page, slide.subtitle, TYPE.closingKicker, {
+          x: GRID.margin, y: np.y + np.height + 12, width: GRID.contentWidth, height: 28,
+        }, { align: "CENTER" }),
+      );
+    } else {
+      // Bottom-anchored over the photo: the kicker sits under it and a three-line
+      // title used to be drawn straight over it.
+      const cover = fitHeading(slide.title, TYPE.coverTitle, GRID.coverTitleWidth, {
+        bottom: GRID.coverKickerY - 10,
+        minTop: CANVAS.height * 0.3,
+        minHeight: GRID.coverTitleHeight,
+        minSize: 20,
+      });
+      requests.push(
+        ...textBox(id("title"), page, slide.title, cover.style, {
+          x: GRID.coverTitleX, y: cover.y,
+          width: GRID.coverTitleWidth, height: cover.height,
+        }),
+        ...textBox(id("sub"), page, slide.subtitle, TYPE.coverKicker, {
+          x: GRID.coverKickerX, y: GRID.coverKickerY,
+          width: GRID.coverKickerWidth, height: GRID.coverKickerHeight,
+        }),
+      );
+    }
+  } else if (layout === "closing") {
+    // THE STACK MOVES UP WHEN THE BODY IS LONG. The action lines live between
+    // the sign-off and the logo; measured honestly, a resources line plus two
+    // contact lines did not fit there, and clamping the box merely clipped
+    // them mid-glyph. So the body's need is measured FIRST, and title and
+    // sign-off shift up by the shortfall — the source's own closing sets its
+    // thank-you high for exactly this reason.
+    const closingLines = (slide.body || "").split("\n").map((l) => l.trim()).filter(Boolean);
+    const closingDrawn = closingLines.reduce((n, l) => n + estimateLines(l, GRID.contentWidth, TYPE.closingAction.size), 0);
+    const closingNeed = closingLines.length
+      ? drawnTextHeight(closingDrawn, TYPE.closingAction.size, 8, closingLines.length) + 4 : 0;
+    const closingLogoTop = LOGO_PLACEMENT.closing.y - 10;
+    const closingRoom = closingLogoTop - (GRID.closingSubtitleY + GRID.closingSubtitleHeight + 14);
+    const closingShift = Math.max(0, Math.min(70, closingNeed - closingRoom));
+    const closingSubY = GRID.closingSubtitleY - closingShift;
+    const closing = fitHeading(slide.title, TYPE.coverTitle, GRID.contentWidth, {
+      bottom: closingSubY - 10,
+      minTop: GRID.eyebrowY + GRID.eyebrowHeight + 6,
+      minHeight: GRID.closingTitleHeight,
+      minSize: 20,
+    });
+    requests.push(
+      ...textBox(id("title"), page, slide.title, closing.style, {
+        x: GRID.margin, y: closing.y,
+        width: GRID.contentWidth, height: closing.height,
+      }, { align: "CENTER" }),
+      ...textBox(id("sub"), page, slide.subtitle, TYPE.closingKicker, {
+        x: GRID.margin, y: closingSubY,
+        width: GRID.contentWidth, height: GRID.closingSubtitleHeight,
+      }, { align: "CENTER" }),
+    );
+    // The close ACTS: a bare "Thank You" ends the deck on nothing, so a body —
+    // one action per line, an email, a next step, a URL — is drawn centred
+    // beneath the sign-off. The deck's last slide is the one that says what to
+    // do now.
+    if (slide.body?.trim()) {
+      const lines = closingLines;
+      const y = closingSubY + GRID.closingSubtitleHeight + 14;
+      // Measured (see closingNeed above), and stopping above the logo: the
+      // stack has already moved up to make this fit.
+      const h = Math.min(closingLogoTop - y, closingNeed);
+      requests.push(...textBox(id("body"), page, lines.join("\n"), TYPE.closingAction, {
+        x: GRID.margin, y, width: GRID.contentWidth, height: Math.max(22, h),
+      }, { align: "CENTER", spaceBelow: 8 }));
+    }
+  } else if (layout === "section") {
+    // A NUMERIC eyebrow ("01", "3") is the divider's index — drawn large in the
+    // brand lime, the source deck's signature divider device. A worded eyebrow
+    // ("PART ONE") is the KICKER, and it lives in the lockup below, not in the
+    // page-header slot. This is not the killed "parse Part N" regex; it only
+    // treats a bare number as a numeral, so it cannot misfire on "Teil 02" or
+    // any localised label.
+    const numeral = slide.eyebrow?.trim().match(/^\d{1,2}$/)?.[0];
+    const numeralBottom = GRID.eyebrowY + SECTION.numeralHeight;
+    if (numeral) {
+      requests.push(...textBox(id("num"), page, numeral, TYPE.sectionNumeral, {
+        x: GRID.margin, y: GRID.eyebrowY, width: SECTION.numeralWidth, height: SECTION.numeralHeight,
+      }));
+    }
+
+    // ONE LOCKUP. Kicker, title and subtitle are measured as a stack and the
+    // stack is centred on the canvas as a group — the reference's divider is a
+    // 111pt block with 16pt and 13pt of air in it. The old code drew the kicker
+    // at y=36, the title in a fixed 100pt box at y=152 and the subtitle at
+    // y=257: three orphaned lines with 125pt and 76pt of empty blue between
+    // them, and a running header where the title's label should be.
+    const kicker = numeral ? "" : (slide.eyebrow || "").trim();
+    const kickerH = kicker
+      ? drawnTextHeight(estimateLines(kicker, GRID.contentWidth, TYPE.sectionKicker.size, false, true), TYPE.sectionKicker.size)
+      : 0;
+    const subText = (slide.subtitle || "").trim();
+    // WHITE on a photograph: the baked gradient guarantees 4.5:1 for white, and
+    // the standfirst grey (#EBEBEB) lands at ~3.8:1 on the same pixels. On the
+    // flat blue field that grey is 4.7:1 and is the reference's muted second
+    // voice under a white title.
+    const subStyle = sectionPhoto ? { ...TYPE.standfirstDark, color: COLOR.white } : TYPE.standfirstDark;
+    const subLines = subText ? estimateLines(subText, GRID.contentWidth, subStyle.size) : 0;
+    const subH = subLines ? drawnTextHeight(subLines, subStyle.size) : 0;
+    // The room the stack may use: under the numeral (or the header slot) and
+    // above the takeaway bar when there is one — `band` is already shortened
+    // for it — so the stack is never drawn through the bar.
+    const stackCeiling = numeral ? numeralBottom : SECTION.minTop;
+    const stackFloor = GRID.bodyY + band;
+    const aboveTitle = kicker ? kickerH + SECTION.kickerGap : 0;
+    const belowTitle = subText ? SECTION.subtitleGap + subH : 0;
+    // The title is fitted to what is LEFT once the kicker and subtitle have
+    // taken theirs, and shrinks — to SECTION.titleMinSize — rather than pushing
+    // the subtitle onto the bar or the footer. Measured at the lead it is
+    // drawn at, or the box carries slack the subtitle would sit under.
+    const sec = fitHeading(slide.title, TYPE.sectionTitle, GRID.contentWidth, {
+      bottom: stackFloor - belowTitle,
+      minTop: stackCeiling + aboveTitle,
+      minHeight: drawnTextHeight(1, TYPE.sectionTitle.size, 0, 1, SECTION.titleLead),
+      minSize: SECTION.titleMinSize,
+      lineSpacing: SECTION.titleLead,
+    });
+    const stackH = aboveTitle + sec.height + belowTitle;
+    let y = Math.max(stackCeiling, Math.min(CANVAS.height / 2 - stackH / 2, stackFloor - stackH));
+    if (kicker) {
+      requests.push(...textBox(id("eyebrow"), page, kicker, TYPE.sectionKicker, {
+        x: GRID.margin, y, width: GRID.contentWidth, height: kickerH,
+      }));
+      y += kickerH + SECTION.kickerGap;
+    }
+    // spaceBelow 0: a title the model stacks with a newline ("Understand\n&
+    // Diagnose", the reference's own device) keeps the same pitch as one that
+    // wraps, instead of opening a 6pt paragraph gap in the middle of the block.
+    requests.push(...textBox(id("title"), page, slide.title, sec.style, {
+      x: GRID.margin, y, width: GRID.contentWidth, height: sec.height,
+    }, { lineSpacing: SECTION.titleLead, spaceBelow: 0 }));
+    y += sec.height;
+    if (subText) {
+      y += SECTION.subtitleGap;
+      // id "sub", not "body": the preview maps "sub" to the spec path
+      // ["subtitle"], so an in-place edit lands on the field that was drawn.
+      // Under "body" it wrote slide.body, which the divider never draws.
+      requests.push(...textBox(id("sub"), page, subText, subStyle, {
+        x: GRID.margin, y, width: GRID.contentWidth, height: subH,
+      }));
+      y += subH;
+    }
+    // contentBottom is deliberately left unset: the lockup is centred as a
+    // group, so a takeaway bar (rare on a divider) keeps its place at the foot
+    // rather than following the stack to mid-page. stackFloor already keeps
+    // the stack clear of it by NOTE.gap.
+  } else if (layout === "timeline") {
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY,
+        width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
+      }),
+      ...textBox(id("sub"), page, slide.subtitle, bodyStyle, {
+        x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: 20,
+      }),
+      ...timelineRequests(page, id, slide.milestones || []),
+    );
+  } else if (layout === "quote") {
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY,
+        width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...(slide.quote ? quoteRequests(page, id, slide.quote) : []),
+    );
+  } else if (layout === "process" || layout === "logo-wall") {
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY,
+        width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
+      }),
+    );
+    if (layout === "process") {
+      // The row starts on the band's top edge and measures against the band
+      // the takeaway bar has already shortened; where it ends is where the
+      // bar goes.
+      const processMeta = { bottom: 0 };
+      requests.push(...processRequests(page, id, slide.stages || [], GRID.bodyY, band, processMeta));
+      if (processMeta.bottom) contentBottom = processMeta.bottom;
+    } else {
+      requests.push(...logoWallRequests(page, id, slide.logos || []));
+    }
+  } else if (layout === "cards") {
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY,
+        width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
+      }),
+    );
+    // The row starts under the standfirst when there is one, and under the
+    // title band when there is not — CARDS.y was a fixed constant, which held
+    // while the grid never moved and stopped holding the day it did.
+    let cardsTop = GRID.bodyY;
+    if (slide.subtitle?.trim()) {
+      const standStyle = onDark ? TYPE.standfirstDark : TYPE.standfirst;
+      const standH = drawnTextHeight(
+        estimateLines(slide.subtitle, GRID.contentWidth, standStyle.size), standStyle.size);
+      requests.push(...textBox(id("sub"), page, slide.subtitle, standStyle, {
+        x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: standH,
+      }));
+      cardsTop = GRID.bodyY + standH + 10;
+    }
+    // The strip and the note both take their room from the card row, so the
+    // three stack without touching: cards, strip, note, footer.
+    const bandBottom = GRID.bodyY + band;
+    const stripItems = (slide.strip?.items || []).length || (slide.strip?.title?.trim() ? 1 : 0);
+    const stripH = stripItems ? Math.min(88, Math.max(48, 20 + 44)) : 0;
+    const cardsH = Math.max(80, bandBottom - cardsTop - (stripH ? stripH + 10 : 0));
+    const cardsMeta = { bottom: 0 };
+    requests.push(...cardsRequests(page, id, slide.cards || [], cardsTop, cardsH, cardsMeta));
+    if (cardsMeta.bottom) contentBottom = cardsMeta.bottom;
+    if (stripH && slide.strip) {
+      const stripTop = (cardsMeta.bottom || cardsTop + cardsH) + 10;
+      requests.push(...stripRequests(page, id, slide.strip, stripTop, stripH));
+      contentBottom = stripTop + stripH;
+    }
+  } else if (layout === "layers") {
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY,
+        width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
+      }),
+    );
+    let diagTop = GRID.bodyY;
+    if (slide.subtitle?.trim()) {
+      const standStyle = onDark ? TYPE.standfirstDark : TYPE.standfirst;
+      const standH = drawnTextHeight(
+        estimateLines(slide.subtitle, GRID.contentWidth, standStyle.size), standStyle.size);
+      requests.push(...textBox(id("sub"), page, slide.subtitle, standStyle, {
+        x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: standH,
+      }));
+      diagTop = GRID.bodyY + standH + 8;
+    }
+    // A diagram earns the note bar's gap when there is no note: the source
+    // page runs nearly full height, and 12pt is the difference between five
+    // bands fitting and the last one falling off the canvas.
+    // The room is the band, exactly. The 12pt the diagram borrowed when there
+    // was no note ran the last band to 386, under the footer at 381; the
+    // ladder inside layersRequests is what fits five bands now. The diagram
+    // reports where it ends so the takeaway bar follows it (Phase A rule).
+    const lay = layersRequests(page, id, slide.layers || [], diagTop, Math.max(100, GRID.bodyY + band - diagTop));
+    requests.push(...lay.requests);
+    contentBottom = lay.bottom;
+  } else if (layout === "stat" || layout === "bar-chart" || layout === "stacked-bar" || layout === "line-chart") {
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY,
+        width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
+      }),
+    );
+
+    // The standfirst — the FINDING the chart proves, in a sentence, under an
+    // assertion title. On the chart layouts the subtitle used to be dropped
+    // entirely: the one slot for a takeaway line was discarded on exactly the
+    // slides that carry evidence. When present it takes the top of the band and
+    // the plot starts beneath it.
+    let chartBandTop = GRID.bodyY;
+    if (slide.subtitle?.trim() && layout !== "stat") {
+      const standStyle = onDark ? TYPE.standfirstDark : TYPE.standfirst;
+      const standH = drawnTextHeight(
+        estimateLines(slide.subtitle, GRID.contentWidth, standStyle.size), standStyle.size
+      );
+      requests.push(...textBox(id("sub"), page, slide.subtitle, standStyle, {
+        x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: standH,
+      }));
+      chartBandTop = GRID.bodyY + standH + 8;
+    }
+
+    if (layout === "stat") {
+      // A stat slide's BODY is its second row of figures — the supporting
+      // numbers a source page sets under the headline ones. The layout never
+      // drew it, so a page of seven figures came out as four and an empty
+      // middle, which was the very first thing the client noticed. With a
+      // body the headline row takes the upper share of the band and the body
+      // the rest; without one the row stays centred as before.
+      //
+      // The split used to be a flat 56% of the band, with the body placed at
+      // that mark whatever the figures above it did. The moment the labels were
+      // measured honestly the block grew past the mark, and the source lines
+      // were drawn through the first bullet. So: top-align the figures when
+      // there is a body, and start the body where they actually end.
+      const hasBody = !!slide.body?.trim();
+      const grid = isStatGrid(slide.stats);
+      // The grid is top-aligned whenever something follows it — bullets, or
+      // the takeaway — so the bar sits just under the cards and the slack
+      // falls BELOW the bar, where the reference page leaves it. Alone, it
+      // centres in the band like every other self-contained block.
+      const stat = statRequests(page, id, slide.stats || [], band, onDark, hasBody || (grid && !!slide.note?.trim()));
+      requests.push(...stat.reqs);
+      if (grid && !hasBody) contentBottom = stat.bottom;
+      if (hasBody) {
+        const bodyTop = GRID.bodyY + stat.height + 10;
+        const room = Math.max(30, GRID.bodyY + band - bodyTop);
+        // The bullets step down to what fits under the figures — 10, 9, then
+        // the 8pt floor — because Slides draws an overflowing body straight
+        // through the takeaway bar beneath it, which is what happened the
+        // moment the bar came up off the bezel.
+        const base = onDark ? TYPE.bodyDark : TYPE.body;
+        const paras = String(slide.body).split("\n").filter((l) => l.trim());
+        let bodyStyle2 = base;
+        for (const sz of [base.size, 9, 8]) {
+          bodyStyle2 = { ...base, size: sz };
+          const lines = paras.reduce((n, p) => n + Math.max(1, estimateLines(p, GRID.contentWidth, sz, true)), 0);
+          if (drawnTextHeight(lines, sz, 4, paras.length) <= room) break;
+        }
+        requests.push(...textBox(id("body"), page, slide.body, bodyStyle2, {
+          x: GRID.margin, y: bodyTop, width: GRID.contentWidth, height: room,
+        }, { bullets: true, spaceBelow: 4 }));
+        contentBottom = bodyTop + room;
+      }
+    }
+    else if (slide.chart) {
+      requests.push(...(
+        layout === "stacked-bar" ? stackedBarRequests(page, id, slide.chart, onDark, chartBandTop, band)
+        : layout === "line-chart" ? lineChartRequests(page, id, slide.chart, onDark, chartBandTop, band)
+        : barChartRequests(page, id, slide.chart, onDark, chartBandTop, band)));
+    }
+  } else if (layout === "swot" || layout === "matrix" || layout === "comparison" || layout === "table" || layout === "scatter" || layout === "venn") {
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY, width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
+      }),
+    );
+    let aTop = GRID.bodyY;
+    if (slide.subtitle?.trim()) {
+      const standStyle = onDark ? TYPE.standfirstDark : TYPE.standfirst;
+      const standH = drawnTextHeight(estimateLines(slide.subtitle, GRID.contentWidth, standStyle.size), standStyle.size);
+      requests.push(...textBox(id("sub"), page, slide.subtitle, standStyle, {
+        x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: standH,
+      }));
+      aTop = GRID.bodyY + standH + 8;
+    }
+    if (layout === "swot" && slide.swot) requests.push(...swotRequests(page, id, slide.swot, aTop, GRID.bodyY + band));
+    else if (layout === "matrix" && slide.matrix) requests.push(...matrixRequests(page, id, slide.matrix, aTop, GRID.bodyY + band));
+    else if (layout === "comparison" && slide.comparison) requests.push(...comparisonRequests(page, id, slide.comparison, aTop, GRID.bodyY + band));
+    else if (layout === "table" && slide.table) {
+      const tableMeta = { bottom: 0 };
+      requests.push(...tableRequests(page, id, slide.table, aTop, slide.bodyRight, GRID.bodyY + band, { onDark, meta: tableMeta }));
+      if (tableMeta.bottom) contentBottom = tableMeta.bottom;
+    }
+    else if (layout === "scatter" && slide.scatter) requests.push(...scatterRequests(page, id, slide.scatter, onDark, aTop, GRID.bodyY + band));
+    else if (layout === "venn" && slide.venn) {
+      const vennMeta = { noteDrawn: false };
+      requests.push(...vennRequests(page, id, slide.venn, onDark, aTop, GRID.bodyY + band, slide.note, vennMeta));
+      noteDrawn = vennMeta.noteDrawn;
+    }
+  } else if (layout === "timeline-parallel") {
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY,
+        width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
+      }),
+      ...textBox(id("sub"), page, slide.subtitle, bodyStyle, {
+        x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: 20,
+      }),
+      ...parallelTimelineRequests(page, id, slide.tracks || [], slide.today),
+    );
+  } else if (layout === "statement") {
+    // One big Playfair sentence on the paper ground — the slide that makes the
+    // argument. From the master template's catalogue: at most ~14 words in the
+    // title, an optional Roboto lead below, nothing else. The vertical centring
+    // is what keeps a nearly-empty slide reading as composed rather than
+    // unfinished.
+    const stTitle = fitHeading(slide.title, TYPE.statementTitle, GRID.contentWidth * 0.86, {
+      bottom: CANVAS.height * 0.62,
+      minTop: CANVAS.height * 0.30,
+      minHeight: 60,
+      minSize: 18,
+    });
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY, width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, stTitle.style, {
+        x: GRID.margin, y: stTitle.y, width: GRID.contentWidth * 0.86, height: stTitle.height,
+      }, { lineSpacing: 1.18 }),
+      ...textBox(id("lead"), page, slide.subtitle || slide.body, TYPE.statementLead, {
+        x: GRID.margin, y: stTitle.y + stTitle.height + 14, width: GRID.contentWidth * 0.7, height: 60,
+      }),
+    );
+  } else if (layout === "feature") {
+    const feature = fitHeading(slide.title, TYPE.featureTitle, GRID.contentWidth * 0.72, {
+      bottom: IMAGE.overlayBodyY - 10,
+      minTop: CANVAS.height * 0.28,
+      minHeight: IMAGE.overlayTitleHeight,
+      minSize: 18,
+    });
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, TYPE.eyebrowDark, {
+        x: GRID.margin, y: GRID.eyebrowY,
+        width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, feature.style, {
+        x: GRID.margin, y: feature.y,
+        width: GRID.contentWidth * 0.72, height: feature.height,
+      }),
+      ...textBox(id("body"), page, slide.body, TYPE.featureBody, {
+        x: GRID.margin, y: IMAGE.overlayBodyY,
+        width: GRID.contentWidth * 0.72, height: IMAGE.overlayBodyHeight,
+      }),
+    );
+  } else if (layout === "image-split") {
+    // Image bleeds off the left edge; text takes the right half. Bleeding
+    // rather than insetting is what makes it read as editorial instead of as a
+    // picture pasted into a document.
+    if (slide.resolvedImage) {
+      requests.push({
+        createImage: {
+          objectId: id("half"),
+          url: slide.resolvedImage.url,
+          elementProperties: {
+            pageObjectId: page,
+            size: { width: pt(IMAGE.splitWidth), height: pt(CANVAS.height) },
+            transform: { scaleX: 1, scaleY: 1, translateX: 0, translateY: 0, unit: "PT" },
+          },
+        },
+      });
+    }
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: IMAGE.splitTextX, y: GRID.eyebrowY,
+        width: IMAGE.splitTextWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: IMAGE.splitTextX, y: titleBox.y,
+        width: IMAGE.splitTextWidth, height: titleBox.height,
+      }),
+      ...textBox(id("body"), page, slide.body, bodyStyle, {
+        x: IMAGE.splitTextX,
+        // Under the title, wherever it ended up — not at a fixed y that the
+        // title may now reach past.
+        y: Math.max(GRID.bodyY, titleBox.y + titleBox.height + 8),
+        width: IMAGE.splitTextWidth,
+        height: Math.max(60, CANVAS.height - GRID.margin - 18 - Math.max(GRID.bodyY, titleBox.y + titleBox.height + 8)),
+      }, { bullets: true }),
+      // In the TEXT column, not on the picture. On the picture it would sit
+      // beside what it credits, but this layout resolves with gradient:false —
+      // nothing measures that corner, so a 6pt light line over an unknown
+      // photograph is exactly the invisible credit this is here to stop.
+      ...creditRequests(id("credit"), page, slide.resolvedImage?.credit,
+        { x: IMAGE.splitTextX, width: IMAGE.splitTextWidth }, false),
+    );
+  } else if (layout === "image-grid") {
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY,
+        width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
+      }),
+      ...gridRequests(page, id, slide.resolvedImages || []),
+    );
+  } else if (layout === "two-column") {
+    // The comparison slide, designed. It was two bare bullet piles — no rule,
+    // no headers, no divider, ~55% dead paper — and it catches exactly the
+    // before/after and pricing content that closes a deal. Now: a rule under
+    // the title, an optional standfirst, per-column headers over an accent
+    // underline, and a hairline down the middle so the two sides read as a
+    // comparison rather than two lists that happen to share a slide.
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY,
+        width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
+      }),
+      ...ruleRequests(id("rule"), page, GRID.bodyY - RULE.gapAbove, GRID.contentWidth, onDark),
+    );
+
+    let colTop = GRID.columnY;
+    if (slide.subtitle?.trim()) {
+      const standStyle = onDark ? TYPE.standfirstDark : TYPE.standfirst;
+      const standH = drawnTextHeight(
+        estimateLines(slide.subtitle, GRID.contentWidth, standStyle.size), standStyle.size
+      );
+      requests.push(...textBox(id("sub"), page, slide.subtitle, standStyle, {
+        x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: standH,
+      }));
+      colTop = GRID.bodyY + standH + 12;
+    }
+
+    // TINTED PANELS, when tones are given, and the hairline when they are not.
+    //
+    // Two bare lists with a rule between them is the treatment the source deck
+    // reserves for its plainest pages; everywhere it wants the reader to feel a
+    // contrast — what works against what does not — it tints the two columns
+    // and inks their headings to match. The hairline is redundant once the
+    // cards are there, and drawing both looked like a mistake.
+    const toneL = toneAt(slide.tones, 0);
+    const toneR = toneAt(slide.tones, 1);
+    const panelBottom = NOTE.bottom - noteHeight(slide.note) - (slide.note?.trim() ? NOTE.gap : 0);
+    const TONE_PAD = 12;
+    const tinted = !!(toneL || toneR);
+    const hasHeads = !!(slide.columns?.left?.trim() || slide.columns?.right?.trim());
+
+    // Smaller inside a card, which is how the source deck sets it: the tint
+    // already separates the two sides, so the type does not also have to be
+    // full size to hold the column together.
+    // 8pt in a tinted card — the floor, and the reference's own size for these
+    // lists — with 4pt between items: seven format bullets fit one 160pt box
+    // there, and at 8.5pt with 6pt gaps the same list split across two
+    // slides here.
+    const COL_GAP = 4;
+    const colBodyStyle = tinted
+      ? { ...bodyStyle, size: Math.max(8, bodyStyle.size - 2), color: COLOR.ink }
+      : bodyStyle;
+
+    // SIZED TO THE WORDS. The tinted panels used to stretch from the standfirst
+    // to the takeaway bar whatever they held: five bullets ending a third of
+    // the way down a 246pt card, the room reading the empty tint as content
+    // that had not arrived. The reference hugs its text and leaves the slack
+    // at the FOOT of the slide, outside the boxes. So: measure both columns,
+    // draw the panel to the taller one, and tell the takeaway bar where the
+    // content ends.
+    const textW = GRID.columnWidth - (tinted ? TONE_PAD * 2 : 0);
+    const measure = (body: string | undefined) => {
+      const t = (body || "").trim();
+      if (!t) return 0;
+      const paras = t.split("\n").filter((l) => l.trim()).length;
+      return drawnTextHeight(estimateLines(t, textW, colBodyStyle.size, true), colBodyStyle.size, COL_GAP, paras);
+    };
+    const leftH = measure(slide.body), rightH = measure(slide.bodyRight);
+    const headBlock = hasHeads ? (tinted ? 24 : 34) : 0;
+    const wanted = (tinted ? TONE_PAD : 0) + headBlock + Math.max(leftH, rightH) + (tinted ? TONE_PAD + 2 : 0);
+    const panelH = PROBING ? Math.max(60, panelBottom - colTop) : Math.max(60, Math.min(panelBottom - colTop, wanted));
+
+    // INSIDE the margin. The panels used to reach 12pt past the column edges
+    // on both sides, so they overhung the takeaway bar beneath them and the
+    // title above — three left edges on one slide, the cards visibly jutting.
+    if (tinted) {
+      if (toneL) requests.push(...filledShape(id("tl"), page, "ROUND_RECTANGLE", toneL.tint, {
+        x: GRID.columnLeftX, y: colTop, width: GRID.columnWidth, height: panelH,
+      }));
+      if (toneR) requests.push(...filledShape(id("tr"), page, "ROUND_RECTANGLE", toneR.tint, {
+        x: GRID.columnRightX, y: colTop, width: GRID.columnWidth, height: panelH,
+      }));
+    } else {
+      const midX = (GRID.columnLeftX + GRID.columnWidth + GRID.columnRightX) / 2;
+      requests.push(...filledShape(id("vrule"), page, "RECTANGLE", onDark ? COLOR.greyLight : COLOR.navy, {
+        x: midX, y: colTop, width: RULE.hairlineThickness, height: panelH,
+      }, RULE.hairlineAlpha));
+    }
+
+    const inset = tinted ? TONE_PAD : 0;
+    const leftX = GRID.columnLeftX + inset, rightX = GRID.columnRightX + inset;
+    let bodyTop = colTop + inset;
+    // A tinted card is a LIGHT surface whatever the ground, so its ink comes
+    // from the tone rather than from the slide.
+    const headStyle = tinted
+      ? { ...TYPE.columnHeader, color: (toneL || toneR)!.ink }
+      : onDark ? { ...TYPE.columnHeader, color: COLOR.white } : TYPE.columnHeader;
+    if (hasHeads) {
+      requests.push(
+        ...textBox(id("lh"), page, slide.columns?.left,
+          toneL ? { ...headStyle, color: toneL.ink } : headStyle, {
+          x: leftX, y: bodyTop, width: textW, height: 20,
+        }),
+        ...textBox(id("rh"), page, slide.columns?.right,
+          toneR ? { ...headStyle, color: toneR.ink } : headStyle, {
+          x: rightX, y: bodyTop, width: textW, height: 20,
+        }),
+      );
+      // The accent underline is the plain treatment's device. Inside a tinted
+      // card the coloured heading already does that job, and the extra rule
+      // read as clutter.
+      if (!tinted) {
+        requests.push(
+          ...filledShape(id("lhu"), page, "RECTANGLE", onDark ? COLOR.tealSoft : COLOR.blue, {
+            x: leftX, y: bodyTop + 22, width: RULE.accentWidth, height: RULE.thickness,
+          }),
+          ...filledShape(id("rhu"), page, "RECTANGLE", onDark ? COLOR.tealSoft : COLOR.blue, {
+            x: rightX, y: bodyTop + 22, width: RULE.accentWidth, height: RULE.thickness,
+          }),
+        );
+      }
+      bodyTop += headBlock;
+    }
+
+    const colH = Math.max(30, colTop + panelH - bodyTop - (tinted ? TONE_PAD : 0));
+    requests.push(
+      ...textBox(id("left"), page, slide.body, colBodyStyle, {
+        x: leftX, y: bodyTop, width: textW, height: colH,
+      }, { bullets: true, spaceBelow: COL_GAP }),
+      ...textBox(id("right"), page, slide.bodyRight, colBodyStyle, {
+        x: rightX, y: bodyTop, width: textW, height: colH,
+      }, { bullets: true, spaceBelow: COL_GAP }),
+    );
+    contentBottom = colTop + panelH;
+  } else {
+    // content, case-study, dark-index all share the title + body skeleton;
+    // the eyebrow is what makes a case study read as one.
+    //
+    // This is the slide most decks are mostly made of, and measured it carried
+    // 12.5% ink, no drawn object of any kind, 116 characters to a line, and the
+    // bottom 47% of the canvas empty. Four things change that, none of them a
+    // new layout: a measure, a rule, a middle step in the type scale, and the
+    // photograph the slide already asked for and used to throw away.
+    // A panel replaces the rail: the master's split carries either a panel or
+    // an image on the right, never both.
+    const panel = slide.panel && (slide.panel.items?.length || slide.panel.title?.trim()) ? slide.panel : undefined;
+    const rail = panel ? null : railBox(slide);
+    // ONE decision, made above: proseColumn already narrows for a panel the
+    // same way it narrows for a rail. A second panel-check here is how the
+    // drawn box and the measured width drift apart — the mutation that removes
+    // the narrowing from one of them is invisible until a title wraps wrong.
+    const proseWidth = proseColumn;
+
+    if (panel) {
+      const panelW = GRID.contentWidth - GRID.proseNarrow - 18;
+      const panelMeta = { bottom: 0 };
+      requests.push(...panelRequests(page, id, panel, {
+        x: GRID.margin + GRID.proseNarrow + 18, y: GRID.bodyY,
+        width: panelW, height: CANVAS.height - GRID.margin - GRID.bodyY - 4,
+      }, panelMeta));
+    }
+
+    if (rail) {
+      requests.push({
+        createImage: {
+          objectId: id("rail"), url: rail.url,
+          elementProperties: {
+            pageObjectId: page,
+            size: { width: pt(rail.width), height: pt(rail.height) },
+            transform: { scaleX: 1, scaleY: 1, translateX: rail.x, translateY: rail.y, unit: "PT" },
+          },
+        },
+      });
+    }
+
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY,
+        width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: GRID.margin, y: titleBox.y, width: proseWidth, height: titleBox.height,
+      }),
+      ...ruleRequests(id("rule"), page, GRID.bodyY - RULE.gapAbove, proseWidth, onDark),
+    );
+
+    // The standfirst takes the room it needs and the bullets start under it.
+    let bodyTop = GRID.bodyY;
+    if (slide.subtitle?.trim()) {
+      const standStyle = onDark ? TYPE.standfirstDark : TYPE.standfirst;
+      const standHeight = drawnTextHeight(
+        estimateLines(slide.subtitle, proseWidth, standStyle.size), standStyle.size
+      );
+      requests.push(...textBox(id("sub"), page, slide.subtitle, standStyle, {
+        x: GRID.margin, y: bodyTop, width: proseWidth, height: standHeight,
+      }));
+      bodyTop += standHeight + 10;
+    }
+
+    // Four bullets in a 241pt band left 47% of the canvas empty below them.
+    // The paragraphs are spread through the band instead — up to a limit, past
+    // which a list stops reading as a list and starts reading as loose lines.
+    const bodyHeight = Math.max(40, GRID.bodyY + band - bodyTop);
+    const paras = (slide.body || "").split("\n").map((l) => l.trim()).filter(Boolean);
+    let bodySpacing = 6;
+    if (paras.length > 1) {
+      let lines = 0;
+      for (const para of paras) lines += Math.max(1, estimateLines(para, proseWidth, bodyStyle.size, true));
+      const natural = drawnTextHeight(lines, bodyStyle.size, 6, paras.length);
+      const slack = bodyHeight - natural;
+      if (slack > 0) bodySpacing = Math.min(22, 6 + slack / (paras.length - 1));
+    }
+
+    requests.push(
+      ...textBox(id("body"), page, slide.body, bodyStyle, {
+        x: GRID.margin, y: bodyTop, width: proseWidth,
+        // Down to the foot of the band, not the old fixed height that stopped
+        // 39pt short of it and pooled every list under the title.
+        height: bodyHeight,
+      }, { bullets: true, spaceBelow: bodySpacing }),
+      ...(rail
+        ? creditRequests(id("credit"), page, slide.resolvedImage?.credit,
+            { x: GRID.margin, width: proseWidth }, onDark)
+        : []),
+    );
+  }
+
+  // The takeaway bar, on every layout. Drawn after the content so it sits on
+  // top of nothing — the band above was already shortened to make room.
+  if (!noteDrawn) requests.push(...noteRequests(page, id, slide.note, onDark,
+    contentBottom !== undefined ? contentBottom + NOTE.gap : undefined));
+
+  requests.push(...logoRequests(id("logo"), page, style, slide));
+
+  // The footer, from the master template: "The Content Engine" at the left and
+  // the page number at the right of every slide except the cover and the
+  // closing. It lives in the bottom margin band, below where any layout is
+  // allowed to draw, so it can never collide with content. The number is the
+  // builder's own — index is authoritative here in a way a model-supplied
+  // number never is.
+  if (layout !== "cover" && layout !== "closing") {
+    // ONE discreet line, and no page number.
+    //
+    // The footer used to sit 1.5pt from the bottom edge — inside the overscan
+    // of most projectors, so on the room's screen it was either cropped or
+    // stuck to the bezel — and carried a page number written as static text,
+    // which went wrong the moment the user merged two slides by hand. They
+    // removed both from every page. The reference deck's credit line sits
+    // ~15pt clear of the edge and names the programme; this does the same,
+    // with the deck's title stamped by the builder rather than typed per
+    // slide. Slides has no automatic page number the API can insert, so
+    // rather than a number that lies after any edit, there is none.
+    const inkLeft = onDark ? { ...TYPE.footerLeft, color: COLOR.greyLight } : TYPE.footerLeft;
+    requests.push(
+      ...textBox(id("ftl"), page, slide.footer || "The Content Engine", inkLeft, {
+        x: GRID.margin, y: FOOTER_Y, width: GRID.contentWidth, height: 12,
+      }),
+    );
+  }
+  return requests;
+}
+
+/** Speaker notes need a second pass: they live on a notes page whose shape id
+ *  Google assigns when the slide is created, so it cannot be referenced in the
+ *  same batchUpdate that creates it. Best-effort — a deck that lands without
+ *  its notes is still the deck the user asked for. */
+async function applySpeakerNotes(
+  presentationId: string,
+  slides: SlideInput[],
+  token: string
+): Promise<void> {
+  if (!slides.some((s) => s.notes?.trim())) return;
+
+  const fields = "slides(objectId,slideProperties(notesPage(notesProperties(speakerNotesObjectId))))";
+  const read = await googleFetch(`${SLIDES_API}/${presentationId}?fields=${encodeURIComponent(fields)}`, token);
+  if (!read.ok) {
+    console.warn(`[Slides] could not read notes pages (${read.status})`);
+    return;
+  }
+
+  const pages: any[] = read.json?.slides || [];
+  const requests: Req[] = [];
+  slides.forEach((slide, i) => {
+    const text = slide.notes?.trim();
+    const notesId = pages[i]?.slideProperties?.notesPage?.notesProperties?.speakerNotesObjectId;
+    if (text && notesId) requests.push({ insertText: { objectId: notesId, text, insertionIndex: 0 } });
+  });
+  if (!requests.length) return;
+
+  const res = await googleFetch(`${SLIDES_API}/${presentationId}:batchUpdate`, token, {
+    method: "POST",
+    body: JSON.stringify({ requests }),
+  });
+  if (!res.ok) console.warn(`[Slides] speaker notes failed (${res.status}) — deck itself is fine`);
+}
+
+/* ─────────────── Orchestration ─────────────── */
+
+/** Every Google call in this file, and it NEVER throws.
+ *
+ *  It used to. A 45s timeout or a dropped socket rejected instead of returning
+ *  {ok:false}, and each caller had been written on the assumption that a failure
+ *  arrives as a status code. So the batchUpdate timeout skipped the cleanup that
+ *  promises to leave nothing behind and orphaned a titled, empty presentation in
+ *  the user's Drive; and a timeout on the speaker notes — which run AFTER the
+ *  deck is finished and are best-effort by design — threw past the success
+ *  return and reported a complete, correct deck as a failure.
+ *
+ *  status 0 means the request never got an answer, which is a different thing
+ *  from a rejection and callers that can act on the difference do. */
+async function googleFetch(url: string, token: string, init: RequestInit = {}) {
+  try {
+    const res = await fetch(url, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        ...(init.headers || {}),
+      },
+      // The chat lambda is 300s and the stall guard does not cover tool
+      // execution, so an unbounded fetch could burn the whole turn.
+      signal: AbortSignal.timeout(45_000),
+    });
+    const json = await res.json().catch(() => ({} as any));
+    return { ok: res.ok, status: res.status, json };
+  } catch (err: any) {
+    const message = err?.name === "TimeoutError" || err?.name === "AbortError"
+      ? "Google did not answer in time"
+      : err?.message || "Could not reach Google";
+    console.warn(`[Slides] ${init.method || "GET"} ${url.split("?")[0]} failed: ${message}`);
+    return { ok: false, status: 0, json: { error: { message } } as any };
+  }
+}
+
+/**
+ * Split a slide whose body will not fit, rather than letting it overflow.
+ *
+ * Slides does not reflow or shrink text to fit a box — it draws it and lets it
+ * run past the edge, off the bottom of the slide. So an over-long body silently
+ * loses its last bullets, and nothing in the deck says so.
+ *
+ * Splitting rather than shrinking is deliberate: type size is part of the brand
+ * and a slide set two points smaller than its neighbours reads as a mistake,
+ * where a second slide reads as a deck. The continuation keeps the title with a
+ * marker so it is obviously the same thought, not a new one.
+ *
+ * Estimated, not measured — there is no text metric server-side. The estimate
+ * is deliberately generous: splitting a slide that would have fit is a smaller
+ * error than dropping the words that did not.
+ */
+/** A table the writer split by hand — "Title (continued)" over the same
+ *  columns — is one table again. The engine never splits a table (the
+ *  splitter excludes them on purpose), so a "(continued)" table is always the
+ *  MODEL's doing, and the reference deck keeps nine engines on one page. The
+ *  renderer declares "Showing N of M" if the rejoined rows exceed the cap. */
+export function mergeContinuedTables(slides: SlideInput[]): SlideInput[] {
+  const out: SlideInput[] = [];
+  for (const s of slides) {
+    const prev = out[out.length - 1];
+    const cont = !!(s && s.layout === "table" && s.table && /\(continued\)\s*$/i.test(String(s.title || "")));
+    const sameCols = !!(prev && prev.layout === "table" && prev.table &&
+      JSON.stringify(prev.table.columns || []) === JSON.stringify(s?.table?.columns || []));
+    if (cont && sameCols) {
+      prev.table = { ...prev.table, rows: [...(prev.table!.rows || []), ...(s.table!.rows || [])] };
+      if (s.note?.trim()) prev.note = s.note;
+      if (s.notes?.trim()) prev.notes = [prev.notes, s.notes].filter(Boolean).join("\n");
+      continue;
+    }
+    out.push(s);
+  }
+  return out;
+}
+
+export function splitOverflowingSlides(slides: SlideInput[]): SlideInput[] {
+  // A "(continued)" table is rejoined BEFORE anything is split, on every path
+  // that builds a deck, so the preview and the Drive build agree.
+  slides = mergeContinuedTables(slides);
+  const out: SlideInput[] = [];
+  for (let i = 0; i < slides.length; i++) {
+    // A FIXPOINT, not one pass. Splitting a body in two used to assume the
+    // remainder fitted; a body three times the box produced one full slide and
+    // one that still overflowed.
+    const pending: SlideInput[] = [slides[i]];
+    for (let guard = 0; guard < 12 && pending.length; guard += 1) {
+      const slide = pending.shift() as SlideInput;
+      const pieces = splitOnce(slide, out.length);
+      if (pieces.length === 1) { out.push(pieces[0]); continue; }
+      out.push(pieces[0]);
+      pending.unshift(...pieces.slice(1));
+    }
+    // Whatever the guard did not resolve still belongs in the deck.
+    for (let j = 0; j < pending.length; j++) out.push(pending[j]);
+  }
+  return out;
+}
+
+/** The box a layout actually draws `body` into, found by PROBING the builder.
+ *
+ *  Measured rather than listed, the same trick textBandsFor uses, because the
+ *  estimate has to follow the geometry: the splitter measured every body
+ *  against the full 671pt content width, and image-split draws it into 315pt.
+ *  A body it judged to be eight lines was sixteen in the box it landed in, so
+ *  the slide that most needed splitting was the one never split. */
+const PROBE = "\u241E";
+
+/** True while the splitter is measuring a layout with a dummy body. A layout
+ *  that sizes its box to its words must report its CEILING here, not the hug:
+ *  the splitter asks "how much room does this field have", and a box drawn
+ *  to fit a two-line probe answered "two lines" — so every real body was
+ *  judged to overflow and a 39-slide deck came back as 53. */
+let PROBING = false;
+
+function bodyBox(
+  slide: SlideInput, index: number, field: "body" | "bodyRight"
+): { width: number; height: number; size: number; bullets: boolean; spaceBelow: number } | undefined {
+  // The probe must measure the box this slide will END UP with, not the box it
+  // has right now. On content/case-study a picture becomes a RIGHT-HAND RAIL
+  // that narrows the body from 540pt to 432pt — but splitting runs BEFORE image
+  // resolution, so the slide carries only `image: {query}` and railBox, which
+  // keys on resolvedImage, would report no rail and measure the wide column. A
+  // body that overflows the narrow column then never splits and runs off the
+  // slide. So: if the slide WILL carry a rail (it has an image intent, resolved
+  // or not), the probe gets a stub resolvedImage to force the narrow measure.
+  const willRail = (slide.resolvedImage?.url || slide.image?.query || slide.image?.url) &&
+    (slide.layout === "content" || slide.layout === "case-study");
+  const probe: any = {
+    ...slide,
+    resolvedImage: willRail ? { url: "probe", scrim: 0 } : undefined,
+  };
+  probe[field] = `${PROBE}\n${PROBE}`;
+  PROBING = true;
+  let reqs: any[];
+  try { reqs = buildSlideRequests(probe, index, "m") as any[]; } finally { PROBING = false; }
+  let id: string | undefined;
+  for (const r of reqs) {
+    if (r.insertText && String(r.insertText.text).indexOf(PROBE) >= 0) { id = r.insertText.objectId; break; }
+  }
+  if (!id) return undefined;   // this layout does not draw that field at all
+  let width = 0, height = 0, size = TYPE.body.size, bullets = false, spaceBelow = SPACE_BELOW;
+  for (const r of reqs) {
+    if (r.createShape && r.createShape.objectId === id) {
+      width = r.createShape.elementProperties.size.width.magnitude;
+      height = r.createShape.elementProperties.size.height.magnitude;
+    }
+    if (r.updateTextStyle && r.updateTextStyle.objectId === id && r.updateTextStyle.style?.fontSize) {
+      size = r.updateTextStyle.style.fontSize.magnitude;
+    }
+    if (r.createParagraphBullets && r.createParagraphBullets.objectId === id) bullets = true;
+    // The gap the layout actually draws between paragraphs, so the splitter
+    // and the renderer never disagree about how tall a list is.
+    if (r.updateParagraphStyle && r.updateParagraphStyle.objectId === id && r.updateParagraphStyle.style?.spaceBelow?.magnitude !== undefined) {
+      spaceBelow = r.updateParagraphStyle.style.spaceBelow.magnitude;
+    }
+  }
+  return { width, height, size, bullets, spaceBelow };
+}
+
+/** How much room a block of paragraphs needs in a given box. */
+const SPACE_BELOW = 6;
+
+function blockHeight(
+  paras: string[], box: { width: number; size: number; bullets: boolean; spaceBelow?: number }
+): number {
+  let lines = 0;
+  for (let i = 0; i < paras.length; i++) {
+    lines += Math.max(1, estimateLines(paras[i], box.width, box.size, box.bullets));
+  }
+  return drawnTextHeight(lines, box.size, box.spaceBelow ?? SPACE_BELOW, paras.length);
+}
+
+/** One split, or none. */
+function splitOnce(slide: SlideInput, index: number): SlideInput[] {
+  const body = slide.body;
+  // Only prose layouts overflow this way; a chart's geometry is bounded.
+  // Structured layouts are excluded wholesale: a slide is split by dividing
+  // its BODY, and everything else on it is copied — so splitting a table
+  // slide would print the entire table twice, once per half. The body on
+  // those layouts is commentary, bounded, and better slightly long than
+  // duplicated.
+  const splittable = !slide.chart && !slide.stats && !slide.milestones && !slide.tracks &&
+    !slide.cards && !slide.quote && !slide.stages && !slide.logos &&
+    !slide.table && !slide.comparison && !slide.swot && !slide.matrix &&
+    !slide.venn && !slide.scatter && !slide.layers && !slide.images && !slide.panel;
+  if (!body || !splittable) return [slide];
+
+  // The cover and the closing size their body box TO THE CONTENT, so the
+  // probe (which measures a two-line body) reports a box the real body would
+  // never be given, and the closing's three wrapped lines became "Thank you
+  // (continued)". A box that grows with its text cannot overflow; it is
+  // clamped to the canvas instead.
+  if (slide.layout === "closing" || slide.layout === "cover") return [slide];
+  const box = bodyBox(slide, index, "body");
+  if (!box || box.width <= 0) return [slide];
+
+  const paras = body.split("\n");
+  if (blockHeight(paras, box) <= box.height) return [slide];
+
+  let take = 0;
+  for (let i = 0; i < paras.length; i++) {
+    if (take && blockHeight(paras.slice(0, i + 1), box) > box.height) break;
+    take = i + 1;
+  }
+  // A single paragraph taller than the whole box cannot be split by lines; let
+  // it through rather than emitting an empty slide and looping.
+  if (!take || take >= paras.length) return [slide];
+
+  // BALANCE. Filling the first slide to the brim and leaving one bullet on the
+  // second is how a deck ends up with a slide carrying a title and the words
+  // "Fee: CHF 6,000". If the remainder would be nearly empty, split down the
+  // middle instead — as long as the first half still fits.
+  const rest = () => paras.slice(take);
+  if (blockHeight(rest(), box) < box.height * 0.4 && take > 1) {
+    const middle = Math.ceil(paras.length / 2);
+    if (middle < take && blockHeight(paras.slice(0, middle), box) <= box.height) take = middle;
+  }
+
+  return [
+    { ...slide, body: paras.slice(0, take).join("\n") },
+    {
+      ...slide,
+      // "(continued)" once, however many times a body has to be split — a
+      // fixpoint over a very long body otherwise produced "T (continued)
+      // (continued) (continued)".
+      title: /\(continued\)\s*$/.test(slide.title || "")
+        ? slide.title
+        : `${slide.title || ""} (continued)`.trim(),
+      body: rest().join("\n"),
+      // The eyebrow and the speaker notes belong to the first half — an eyebrow
+      // repeated reads as a new section starting. The picture is INHERITED
+      // instead of re-requested: dropping it left an image-split slide as a
+      // column of text beside half a slide of nothing, and keeping the query
+      // would buy a second, different photograph for the same point. See
+      // inheritContinuationImages, which runs after resolution — splitting
+      // happens BEFORE it, so there is nothing to copy yet at this moment.
+      // bodyRight goes with the eyebrow: the spread copies it, so a two-column
+      // slide whose LEFT column overflowed repeated its whole right column on
+      // the continuation.
+      // The standfirst and the takeaway belong to the FIRST half too. A real
+      // conversion produced a continuation carrying one leftover sentence,
+      // padded to a full slide by the intro and the takeaway repeated verbatim
+      // — framing cloned to dress up a slide that holds almost nothing.
+      image: undefined, eyebrow: undefined, notes: undefined, bodyRight: undefined,
+      subtitle: undefined, note: undefined, strip: undefined, tones: undefined,
+      continuation: true,
+    },
+  ];
+}
+
+/**
+ * Turn every slide's image BRIEF into an actual picture, before anything is
+ * drawn or previewed.
+ *
+ * Resolution happens once, up front, for a reason: the preview and the built
+ * deck must show the same photograph. Resolving lazily at draw time would give
+ * a draft one Unsplash hit and the published deck another, and the preview
+ * would stop predicting the deck — which is the one thing it has to do.
+ *
+ * Slides resolve concurrently, and a slide whose image cannot be found simply
+ * keeps its solid brand background rather than failing the deck.
+ */
+/** Where this layout will draw text on top of the photograph, as fractions of
+ *  the canvas — read from the layout ITSELF rather than listed by hand.
+ *
+ *  Listing them by hand is what went wrong: the gradient was built for a cover,
+ *  whose title sits across the foot, and every other full-bleed layout inherited
+ *  a shape that was never measured against where its own words land. A closing
+ *  slide writes across the middle and a feature slide starts at the very top,
+ *  and both were given a picture that is lightest exactly there.
+ *
+ *  Derived from the same request list the deck is built from, so a box that
+ *  moves takes its gradient with it. */
+export function textBandsFor(slide: SlideInput, index: number): TextBand[] {
+  const raw: TextBand[] = [];
+  for (const req of buildSlideRequests({ ...slide, resolvedImage: undefined }, index, "band")) {
+    const shape = (req as any).createShape;
+    if (!shape || shape.shapeType !== "TEXT_BOX") continue;
+    const y = shape.elementProperties.transform.translateY;
+    const h = shape.elementProperties.size.height.magnitude;
+    const top = Math.max(0, Math.min(1, y / CANVAS.height));
+    const bottom = Math.max(0, Math.min(1, (y + h) / CANVAS.height));
+    if (bottom > top) raw.push({ top, bottom });
+  }
+  // The photo credit is added by hand, because it is the one box that cannot be
+  // derived: it exists only once the image has been resolved, and this runs to
+  // decide how to bake that image. White 6pt type on an unmeasured foot is
+  // exactly the case that leaves a photographer's name invisible.
+  raw.push({
+    top: IMAGE.creditY / CANVAS.height,
+    bottom: (IMAGE.creditY + IMAGE.creditHeight) / CANVAS.height,
+  });
+
+  // Merged, because eight overlapping boxes is eight measurements of nearly the
+  // same pixels.
+  raw.sort((a, b) => a.top - b.top);
+  const merged: TextBand[] = [];
+  for (const band of raw) {
+    const last = merged[merged.length - 1];
+    if (last && band.top <= last.bottom + 0.02) last.bottom = Math.max(last.bottom, band.bottom);
+    else merged.push({ ...band });
+  }
+  return merged;
+}
+
+/** Give every continuation the picture of the slide it was cut from.
+ *
+ *  Run AFTER resolution, because splitting runs before it: at the moment the
+ *  slide is cut there is only an image QUERY, and nothing to copy. Keeping the
+ *  query on the tail instead would buy a second, different photograph for the
+ *  same point — and pay for it. This was shipped once as `resolvedImage` left
+ *  on the continuation, which did nothing at all: the field is empty when the
+ *  splitter runs, and the check that was supposed to prove otherwise used a
+ *  fixture with the picture already resolved.
+ */
+export function inheritContinuationImages(slides: SlideInput[]): void {
+  for (let i = 1; i < slides.length; i++) {
+    const slide = slides[i];
+    if (!slide.continuation || slide.resolvedImage) continue;
+    const parent = slides[i - 1];
+    if (parent.resolvedImage) slide.resolvedImage = parent.resolvedImage;
+  }
+}
+
+/** Reissue the capability URLs a persisted draft carries.
+ *
+ *  They last thirty days; the draft in the thread lasts for ever. A deck
+ *  reopened five weeks later handed Google links it could only 404 — and one
+ *  unfetchable image fails the whole batchUpdate, so the deck did not build at
+ *  all rather than building with a gap. Anything not minted by us passes
+ *  through untouched. */
+export function refreshDeckImageUrls(slides: SlideInput[]): void {
+  for (let i = 0; i < slides.length; i++) {
+    const s: any = slides[i];
+    if (s.resolvedImage?.url) s.resolvedImage.url = refreshSignedMediaUrl(s.resolvedImage.url);
+    if (s.quote?.resolvedImage?.url) {
+      s.quote.resolvedImage.url = refreshSignedMediaUrl(s.quote.resolvedImage.url);
+    }
+    for (const r of s.resolvedImages || []) if (r?.url) r.url = refreshSignedMediaUrl(r.url);
+    for (const l of s.logos || []) if (l?.resolvedUrl) l.resolvedUrl = refreshSignedMediaUrl(l.resolvedUrl);
+    for (const c of s.cards || []) {
+      if (c?.resolvedImage?.url) c.resolvedImage.url = refreshSignedMediaUrl(c.resolvedImage.url);
+      if (c?.resolvedIcon) c.resolvedIcon = refreshSignedMediaUrl(c.resolvedIcon);
+    }
+  }
+}
+
+/** Hands back the bytes of the user's Nth attached image (1-based), or null.
+ *  Injected rather than imported so lib/slides never reaches into the chat
+ *  layer — the same reason the image GENERATOR is injected. */
+export type AttachmentSupplier = (
+  index: number
+) => Promise<{ bytes: Buffer; contentType: string } | null>;
+
+export async function resolveDeckImages(
+  slides: SlideInput[],
+  generate?: ImageGenerator,
+  attachments?: AttachmentSupplier,
+  /** Ticked once per slide whose picture had to be fetched or generated. The
+   *  execution phase used to be SILENT — a 27-slide deck with photographs sat
+   *  behind one static line for minutes and read as hung. */
+  onProgress?: (done: number, total: number) => void
+): Promise<void> {
+  // Normalise the layout name ONCE, here, because every build path goes through
+  // this function. A slide asking for "title" or "bullets" — names the sibling
+  // .pptx tool uses, which the model sees in the same turn — is drawn as the
+  // nearest real layout instead of throwing, and the substitution is recorded
+  // on the slide so the deck can be described accurately afterwards.
+  slides.forEach((slide, i) => {
+    const asked = slide.layout as string | undefined;
+    const used = layoutOf(asked, i);
+    if (asked && asked !== used) {
+      slide.layoutAsked = asked;
+      console.warn(`[Slides] slide ${i + 1}: unknown layout "${asked}" — drawn as "${used}"`);
+    }
+    slide.layout = used;
+  });
+
+  // A deck-wide art-direction note, set once by the model, threaded into every
+  // PHOTOGRAPH query so a deck's images read as one commission — a beach cover
+  // and a factory feature can share "muted, cinematic, cool light" instead of
+  // being two unrelated stock grabs. Never applied to a `url` (an exact image),
+  // and never to logos, icons or a named person's portrait.
+  const deckStyle = slides.find((sx) => sx.imageStyle?.trim())?.imageStyle?.trim();
+  const styled = (req: ImageRequest): ImageRequest => {
+    if (req.url || !req.query || !deckStyle) return req;
+    return { ...req, query: `${req.query}. ${deckStyle}` };
+  };
+
+  const pending = slides.filter((sx) => sx.image && !sx.resolvedImage && !sx.imageUnavailable).length;
+  let done = 0;
+  const tick = () => { done++; try { onProgress?.(done, pending); } catch { /* progress must never break a build */ } };
+
+  await Promise.all(
+    slides.map(async (slide, slideIndex) => {
+      const counted = !!(slide.image && !slide.resolvedImage && !slide.imageUnavailable);
+      try {
+      await (async () => {
+      // `imageUnavailable` means we already tried and could not find one. It
+      // is checked as well as `resolvedImage` because publishing re-runs this
+      // whole resolution: a slide that previewed as flat navy — because
+      // Unsplash 403'd on the demo tier, or the generator was rate-limited —
+      // could pick up a picture nobody had reviewed on the way into Drive, and
+      // the deck the user approved is not the deck they got. A retry is still
+      // available: changing the image in the preview resolves it explicitly.
+      // An ATTACHED image is resolved first and separately: it is not something
+      // a stock search or a generator could ever supply — a screenshot of the
+      // user's own product has to be the actual file they sent.
+      if (slide.image?.attachment && !slide.resolvedImage && attachments) {
+        const file = await attachments(slide.image.attachment);
+        if (file) {
+          const src = await attachmentImageSource(file.bytes, file.contentType, slide.image.region);
+          if (src) {
+            // Baked to the box it will sit in, like any other picture, so it
+            // does not letterbox. A screenshot carries text, so it is never
+            // darkened by a gradient — the crop is the whole treatment.
+            const railShape = slide.layout === "content" || slide.layout === "case-study"
+              ? { width: CANVAS.width - (GRID.margin + GRID.proseNarrow + IMAGE.railGap),
+                  height: CANVAS.height - GRID.bodyY }
+              : null;
+            const split = slide.layout === "image-split";
+            const baked = await bakeImageSource(src, {
+              aspect: railShape ? railShape.width / railShape.height
+                : split ? IMAGE.splitWidth / CANVAS.height
+                : CANVAS.width / CANVAS.height,
+              gradient: false,
+              // contain, not cover: cropping a UI screenshot to fill a box cuts
+              // off the very thing the slide is pointing at.
+              fit: "contain",
+            });
+            slide.resolvedImage = { url: baked.url, scrim: 0, credit: baked.credit, logo: baked.logo };
+          }
+        }
+        if (!slide.resolvedImage) {
+          slide.imageUnavailable = true;
+          slide.imageError = `attachment ${slide.image.attachment} could not be read`;
+        }
+      }
+
+      if (slide.image && !slide.resolvedImage && !slide.imageUnavailable) {
+        // Crop to the SHAPE OF THE BOX the image will sit in. Baking everything
+        // to 16:9 and dropping it into a tall half-slide letterboxes exactly the
+        // way the full-bleed cover used to, which is the bug this closes.
+        // Gradient only where text sits on the picture.
+        const split = slide.layout === "image-split";
+        // A prose slide's picture is a rail down the right, not a backdrop, so
+        // it is cropped to the rail's own shape. Baking it 16:9 and dropping it
+        // into a 239x272 box is the letterboxing every other path fixed.
+        const railShape = slide.layout === "content" || slide.layout === "case-study"
+          ? { width: CANVAS.width - (GRID.margin + GRID.proseNarrow + IMAGE.railGap),
+              height: CANVAS.height - GRID.bodyY }
+          : null;
+        // Tell the baker where this layout's lockup will land, so it measures
+        // the part of the picture the mark actually sits on.
+        const style = slideStyle(slide, slideIndex);
+        const place = LOGO_PLACEMENT[style.logoPlacement];
+        const r = await resolveImage(styled(slide.image), generate, {
+          aspect: railShape
+            ? railShape.width / railShape.height
+            : split ? IMAGE.splitWidth / CANVAS.height : CANVAS.width / CANVAS.height,
+          // No text sits on the rail or the split picture, so neither is
+          // darkened; a gradient there would dim a photograph for nothing.
+          gradient: !split && !railShape,
+          textBands: split || railShape ? undefined : textBandsFor(slide, slideIndex),
+          logoRegion: {
+            x: place.x / CANVAS.width, y: place.y / CANVAS.height,
+            w: place.width / CANVAS.width, h: place.height / CANVAS.height,
+          },
+        });
+        // `unusable` means the bake failed on a picture that CARRIES TEXT. The
+        // baked gradient is the contrast mechanism there — the flat scrim
+        // rectangle it replaced is gone — so using the raw file would put white
+        // type on raw daylight. The designed navy ground is better, and the
+        // reason is recorded rather than swallowed.
+        if (r && !r.unusable) {
+          slide.resolvedImage = { url: r.url, scrim: r.scrim, credit: r.credit, logo: r.logo };
+        } else {
+          slide.imageUnavailable = true;
+          slide.imageError = r?.unusable || "no image could be found for it";
+        }
+      }
+      if (slide.quote?.image && !slide.quote.resolvedImage) {
+        // trademark:true — the same guard the logos use, for the same reason.
+        // A quote is attributed to a real named person, and the owned→stock→
+        // generated chain would answer a "portrait of a CSO" query with a stock
+        // photograph of a stranger, printed under that person's name. A missing
+        // portrait must stay missing. A supplied `url` (an actual photo of the
+        // person) still resolves — trademark only blocks the search/generate.
+        const r = await resolveImage(slide.quote.image, generate, {
+          aspect: 1, gradient: false, trademark: true,
+        });
+        if (r) slide.quote.resolvedImage = { url: r.url };
+      }
+      if (slide.logos?.length) {
+        await Promise.all(slide.logos.map(async (l) => {
+          if (!l || l.resolvedUrl) return;
+          // contain, never cover: a cropped client mark is a misused trademark.
+          // trademark, so a mark that cannot be found stays missing rather than
+          // being filled in by stock photography or a generated picture.
+          const r = await resolveImage({ url: l.url, query: l.query }, generate,
+            { aspect: 2, gradient: false, fit: "contain", trademark: true });
+          if (r) l.resolvedUrl = r.url;
+        }));
+      }
+      if (slide.cards?.length) {
+        const cardAspect = cardGeometry(slide.cards.length).aspect;
+        await Promise.all(slide.cards.map(async (card) => {
+          if (!card) return;
+          if (card.icon && !card.resolvedIcon) {
+            const icon = await resolveIcon(card.icon);
+            if (icon) card.resolvedIcon = icon;
+          }
+          if (!card.image || card.resolvedImage) return;
+          const r = await resolveImage(styled(card.image), generate, { aspect: cardAspect, gradient: false });
+          if (r) card.resolvedImage = { url: r.url };
+        }));
+      }
+      if (slide.images?.length && !slide.resolvedImages) {
+        const specs = slide.images.slice(0, 12);
+        // WHICH pictures we get has to be settled before the shape to crop them
+        // to can be. The crop came from the requested set and the cells from the
+        // survivors, so six asked for and four found baked a 1.70 crop into a
+        // 2.29 cell — and Slides letterboxes rather than stretches, which is
+        // 57pt of dead ground per cell. The caption flip does the same thing:
+        // whether ANY image carries a caption changes the cell height, and it
+        // was read over the requested set too.
+        const found = (await Promise.all(specs.map(async (spec) => {
+          if (!spec) return null;
+          const src = await selectImageSource(styled(spec), generate);
+          return src ? { src, caption: spec.caption } : null;
+        }))).filter(Boolean) as { src: ImageSource; caption?: string }[];
+
+        if (found.length) {
+          const aspect = gridGeometry(found.length, found.some((f) => f.caption)).aspect;
+          // No text sits on a grid cell, so no gradient.
+          slide.resolvedImages = await Promise.all(found.map(async (f) => ({
+            url: (await bakeImageSource(f.src, { aspect, gradient: false })).url,
+            caption: f.caption,
+          })));
+        }
+        if (found.length < specs.length) {
+          slide.imagesDropped = specs.length - found.length;
+          console.warn(`[SlideImages] grid: ${slide.imagesDropped} of ${specs.length} images not found`);
+        }
+      }
+      })();
+      } finally {
+        if (counted) tick();
+      }
+    })
+  );
+
+  // Tails of split slides take the picture of the slide they came from.
+  inheritContinuationImages(slides);
+}
+
+/** Short unique prefix for one generation run. Base36 of the clock plus a few
+ *  random characters: unique enough within a single presentation, and short
+ *  enough to leave room under the 50-character objectId limit. */
+function runId(): string {
+  return `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
+}
+
+/** Replace every slide in an existing deck, keeping the FILE.
+ *
+ *  This is the difference between "make it more visual" changing the deck the
+ *  user has open and handing them a second link to a near-identical file. The
+ *  URL, revision history and any comments survive; only the slides are swapped.
+ *
+ *  New slides are created first and the old ones deleted in the same batch, so
+ *  the deck is never momentarily empty and the whole swap is one atomic update.
+ */
+export async function updateSlides(
+  presentationId: string,
+  title: string,
+  slides: SlideInput[],
+  userEmail: string,
+  generateImageFn?: ImageGenerator,
+  attachments?: AttachmentSupplier,
+  onImageProgress?: (done: number, total: number) => void
+): Promise<SlidesResult> {
+  const auth = await getUserGoogleToken(userEmail);
+  if (!auth.ok || !auth.accessToken) {
+    const reason = auth.reason as SlidesAuthFailure;
+    return { ok: false, error: authFailureMessage(reason), reason };
+  }
+  const token = auth.accessToken;
+
+  const existing = await googleFetch(
+    `${SLIDES_API}/${presentationId}?fields=slides(objectId)`, token
+  );
+  if (!existing.ok) {
+    // 404 here usually means the deck was created by something other than this
+    // app: drive.file only reaches files we made. Reported, not worked around.
+    return {
+      ok: false,
+      notFound: existing.status === 404 || existing.status === 403,
+      error: `Could not open that deck to update it: ${existing.json?.error?.message || `HTTP ${existing.status}`}`,
+    };
+  }
+  const oldIds: string[] = (existing.json?.slides || []).map((s: any) => s.objectId);
+
+  slides = splitOverflowingSlides(slides);
+  refreshDeckImageUrls(slides);
+  await resolveDeckImages(slides, generateImageFn, attachments, onImageProgress);
+
+  const run = runId();
+  const requests: Req[] = slides.flatMap((slide, i) => buildSlideRequests(slide, i, run));
+  for (const objectId of oldIds) requests.push({ deleteObject: { objectId } });
+
+  const updated = await googleFetch(`${SLIDES_API}/${presentationId}:batchUpdate`, token, {
+    method: "POST",
+    body: JSON.stringify({ requests }),
+  });
+  if (!updated.ok) {
+    const detail = updated.json?.error?.message || `HTTP ${updated.status}`;
+    console.warn(`[Slides] update failed: ${detail}`);
+    // No cleanup here, deliberately: the batch is atomic, so a failure leaves
+    // the user's existing deck exactly as it was. Deleting would destroy it.
+    return { ok: false, error: `Could not update the slides: ${detail}` };
+  }
+
+  // Keep the filename in step with the deck's own title.
+  await googleFetch(`${DRIVE_API}/${presentationId}?supportsAllDrives=true`, token, {
+    method: "PATCH",
+    body: JSON.stringify({ name: title }),
+  });
+
+  await applySpeakerNotes(presentationId, slides, token);
+
+  return {
+    ok: true,
+    presentationId,
+    url: `https://docs.google.com/presentation/d/${presentationId}/edit`,
+    title,
+    slideCount: slides.length,
+    updated: true,
+    thumbnails: await captureThumbnails(presentationId, token),
+  };
+}
+
+export async function generateSlides(
+  title: string,
+  slides: SlideInput[],
+  userEmail: string,
+  generateImageFn?: ImageGenerator,
+  attachments?: AttachmentSupplier,
+  onImageProgress?: (done: number, total: number) => void
+): Promise<SlidesResult> {
+  if (!userEmail) return { ok: false, error: "No signed-in user to create the deck for." };
+  if (!slides?.length) return { ok: false, error: "No slides to build." };
+  stampFooter(slides, title);
+
+  const auth = await getUserGoogleToken(userEmail);
+  if (!auth.ok || !auth.accessToken) {
+    const reason = auth.reason as SlidesAuthFailure;
+    return { ok: false, error: authFailureMessage(reason), reason };
+  }
+  const token = auth.accessToken;
+
+  const created = await googleFetch(SLIDES_API, token, {
+    method: "POST",
+    body: JSON.stringify({ title }),
+  });
+  if (!created.ok || !created.json?.presentationId) {
+    const detail = created.json?.error?.message || `HTTP ${created.status}`;
+    console.warn(`[Slides] create failed: ${detail}`);
+    // A disabled API is the one failure with an actionable fix, and its message
+    // is otherwise opaque enough that it looks like a permissions problem.
+    if (/has not been used|is disabled/i.test(detail)) {
+      return { ok: false, error: "The Google Slides API isn't enabled on this project yet." };
+    }
+    return { ok: false, error: `Could not create the presentation: ${detail}` };
+  }
+
+  const presentationId: string = created.json.presentationId;
+  const defaultSlideId: string | undefined = created.json.slides?.[0]?.objectId;
+
+  slides = splitOverflowingSlides(slides);
+  refreshDeckImageUrls(slides);
+  await resolveDeckImages(slides, generateImageFn, attachments, onImageProgress);
+
+  const run = runId();
+  const requests: Req[] = slides.flatMap((slide, i) => buildSlideRequests(slide, i, run));
+  // Delete Slides' own starter slide LAST — removing it first would leave the
+  // deck momentarily empty, and insertionIndex is evaluated as requests apply.
+  if (defaultSlideId) requests.push({ deleteObject: { objectId: defaultSlideId } });
+
+  const updated = await googleFetch(`${SLIDES_API}/${presentationId}:batchUpdate`, token, {
+    method: "POST",
+    body: JSON.stringify({ requests }),
+  });
+
+  if (!updated.ok) {
+    const detail = updated.json?.error?.message || `HTTP ${updated.status}`;
+    console.warn(`[Slides] batchUpdate failed: ${detail}`);
+
+    // A request that never got an answer is not the same as one that was
+    // refused. Google frequently finishes a batch we stopped waiting for, so
+    // ASK before destroying: deleting a deck that was in fact built correctly,
+    // and telling the user it failed, is the worse of the two mistakes.
+    if (updated.status === 0) {
+      const check = await googleFetch(
+        `${SLIDES_API}/${presentationId}?fields=${encodeURIComponent("slides(objectId)")}`,
+        token
+      );
+      const built: any[] = check.json?.slides || [];
+      if (check.ok && built.length >= slides.length) {
+        console.log(`[Slides] batch completed despite the timeout — ${built.length} slides present`);
+        await applySpeakerNotes(presentationId, slides, token);
+        return {
+          ok: true,
+          presentationId,
+          url: `https://docs.google.com/presentation/d/${presentationId}/edit`,
+          title,
+          slideCount: slides.length,
+          thumbnails: await captureThumbnails(presentationId, token),
+        };
+      }
+    }
+
+    // Leave nothing behind. An empty "Untitled presentation" appearing in
+    // someone's Drive after a failed request is worse than no file at all.
+    const cleanup = await googleFetch(`${DRIVE_API}/${presentationId}?supportsAllDrives=true`, token, {
+      method: "DELETE",
+    });
+    if (!cleanup.ok) console.warn(`[Slides] could not clean up ${presentationId} (${cleanup.status})`);
+    return { ok: false, error: `Could not build the slides: ${detail}` };
+  }
+
+  await applySpeakerNotes(presentationId, slides, token);
+
+  return {
+    ok: true,
+    presentationId,
+    url: `https://docs.google.com/presentation/d/${presentationId}/edit`,
+    title,
+    slideCount: slides.length,
+    thumbnails: await captureThumbnails(presentationId, token),
+  };
+}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -19,8 +19,20 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { isExpiredCUWriteOff } from "@/lib/expired-cus";
+import { formatLocalDate } from "@/lib/date-utils";
+import { downloadCSV } from "@/lib/csv-utils";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
+import { MultiSelectFilter } from "@/components/operations/MultiSelectFilter";
+import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
+import {
+  categorizeContentType,
+  getCategoryFilterOptions,
+  getFormatFilterOptions,
+} from "@/lib/content-type-utils";
 import {
   BarChart,
   Bar,
@@ -69,8 +81,8 @@ interface ContractRow {
 const getThisMonthRange = () => {
   const d = new Date();
   return {
-    from: new Date(d.getFullYear(), d.getMonth(), 1).toISOString().split("T")[0],
-    to: new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().split("T")[0],
+    from: formatLocalDate(new Date(d.getFullYear(), d.getMonth(), 1)),
+    to: formatLocalDate(new Date(d.getFullYear(), d.getMonth() + 1, 0)),
   };
 };
 
@@ -81,8 +93,8 @@ const presets = [
     getRange: () => {
       const d = new Date();
       return {
-        from: new Date(d.getFullYear(), d.getMonth() - 1, 1).toISOString().split("T")[0],
-        to: new Date(d.getFullYear(), d.getMonth(), 0).toISOString().split("T")[0],
+        from: formatLocalDate(new Date(d.getFullYear(), d.getMonth() - 1, 1)),
+        to: formatLocalDate(new Date(d.getFullYear(), d.getMonth(), 0)),
       };
     },
   },
@@ -92,8 +104,8 @@ const presets = [
       const d = new Date();
       const q = Math.floor(d.getMonth() / 3);
       return {
-        from: new Date(d.getFullYear(), q * 3, 1).toISOString().split("T")[0],
-        to: new Date(d.getFullYear(), q * 3 + 3, 0).toISOString().split("T")[0],
+        from: formatLocalDate(new Date(d.getFullYear(), q * 3, 1)),
+        to: formatLocalDate(new Date(d.getFullYear(), q * 3 + 3, 0)),
       };
     },
   },
@@ -185,6 +197,7 @@ export default function DeliveredPage() {
 
   const [allTasks, setAllTasks] = useState<TaskRow[]>([]);
   const [contracts, setContracts] = useState<ContractRow[]>([]);
+  const [mediaByContent, setMediaByContent] = useState<Record<string, { fileName: string; url: string }[]>>({});
   const [loading, setLoading] = useState(true);
 
   const [dateFrom, setDateFrom] = useState(initRange.from);
@@ -193,10 +206,26 @@ export default function DeliveredPage() {
 
   const [searchQuery, setSearchQuery] = useState("");
   const [excludeTestClients, setExcludeTestClients] = useState(true);
+  const [hideExpiredCUs, setHideExpiredCUs] = useState(true);
   const EXCLUDE_CLIENT_IDS = "1,2";
 
-  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
+  // Global customer filter from the TopBar selector
+  const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
+
+  const [selectedCustomerIds, setSelectedCustomerIds] = useState<Set<string>>(new Set());
+  const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
+  const [selectedFormats, setSelectedFormats] = useState<Set<string>>(new Set());
+  const autoSelectedRef = useRef(false);
+  const autoSelectedTaxonomyRef = useRef({ categories: false, formats: false });
   const [selectedCommissioner, setSelectedCommissioner] = useState<string | null>(null);
+
+  const toggleCustomer = (id: string) => {
+    setSelectedCustomerIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
 
   const custSort = useSort("name", true);
   const contractSort = useSort("contractName", true);
@@ -205,18 +234,27 @@ export default function DeliveredPage() {
   const userContentSort = useSort("createdAt", false);
 
   /* ─── Fetch ─── */
-  const fetchTasks = useCallback(async (from: string, to: string, excludeClients: boolean) => {
+  const fetchTasks = useCallback(async (from: string, to: string, excludeClients: boolean, clientId: string | null) => {
     setLoading(true);
     try {
       const params = new URLSearchParams();
       if (from) params.set("from", from);
       if (to) params.set("to", to);
       if (excludeClients) params.set("excludeClients", EXCLUDE_CLIENT_IDS);
+      // Scope the query server-side when a customer is selected — a wide
+      // date range over all clients is tens of MB; one client's is tiny.
+      if (clientId) params.set("clientId", clientId);
+      // Delivered means completed IN the period, not "created in the period
+      // and finished at some point" — see the basis param in the API route.
+      params.set("basis", "completed");
       const res = await fetch(`/api/operations/commissioned-cus?${params.toString()}`);
       const data = await res.json();
       setAllTasks(data.tasks || []);
       setContracts(data.contracts || []);
-      setSelectedCustomerId(null);
+      setMediaByContent(data.mediaByContent || {});
+      setSelectedCustomerIds(new Set());
+      autoSelectedRef.current = false;
+      autoSelectedTaxonomyRef.current = { categories: false, formats: false };
       setSelectedCommissioner(null);
     } catch (err) {
       console.error("Failed to fetch:", err);
@@ -226,8 +264,8 @@ export default function DeliveredPage() {
   }, []);
 
   useEffect(() => {
-    fetchTasks(dateFrom, dateTo, excludeTestClients);
-  }, [dateFrom, dateTo, excludeTestClients, fetchTasks]);
+    fetchTasks(dateFrom, dateTo, excludeTestClients, globalCustomerId);
+  }, [dateFrom, dateTo, excludeTestClients, globalCustomerId, fetchTasks]);
 
   const applyPreset = (preset: (typeof presets)[0]) => {
     const range = preset.getRange();
@@ -245,20 +283,67 @@ export default function DeliveredPage() {
   /* ─── Filter to completed tasks only ─── */
   const tasks = useMemo(() => allTasks.filter((t) => t.taskStatus === "done"), [allTasks]);
 
+  /* ─── Category / Format options (derived from completed tasks) ─── */
+  const categoryOptions = useMemo(() => getCategoryFilterOptions(tasks), [tasks]);
+  const formatOptions = useMemo(() => getFormatFilterOptions(tasks), [tasks]);
+
+  /* ─── Auto-select all categories/formats on first populate ─── */
+  useEffect(() => {
+    if (categoryOptions.length > 0 && !autoSelectedTaxonomyRef.current.categories) {
+      setSelectedCategories(new Set(categoryOptions.map((o) => o.value)));
+      autoSelectedTaxonomyRef.current.categories = true;
+    }
+  }, [categoryOptions]);
+  useEffect(() => {
+    if (formatOptions.length > 0 && !autoSelectedTaxonomyRef.current.formats) {
+      setSelectedFormats(new Set(formatOptions.map((o) => o.value)));
+      autoSelectedTaxonomyRef.current.formats = true;
+    }
+  }, [formatOptions]);
+
   /* ─── Filtered tasks ─── */
-  const filtered = useMemo(() => {
-    if (!searchQuery.trim()) return tasks;
-    const q = searchQuery.toLowerCase();
-    return tasks.filter(
-      (t) =>
-        t.contentTitle.toLowerCase().includes(q) ||
-        t.customerName.toLowerCase().includes(q) ||
-        t.taskTitle.toLowerCase().includes(q) ||
-        t.contentType.toLowerCase().includes(q) ||
-        (t.assigneeName && t.assigneeName.toLowerCase().includes(q)) ||
-        (t.commissionedByName && t.commissionedByName.toLowerCase().includes(q))
-    );
-  }, [tasks, searchQuery]);
+  // Every filter EXCEPT the expired-CU one, so the toggle can report what it hides.
+  const filteredBeforeExpiry = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return tasks.filter((t) => {
+      // Global customer scope (from the TopBar selector)
+      if (globalCustomerId && t.customerId !== globalCustomerId) return false;
+      const cat = categorizeContentType(t.contentType || "");
+      if (!selectedCategories.has(cat)) return false;
+      if (!selectedFormats.has(t.contentType || "unknown")) return false;
+      if (q) {
+        const hit =
+          t.contentTitle.toLowerCase().includes(q) ||
+          t.customerName.toLowerCase().includes(q) ||
+          t.taskTitle.toLowerCase().includes(q) ||
+          t.contentType.toLowerCase().includes(q) ||
+          (t.assigneeName ? t.assigneeName.toLowerCase().includes(q) : false) ||
+          (t.commissionedByName ? t.commissionedByName.toLowerCase().includes(q) : false);
+        if (!hit) return false;
+      }
+      return true;
+    });
+  }, [tasks, searchQuery, selectedCategories, selectedFormats, globalCustomerId]);
+
+  const filtered = useMemo(
+    () =>
+      hideExpiredCUs
+        ? filteredBeforeExpiry.filter((t) => !isExpiredCUWriteOff(t.contentTitle, t.contentType))
+        : filteredBeforeExpiry,
+    [filteredBeforeExpiry, hideExpiredCUs]
+  );
+
+  // What the toggle is holding back — surfaced so the number is never silently
+  // different from Retool or a previous export.
+  const expiredExcluded = useMemo(() => {
+    const items = filteredBeforeExpiry.filter((t) => isExpiredCUWriteOff(t.contentTitle, t.contentType));
+    const cus = items.reduce((sum, t) => sum + t.taskCUs, 0);
+    // Count by content id, not title: two clients can both have an item
+    // literally named "Expired CUs" and they must not collapse into one.
+    const ids = Array.from(new Set(items.map((t) => t.contentId || t.taskId)));
+    const names = Array.from(new Set(items.map((t) => `${t.customerName} — ${t.contentTitle}`)));
+    return { count: ids.length, cus, names };
+  }, [filteredBeforeExpiry]);
 
   /* ─── Totals ─── */
   const totals = useMemo(() => {
@@ -294,18 +379,39 @@ export default function DeliveredPage() {
   }, [filtered, custSort.currentSort, custSort.currentAsc]);
 
   useEffect(() => {
-    if (customerList.length > 0 && !selectedCustomerId) {
-      setSelectedCustomerId(customerList[0].id);
+    if (customerList.length > 0 && !autoSelectedRef.current) {
+      setSelectedCustomerIds(new Set(customerList.map((c) => c.id)));
+      autoSelectedRef.current = true;
     }
-  }, [customerList, selectedCustomerId]);
+  }, [customerList]);
 
-  /* ─── Contracts for selected customer ─── */
+  // When the TopBar's customer filter changes, override the per-page
+  // customer multi-select so derived stats and contracts stay in sync.
+  // Without this, an earlier auto-select-all keeps every customer selected
+  // and Contract Activity shows unrelated clients' contracts.
+  useEffect(() => {
+    if (globalCustomerId) {
+      setSelectedCustomerIds(new Set([globalCustomerId]));
+    } else {
+      // Allow auto-select-all to re-run when the global filter is cleared
+      autoSelectedRef.current = false;
+    }
+  }, [globalCustomerId]);
+
+  const selectAllCustomers = useCallback(() => {
+    setSelectedCustomerIds(new Set(customerList.map((c) => c.id)));
+  }, [customerList]);
+  const selectNoCustomers = useCallback(() => {
+    setSelectedCustomerIds(new Set());
+  }, []);
+
+  /* ─── Contracts for selected customers ─── */
   const customerContracts = useMemo(() => {
-    if (!selectedCustomerId) return [];
-    const relevant = contracts.filter((c) => c.clientId === selectedCustomerId);
+    if (selectedCustomerIds.size === 0) return [];
+    const relevant = contracts.filter((c) => c.clientId && selectedCustomerIds.has(c.clientId));
     const periodCUsByContract: Record<string, number> = {};
     for (const t of filtered) {
-      if (t.customerId === selectedCustomerId && t.contractId) {
+      if (t.customerId && selectedCustomerIds.has(t.customerId) && t.contractId) {
         periodCUsByContract[t.contractId] = (periodCUsByContract[t.contractId] || 0) + t.taskCUs;
       }
     }
@@ -315,17 +421,17 @@ export default function DeliveredPage() {
       remaining: Math.max(0, c.totalContractCUs - c.completedContractCUs),
     }));
     return sortRows(rows, contractSort.currentSort, contractSort.currentAsc);
-  }, [selectedCustomerId, contracts, filtered, contractSort.currentSort, contractSort.currentAsc]);
+  }, [selectedCustomerIds, contracts, filtered, contractSort.currentSort, contractSort.currentAsc]);
 
-  /* ─── Content for selected customer ─── */
+  /* ─── Content for selected customers ─── */
   const customerContent = useMemo(() => {
-    if (!selectedCustomerId) return [];
+    if (selectedCustomerIds.size === 0) return [];
     const map: Record<string, {
       contentId: string; title: string; type: string; commissionedBy: string | null;
       cus: number; completedAt: string | null; createdAt: string;
     }> = {};
     for (const t of filtered) {
-      if (t.customerId !== selectedCustomerId) continue;
+      if (!t.customerId || !selectedCustomerIds.has(t.customerId)) continue;
       const cid = t.contentId || t.taskId;
       if (!map[cid]) {
         map[cid] = {
@@ -336,7 +442,7 @@ export default function DeliveredPage() {
       map[cid].cus += t.taskCUs;
     }
     return sortRows(Object.values(map), contentSort.currentSort, contentSort.currentAsc);
-  }, [filtered, selectedCustomerId, contentSort.currentSort, contentSort.currentAsc]);
+  }, [filtered, selectedCustomerIds, contentSort.currentSort, contentSort.currentAsc]);
 
   /* ─── Daily chart ─── */
   const dailyData = useMemo(() => {
@@ -393,19 +499,42 @@ export default function DeliveredPage() {
     return sortRows(Object.values(map), userContentSort.currentSort, userContentSort.currentAsc);
   }, [filtered, selectedCommissioner, userContentSort.currentSort, userContentSort.currentAsc]);
 
+  // The exported file must carry the toggle state: a CSV pulled today and
+  // one pulled last week otherwise differ with nothing in either to say why.
+  const csvName = (base: string) =>
+    `${base}${hideExpiredCUs && expiredExcluded.count > 0 ? "-ex-writeoffs" : ""}.csv`;
+
   const isFiltered = dateFrom || dateTo;
-  const selectedCustomerName = customerList.find((c) => c.id === selectedCustomerId)?.name;
+  const selectionLabel = useMemo(() => {
+    const n = selectedCustomerIds.size;
+    if (n === 0) return "";
+    if (n === customerList.length && n > 0) return " \u2014 All customers";
+    const names = customerList.filter((c) => selectedCustomerIds.has(c.id)).map((c) => c.name);
+    if (names.length <= 3) return ` \u2014 ${names.join(", ")}`;
+    return ` \u2014 ${n} customers`;
+  }, [selectedCustomerIds, customerList]);
 
   /* ─────────────── Render ─────────────── */
   return (
     <div className="max-w-[1400px] space-y-5">
       {/* Header */}
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Delivered Content Units</h1>
-        <p className="text-sm text-muted-foreground mt-0.5">
-          Completed tasks {isFiltered ? "for the selected period" : "across all time"}.
-          {!loading && ` ${totals.tasks} completed tasks across ${totals.contentItems} content items.`}
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">Delivered Content Units</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Tasks completed {isFiltered ? "in the selected period" : "across all time"}.
+            {!loading && ` ${totals.tasks} completed tasks across ${totals.contentItems} content items.`}
+          </p>
+        </div>
+        {globalCustomerId && (
+          <a
+            href={`/api/operations/client-export?clientId=${globalCustomerId}${dateFrom ? `&from=${dateFrom}` : ""}${dateTo ? `&to=${dateTo}` : ""}`}
+            className="shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-foreground text-background text-xs font-medium hover:opacity-90 transition-opacity"
+            title="Two-sheet workbook: content COMMISSIONED in the selected date range (not completed-in-range), with doc links and 1-year media download URLs"
+          >
+            <Download className="h-3.5 w-3.5" /> Client handover export
+          </a>
+        )}
       </div>
 
       {/* Date range + search */}
@@ -457,7 +586,21 @@ export default function DeliveredPage() {
                 <input type="checkbox" checked={excludeTestClients} onChange={(e) => setExcludeTestClients(e.target.checked)} className="rounded border-muted-foreground/30 h-3.5 w-3.5" />
                 Hide TCE and test clients
               </label>
+              <label
+                className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer shrink-0 select-none"
+                title="Contract-closure write-offs (e.g. 'WBCSD expired CUs (2026)') are accounting adjustments, not produced work. When ticked they are removed from Delivered CUs, CUs by type, the customer/team tables, both charts, Period CUs and every CSV export here. The all-time Contract Total / Completed / Remaining columns still count them, because the client's balance really was consumed."
+              >
+                <input type="checkbox" checked={hideExpiredCUs} onChange={(e) => setHideExpiredCUs(e.target.checked)} className="rounded border-muted-foreground/30 h-3.5 w-3.5" />
+                Hide expired CUs
+              </label>
             </div>
+          </div>
+
+          {/* Row 2: Customer + Category + Format filters */}
+          <div className="flex flex-wrap items-end gap-3">
+            <CustomerDropdownFilter />
+            <MultiSelectFilter label="Category" options={categoryOptions} selected={selectedCategories} onChange={setSelectedCategories} allLabel="All categories" />
+            <MultiSelectFilter label="Format" options={formatOptions} selected={selectedFormats} onChange={setSelectedFormats} allLabel="All formats" />
           </div>
         </CardContent>
       </Card>
@@ -471,7 +614,7 @@ export default function DeliveredPage() {
           {/* KPI cards */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {[
-              { icon: Package, color: "text-blue-500", label: "Delivered CUs", value: totals.totalCUs.toFixed(1) },
+              { icon: Package, color: "text-blue-500", label: "Delivered CUs", value: totals.totalCUs.toFixed(2) },
               { icon: CheckCircle2, color: "text-green-500", label: "Tasks Completed", value: String(totals.tasks) },
               { icon: FileText, color: "text-violet-500", label: "Content Items", value: String(totals.contentItems) },
               { icon: Users, color: "text-cyan-500", label: "Customers", value: String(totals.customers) },
@@ -488,6 +631,14 @@ export default function DeliveredPage() {
             ))}
           </div>
 
+          {/* Expired-CU write-offs held back by the toggle — shown so the
+              headline number is never silently different from Retool. */}
+          {hideExpiredCUs && expiredExcluded.count > 0 && (
+            <p className="text-[11px] text-muted-foreground" title={expiredExcluded.names.join("\n")}>
+              Excludes {expiredExcluded.count} expired-CU write-off{expiredExcluded.count === 1 ? "" : "s"} ({expiredExcluded.cus.toFixed(2)} CU) &mdash; contract-closure adjustments, not produced work. Untick &ldquo;Hide expired CUs&rdquo; to include them.
+            </p>
+          )}
+
           {/* CU by type */}
           {cusByType.length > 0 && (
             <div className="flex items-center gap-2 flex-wrap">
@@ -495,7 +646,7 @@ export default function DeliveredPage() {
               <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider mr-1">CUs by type:</span>
               {cusByType.map(([type, cus]) => (
                 <Badge key={type} variant="secondary" className="text-[10px] gap-1 capitalize py-0.5">
-                  {type} <span className="font-bold">{cus.toFixed(1)}</span>
+                  {type} <span className="font-bold">{cus.toFixed(2)}</span>
                 </Badge>
               ))}
             </div>
@@ -504,8 +655,13 @@ export default function DeliveredPage() {
           {/* Active Customers */}
           <Card className="border-0 shadow-sm">
             <CardContent className="p-0">
-              <div className="px-4 py-2.5 border-b">
+              <div className="px-4 py-2.5 border-b flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Active Customers</h2>
+                {customerList.length > 0 && (
+                  <button onClick={() => downloadCSV(customerList.map(c => ({ Customer: c.name, CUs: (c.cus).toFixed(2), Tasks: c.taskCount })), csvName("active-customers"))} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                    <Download className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
               {customerList.length === 0 ? (
                 <p className="text-xs text-muted-foreground text-center py-8">No customers found.</p>
@@ -514,26 +670,48 @@ export default function DeliveredPage() {
                   <table className="w-full text-xs">
                     <thead className="sticky top-0 bg-background z-[1]">
                       <tr className="border-b">
+                        <th className="px-2 py-2 w-8">
+                          <input
+                            type="checkbox"
+                            aria-label={selectedCustomerIds.size === customerList.length ? "Deselect all customers" : "Select all customers"}
+                            checked={customerList.length > 0 && selectedCustomerIds.size === customerList.length}
+                            ref={(el) => { if (el) el.indeterminate = selectedCustomerIds.size > 0 && selectedCustomerIds.size < customerList.length; }}
+                            onChange={() => selectedCustomerIds.size === customerList.length ? selectNoCustomers() : selectAllCustomers()}
+                            className="rounded border-muted-foreground/30 h-3.5 w-3.5 cursor-pointer"
+                          />
+                        </th>
                         <SortHeader label="Customer" sortKey="name" {...custSort} onSort={custSort.toggle} />
                         <SortHeader label="CUs" sortKey="cus" {...custSort} onSort={custSort.toggle} align="right" />
                         <SortHeader label="Tasks" sortKey="taskCount" {...custSort} onSort={custSort.toggle} align="right" />
                       </tr>
                     </thead>
                     <tbody>
-                      {customerList.map((c) => (
-                        <tr
-                          key={c.id}
-                          onClick={() => setSelectedCustomerId(c.id)}
-                          className={cn(
-                            "border-b border-border/30 cursor-pointer transition-colors hover:bg-muted/40",
-                            selectedCustomerId === c.id && "bg-blue-500/8 border-l-2 border-l-blue-500"
-                          )}
-                        >
-                          <td className={cn("px-3 py-2 font-medium", selectedCustomerId === c.id && "text-blue-600")}>{c.name}</td>
-                          <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.cus.toFixed(1)}</td>
-                          <td className="px-3 py-2 text-right text-muted-foreground tabular-nums">{c.taskCount}</td>
-                        </tr>
-                      ))}
+                      {customerList.map((c) => {
+                        const checked = selectedCustomerIds.has(c.id);
+                        return (
+                          <tr
+                            key={c.id}
+                            onClick={() => toggleCustomer(c.id)}
+                            className={cn(
+                              "border-b border-border/30 cursor-pointer transition-colors hover:bg-muted/40",
+                              checked && "bg-blue-500/8 border-l-2 border-l-blue-500"
+                            )}
+                          >
+                            <td className="px-2 py-2 w-8" onClick={(e) => e.stopPropagation()}>
+                              <input
+                                type="checkbox"
+                                aria-label={`${checked ? "Deselect" : "Select"} ${c.name}`}
+                                checked={checked}
+                                onChange={() => toggleCustomer(c.id)}
+                                className="rounded border-muted-foreground/30 h-3.5 w-3.5 cursor-pointer"
+                              />
+                            </td>
+                            <td className={cn("px-3 py-2 font-medium", checked && "text-blue-600")}>{c.name}</td>
+                            <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.cus.toFixed(2)}</td>
+                            <td className="px-3 py-2 text-right text-muted-foreground tabular-nums">{c.taskCount}</td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -544,15 +722,20 @@ export default function DeliveredPage() {
           {/* Contract Activity */}
           <Card className="border-0 shadow-sm">
             <CardContent className="p-0">
-              <div className="px-4 py-2.5 border-b">
+              <div className="px-4 py-2.5 border-b flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  Contract Activity{selectedCustomerName ? ` \u2014 ${selectedCustomerName}` : ""}
+                  Contract Activity{selectionLabel}
                 </h2>
+                {customerContracts.length > 0 && (
+                  <button onClick={() => downloadCSV(customerContracts.map(c => ({ Contract: c.contractName, "Total CUs": (c.totalContractCUs).toFixed(2), Completed: (c.completedContractCUs).toFixed(2), Remaining: (c.remaining).toFixed(2), "Period CUs": (c.periodCUs).toFixed(2) })), csvName("contract-activity"))} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                    <Download className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
-              {!selectedCustomerId ? (
-                <p className="text-xs text-muted-foreground text-center py-6">Select a customer above to view contracts.</p>
+              {selectedCustomerIds.size === 0 ? (
+                <p className="text-xs text-muted-foreground text-center py-6">Select one or more customers above to view contracts.</p>
               ) : customerContracts.length === 0 ? (
-                <p className="text-xs text-muted-foreground text-center py-6">No contracts found for this customer.</p>
+                <p className="text-xs text-muted-foreground text-center py-6">No contracts found for the selected customers.</p>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-xs">
@@ -570,14 +753,14 @@ export default function DeliveredPage() {
                       {customerContracts.map((c) => (
                         <tr key={c.contractId} className="border-b border-border/50 hover:bg-muted/30">
                           <td className="px-3 py-2 font-medium">{c.contractName}</td>
-                          <td className="px-3 py-2 text-right tabular-nums">{c.totalContractCUs.toFixed(1)}</td>
-                          <td className="px-3 py-2 text-right tabular-nums">{c.completedContractCUs.toFixed(1)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{c.totalContractCUs.toFixed(2)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{c.completedContractCUs.toFixed(2)}</td>
                           <td className="px-3 py-2 text-right tabular-nums font-medium">
-                            <span className={c.remaining <= 0 ? "text-red-500" : "text-green-600"}>{c.remaining.toFixed(1)}</span>
+                            <span className={c.remaining <= 0 ? "text-red-500" : "text-green-600"}>{c.remaining.toFixed(2)}</span>
                           </td>
-                          <td className="px-3 py-2 text-right tabular-nums font-semibold">{c.periodCUs.toFixed(1)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums font-semibold">{c.periodCUs.toFixed(2)}</td>
                           <td className="px-3 py-2 text-center">
-                            <a href={`https://app.thecontentengine.com/admin/contracts/${c.contractId}`} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-600"><ExternalLink className="h-3 w-3 inline" /></a>
+                            <a href={`https://app.thecontentengine.com/all/contracts/${c.contractId}`} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-600"><ExternalLink className="h-3 w-3 inline" /></a>
                           </td>
                         </tr>
                       ))}
@@ -591,13 +774,18 @@ export default function DeliveredPage() {
           {/* Content Delivered */}
           <Card className="border-0 shadow-sm">
             <CardContent className="p-0">
-              <div className="px-4 py-2.5 border-b">
+              <div className="px-4 py-2.5 border-b flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  Content Delivered{selectedCustomerName ? ` \u2014 ${selectedCustomerName}` : ""}
+                  Content Delivered{selectionLabel}
                 </h2>
+                {customerContent.length > 0 && (
+                  <button onClick={() => downloadCSV(customerContent.map(c => ({ Content: c.title, Type: c.type, "Commissioned By": c.commissionedBy || "\u2014", CUs: (c.cus).toFixed(2), Completed: fmtDate(c.completedAt), Commissioned: fmtDate(c.createdAt), Link: c.contentId ? `https://app.thecontentengine.com/all/contents/${c.contentId}` : "", "Media download URLs": (mediaByContent[c.contentId] || []).map(m => m.url).join("\n") })), csvName("content-delivered"))} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                    <Download className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
-              {!selectedCustomerId ? (
-                <p className="text-xs text-muted-foreground text-center py-6">Select a customer above to view content.</p>
+              {selectedCustomerIds.size === 0 ? (
+                <p className="text-xs text-muted-foreground text-center py-6">Select one or more customers above to view content.</p>
               ) : customerContent.length === 0 ? (
                 <p className="text-xs text-muted-foreground text-center py-6">No delivered content found in this period.</p>
               ) : (
@@ -620,7 +808,7 @@ export default function DeliveredPage() {
                           <td className="px-3 py-2 font-medium max-w-[250px] truncate">{c.title}</td>
                           <td className="px-3 py-2"><Badge variant="secondary" className="text-[9px] capitalize">{c.type}</Badge></td>
                           <td className="px-3 py-2 text-muted-foreground">{c.commissionedBy || "\u2014"}</td>
-                          <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.cus.toFixed(1)}</td>
+                          <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.cus.toFixed(2)}</td>
                           <td className="px-3 py-2 text-muted-foreground tabular-nums">{fmtDate(c.completedAt)}</td>
                           <td className="px-3 py-2 text-muted-foreground tabular-nums">{fmtDate(c.createdAt)}</td>
                           <td className="px-3 py-2 text-center">
@@ -683,8 +871,13 @@ export default function DeliveredPage() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <Card className="border-0 shadow-sm">
               <CardContent className="p-0">
-                <div className="px-4 py-2.5 border-b">
+                <div className="px-4 py-2.5 border-b flex items-center justify-between">
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Team Deliveries</h2>
+                  {teamList.length > 0 && (
+                    <button onClick={() => downloadCSV(teamList.map(u => ({ Name: u.name, Items: u.count, CUs: (u.cus).toFixed(2) })), csvName("team-deliveries"))} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                      <Download className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
                 {teamList.length === 0 ? (
                   <p className="text-xs text-muted-foreground text-center py-8">No data.</p>
@@ -715,7 +908,7 @@ export default function DeliveredPage() {
                               </span>
                             </td>
                             <td className="px-3 py-2 text-right text-muted-foreground tabular-nums">{u.count}</td>
-                            <td className="px-3 py-2 text-right font-semibold tabular-nums">{u.cus.toFixed(1)}</td>
+                            <td className="px-3 py-2 text-right font-semibold tabular-nums">{u.cus.toFixed(2)}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -727,10 +920,15 @@ export default function DeliveredPage() {
 
             <Card className="border-0 shadow-sm">
               <CardContent className="p-0">
-                <div className="px-4 py-2.5 border-b">
+                <div className="px-4 py-2.5 border-b flex items-center justify-between">
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                     {selectedCommissioner ? `Content \u2014 ${selectedCommissioner}` : "Content by User"}
                   </h2>
+                  {commissionerContent.length > 0 && (
+                    <button onClick={() => downloadCSV(commissionerContent.map(c => ({ Content: c.title, Customer: c.customer, Type: c.type, CUs: (c.cus).toFixed(2), Link: c.contentId ? `https://app.thecontentengine.com/all/contents/${c.contentId}` : "" })), csvName("content-by-user"))} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                      <Download className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
                 {!selectedCommissioner ? (
                   <p className="text-xs text-muted-foreground text-center py-8">Select a team member to view their content.</p>
@@ -754,7 +952,7 @@ export default function DeliveredPage() {
                             <td className="px-3 py-2 font-medium max-w-[180px] truncate">{c.title}</td>
                             <td className="px-3 py-2 text-muted-foreground truncate max-w-[120px]">{c.customer}</td>
                             <td className="px-3 py-2"><Badge variant="secondary" className="text-[9px] capitalize">{c.type}</Badge></td>
-                            <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.cus.toFixed(1)}</td>
+                            <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.cus.toFixed(2)}</td>
                             <td className="px-3 py-2 text-center">
                               {c.contentId && (
                                 <a href={`https://app.thecontentengine.com/all/contents/${c.contentId}`} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-600"><ExternalLink className="h-3 w-3 inline" /></a>
