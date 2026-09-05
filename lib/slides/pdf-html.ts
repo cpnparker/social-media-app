@@ -31,7 +31,7 @@
  */
 
 import type { PreviewDeck, PreviewSlide, PreviewElement } from "./preview-model";
-import { runsOf, SLIDES_TEXT_INSET } from "./preview-style";
+import { runsOf, SLIDES_TEXT_INSET, NATURAL_LINE } from "./preview-style";
 
 /** 720pt → 960px. */
 const S = 4 / 3;
@@ -124,7 +124,9 @@ function elementHtml(el: PreviewElement): string {
   const vAlign = el.vCenter ? "justify-content:center;" : el.vBottom ? "justify-content:flex-end;" : "";
   const weight = el.weight || 400;
   const size = (el.size || 10) * S;
-  const lineHeight = el.lineSpacing ? `line-height:${el.lineSpacing / 100};` : "line-height:1.15;";
+  // Slides multiplies the face's natural height, CSS the font size — see
+  // NATURAL_LINE. Without it the print ran a fifth tighter than the deck.
+  const lineHeight = `line-height:${((el.lineSpacing ?? 115) / 100) * NATURAL_LINE};`;
   const spaceBelow = el.spaceBelow ? `row-gap:${el.spaceBelow * S}px;` : "";
   // Slides insets text inside EVERY box — 0.1in left and right, 0.05in top and
   // bottom — and does not expose the setting through the API. The chat preview

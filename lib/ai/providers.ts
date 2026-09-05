@@ -8,7 +8,7 @@ import { fetchBlobContent } from "./blob-utils";
 import { anthropicCallParams, anthropicMaxTokens } from "./anthropic-params";
 import { supabase } from "@/lib/supabase";
 import { searchNotebook } from "@/lib/notebook/search";
-import { generateSlides, updateSlides, resolveDeckImages, splitOverflowingSlides, isVisualSlide, deckWarnings } from "@/lib/slides/generate";
+import { generateSlides, updateSlides, resolveDeckImages, splitOverflowingSlides, isVisualSlide, deckWarnings, stampFooter } from "@/lib/slides/generate";
 import { createToolLoopGuard, repeatedCallNotice, overBudgetNotice, stallOutcome, slidesWritten, type ToolUsage } from "@/lib/ai/tool-loop-guard";
 import { toPreviewModel } from "@/lib/slides/preview-model";
 import { signedMediaUrl } from "@/lib/media/signed";
@@ -1434,7 +1434,7 @@ const DOCUMENT_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
               },
               table: {
                 type: "object",
-                description: "A DATA table (table layout): `columns` is the header row, `rows` is an array of rows, each an array of cell strings IN COLUMN ORDER. A source slide that carries commentary BESIDE its table — analysis panels, renegotiation notes, a takeaway — keeps that commentary ON the slide: pass it as `bodyRight` (one line per panel) and the table narrows to make room. Moving it to speaker notes is losing it; the commentary is usually the point of such a slide. Columns whose cells are figures are right-aligned automatically, so a column of numbers can be read down. `highlight` takes the row indices that carry the argument. Up to 6 columns and 12 rows; extra rows are dropped and the slide says so. Reach for this over `comparison` when the cells are measurements rather than judgements, and over a bar chart when the reader needs the actual figures.",
+                description: "A DATA table (table layout): `columns` is the header row, `rows` is an array of rows, each an array of cell strings IN COLUMN ORDER. A source slide that carries commentary BESIDE its table — analysis panels, renegotiation notes, a takeaway — keeps that commentary ON the slide: pass it as `bodyRight` (one line per panel) and the table narrows to make room. Moving it to speaker notes is losing it; the commentary is usually the point of such a slide. Columns whose cells are figures are right-aligned automatically, so a column of numbers can be read down. `highlight` takes the row indices that carry the argument. Up to 6 columns and 12 rows. A table under 12 rows is ONE slide: never split it across two slides and never write '(continued)' — the reference decks keep nine engines on one page and so does this engine; extra rows are dropped and the slide says so. Reach for this over `comparison` when the cells are measurements rather than judgements, and over a bar chart when the reader needs the actual figures.",
                 properties: {
                   columns: { type: "array", items: { type: "string" } },
                   rows: { type: "array", items: { type: "array", items: { type: "string" } } },
@@ -4420,6 +4420,7 @@ async function buildSlidesDraft(
   // Split BEFORE anything else, so the preview shows the deck that will be
   // built rather than one slide fewer.
   const slides = splitOverflowingSlides(rawSlides);
+  stampFooter(slides, title);
   // How many slides the server added. On a faithful conversion this is the
   // difference between "one source slide, one output slide" and a deck with
   // "(continued)" in it, and the user has to be told which slides those are

@@ -32,7 +32,7 @@ const THUMB_W = 330;
 // no server code is pulled into the bundle.
 export type { PreviewElement, PreviewSlide } from "@/lib/slides/preview-model";
 import type { PreviewSlide } from "@/lib/slides/preview-model";
-import { SLIDES_TEXT_INSET, BULLET_INDENT, runsOf } from "@/lib/slides/preview-style";
+import { SLIDES_TEXT_INSET, BULLET_INDENT, NATURAL_LINE, runsOf } from "@/lib/slides/preview-style";
 
 export interface SlideDraft {
   title: string;
@@ -192,7 +192,10 @@ function SlideThumb({
               fontFamily: fontStack(el.font),
               fontSize: el.size,
               fontWeight: el.weight || 400,
-              lineHeight: (el.lineSpacing ?? 115) / 100,
+              // Slides' line spacing multiplies the face's natural height, not the
+              // font size — NATURAL_LINE — or the preview runs a fifth tighter
+              // than the deck and flatters an overflowing body.
+              lineHeight: ((el.lineSpacing ?? 115) / 100) * NATURAL_LINE,
               textAlign: el.align === "center" ? "center" : el.align === "end" ? "right" : "left",
               // VISIBLE, because Slides does not reflow, shrink or clip: it
               // draws the text and lets it run off the slide. Clipping it here

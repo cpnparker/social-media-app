@@ -202,6 +202,10 @@ export interface SlideInput {
    *  process slide written that way drew four empty blue boxes and said
    *  nothing — the deck shipped with them. */
   stages?: { name?: string; caption?: string; title?: string; body?: string }[];
+  /** The footer's text — the deck's own name, stamped by the builder. A slide
+   *  never chooses this; it is the one line that must read the same on every
+   *  page, and a model writing it per slide would not. */
+  footer?: string;
   /** Client marks for logo-wall. Fitted whole, never cropped. */
   logos?: { url?: string; query?: string; name?: string; resolvedUrl?: string }[];
   /** Big numbers for the stat layout — three at most, or none of them lands. */
@@ -374,6 +378,16 @@ function noteHeight(note: string | undefined): number {
  * — measures against this rather than GRID.bandHeight, so adding a note moves
  * the content up instead of drawing the bar on top of it.
  */
+/** Every slide gets the deck's name in its footer. Called by both entry
+ *  points — the Drive build and the chat draft — so the preview and the deck
+ *  carry the same line. */
+export function stampFooter(slides: SlideInput[], title: string | undefined): SlideInput[] {
+  const t = String(title || "").replace(/[{}]/g, "").trim();
+  const footer = t ? `The Content Engine \u00b7 ${t}` : "The Content Engine";
+  for (const s of slides) if (s && !s.footer) s.footer = footer;
+  return slides;
+}
+
 export function bandHeightFor(slide: Pick<SlideInput, "note">): number {
   const h = noteHeight(slide.note);
   if (!h) return GRID.bandHeight;
@@ -389,12 +403,20 @@ export function bandHeightFor(slide: Pick<SlideInput, "note">): number {
  * the page lost its emphasis.
  */
 function noteRequests(
-  page: string, id: (s: string) => string, note: string | undefined, onDark: boolean
+  page: string, id: (s: string) => string, note: string | undefined, onDark: boolean,
+  below?: number
 ): Req[] {
   const text = (note || "").trim();
   if (!text) return [];
   const h = noteHeight(text);
-  const y = NOTE.bottom - h;
+  // UNDER THE CONTENT, not at the foot of the page. The reference deck sets
+  // its takeaway bar a few points beneath the boxes it comments on, and lets
+  // the empty space fall BELOW it; pinned to the bottom, the bar sat up to
+  // 150pt under the last bullet, so the room's eye had to cross a void of
+  // tinted card to find the sentence the presenter was reading out. A layout
+  // that knows where its content ends passes it here; one that does not gets
+  // the old pin.
+  const y = below !== undefined ? Math.min(below, NOTE.bottom - h) : NOTE.bottom - h;
   const out: Req[] = [
     ...filledShape(id("noteBar"), page, "ROUND_RECTANGLE", onDark ? COLOR.white : COLOR.tintBlue, {
       x: GRID.margin, y, width: GRID.contentWidth, height: h,
@@ -1565,6 +1587,9 @@ export function layoutOf(raw: string | undefined, index: number): SlideLayout {
  *  does; two estimators would drift and the check would stop meaning anything. */
 export const TEXT_INSET_X = SLIDES_TEXT_INSET.x * 2;
 export const TEXT_INSET_Y = SLIDES_TEXT_INSET.y * 2;
+/** The footer line's top: its text sits ~15pt clear of the bottom edge, which
+ *  is outside the overscan of the projectors this deck is shown on. */
+export const FOOTER_Y = CANVAS.height - 24;
 const PER_CHAR = 0.55;              // widest average advance across the deck's faces
 const LINE_LEAD = 1.45;             // 115% paragraph spacing on a ~1.26em face
 /** How much wider an all-caps run runs than that mixed-case average. Measured
@@ -1631,10 +1656,15 @@ export function estimateLines(
  *  between PARAGRAPHS, not between wrapped lines — counting it per line
  *  over-estimated a wrapping body by a third and split slides that fitted. */
 export function drawnTextHeight(
-  lines: number, size: number, spaceBelow = 0, paragraphs = 1
+  lines: number, size: number, spaceBelow = 0, paragraphs = 1, lineSpacing?: number
 ): number {
   if (lines <= 0) return 0;
-  return TEXT_INSET_Y + lines * size * LINE_LEAD + Math.max(0, paragraphs - 1) * spaceBelow;
+  // LINE_LEAD is 115% paragraph spacing on a ~1.26em face. A box drawn at a
+  // DIFFERENT spacing — table cells sit at 105% — was still measured at 145%,
+  // so every table row carried 18% of height it never used, and nine rows
+  // that fit were judged not to and split across two slides.
+  const lead = lineSpacing ? 1.26 * lineSpacing : LINE_LEAD;
+  return TEXT_INSET_Y + lines * size * lead + Math.max(0, paragraphs - 1) * spaceBelow;
 }
 
 /** How many rows a chart may draw, and how tall each may be.
@@ -1816,7 +1846,10 @@ function lineChartRequests(
   const legendH = series.length > 1 ? 20 : 0;
   const plotX = GRID.margin + 34;                       // room for y at the left
   const plotW = GRID.contentWidth - 34;
-  const bandBottom = CANVAS.height - GRID.margin;
+  // Ends above the footer, with the source line between them; it used to run
+  // 2pt short of the bottom margin, which put the source on top of the
+  // footer once the footer came up off the bezel.
+  const bandBottom = FOOTER_Y - 18;
   const plotTop = bandTop + 6;
   const plotBottom = bandBottom - 18 - legendH;         // room for x labels + legend
   const plotH = Math.max(40, plotBottom - plotTop);
@@ -1942,7 +1975,7 @@ function lineChartRequests(
   }
 
   out.push(...textBox(id("lsrc"), page, chart.source, TYPE.chartAxis, {
-    x: GRID.margin, y: CANVAS.height - GRID.margin - 2, width: GRID.contentWidth, height: 14,
+    x: GRID.margin, y: bandBottom + 2, width: GRID.contentWidth, height: 14,
   }));
   return out;
 }
@@ -2479,13 +2512,17 @@ function ruleRequests(
  *  The thumbnail is a fraction of the card's HEIGHT rather than a square of its
  *  width. Square-by-width overflowed: with four cards the picture ate so much
  *  of the card that the body was pushed out of the bottom of its own panel. */
-export function cardGeometry(count: number) {
+export function cardGeometry(count: number, wide = false) {
   // FIVE OR SIX CARDS WRAP TO TWO ROWS. One row of six gave each card 103pt of
   // width — a heading wrapped to four lines over a body squeezed to a word a
   // line — while the source decks set the same content as a 2x3 grid. Four
   // cards and fewer stay on one row, which is where a row still reads as one.
-  const rows = count >= 5 ? 2 : 1;
-  const cols = Math.max(1, Math.min(6, rows === 2 ? Math.ceil(count / 2) : count));
+  // WIDE: two columns, however many rows. Six cards in three columns gave each
+  // body a 190pt measure, so sentences that sat on two lines in the reference
+  // deck's two-column grid wrapped to three and ran off the card. Chosen by
+  // the caller from the measured bodies, never by count alone.
+  const rows = wide ? Math.ceil(count / 2) : count >= 5 ? 2 : 1;
+  const cols = Math.max(1, Math.min(6, wide ? Math.min(2, count) : rows === 2 ? Math.ceil(count / 2) : count));
   const cellW = (GRID.contentWidth - CARDS.gap * (cols - 1)) / cols;
   const innerW = cellW - CARDS.padding * 2;
   const thumbH = CARDS.height * 0.42;
@@ -2516,47 +2553,128 @@ function cardsRequests(
   page: string, id: (s: string) => string,
   cards: NonNullable<SlideInput["cards"]>,
   top: number = CARDS.y,
-  height: number = CARDS.height
+  height: number = CARDS.height,
+  meta?: { bottom: number }
 ): Req[] {
   const shown = cards.filter(Boolean).slice(0, 6);
   if (!shown.length) return [];
-  const { cols, rows: gridRows, cellW, innerW: gInnerW, thumbW, thumbH } = cardGeometry(shown.length);
 
-  // ONE title height for the whole row, taken from the tallest.
-  //
-  // Measured per card before, so a one-line heading and a two-line heading
-  // started their bodies at different heights and the row lost its baseline —
-  // four cards read as four separate columns that happened to be next to each
-  // other. Cards are a GRID: what makes them read as one is that the same part
-  // of every card sits on the same line. The cost is a few points of space
-  // under the short headings, which is what a grid costs.
-  const titleBlockH = shown.reduce((tallest, c) => {
-    if (!c.title) return tallest;
-    const lines = estimateLines(c.title, gInnerW, TYPE.cardTitle.size);
-    return Math.max(tallest, drawnTextHeight(lines, TYPE.cardTitle.size));
-  }, 0.42 * 72);
-  // A panel only where there is a picture to hold. Boxing a chip and two lines
-  // of text produced a card that was four-fifths empty — their own pillars
-  // slide sets that type straight on the slide ground, and it reads lighter.
+  const bulletsFor = (c: { body?: string }) =>
+    (c.body || "").split("\n").filter((l) => l.trim()).length >= 2;
+  const paragraphsOf = (c: { body?: string }) => (c.body || "").trim().split("\n").filter((l) => l.trim()).length;
   const panelled = shown.some((c) => c.resolvedImage?.url);
   const anyToned = shown.some((c) => toneAt([c.tone || ""], 0));
+  const boxedAll = anyToned || panelled;
+
+  // A FIT LADDER, not one rule. Bodies are measured at the drawn size and
+  // leading, row by row, against each grid in turn; the first arrangement
+  // whose rows all fit their share of the band wins. Choosing "wide" from the
+  // narrow measure alone gave four E-E-A-T cards a 2x2 grid whose rows were
+  // then capped by the band, and every second line fell out of its card.
+  //   1. narrow grid, 9pt at 1.3       — the reference's own card text
+  //   2. narrow grid, 8pt at 1.3       — the floor
+  //   3. wide grid (two columns), 9 then 8
+  //   4. tighter leading as the last resort before anything is cut
+  type Plan = { wide: boolean; size: number; lead: number; titleSize: number };
+  const T = TYPE.cardTitle.size;
+  const LADDER: Plan[] = [
+    { wide: false, size: TYPE.cardBody.size, lead: 1.3, titleSize: T }, { wide: false, size: 8, lead: 1.3, titleSize: T },
+    { wide: true, size: TYPE.cardBody.size, lead: 1.3, titleSize: T }, { wide: true, size: 8, lead: 1.3, titleSize: T },
+    { wide: false, size: 8, lead: 1.15, titleSize: T }, { wide: true, size: 8, lead: 1.15, titleSize: T },
+    // A two-line heading costs every card in the row 45pt; one step down on
+    // the heading is cheaper than losing a body line.
+    { wide: false, size: 8, lead: 1.15, titleSize: 11.5 }, { wide: true, size: 8, lead: 1.15, titleSize: 11.5 },
+  ];
+  const measurePlan = (p: Plan) => {
+    const g = cardGeometry(shown.length, p.wide);
+    // BESIDE the heading in a grid three across or fewer; ABOVE it in a
+    // four-across grid, where a 100pt card cannot spare half its measure and
+    // "Training data - the slow clock" wrapped to four lines beside its chip.
+    // The reference stacks on its four-card pages and sets the number inline
+    // on its six-card ones, for the same reason.
+    const inlineChips = g.cols <= 3;
+    const chipWidth = (marker: string) => Math.min(g.innerW * 0.5,
+      Math.max(34, Math.ceil(marker.length * TYPE.cardMarker.size * 0.6) + TEXT_INSET_X + 10));
+    const tBlock = shown.reduce((tallest, c) => {
+      if (!c.title) return tallest;
+      const w = g.innerW - (c.marker && inlineChips ? chipWidth(c.marker) + 6 : 0);
+      return Math.max(tallest, drawnTextHeight(estimateLines(c.title, w, p.titleSize), p.titleSize));
+    }, 0.42 * 72);
+    const bodyH = (c: (typeof shown)[number], innerW: number) => {
+      const t = (c.body || "").trim();
+      if (!t) return 0;
+      return drawnTextHeight(estimateLines(t, innerW, p.size, bulletsFor(c)), p.size, 4, paragraphsOf(c), p.lead);
+    };
+    const contentH = (card: (typeof shown)[number]) => {
+      const tone = toneAt([card.tone || ""], 0);
+      const boxed = !!(tone || boxedAll);
+      let h = boxed ? CARDS.padding + (tone || anyToned ? 3 : 0) : 0;
+      if (card.resolvedImage?.url) h += g.thumbH + CARDS.titleGap;
+      else if (card.resolvedIcon) h += CARDS.iconSize + CARDS.titleGap;
+      // A marker sits BESIDE the heading when there is one — "01 · Tier-1
+      // press" — and costs no row of its own; six cards with a chip row, a
+      // heading and a body could not fit under a takeaway bar at 8pt, and the
+      // reference deck never stacks them.
+      const beside = !!(card.marker && card.title && inlineChips);
+      if (card.marker && !beside) h += CARDS.markerHeight + CARDS.titleGap;
+      h += Math.max(tBlock, beside ? CARDS.markerHeight : 0) + 4;
+      h += bodyH(card, boxed ? g.cellW - CARDS.padding * 2 : g.cellW);
+      h += boxed ? CARDS.padding : 0;
+      return h;
+    };
+    // ROWS NEED NOT BE EQUAL. Each row is as tall as its tallest card, and the
+    // GRID fits when the rows and their gaps fit the band — a first row of
+    // three-line bodies over a second of one-liners is not two rows of the
+    // taller. Capping every row at an equal share put the second lines of a
+    // five-card set outside their cards while a third of the band sat empty.
+    const rowHs: number[] = [];
+    for (let r = 0; r < g.rows; r++) {
+      let tallest = 0;
+      for (let i = r * g.cols; i < Math.min(shown.length, (r + 1) * g.cols); i++) tallest = Math.max(tallest, contentH(shown[i]));
+      rowHs.push(Math.max(40, tallest));
+    }
+    const total = rowHs.reduce((a, b) => a + b, 0) + CARDS.gap * (g.rows - 1);
+    return { g, tBlock, rowHs, total, inlineChips, fits: total <= height + 0.5 };
+  };
+  let plan = LADDER[0];
+  let measured = measurePlan(plan);
+  for (let k = 1; k < LADDER.length && !measured.fits; k++) { plan = LADDER[k]; measured = measurePlan(plan); }
+  if (!measured.fits) {
+    // Nothing fits whole: take the plan that misses by least, and scale its
+    // rows to the band so the grid at least ends where it should. The text
+    // then runs a little past its card — declared by deckWarnings, never
+    // hidden — rather than the LAST plan's rows, which were the tallest.
+    let best = measurePlan(LADDER[0]), bestPlan = LADDER[0];
+    for (const p of LADDER) { const m = measurePlan(p); if (m.total < best.total) { best = m; bestPlan = p; } }
+    plan = bestPlan; measured = best;
+    const k = Math.max(0.5, (height - CARDS.gap * (measured.g.rows - 1)) / (measured.total - CARDS.gap * (measured.g.rows - 1)));
+    measured.rowHs = measured.rowHs.map((h) => h * k);
+  }
+  const BODY_LEAD = plan.lead;
+  const bodySize = plan.size;
+  const titleSize = plan.titleSize;
+  const { cols, rows: gridRows, cellW, thumbW, thumbH } = measured.g;
+  const titleBlockH = measured.tBlock;
+  const rowHs = measured.rowHs;
+  const inlineChips = measured.inlineChips;
+  const rowTops: number[] = [];
+  { let acc = top; for (const h of rowHs) { rowTops.push(acc); acc += h + CARDS.gap; } }
 
   const out: Req[] = [];
-  // Two grid rows split the band evenly, with the gap between them.
-  const rowH = gridRows === 2 ? (height - CARDS.gap) / 2 : height;
   shown.forEach((card, i) => {
     const col = i % cols;
     const gridRow = Math.floor(i / cols);
-    const x = GRID.margin + col * (cellW + CARDS.gap);
-    const rowTop = top + gridRow * (rowH + CARDS.gap);
+    // A short last row is CENTRED: five cards in a three-wide grid left a hole
+    // at the bottom right that the room read as a sixth card missing.
+    const inRow = Math.min(cols, shown.length - gridRow * cols);
+    const rowW = inRow * cellW + (inRow - 1) * CARDS.gap;
+    const x = GRID.margin + (GRID.contentWidth - rowW) / 2 + col * (cellW + CARDS.gap);
+    const rowTop = rowTops[gridRow];
+    const rowH = rowHs[gridRow];
     let y = rowTop;
 
-    // A TONED card gets the source deck's treatment: a tinted panel with a
-    // 3pt accent bar across its top in the tone's strong colour, the heading
-    // inked to match. One card toned means every card gets at least a plain
-    // panel, or the row reads as one card floating and the rest bare.
     const tone = toneAt([card.tone || ""], 0);
-    if (tone || anyToned || panelled) {
+    if (tone || boxedAll) {
       out.push(...filledShape(id(`cp${i}`), page, "ROUND_RECTANGLE",
         tone ? tone.tint : COLOR.white, {
         x, y, width: cellW, height: rowH,
@@ -2572,7 +2690,7 @@ function cardsRequests(
         }));
       }
     }
-    const boxed = tone || anyToned || panelled;
+    const boxed = !!(tone || boxedAll);
     const innerX = boxed ? x + CARDS.padding : x;
     const innerW = boxed ? cellW - CARDS.padding * 2 : cellW;
     if (boxed) y += CARDS.padding + (tone || anyToned ? 3 : 0);
@@ -2611,56 +2729,49 @@ function cardsRequests(
       y += size + CARDS.titleGap;
     }
 
+    const inline = !!(card.marker && card.title && inlineChips);
+    let titleX = innerX, titleW = innerW;
     if (card.marker) {
-      // A chip, not plain text: the marker is a wayfinding device and reads as
-      // one only when it carries its own ground.
-      // + the 14.4pt Slides insets, which the old formula did not allow for, so
-      // "01" in a 26pt chip wrapped onto a second line and ran into the heading.
       const chipW = Math.min(
-        innerW,
+        inline ? innerW * 0.5 : innerW,
         Math.max(34, Math.ceil(card.marker.length * TYPE.cardMarker.size * 0.6) + TEXT_INSET_X + 10)
       );
       out.push(
         ...filledShape(id(`cm${i}`), page, "RECTANGLE", COLOR.blue, {
           x: innerX, y, width: chipW, height: CARDS.markerHeight,
         }),
-        // The text box covers the chip EXACTLY and is centred on both axes.
-        // It used to be nudged down 4pt while keeping the chip's full height,
-        // so it hung 4pt past the bottom and, with Slides' own top inset on top
-        // of that, the numeral sat visibly high in its own box. Nothing
-        // centred it vertically — vCenter existed and was used in exactly one
-        // place in this file. An offset is a guess at centring; contentAlignment
-        // is centring, and it stays right when the chip or the type size change.
         ...textBox(id(`cmt${i}`), page, card.marker, TYPE.cardMarker, {
           x: innerX, y, width: chipW, height: CARDS.markerHeight,
         }, { align: "CENTER", vCenter: true }),
       );
-      y += CARDS.markerHeight + CARDS.titleGap;
+      if (inline) { titleX = innerX + chipW + 6; titleW = innerW - chipW - 6; }
+      else y += CARDS.markerHeight + CARDS.titleGap;
     }
 
+    // The title sits at the TOP of its block, beside its chip when it has
+    // one. The block is still the tallest title's height so every body in a
+    // row starts on one baseline — but the slack now falls between a short
+    // title and its body, not above it.
+    const blockH = Math.max(titleBlockH, inline ? CARDS.markerHeight : 0);
     if (card.title) {
-      // The row's shared height, not this card's own. Still MEASURED rather
-      // than assumed — a fixed 30pt box used to let a three-line heading run
-      // straight through the body underneath it.
       out.push(...textBox(id(`ct${i}`), page, card.title,
-        tone ? { ...TYPE.cardTitle, color: tone.ink } : TYPE.cardTitle, {
-        x: innerX, y, width: innerW, height: titleBlockH,
-      }, { vBottom: true }));
-      y += titleBlockH + 4;
-    } else {
-      // No heading on this card, but the row still reserves the band, or its
-      // body would ride up and break the baseline the others share.
-      y += titleBlockH + 4;
+        { ...TYPE.cardTitle, size: titleSize, ...(tone ? { color: tone.ink } : {}) }, {
+        x: titleX, y: inline ? y - 3 : y, width: titleW, height: blockH,
+      }, inline ? { vCenter: true } : {}));
     }
+    y += blockH + 4;
 
     if (card.body) {
       const remaining = rowTop + rowH - y - (boxed ? CARDS.padding : 0);
+      // Bullets stay bullets. Three points written on three lines were being
+      // drawn as one paragraph, and the presenter could not count them.
       out.push(...textBox(id(`cb${i}`), page, card.body,
-        tone ? { ...TYPE.cardBody, color: COLOR.ink } : TYPE.cardBody, {
+        { ...TYPE.cardBody, size: bodySize, ...(tone ? { color: COLOR.ink } : {}) }, {
         x: innerX, y, width: innerW, height: Math.max(20, remaining),
-      }));
+      }, { bullets: bulletsFor(card), lineSpacing: BODY_LEAD, spaceBelow: 4 }));
     }
   });
+  if (meta) meta.bottom = rowTops[rowTops.length - 1] + rowHs[rowHs.length - 1];
   return out;
 }
 
@@ -3481,8 +3592,10 @@ function tableRequests(
   page: string, id: (s: string) => string,
   spec: NonNullable<SlideInput["table"]>, bandTop: number,
   rail?: string,
-  bandBottom?: number
+  bandBottom?: number,
+  opts: { onDark?: boolean; meta?: { bottom: number } } = {}
 ): Req[] {
+  const onDark = !!opts.onDark;
   const columns = (spec.columns || []).map((c) => String(c ?? "")).slice(0, TABLE_MAX_COLS);
   const allRows = (spec.rows || []).filter((r) => Array.isArray(r) && r.some((c) => String(c ?? "").trim() !== ""));
   if (!columns.length || !allRows.length) return [];
@@ -3526,6 +3639,9 @@ function tableRequests(
   // engine table the bar sat squarely on top of the ninth row — DeepSeek was
   // drawn, and then painted over.
   const bottom = Math.min(CANVAS.height - GRID.margin - tail, bandBottom ?? Infinity);
+  // Never into the footer: the "Showing N of M" line sits under the last row,
+  // and it was drawn 5pt into the footer once the footer came up off the bezel.
+  const bottomClear = Math.min(bottom, FOOTER_Y - 6 - ((spec.rows || []).length > TABLE_MAX_ROWS ? 14 : 0));
 
   interface TablePlan {
     size: number; headSize: number; cap: number;
@@ -3533,8 +3649,13 @@ function tableRequests(
     heads: string[]; headH: number;
     rowHs: number[]; rowCaps: number[]; fits: boolean;
   }
+  /** Text sits 6pt in from a column's edge, so the header band and the zebra
+   *  have a margin and the label column does not touch the slide edge. The
+   *  width planner must know it, or a narrow value column loses exactly those
+   *  6pt and "2 hours" is cut to "2 hou…" — which the battery caught. */
+  const CELL_X = 6;
   const planFor = (size: number, cap: number): TablePlan => {
-    const headSize = Math.max(8, Math.min(TYPE.cellHead.size, size + 2.5));
+    const headSize = Math.max(8, Math.min(TYPE.cellHead.size, size + 0.5));
     const natural = columns.map((c, j) => {
       let cells = 0;
       for (const r of rows) cells = Math.max(cells, r[j].length);
@@ -3544,21 +3665,35 @@ function tableRequests(
       const headW = Math.ceil(c.length / 2 + 1) * headSize * PER_CHAR;
       const cellClaim = cells <= 35 ? cells : 35 + (cells - 35) / 2;
       const cellW = cellClaim * size * PER_CHAR;
-      return Math.max(TABLE_MIN_COL, Math.max(headW, cellW) + TEXT_INSET_X);
+      return Math.max(TABLE_MIN_COL + CELL_X, Math.max(headW, cellW) + TEXT_INSET_X + CELL_X);
     });
     const widths = fitColumnWidths(natural, tableW);
     const xs: number[] = [];
     let acc = GRID.margin;
     for (const w of widths) { xs.push(acc); acc += w; }
-    const inner = (j: number) => Math.max(10, widths[j]);
+    // The column's TEXT width: its share of the table less the 6pt inset the
+    // cells are drawn with. Measured and drawn at the same number, or the
+    // planner passes a cell that the renderer then cuts — which is exactly
+    // what happened to "Master entity plus satellites…" in a three-row table
+    // with 140pt to spare.
+    const inner = (j: number) => Math.max(10, widths[j] - CELL_X);
     const heads = columns.map((c, j) => fitCell(c, inner(j), headSize, 2));
     const headLines = heads.reduce((n, h, j) => Math.max(n, estimateLines(h, inner(j), headSize)), 1);
-    const headH = Math.max(20, drawnTextHeight(headLines, headSize));
-    const availRows = bottom - top - headH - 4;
+    const headH = Math.max(22, drawnTextHeight(headLines, headSize, 0, 1, 1.05));
+    const availRows = bottomClear - top - headH - 4;
     const rowCaps = rows.map((r) => r.reduce((n, cell, j) => cell.trim()
       ? Math.max(n, Math.min(cap, estimateLines(cell, inner(j), size)))
       : n, 1));
-    const rowHs = rowCaps.map((n) => Math.max(15, drawnTextHeight(n, size) + 2));
+    // THE ROW PITCH EXCLUDES SLIDES' INSET. Every text box carries 7.2pt of
+    // vertical inset the API cannot switch off; paid per ROW, ten rows spent
+    // 72pt on nothing, and a scorecard that fits the reference's page at 7.8pt
+    // needed 268pt of rows here against 244 available. So a row is as tall as
+    // its LINES at the cells' own 105% leading plus a hair of air, and the
+    // cell's box (below) overhangs the row by half the inset top and bottom,
+    // its text centred: the boxes overlap their neighbours' empty inset, the
+    // glyphs never do. Two lines at 7.5pt come to 21.8pt — the reference's own
+    // 21.6.
+    const rowHs = rowCaps.map((n) => Math.max(size * 1.26 * 1.05 + 6, n * size * 1.26 * 1.05 + 2));
     const total = rowHs.reduce((a, b) => a + b, 0);
     return { size, headSize, cap, widths, xs, inner, heads, headH, rowHs, rowCaps, fits: total <= availRows };
   };
@@ -3567,29 +3702,40 @@ function tableRequests(
   // 6pt is the floor: the source decks set dense tables at the equivalent of
   // ~5pt, and a nine-row table with wrapped cells needs it. Small and whole
   // beats large and cut mid-phrase.
-  outer: for (const trySize of [TYPE.cellText.size, 8, 7, 6.5, 6]) {
+  // 7.5pt is the floor — "about 8", the user's own number. Below it the room
+  // cannot read the column that carries the argument; a table that will not
+  // fit at 7.5 declares the rows it drops rather than shrinking to 6.
+  outer: for (const trySize of [TYPE.cellText.size, 8.5, 8, 7.5]) {
     for (const tryCap of [3, 2]) {
       const cand = planFor(trySize, tryCap);
       // A candidate only counts when nothing in it is clipped: every cell's
       // measured lines within the cap, at this size.
       const clipped = rows.some((r) => r.some((cell, j) =>
         cell.trim() !== "" && estimateLines(cell, cand.inner(j), trySize) > tryCap));
+      if (process.env.TABLE_DEBUG) {
+        const total = cand.rowHs.reduce((a, b) => a + b, 0);
+        const worst = rows.reduce((n, r) => Math.max(n, ...r.map((cell, j) => cell.trim() ? estimateLines(cell, cand.inner(j), trySize) : 0)), 0);
+        console.log(`   [table] ${trySize}pt cap ${tryCap}: rows ${total.toFixed(0)} avail ${(bottomClear - top - cand.headH - 4).toFixed(0)} fits=${cand.fits} worstLines=${worst} clipped=${clipped}`);
+      }
       if (cand.fits && !clipped) { plan = cand; break outer; }
     }
   }
   if (!plan) {
     plan = planFor(TYPE.cellText.size, 1);
-    const availRows = bottom - top - plan.headH - 4;
+    const availRows = bottomClear - top - plan.headH - 4;
     const total = plan.rowHs.reduce((a, b) => a + b, 0);
     if (total > availRows) {
       const k = availRows / total;
-      plan.rowHs = plan.rowHs.map((h) => Math.max(13, h * k));
+      plan.rowHs = plan.rowHs.map((h) => Math.max(11, h * k));
     }
   } else {
     // Deal the slack back, bounded, so the table breathes instead of huddling.
-    const availRows = bottom - top - plan.headH - 4;
+    const availRows = bottomClear - top - plan.headH - 4;
     const total = plan.rowHs.reduce((a, b) => a + b, 0);
-    const extra = Math.min(12, Math.max(0, (availRows - total) / rows.length));
+    // Rows hug their words. The slack used to be dealt back up to 12pt a row,
+    // which made a five-row table into five 60pt bands of tint with three
+    // lines in each — "waiting for a line that never comes".
+    const extra = Math.min(3, Math.max(0, (availRows - total) / rows.length));
     plan.rowHs = plan.rowHs.map((h) => h + extra);
   }
   const { widths, xs, inner, heads, headH, rowHs, rowCaps } = plan;
@@ -3601,14 +3747,18 @@ function tableRequests(
     for (const h of rowHs) { rowYs.push(acc2); acc2 += h; }
   }
 
+  // A HEADER BAND: navy with white bold heads (inverted on a dark ground).
+  // Serif heads over a hairline read as a fourth row from the back, and the
+  // presenter had to say what the columns were.
+  out.push(...filledShape(id("thb"), page, "RECTANGLE", onDark ? COLOR.white : COLOR.navy, {
+    x: GRID.margin, y: top, width: tableW, height: headH,
+  }, onDark ? 0.92 : 1));
+  const bandHead = { ...headStyle, color: onDark ? COLOR.navy : COLOR.white };
   heads.forEach((c, j) => {
-    out.push(...textBox(id(`th${j}`), page, c, headStyle, {
-      x: xs[j] + PAD, y: top, width: inner(j), height: headH,
-    }, { align: aligns[j] === "right" ? "END" : "START" }));
+    out.push(...textBox(id(`th${j}`), page, c, bandHead, {
+      x: xs[j] + PAD + CELL_X, y: top, width: inner(j), height: headH,
+    }, { align: aligns[j] === "right" ? "END" : "START", vCenter: true, lineSpacing: 1.05 }));
   });
-  out.push(...filledShape(id("trh"), page, "RECTANGLE", COLOR.navy, {
-    x: GRID.margin, y: top + headH, width: tableW, height: RULE.hairlineThickness,
-  }, 0.4));
 
   const highlighted = new Set((spec.highlight || []).filter((n) => Number.isInteger(n)));
 
@@ -3679,6 +3829,12 @@ function tableRequests(
       out.push(...filledShape(id(`trb${i}`), page, "RECTANGLE", COLOR.tintBlue, {
         x: GRID.margin, y: ry, width: tableW, height: rowH,
       }, 0.6));
+    } else if (i % 2 === 1) {
+      // Zebra: the eye tracks a row across four columns on the tint, and slips
+      // a row without it. Alternate rows, light, under everything in the row.
+      out.push(...filledShape(id(`tz${i}`), page, "RECTANGLE", onDark ? COLOR.white : COLOR.tintBlue, {
+        x: GRID.margin, y: ry, width: tableW, height: rowH,
+      }, onDark ? 0.06 : 0.45));
     }
     r.forEach((cell, j) => {
       if (!cell.trim()) return;
@@ -3691,7 +3847,7 @@ function tableRequests(
       if (pill && psize) {
         const label = cell.trim();
         const pw = pillWidth(label, psize);
-        const px = aligns[j] === "right" ? xs[j] + inner(j) - pw : xs[j];
+        const px = aligns[j] === "right" ? xs[j] + inner(j) - pw : xs[j] + CELL_X;
         const capsule = { x: px, y: ry + rowH / 2 - PILL_H / 2, width: pw, height: PILL_H };
         out.push(...filledShape(id(`tp${i}_${j}`), page, "ROUND_RECTANGLE", pill.spec.fill, capsule));
         // vCenter, because the label and the capsule are the SAME rectangle:
@@ -3709,10 +3865,13 @@ function tableRequests(
       // squeezed to fit, a full-height text box in a scaled-down row overlaps
       // the neighbour below — the exact collision the battery's stress table
       // caught the moment this engine landed.
-      const cellH = Math.min(Math.max(14, rowH - 1), Math.max(16, drawnTextHeight(capForCell, style.size)));
+      // The cell is the row's full height and its text centres in it — so a
+      // one-line cell sits level with its row's pill and with the first line
+      // of a two-line neighbour, instead of a computed offset that put
+      // "P1 · CORE" level with the third line of its own description.
       out.push(...textBox(id(`tc${i}_${j}`), page, fitCell(cell, inner(j), style.size, capForCell), style, {
-        x: xs[j] + PAD, y: ry + Math.max(1, (rowH - cellH) / 2), width: inner(j), height: cellH,
-      }, { align: aligns[j] === "right" ? "END" : "START", lineSpacing: 1.05 }));
+        x: xs[j] + PAD + CELL_X, y: ry - TEXT_INSET_Y / 2, width: inner(j), height: rowH + TEXT_INSET_Y,
+      }, { align: aligns[j] === "right" ? "END" : "START", lineSpacing: 1.05, vCenter: true }));
     });
     if (i < rows.length - 1) {
       out.push(...filledShape(id(`trr${i}`), page, "RECTANGLE", COLOR.navy, {
@@ -3721,6 +3880,8 @@ function tableRequests(
     }
   });
 
+  const lastRowBottom = rowYs[rowYs.length - 1] + rowHs[rowHs.length - 1];
+  if (opts.meta) opts.meta.bottom = lastRowBottom + (note ? 16 : 0);
   if (note) {
     const parts: string[] = [];
     if (dropped > 0) parts.push(`${rows.length} of ${allRows.length} rows`);
@@ -3747,7 +3908,8 @@ export const PANEL_MAX_ITEMS = 4;
 /** The master template's rounded panel beside the prose. */
 function panelRequests(
   page: string, id: (s: string) => string,
-  spec: NonNullable<SlideInput["panel"]>, box: { x: number; y: number; width: number; height: number }
+  spec: NonNullable<SlideInput["panel"]>, box: { x: number; y: number; width: number; height: number },
+  meta?: { bottom: number }
 ): Req[] {
   const soft = spec.style === "soft";
   const fill = soft ? COLOR.lav : COLOR.blue;
@@ -3757,7 +3919,7 @@ function panelRequests(
   const items = allItems.slice(0, PANEL_MAX_ITEMS);
 
   const out: Req[] = [];
-  out.push(...filledShape(id("pnl"), page, "ROUND_RECTANGLE", fill, box));
+  // The panel shape is pushed once its height is known — see below.
 
   const PAD = 15;                       // the master's 26px inner padding, minus a step for our tighter canvas
   const innerW = box.width - PAD * 2;
@@ -3809,6 +3971,12 @@ function panelRequests(
   }
   const drawn = items.slice(0, count);
   const shortfall = allItems.length - drawn.length;
+  // AS TALL AS ITS STACK. The panel used to fill the whole column beside the
+  // prose — 48pt of void between its heading and first item, 61pt under the
+  // last — and read as padding. It is now the height of what it holds.
+  const usedH = Math.min(box.height, PAD + titleH + stackHeight(plan, count) + PAD);
+  out.push(...filledShape(id("pnl"), page, "ROUND_RECTANGLE", fill, { ...box, height: usedH }));
+  if (meta) meta.bottom = box.y + usedH;
 
   let cursor = box.y + PAD;
   if (spec.title?.trim()) {
@@ -3907,6 +4075,10 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
   if (style.background === null || layout === "feature" || sectionPhoto) {
     requests.push(...backdropRequests(page, id, slide));
   }
+  /** Where this slide's content ENDS, set by layouts that size their boxes to
+   *  their words. The takeaway bar sits just beneath it. Left unset, the bar
+   *  keeps its old place at the foot of the band. */
+  let contentBottom: number | undefined;
 
   const onDark = style.onDark;
   const bodyStyle = onDark ? TYPE.bodyDark : TYPE.body;
@@ -4130,9 +4302,13 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
     const stripItems = (slide.strip?.items || []).length || (slide.strip?.title?.trim() ? 1 : 0);
     const stripH = stripItems ? Math.min(88, Math.max(48, 20 + 44)) : 0;
     const cardsH = Math.max(80, bandBottom - cardsTop - (stripH ? stripH + 10 : 0));
-    requests.push(...cardsRequests(page, id, slide.cards || [], cardsTop, cardsH));
+    const cardsMeta = { bottom: 0 };
+    requests.push(...cardsRequests(page, id, slide.cards || [], cardsTop, cardsH, cardsMeta));
+    if (cardsMeta.bottom) contentBottom = cardsMeta.bottom;
     if (stripH && slide.strip) {
-      requests.push(...stripRequests(page, id, slide.strip, cardsTop + cardsH + 10, stripH));
+      const stripTop = (cardsMeta.bottom || cardsTop + cardsH) + 10;
+      requests.push(...stripRequests(page, id, slide.strip, stripTop, stripH));
+      contentBottom = stripTop + stripH;
     }
   } else if (layout === "layers") {
     requests.push(
@@ -4205,11 +4381,23 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       requests.push(...stat.reqs);
       if (hasBody) {
         const bodyTop = GRID.bodyY + stat.height + 10;
-        const bodyStyle2 = onDark ? TYPE.bodyDark : TYPE.body;
+        const room = Math.max(30, GRID.bodyY + band - bodyTop);
+        // The bullets step down to what fits under the figures — 10, 9, then
+        // the 8pt floor — because Slides draws an overflowing body straight
+        // through the takeaway bar beneath it, which is what happened the
+        // moment the bar came up off the bezel.
+        const base = onDark ? TYPE.bodyDark : TYPE.body;
+        const paras = String(slide.body).split("\n").filter((l) => l.trim());
+        let bodyStyle2 = base;
+        for (const sz of [base.size, 9, 8]) {
+          bodyStyle2 = { ...base, size: sz };
+          const lines = paras.reduce((n, p) => n + Math.max(1, estimateLines(p, GRID.contentWidth, sz, true)), 0);
+          if (drawnTextHeight(lines, sz, 4, paras.length) <= room) break;
+        }
         requests.push(...textBox(id("body"), page, slide.body, bodyStyle2, {
-          x: GRID.margin, y: bodyTop, width: GRID.contentWidth,
-          height: Math.max(30, GRID.bodyY + band - bodyTop),
+          x: GRID.margin, y: bodyTop, width: GRID.contentWidth, height: room,
         }, { bullets: true, spaceBelow: 4 }));
+        contentBottom = bodyTop + room;
       }
     }
     else if (slide.chart) {
@@ -4239,7 +4427,11 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
     if (layout === "swot" && slide.swot) requests.push(...swotRequests(page, id, slide.swot, aTop, GRID.bodyY + band));
     else if (layout === "matrix" && slide.matrix) requests.push(...matrixRequests(page, id, slide.matrix, aTop, GRID.bodyY + band));
     else if (layout === "comparison" && slide.comparison) requests.push(...comparisonRequests(page, id, slide.comparison, aTop, GRID.bodyY + band));
-    else if (layout === "table" && slide.table) requests.push(...tableRequests(page, id, slide.table, aTop, slide.bodyRight, GRID.bodyY + band));
+    else if (layout === "table" && slide.table) {
+      const tableMeta = { bottom: 0 };
+      requests.push(...tableRequests(page, id, slide.table, aTop, slide.bodyRight, GRID.bodyY + band, { onDark, meta: tableMeta }));
+      if (tableMeta.bottom) contentBottom = tableMeta.bottom;
+    }
     else if (layout === "scatter" && slide.scatter) requests.push(...scatterRequests(page, id, slide.scatter, onDark, aTop, GRID.bodyY + band));
     else if (layout === "venn" && slide.venn) requests.push(...vennRequests(page, id, slide.venn, onDark, aTop, GRID.bodyY + band));
   } else if (layout === "timeline-parallel") {
@@ -4392,38 +4584,75 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
     const toneL = toneAt(slide.tones, 0);
     const toneR = toneAt(slide.tones, 1);
     const panelBottom = NOTE.bottom - noteHeight(slide.note) - (slide.note?.trim() ? NOTE.gap : 0);
-    const panelH = Math.max(60, panelBottom - colTop);
     const TONE_PAD = 12;
-    if (toneL || toneR) {
+    const tinted = !!(toneL || toneR);
+    const hasHeads = !!(slide.columns?.left?.trim() || slide.columns?.right?.trim());
+
+    // Smaller inside a card, which is how the source deck sets it: the tint
+    // already separates the two sides, so the type does not also have to be
+    // full size to hold the column together.
+    // 8pt in a tinted card — the floor, and the reference's own size for these
+    // lists — with 4pt between items: seven format bullets fit one 160pt box
+    // there, and at 8.5pt with 6pt gaps the same list split across two
+    // slides here.
+    const COL_GAP = 4;
+    const colBodyStyle = tinted
+      ? { ...bodyStyle, size: Math.max(8, bodyStyle.size - 2), color: COLOR.ink }
+      : bodyStyle;
+
+    // SIZED TO THE WORDS. The tinted panels used to stretch from the standfirst
+    // to the takeaway bar whatever they held: five bullets ending a third of
+    // the way down a 246pt card, the room reading the empty tint as content
+    // that had not arrived. The reference hugs its text and leaves the slack
+    // at the FOOT of the slide, outside the boxes. So: measure both columns,
+    // draw the panel to the taller one, and tell the takeaway bar where the
+    // content ends.
+    const textW = GRID.columnWidth - (tinted ? TONE_PAD * 2 : 0);
+    const measure = (body: string | undefined) => {
+      const t = (body || "").trim();
+      if (!t) return 0;
+      const paras = t.split("\n").filter((l) => l.trim()).length;
+      return drawnTextHeight(estimateLines(t, textW, colBodyStyle.size, true), colBodyStyle.size, COL_GAP, paras);
+    };
+    const leftH = measure(slide.body), rightH = measure(slide.bodyRight);
+    const headBlock = hasHeads ? (tinted ? 24 : 34) : 0;
+    const wanted = (tinted ? TONE_PAD : 0) + headBlock + Math.max(leftH, rightH) + (tinted ? TONE_PAD + 2 : 0);
+    const panelH = PROBING ? Math.max(60, panelBottom - colTop) : Math.max(60, Math.min(panelBottom - colTop, wanted));
+
+    // INSIDE the margin. The panels used to reach 12pt past the column edges
+    // on both sides, so they overhung the takeaway bar beneath them and the
+    // title above — three left edges on one slide, the cards visibly jutting.
+    if (tinted) {
       if (toneL) requests.push(...filledShape(id("tl"), page, "ROUND_RECTANGLE", toneL.tint, {
-        x: GRID.columnLeftX - TONE_PAD, y: colTop, width: GRID.columnWidth + TONE_PAD * 2, height: panelH,
+        x: GRID.columnLeftX, y: colTop, width: GRID.columnWidth, height: panelH,
       }));
       if (toneR) requests.push(...filledShape(id("tr"), page, "ROUND_RECTANGLE", toneR.tint, {
-        x: GRID.columnRightX - TONE_PAD, y: colTop, width: GRID.columnWidth + TONE_PAD * 2, height: panelH,
+        x: GRID.columnRightX, y: colTop, width: GRID.columnWidth, height: panelH,
       }));
     } else {
       const midX = (GRID.columnLeftX + GRID.columnWidth + GRID.columnRightX) / 2;
       requests.push(...filledShape(id("vrule"), page, "RECTANGLE", onDark ? COLOR.greyLight : COLOR.navy, {
-        x: midX, y: colTop, width: RULE.hairlineThickness, height: panelBottom - colTop,
+        x: midX, y: colTop, width: RULE.hairlineThickness, height: panelH,
       }, RULE.hairlineAlpha));
     }
-    const tinted = !!(toneL || toneR);
 
-    let bodyTop = colTop + (tinted ? TONE_PAD : 0);
+    const inset = tinted ? TONE_PAD : 0;
+    const leftX = GRID.columnLeftX + inset, rightX = GRID.columnRightX + inset;
+    let bodyTop = colTop + inset;
     // A tinted card is a LIGHT surface whatever the ground, so its ink comes
     // from the tone rather than from the slide.
     const headStyle = tinted
       ? { ...TYPE.columnHeader, color: (toneL || toneR)!.ink }
       : onDark ? { ...TYPE.columnHeader, color: COLOR.white } : TYPE.columnHeader;
-    if (slide.columns?.left?.trim() || slide.columns?.right?.trim()) {
+    if (hasHeads) {
       requests.push(
         ...textBox(id("lh"), page, slide.columns?.left,
           toneL ? { ...headStyle, color: toneL.ink } : headStyle, {
-          x: GRID.columnLeftX, y: bodyTop, width: GRID.columnWidth, height: 20,
+          x: leftX, y: bodyTop, width: textW, height: 20,
         }),
         ...textBox(id("rh"), page, slide.columns?.right,
           toneR ? { ...headStyle, color: toneR.ink } : headStyle, {
-          x: GRID.columnRightX, y: bodyTop, width: GRID.columnWidth, height: 20,
+          x: rightX, y: bodyTop, width: textW, height: 20,
         }),
       );
       // The accent underline is the plain treatment's device. Inside a tinted
@@ -4432,32 +4661,26 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       if (!tinted) {
         requests.push(
           ...filledShape(id("lhu"), page, "RECTANGLE", onDark ? COLOR.tealSoft : COLOR.blue, {
-            x: GRID.columnLeftX, y: bodyTop + 22, width: RULE.accentWidth, height: RULE.thickness,
+            x: leftX, y: bodyTop + 22, width: RULE.accentWidth, height: RULE.thickness,
           }),
           ...filledShape(id("rhu"), page, "RECTANGLE", onDark ? COLOR.tealSoft : COLOR.blue, {
-            x: GRID.columnRightX, y: bodyTop + 22, width: RULE.accentWidth, height: RULE.thickness,
+            x: rightX, y: bodyTop + 22, width: RULE.accentWidth, height: RULE.thickness,
           }),
         );
       }
-      bodyTop += tinted ? 24 : 34;
+      bodyTop += headBlock;
     }
 
-    const colH = Math.max(30, panelBottom - bodyTop - (tinted ? 8 : 0));
-    // Smaller inside a card, which is how the source deck sets it: the tint
-    // already separates the two sides, so the type does not also have to be
-    // full size to hold the column together — and at 10pt a three-item column
-    // plus a takeaway bar overflowed into a second slide it did not need.
-    const colBodyStyle = tinted
-      ? { ...bodyStyle, size: Math.max(8, bodyStyle.size - 1.5), color: COLOR.ink }
-      : bodyStyle;
+    const colH = Math.max(30, colTop + panelH - bodyTop - (tinted ? TONE_PAD : 0));
     requests.push(
       ...textBox(id("left"), page, slide.body, colBodyStyle, {
-        x: GRID.columnLeftX, y: bodyTop, width: GRID.columnWidth, height: colH,
-      }, { bullets: true }),
+        x: leftX, y: bodyTop, width: textW, height: colH,
+      }, { bullets: true, spaceBelow: COL_GAP }),
       ...textBox(id("right"), page, slide.bodyRight, colBodyStyle, {
-        x: GRID.columnRightX, y: bodyTop, width: GRID.columnWidth, height: colH,
-      }, { bullets: true }),
+        x: rightX, y: bodyTop, width: textW, height: colH,
+      }, { bullets: true, spaceBelow: COL_GAP }),
     );
+    contentBottom = colTop + panelH;
   } else {
     // content, case-study, dark-index all share the title + body skeleton;
     // the eyebrow is what makes a case study read as one.
@@ -4479,10 +4702,11 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
 
     if (panel) {
       const panelW = GRID.contentWidth - GRID.proseNarrow - 18;
+      const panelMeta = { bottom: 0 };
       requests.push(...panelRequests(page, id, panel, {
         x: GRID.margin + GRID.proseNarrow + 18, y: GRID.bodyY,
         width: panelW, height: CANVAS.height - GRID.margin - GRID.bodyY - 4,
-      }));
+      }, panelMeta));
     }
 
     if (rail) {
@@ -4552,7 +4776,8 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
 
   // The takeaway bar, on every layout. Drawn after the content so it sits on
   // top of nothing — the band above was already shortened to make room.
-  requests.push(...noteRequests(page, id, slide.note, onDark));
+  requests.push(...noteRequests(page, id, slide.note, onDark,
+    contentBottom !== undefined ? contentBottom + NOTE.gap : undefined));
 
   requests.push(...logoRequests(id("logo"), page, layout, slide));
 
@@ -4563,19 +4788,22 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
   // builder's own — index is authoritative here in a way a model-supplied
   // number never is.
   if (layout !== "cover" && layout !== "closing") {
-    // 394, not 389: the chart layouts draw their source line 12pt into the
-    // bottom margin (measured: 378.5 + 14), so the footer sits on the last
-    // 11pt of the canvas, under everything any layout draws.
-    const footerY = CANVAS.height - 11;
+    // ONE discreet line, and no page number.
+    //
+    // The footer used to sit 1.5pt from the bottom edge — inside the overscan
+    // of most projectors, so on the room's screen it was either cropped or
+    // stuck to the bezel — and carried a page number written as static text,
+    // which went wrong the moment the user merged two slides by hand. They
+    // removed both from every page. The reference deck's credit line sits
+    // ~15pt clear of the edge and names the programme; this does the same,
+    // with the deck's title stamped by the builder rather than typed per
+    // slide. Slides has no automatic page number the API can insert, so
+    // rather than a number that lies after any edit, there is none.
     const inkLeft = onDark ? { ...TYPE.footerLeft, color: COLOR.greyLight } : TYPE.footerLeft;
-    const inkNum = onDark ? { ...TYPE.footerNumber, color: COLOR.lime } : TYPE.footerNumber;
     requests.push(
-      ...textBox(id("ftl"), page, "The Content Engine", inkLeft, {
-        x: GRID.margin, y: footerY, width: 160, height: 10,
+      ...textBox(id("ftl"), page, slide.footer || "The Content Engine", inkLeft, {
+        x: GRID.margin, y: FOOTER_Y, width: GRID.contentWidth, height: 12,
       }),
-      ...textBox(id("ftn"), page, String(index + 1), inkNum, {
-        x: CANVAS.width - GRID.margin - 40, y: footerY, width: 40, height: 10,
-      }, { align: "END" }),
     );
   }
   return requests;
@@ -4669,7 +4897,33 @@ async function googleFetch(url: string, token: string, init: RequestInit = {}) {
  * is deliberately generous: splitting a slide that would have fit is a smaller
  * error than dropping the words that did not.
  */
+/** A table the writer split by hand — "Title (continued)" over the same
+ *  columns — is one table again. The engine never splits a table (the
+ *  splitter excludes them on purpose), so a "(continued)" table is always the
+ *  MODEL's doing, and the reference deck keeps nine engines on one page. The
+ *  renderer declares "Showing N of M" if the rejoined rows exceed the cap. */
+export function mergeContinuedTables(slides: SlideInput[]): SlideInput[] {
+  const out: SlideInput[] = [];
+  for (const s of slides) {
+    const prev = out[out.length - 1];
+    const cont = !!(s && s.layout === "table" && s.table && /\(continued\)\s*$/i.test(String(s.title || "")));
+    const sameCols = !!(prev && prev.layout === "table" && prev.table &&
+      JSON.stringify(prev.table.columns || []) === JSON.stringify(s?.table?.columns || []));
+    if (cont && sameCols) {
+      prev.table = { ...prev.table, rows: [...(prev.table!.rows || []), ...(s.table!.rows || [])] };
+      if (s.note?.trim()) prev.note = s.note;
+      if (s.notes?.trim()) prev.notes = [prev.notes, s.notes].filter(Boolean).join("\n");
+      continue;
+    }
+    out.push(s);
+  }
+  return out;
+}
+
 export function splitOverflowingSlides(slides: SlideInput[]): SlideInput[] {
+  // A "(continued)" table is rejoined BEFORE anything is split, on every path
+  // that builds a deck, so the preview and the Drive build agree.
+  slides = mergeContinuedTables(slides);
   const out: SlideInput[] = [];
   for (let i = 0; i < slides.length; i++) {
     // A FIXPOINT, not one pass. Splitting a body in two used to assume the
@@ -4698,9 +4952,16 @@ export function splitOverflowingSlides(slides: SlideInput[]): SlideInput[] {
  *  the slide that most needed splitting was the one never split. */
 const PROBE = "\u241E";
 
+/** True while the splitter is measuring a layout with a dummy body. A layout
+ *  that sizes its box to its words must report its CEILING here, not the hug:
+ *  the splitter asks "how much room does this field have", and a box drawn
+ *  to fit a two-line probe answered "two lines" — so every real body was
+ *  judged to overflow and a 39-slide deck came back as 53. */
+let PROBING = false;
+
 function bodyBox(
   slide: SlideInput, index: number, field: "body" | "bodyRight"
-): { width: number; height: number; size: number; bullets: boolean } | undefined {
+): { width: number; height: number; size: number; bullets: boolean; spaceBelow: number } | undefined {
   // The probe must measure the box this slide will END UP with, not the box it
   // has right now. On content/case-study a picture becomes a RIGHT-HAND RAIL
   // that narrows the body from 540pt to 432pt — but splitting runs BEFORE image
@@ -4716,13 +4977,15 @@ function bodyBox(
     resolvedImage: willRail ? { url: "probe", scrim: 0 } : undefined,
   };
   probe[field] = `${PROBE}\n${PROBE}`;
-  const reqs = buildSlideRequests(probe, index, "m") as any[];
+  PROBING = true;
+  let reqs: any[];
+  try { reqs = buildSlideRequests(probe, index, "m") as any[]; } finally { PROBING = false; }
   let id: string | undefined;
   for (const r of reqs) {
     if (r.insertText && String(r.insertText.text).indexOf(PROBE) >= 0) { id = r.insertText.objectId; break; }
   }
   if (!id) return undefined;   // this layout does not draw that field at all
-  let width = 0, height = 0, size = TYPE.body.size, bullets = false;
+  let width = 0, height = 0, size = TYPE.body.size, bullets = false, spaceBelow = SPACE_BELOW;
   for (const r of reqs) {
     if (r.createShape && r.createShape.objectId === id) {
       width = r.createShape.elementProperties.size.width.magnitude;
@@ -4732,22 +4995,27 @@ function bodyBox(
       size = r.updateTextStyle.style.fontSize.magnitude;
     }
     if (r.createParagraphBullets && r.createParagraphBullets.objectId === id) bullets = true;
+    // The gap the layout actually draws between paragraphs, so the splitter
+    // and the renderer never disagree about how tall a list is.
+    if (r.updateParagraphStyle && r.updateParagraphStyle.objectId === id && r.updateParagraphStyle.style?.spaceBelow?.magnitude !== undefined) {
+      spaceBelow = r.updateParagraphStyle.style.spaceBelow.magnitude;
+    }
   }
-  return { width, height, size, bullets };
+  return { width, height, size, bullets, spaceBelow };
 }
 
 /** How much room a block of paragraphs needs in a given box. */
+const SPACE_BELOW = 6;
+
 function blockHeight(
-  paras: string[], box: { width: number; size: number; bullets: boolean }
+  paras: string[], box: { width: number; size: number; bullets: boolean; spaceBelow?: number }
 ): number {
   let lines = 0;
   for (let i = 0; i < paras.length; i++) {
     lines += Math.max(1, estimateLines(paras[i], box.width, box.size, box.bullets));
   }
-  return drawnTextHeight(lines, box.size, SPACE_BELOW, paras.length);
+  return drawnTextHeight(lines, box.size, box.spaceBelow ?? SPACE_BELOW, paras.length);
 }
-
-const SPACE_BELOW = 6;
 
 /** One split, or none. */
 function splitOnce(slide: SlideInput, index: number): SlideInput[] {
@@ -5228,6 +5496,7 @@ export async function generateSlides(
 ): Promise<SlidesResult> {
   if (!userEmail) return { ok: false, error: "No signed-in user to create the deck for." };
   if (!slides?.length) return { ok: false, error: "No slides to build." };
+  stampFooter(slides, title);
 
   const auth = await getUserGoogleToken(userEmail);
   if (!auth.ok || !auth.accessToken) {

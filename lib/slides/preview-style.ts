@@ -17,6 +17,15 @@
  *  deck does not have — enough for a title to wrap here and not there. */
 export const SLIDES_TEXT_INSET = { x: 7.2, y: 3.6 } as const;
 
+/** Slides' "line spacing" multiplies the FACE's natural line height — about
+ *  1.26em for Roboto and Playfair — where CSS line-height multiplies the font
+ *  SIZE. Both previews drew `line-height: 1.15` and came out a fifth tighter
+ *  than the deck: a body that overflows in Slides looked like it fitted here,
+ *  which is the one direction a preview may not be wrong in. The engine sizes
+ *  every box on this same 1.26 (see LINE_LEAD), so the previews now draw on it
+ *  too. */
+export const NATURAL_LINE = 1.26;
+
 /** The hanging indent Slides' level-0 disc preset applies to a bulleted list.
  *  The glyph sits at the inset and wrapped lines align under the text. */
 export const BULLET_INDENT = 18;

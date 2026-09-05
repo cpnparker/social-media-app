@@ -103,7 +103,7 @@ export const STAT_MAX = 8;
 
 export const NOTE = {
   /** Clear of the footer, which occupies the last 11pt. */
-  bottom: 388,
+  bottom: 374,
   pad: 9,
   gap: 10,
   minHeight: 26,
@@ -257,7 +257,7 @@ export const TYPE: Record<string, TypeStyle> = {
   /** The line under the title that says what the slide argues, before the
    *  bullets say how. Two type sizes 2x apart is not a hierarchy — it is a
    *  heading and a footnote. This is the middle step. */
-  standfirst:    { font: "Roboto", size: 13, weight: 300, color: COLOR.navy },
+  standfirst:    { font: "Roboto", size: 11.5, weight: 300, color: COLOR.navy },
   /** A two-column comparison header — "Before"/"After", over an accent rule. */
   columnHeader:  { font: "Playfair Display", size: 14, color: COLOR.navy },
   quadHeader:    { font: "Roboto", size: 11, bold: true, color: COLOR.navy, caps: true },
@@ -270,14 +270,14 @@ export const TYPE: Record<string, TypeStyle> = {
   cellText:      { font: "Roboto", size: 9, weight: 300, color: COLOR.navy },
   /** The footer furniture from the master: 8px on the 960 canvas is 6pt here.
    *  The page number is the blue bold detail, lime on dark grounds. */
-  footerLeft:    { font: "Roboto", size: 6, weight: 300, color: COLOR.navy },
+  footerLeft:    { font: "Roboto", size: 6.5, weight: 300, color: COLOR.ink },
   footerNumber:  { font: "Roboto", size: 6, bold: true, color: COLOR.blue },
   /** One big Playfair sentence: the statement layout. Master sets it a step
    *  above the slide headline; ~34px on the 960 canvas is 25.5pt here. */
   statementTitle:{ font: "Playfair Display", size: 25, color: COLOR.navy },
   statementLead: { font: "Roboto", size: 10, weight: 300, color: COLOR.ink },
-  cellHead:      { font: "Playfair Display", size: 12, color: COLOR.navy },
-  standfirstDark:{ font: "Roboto", size: 13, weight: 300, color: COLOR.greyLight },
+  cellHead:      { font: "Roboto", size: 9, bold: true, color: COLOR.white },
+  standfirstDark:{ font: "Roboto", size: 11.5, weight: 300, color: COLOR.greyLight },
   statistic:     { font: "Poppins", size: 30, color: COLOR.white },
   source:        { font: "Roboto", size: 7, color: COLOR.ink },
   milestoneDate: { font: "Roboto", size: 9, bold: true, color: COLOR.blue, caps: true },
@@ -310,7 +310,7 @@ export const TYPE: Record<string, TypeStyle> = {
   chartSeries:   { font: "Roboto", size: 8, bold: true, color: COLOR.navy },
   cardMarker:    { font: "Roboto", size: 9, bold: true, color: COLOR.white, caps: true },
   cardTitle:     { font: "Playfair Display", size: 13, color: COLOR.navy },
-  cardBody:      { font: "Roboto", size: 8, weight: 300, color: COLOR.navy },
+  cardBody:      { font: "Roboto", size: 9, weight: 300, color: COLOR.navy },
   // Periwinkle, not brand blue: blue on navy is 2.4:1, under even the 3:1 floor
   // for a graphic. The mark has to be seen and must not compete with the words,
   // and periwinkle is accent3 in both themes — the blue family the original

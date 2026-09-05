@@ -14,18 +14,18 @@ import {
   buildSlideRequests, textBandsFor, splitOverflowingSlides, isoDate, isVisualSlide,
   estimateLines, drawnTextHeight, inheritContinuationImages, resolveDeckImages,
   niceTicks, isNumericColumn, fitCell, fitColumnWidths, parseAccents, parseBold, deckWarnings, cardGeometry, bandHeightFor,
-  CAPS_WIDEN, TEXT_INSET_X, pillWidth, droppedContent,
+  CAPS_WIDEN, TEXT_INSET_X, TEXT_INSET_Y, pillWidth, droppedContent,
   type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel } from "../lib/slides/preview-model";
 import { applyEditSlide, unrenderableSlides, PAYLOAD_FIELDS, insertableLayout } from "../lib/slides/edit";
 import { deckToHtml, safeSrc } from "../lib/slides/pdf-html";
-import { SLIDES_TEXT_INSET } from "../lib/slides/preview-style";
+import { SLIDES_TEXT_INSET, NATURAL_LINE } from "../lib/slides/preview-style";
 import { prepareSlidesForBuild, sourceSlideCount, fidelityAudit } from "../lib/ai/providers";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { gradientProfileFor, CONTRAST } from "../lib/slides/images";
-import { CANVAS, LAYOUT_STYLE, COLOR, GRID, LAYOUTS } from "../lib/slides/brand";
+import { CANVAS, LAYOUT_STYLE, COLOR, GRID, LAYOUTS, NOTE } from "../lib/slides/brand";
 
 const TYPE_STAT_CAP = 54;   // the multi-stat value cap; a hero must exceed it
 let failures = 0;
@@ -269,7 +269,13 @@ deck.slides.forEach((page, i) => {
   for (let a = 0; a < texts.length; a++) {
     for (let b = a + 1; b < texts.length; b++) {
       const p = texts[a], q = texts[b];
-      const apart = p.x + p.w <= q.x || q.x + q.w <= p.x || p.y + p.h <= q.y || q.y + q.h <= p.y;
+      // A box's vertical INSET is not content: Slides never draws a glyph in
+      // the 3.6pt above or below the text. Table cells overhang their row by
+      // exactly that, on purpose, so that ten rows do not spend 72pt on
+      // padding — two cells whose insets touch are not two texts that touch.
+      const iy = SLIDES_TEXT_INSET.y;
+      const py0 = p.y + iy, py1 = p.y + Math.max(0, p.h - iy), qy0 = q.y + iy, qy1 = q.y + Math.max(0, q.h - iy);
+      const apart = p.x + p.w <= q.x || q.x + q.w <= p.x || py1 <= qy0 || qy1 <= py0;
       if (!apart) fail(`${ALL[i].layout}: "${String(p.text).slice(0, 18)}" overlaps "${String(q.text).slice(0, 18)}"`);
     }
   }
@@ -1087,7 +1093,9 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     for (const r of railed as any[]) {
       const cs = r.createShape; if (!cs) continue;
       const t = cs.elementProperties; const x = t.transform.translateX, w = t.size.width.magnitude * (t.transform.scaleX || 1);
-      if (/_trh$/.test(cs.objectId)) tableRight = x + w;
+      // The table's right edge is its header band's (the hairline it used to
+      // be read from is gone: the band replaced it).
+      if (/_thb$/.test(cs.objectId)) tableRight = x + w;
       if (/_trail$/.test(cs.objectId)) { railLeft = x; railW = w; }
     }
     assertTable(tableRight > 0 && railLeft > tableRight, `the rail starts after the table ends (${Math.round(tableRight)} < ${Math.round(railLeft)})`);
@@ -1548,8 +1556,14 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     // or the closing, which is the master's own rule.
     const c5 = buildSlideRequests({ layout: "content", title: "T", body: "x" } as SlideInput, 4, "n");
     const c5texts = (c5 as any[]).filter((r) => r.insertText).map((r) => r.insertText.text);
-    assertBrand(c5texts.indexOf("The Content Engine") >= 0, "the footer names the house");
-    assertBrand(c5texts.indexOf("5") >= 0, "and numbers the page from the builder's own index");
+    assertBrand(c5texts.some((t: string) => t.indexOf("The Content Engine") === 0), "the footer names the house");
+    // NO page number. It was static text, so it lied the moment the user
+    // merged two slides by hand, and they removed it from every page.
+    assertBrand(c5texts.indexOf("5") < 0, "and carries no page number — a static number is wrong after the first manual edit");
+    // The deck's title joins the footer once the builder stamps it.
+    const stamped = buildSlideRequests({ layout: "content", title: "T", body: "x", footer: "The Content Engine · Building Authority on AI" } as SlideInput, 4, "n");
+    const stampedTexts = (stamped as any[]).filter((r) => r.insertText).map((r) => r.insertText.text);
+    assertBrand(stampedTexts.indexOf("The Content Engine · Building Authority on AI") >= 0, "and names the deck when the builder has stamped it");
     for (const l of ["cover", "closing"] as const) {
       const t = (buildSlideRequests({ layout: l, title: "T" } as SlideInput, 0, "n") as any[])
         .filter((r) => r.insertText).map((r) => r.insertText.text);
@@ -1558,11 +1572,13 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     // The footer lives in the margin band, below every layout's content floor.
     for (const r of c5 as any[]) {
       if (!(r.createShape?.objectId || "").match(/_ft[ln]$/)) continue;
-      // Below 392.5, measured: the chart layouts draw their source line 12pt
-      // into the margin band, so "inside the margin" was not low enough and
-      // the first footer position collided with every chart's source note.
-      assertBrand(r.createShape.elementProperties.transform.translateY >= CANVAS.height - 12,
-        "the footer sits on the last points of the canvas, under every layout's bottom furniture");
+      const fy = r.createShape.elementProperties.transform.translateY;
+      // CLEAR OF THE BEZEL. At 1.5pt from the edge the footer sat inside the
+      // overscan of most projectors — cropped, or stuck to the frame — and
+      // the user removed it. The reference's credit line is ~15pt clear.
+      assertBrand(CANVAS.height - fy >= 22, `the footer sits at least 22pt above the bottom edge, clear of projector overscan (${fy.toFixed(1)})`);
+      // And still below every layout's floor: the takeaway bar's own bottom.
+      assertBrand(fy >= NOTE.bottom + 4, `the footer (${fy.toFixed(1)}) sits below the takeaway bar's floor (${NOTE.bottom})`);
     }
 
     // STATEMENT: in the catalogue everywhere a layout has to be known.
@@ -2549,22 +2565,24 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     if (bodyTops.length !== 4) fail(`expected 4 card bodies, found ${bodyTops.length}`);
     else if (new Set(bodyTops).size !== 1) fail(`card bodies start at ${bodyTops.join(", ")} — a one-line and a two-line heading broke the row's baseline`);
 
-    // A shared band leaves slack under the SHORT headings. Bottom-aligning puts
-    // that slack above the heading, under the chip, instead of opening a hole
-    // between the heading and its body.
+    // The heading sits at the TOP of its block, under the chip. Bottom-aligning
+    // it put the row's slack ABOVE the heading — a 54px hole between the
+    // number and the name on every card, which the reviewers read as
+    // "four half-filled forms". The shared block height stays (bodies share a
+    // baseline, asserted above); the slack now falls between a short heading
+    // and its body, where the reference deck leaves it.
     const bottomAligned = reqs
       .filter((r) => r.updateShapeProperties?.shapeProperties?.contentAlignment === "BOTTOM")
       .map((r) => r.updateShapeProperties.objectId);
     const titleIds = Array.from(shapes.keys()).filter((k) => /ct\d+$/.test(k));
     for (const tid of titleIds) {
-      if (bottomAligned.indexOf(tid) === -1) fail(`card title ${tid} is not bottom-aligned — a one-line heading leaves a hole above its body`);
+      if (bottomAligned.indexOf(tid) !== -1) fail(`card title ${tid} is bottom-aligned — the slack lands between chip and heading and reads as a hole`);
     }
-    // And the PREVIEW must carry it, or it draws the heading at the top of the
-    // band while the deck draws it at the bottom.
+    // And the PREVIEW agrees: no bottom-aligned text on this slide in either.
     const pm = toPreviewModel([cardsSlide]);
     const previewTitles = (pm.slides?.[0]?.elements ?? []).filter((e: any) => e.kind === "text" && e.vBottom);
-    if (previewTitles.length !== titleIds.length) {
-      fail(`preview shows ${previewTitles.length} bottom-aligned text boxes, the deck has ${titleIds.length} — the preview would disagree with the deck`);
+    if (previewTitles.length !== 0) {
+      fail(`preview shows ${previewTitles.length} bottom-aligned text boxes, the deck has 0 — the preview would disagree with the deck`);
     }
 
     // The stacked bar, in the exact shape that produced two bars both labelled
@@ -2739,6 +2757,20 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     if (/text-align:[a-z]+;overflow:hidden;/.test(html)) {
       fail(`the PDF hides overflowing text — Slides draws it and lets it run, and hiding it lets an overflowing slide print as a tidy one`);
     }
+    // LINE HEIGHT. Slides' 115% is 115% of the face's ~1.26em, and the engine
+    // sizes every box on exactly that (LINE_LEAD = 1.449). A preview drawing
+    // CSS line-height 1.15 — of the font SIZE — ran a fifth tighter than the
+    // deck, so a body that overflows in Slides fitted in the picture. The
+    // print must draw the default box at the engine's own lead.
+    const expectLead = (1.15 * NATURAL_LINE).toFixed(3);
+    const leads = html.match(/line-height:([0-9.]+);/g) || [];
+    const defaults = leads.filter((l) => Math.abs(parseFloat(l.replace(/[^0-9.]/g, "")) - parseFloat(expectLead)) < 0.002);
+    if (!leads.length) fail("the PDF sets no line-height at all");
+    else if (!defaults.length) fail(`the PDF draws its default line spacing at ${leads[0]} — the engine measures at ${expectLead}, so the print runs tighter than the deck`);
+    // And the 105% table cells at 105% of the same face height.
+    if (!leads.some((l) => Math.abs(parseFloat(l.replace(/[^0-9.]/g, "")) - 1.05 * NATURAL_LINE) < 0.002)) {
+      fail("the PDF's table cells are not drawn at 105% of the face height");
+    }
   }
   if (failures === before25) pass("a pill column steps down as one, its labels centre in their capsules, and the print carries Slides' own inset");
 
@@ -2831,6 +2863,134 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     }
   }
   if (failures === before26) pass("text that a layout cannot draw is named, reported, and never passed off as being in the deck");
+
+  /* 27. BOXES HUG THEIR WORDS, SIT INSIDE THE MARGIN, AND SAY WHERE THEY END
+   *
+   * The reference deck the client actually presented sizes every tinted box
+   * to the text it holds and leaves the slack at the FOOT of the slide; the
+   * takeaway bar sits a few points under the boxes it comments on. Ours
+   * stretched every panel to the band, pinned the bar to the bottom, and on
+   * 20 of 38 pages a paragraph sat in the top third of a slab of tint. The
+   * user called it "boxes mis-sized with lots of wasted space" and corrected
+   * it by hand on lots of pages.
+   *
+   * Four assertions, each of which a mutation run found missing:
+   *   - a two-column panel's height tracks its content, and sits inside the
+   *     margin rather than 12pt past it on both sides;
+   *   - the takeaway bar starts NOTE.gap under the content, not at the foot;
+   *   - the splitter judges a slide against the room it HAS, not the box it
+   *     drew for a two-line probe — that bug turned a 39-slide deck into 53;
+   *   - a table cell is the full row tall and centres its text.
+   *
+   * MUTATION LOG
+   *   - two-column panel stretched to the band     → KILLED
+   *   - panel drawn 12pt past the margin           → KILLED
+   *   - takeaway pinned to the foot again          → KILLED
+   *   - splitter probes the hug, not the ceiling   → KILLED (only with UNEQUAL columns;
+   *     equal ones prop the probe up to the need — recorded as a survivor first)
+   *   - cards fill the band again                  → KILLED
+   *   - table cell not centred                     → KILLED
+   */
+  const before27 = failures;
+  console.log(`\n27. Boxes hug their words, sit inside the margin, and say where they end`);
+  {
+    const geomOf = (reqs: any[], suffix: string) => {
+      for (const r of reqs) {
+        const o = r.createShape || r.createImage;
+        if (o && String(o.objectId).endsWith(suffix)) {
+          const t = o.elementProperties.transform;
+          return { x: t.translateX, y: t.translateY, w: o.elementProperties.size.width.magnitude, h: o.elementProperties.size.height.magnitude };
+        }
+      }
+      return null;
+    };
+
+    // TWO-COLUMN. Five short bullets a side — the Keyword Era page — with a
+    // takeaway. Short on purpose: if the panel is not far under its ceiling
+    // the assertion says nothing.
+    const cols: SlideInput = {
+      layout: "two-column", title: "The keyword era",
+      columns: { left: "How it works", right: "Limitations now emerging" },
+      body: "Match user queries with exact keywords\nOptimise meta tags and URLs\nBuild backlinks\nTrack rankings\nSuccess = blue links clicked",
+      // The RIGHT column is deliberately shorter than the left. The two panels
+      // share one height, so with equal columns the right one props the
+      // splitter's probe box up to exactly what the left needs, and the
+      // "probes the hug, not the ceiling" mutation survives. Unequal, the
+      // hugged probe is shorter than the left column and the bug shows.
+      bodyRight: "Treats every query as a string\nNo strategy for AI answers",
+      tones: ["grey", "coral"],
+      note: "Keywords aren't dead: they're the floor, not the ceiling.",
+    };
+    const creqs = buildSlideRequests(cols, 0, "p27a") as any[];
+    const tl = geomOf(creqs, "_tl"), tr = geomOf(creqs, "_tr"), bar = geomOf(creqs, "_noteBar");
+    if (!tl || !tr || !bar) fail(`two-column fixture drew no panels or no takeaway (tl=${!!tl} tr=${!!tr} bar=${!!bar})`);
+    else {
+      const ceiling = NOTE.bottom - bar.h - NOTE.gap - tl.y;
+      // PRECONDITION: the content is genuinely short of the ceiling.
+      if (tl.h > ceiling * 0.75) fail(`fixture is too tall (panel ${tl.h.toFixed(0)} of ${ceiling.toFixed(0)} available) — a panel near its ceiling cannot show that panels hug`);
+      if (tl.h > ceiling * 0.75) { /* nothing more to prove */ }
+      else {
+        if (tl.h >= ceiling - 1) fail(`the two-column panel is stretched to the band (${tl.h.toFixed(0)} of ${ceiling.toFixed(0)}) — five bullets in a slab of tint`);
+        if (Math.abs(tl.h - tr.h) > 0.5) fail(`the two panels differ in height (${tl.h.toFixed(1)} vs ${tr.h.toFixed(1)}) — a pair reads as a pair only at one height`);
+        // Inside the margin.
+        if (Math.abs(tl.x - GRID.columnLeftX) > 0.5) fail(`the left panel starts at ${tl.x.toFixed(1)}, not on the column edge ${GRID.columnLeftX.toFixed(1)} — it overhangs the title and the takeaway`);
+        const rightEdge = tr.x + tr.w, contentRight = GRID.margin + GRID.contentWidth;
+        if (rightEdge > contentRight + 0.5) fail(`the right panel ends at ${rightEdge.toFixed(1)}, past the content edge ${contentRight.toFixed(1)}`);
+        // The takeaway follows the content.
+        const expectBarTop = tl.y + tl.h + NOTE.gap;
+        if (Math.abs(bar.y - expectBarTop) > 0.5) fail(`the takeaway bar starts at ${bar.y.toFixed(1)}, not ${NOTE.gap}pt under the panels (${expectBarTop.toFixed(1)}) — pinned to the foot, the room's eye crosses a void to find it`);
+      }
+      // THE SPLITTER sees the ceiling: this slide fits, so it must not split.
+      const kept = splitOverflowingSlides([JSON.parse(JSON.stringify(cols))]);
+      if (kept.length !== 1) fail(`a two-column slide that fits was split into ${kept.length} — the splitter is measuring against the hugged box, not the room`);
+      // And it still splits a slide that genuinely does not fit (or the
+      // assertion above passes for the wrong reason).
+      const long = { ...cols, body: Array.from({ length: 22 }, (_, i) => `A deliberately long bullet that wraps at least once at column width, number ${i + 1}`).join("\n") };
+      if (splitOverflowingSlides([JSON.parse(JSON.stringify(long))]).length < 2) fail("the splitter no longer splits a column that genuinely overflows");
+    }
+
+    // CARDS. Three one-line bodies and a takeaway: the cards must not fill
+    // the band, and the bar must sit under them.
+    const cards: SlideInput = {
+      layout: "cards", title: "Three pillars",
+      cards: [
+        { title: "Authority", body: "Credibility signals AI looks for.", tone: "blue" },
+        { title: "Consistency", body: "The same facts everywhere AI reads.", tone: "teal" },
+        { title: "Relevance", body: "Structure AI can parse and cite.", tone: "amber" },
+      ],
+      note: "Triangulation: models check third parties for agreement.",
+    };
+    const kreqs = buildSlideRequests(cards, 0, "p27b") as any[];
+    const cp0 = geomOf(kreqs, "_cp0"), kbar = geomOf(kreqs, "_noteBar");
+    if (!cp0 || !kbar) fail("cards fixture drew no card or no takeaway");
+    else {
+      const room = NOTE.bottom - kbar.h - NOTE.gap - cp0.y;
+      if (cp0.h > room * 0.6) fail(`a one-line card is ${cp0.h.toFixed(0)}pt tall in ${room.toFixed(0)} of room — cards are filling the band again`);
+      if (Math.abs(kbar.y - (cp0.y + cp0.h + NOTE.gap)) > 0.5) fail(`the takeaway under the cards starts at ${kbar.y.toFixed(1)}, not ${NOTE.gap}pt under them`);
+    }
+
+    // TABLE CELLS: full row height, centred, overhanging the row by half the
+    // inset each side so the text — not the box — is what meets its neighbour.
+    const tbl: SlideInput = { layout: "table", title: "Tiers",
+      table: { columns: ["Tier", "What belongs here", "Volume"], rows: [
+        ["P1", "Master entity plus satellites directly linked to revenue and strategic goals", "10-15"],
+        ["P2", "Supporting experts, secondary products, partners", "20-40"],
+      ] } };
+    const treqs = buildSlideRequests(tbl, 0, "p27c") as any[];
+    const centred = new Set<string>();
+    for (const r of treqs) if (r.updateShapeProperties?.shapeProperties?.contentAlignment === "MIDDLE") centred.add(r.updateShapeProperties.objectId);
+    const cellIds = treqs.filter((r) => r.createShape && /_tc\d+_[12]$/.test(r.createShape.objectId)).map((r) => r.createShape.objectId);
+    if (cellIds.length < 4) fail(`expected at least 4 prose cells, found ${cellIds.length}`);
+    for (const cid of cellIds) {
+      if (!centred.has(cid)) fail(`table cell ${cid} is not vertically centred — a one-line cell sits level with the third line of its two-line neighbour`);
+    }
+    const zebra = geomOf(treqs, "_tz1"), cell1 = geomOf(treqs, "_tc1_1");
+    if (!zebra || !cell1) fail(`no zebra row or cell to measure (zebra=${!!zebra} cell=${!!cell1})`);
+    else if (Math.abs((zebra.y - cell1.y) - TEXT_INSET_Y / 2) > 0.5 || Math.abs((cell1.h - zebra.h) - TEXT_INSET_Y) > 0.5) {
+      fail(`the cell box does not overhang its row by half the inset each side (row y ${zebra.y.toFixed(1)} h ${zebra.h.toFixed(1)}, cell y ${cell1.y.toFixed(1)} h ${cell1.h.toFixed(1)}) — the row pitch is paying for padding again`);
+    }
+  }
+  if (failures === before27) pass("panels and cards hug their words inside the margin, the takeaway follows them, the splitter measures the room, and cells centre in their rows");
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);
