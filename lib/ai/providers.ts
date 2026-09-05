@@ -338,12 +338,11 @@ const POST_TAINT_READ_TOOLS = new Set([
   "lookup_client_context",
   // Pure function over text already in the turn. Nothing leaves.
   "query_content_score",
-  // A READ of our own AI-visibility platform. It reaches outside the
-  // conversation, but so does query_drive_docs: what matters post-taint is
-  // that it cannot WRITE anywhere or persist anything, and it cannot. The
-  // reports that carry scraped third-party text set the taint themselves
-  // (AUTHORITYON_UNTRUSTED_REPORTS), so reading one narrows the tool set for
-  // everything after it — which is the behaviour an email read already has.
+  // A READ of our own AI-visibility platform, in the same class as
+  // query_drive_docs: it reaches outside the conversation but cannot write
+  // anywhere or persist anything, so it stays available after a hard taint.
+  // Its own text-bearing reports set the SOFT taint rather than the hard one
+  // — see AUTHORITYON_UNTRUSTED_REPORTS for why that is the right level.
   "query_authorityon",
 ]);
 
@@ -7237,18 +7236,36 @@ const AUTHORITYON_REPORTS: { [k: string]: string } = {
  * This is the security decision in the whole integration. `answers` returns
  * the verbatim words an AI assistant said about a brand; `stories`,
  * `earned_media` and `citations` return scraped coverage; `recommendations`
- * carries `rationale` and `story` fields written from that same material; the
- * report and audit documents are built out of all of it.
+ * carries `rationale` and `story` written from that same material; the report
+ * and audit documents are built out of all of it.
  *
- * Anyone who wants EngineAI to take an action need only get the instruction
- * onto a page AuthorityOn reads. So these set the same taint an email read
- * sets: after one, the model keeps its READS and loses everything that can
- * reach outside the conversation or persist beyond it.
+ * ── WHICH TAINT, AND WHY THE SOFT ONE ───────────────────────────────────────
  *
- * The scores and the brand list are numbers and identifiers from our own
- * platform. They are still fenced — everything is fenced — but they do not
- * taint, because tainting on a score lookup would block a deck build for no
- * reason and teach people to work around the rule.
+ * These set the SOFT taint (`sawThirdPartyContent`) — the one Drive, Slack and
+ * MeetingBrain set — not the HARD taint reserved for the mailbox.
+ *
+ * The first version set the hard taint, reasoning that scraped web text is
+ * attacker-influenceable and therefore email-shaped. Driving it against the
+ * live server showed the cost: "pull the AI answers for Zurich Instruments and
+ * build me a deck" is the most obvious thing anyone will ask this integration,
+ * it is ONE turn, and the hard taint blocks every generate_* tool for the rest
+ * of that turn. The integration would have refused its own headline use case.
+ *
+ * The distinction this codebase already draws is the right one, and it is
+ * about PROVENANCE rather than authorship. A mailbox is a channel any stranger
+ * can push text into unbidden, and mail questions are terminal. AuthorityOn is
+ * our own platform reporting on brands we chose to track — the same shape as a
+ * Drive document somebody shared with us, which is equally attacker-writable
+ * and gets the soft taint.
+ *
+ * So the defence is layered as it is for Drive: the FENCE carries it on every
+ * response, and instructions inside a fenced block are never followed; the
+ * soft taint closes the PERSISTENT channel, stopping background memory
+ * extraction so planted text cannot become a standing instruction in a future
+ * turn. What it deliberately does not do is stop the user finishing their work.
+ *
+ * The scores and the brand list are figures and identifiers from our own
+ * platform. Still fenced — everything is fenced — but they do not taint.
  */
 const AUTHORITYON_UNTRUSTED_REPORTS = new Set([
   "answers", "stories", "earned_media", "citations",
@@ -9610,7 +9627,7 @@ async function streamAnthropic(
             const result = await callAuthorityOn(mcpTool, args);
             // THE TAINT. A report carrying scraped third-party text narrows
             // everything after it, exactly as an email read does.
-            if (result.ok && authorityOnReportIsUntrusted(report)) config.sawUntrustedContent = true;
+            if (result.ok && authorityOnReportIsUntrusted(report)) config.sawThirdPartyContent = true;
             toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: formatAuthorityOnResult(report, result) });
           }
         } catch (err: any) {
@@ -10683,7 +10700,7 @@ async function streamXAIChatCompletions(
             const args = authorityOnArgs(report, input);
             const result = await callAuthorityOn(mcpTool, args);
             // THE TAINT — see the Anthropic chain.
-            if (result.ok && authorityOnReportIsUntrusted(report)) config.sawUntrustedContent = true;
+            if (result.ok && authorityOnReportIsUntrusted(report)) config.sawThirdPartyContent = true;
             openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: formatAuthorityOnResult(report, result) } as any);
           }
         } catch (err: any) {
@@ -11738,7 +11755,7 @@ async function streamGemini(
             const args = authorityOnArgs(report, input);
             const result = await callAuthorityOn(mcpTool, args);
             // THE TAINT — see the Anthropic chain.
-            if (result.ok && authorityOnReportIsUntrusted(report)) config.sawUntrustedContent = true;
+            if (result.ok && authorityOnReportIsUntrusted(report)) config.sawThirdPartyContent = true;
             geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: formatAuthorityOnResult(report, result) } as any);
           }
         } catch (err: any) {
@@ -12692,7 +12709,7 @@ async function streamOpenAI(
             const args = authorityOnArgs(report, input);
             const result = await callAuthorityOn(mcpTool, args);
             // THE TAINT — see the Anthropic chain.
-            if (result.ok && authorityOnReportIsUntrusted(report)) config.sawUntrustedContent = true;
+            if (result.ok && authorityOnReportIsUntrusted(report)) config.sawThirdPartyContent = true;
             openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: formatAuthorityOnResult(report, result) } as any);
           }
         } catch (err: any) {

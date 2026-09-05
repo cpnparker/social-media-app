@@ -186,9 +186,15 @@ console.log("\n5. Registered, executed and TAINTED in all four chains");
   if (executed !== 4) fail(`the tool is executed in ${executed} of 4 chains — a chain that registers it without a handler answers "unknown tool"`);
   // THE ONE THAT MATTERS. A chain that registers the tool but forgets the
   // taint line reads scraped text with every write tool still open.
-  const tainted = (src.match(/authorityOnReportIsUntrusted\(report\)\) config\.sawUntrustedContent = true/g) || []).length;
+  const tainted = (src.match(/authorityOnReportIsUntrusted\(report\)\) config\.sawThirdPartyContent = true/g) || []).length;
   if (tainted !== 4) {
-    fail(`the taint is set in ${tainted} of 4 chains — the chains that register the tool without it read scraped third-party text with Gmail and scheduling still available`);
+    fail(`the taint is set in ${tainted} of 4 chains — a chain that registers the tool without it lets planted text become a standing memory`);
+  }
+  // The SOFT taint, deliberately. The hard one blocks every generate_* tool
+  // for the rest of the turn, and "pull the AI answers and build me a deck"
+  // is one turn and the headline use case. Verified against the live server.
+  if (/authorityOnReportIsUntrusted\(report\)\) config\.sawUntrustedContent = true/.test(src)) {
+    fail("AuthorityOn sets the HARD taint — that blocks deck and document generation in the same turn, which is the workflow this integration exists for");
   }
   // Gated on a configured key in EVERY chain, so the model is never offered a
   // tool that can only fail. Counted, not merely found: nulling one of the
