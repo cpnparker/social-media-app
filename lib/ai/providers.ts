@@ -1919,7 +1919,7 @@ const WORD_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         body: {
           type: "string",
           description:
-            "The full document in markdown. Use # ## ### for headings, - for bullets, 1. for numbered lists, | tables |, > quotes, **bold**, *italic*, [links](url). Write the COMPLETE content — this is what the file will contain, so never abbreviate or write a placeholder.",
+            "The full document in markdown. Use # ## ### for headings, - for bullets, 1. for numbered lists, | tables |, > quotes, **bold**, *italic*, [links](url). Write the COMPLETE content — this is what the file will contain, so never abbreviate or write a placeholder. The title, subtitle and date are drawn ABOVE the body for you: do not repeat them as a heading or as a 'Prepared / Generated / Source' line, or the reader sees the title twice. Start the body at the first real section.",
         },
         googleDoc: {
           type: "boolean",
@@ -7194,7 +7194,7 @@ export const AUTHORITYON_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         pillar: { type: "string", enum: ["AI_SCAN", "WEBSITE", "CONTENT", "SOCIAL"], description: "recommendations only." },
         department: { type: "string", enum: ["CONTENT_EDITORIAL", "WEB_DIGITAL", "DEMAND_GEN", "MEDIA_RELATIONS"], description: "recommendations only." },
         kind: { type: "string", enum: ["ai_performance", "exec_pack"], description: "report only. Default ai_performance." },
-        format: { type: "string", enum: ["markdown", "json"], description: "report and audit_report only. Defaults to markdown, which is what you want: hand that markdown to generate_word_document to produce the file, so a brand report is rendered by the same pipeline as every other document this app makes." },
+        format: { type: "string", enum: ["markdown", "json"], description: "report and audit_report only. Defaults to markdown, which is what you want: hand that markdown to generate_word_document to produce the file, so a brand report is rendered by the same pipeline as every other document this app makes. For a client-facing advisory report set coverPage: true, put the headline score and period in the subtitle, and keep AuthorityOn's section order (score composition, positioning, audits, evidence, roadmap, targets) — that order is the argument." },
         limit: { type: "number", description: "Rows to return, 1-50. Default 20." },
       },
       required: ["report"],
@@ -8474,7 +8474,7 @@ async function streamAnthropic(
           }
           if (block.name === "generate_document" || block.name === "generate_word_document" || block.name === "generate_slides") {
             controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ generating_document: true })}\n\n`)
+              encoder.encode(`data: ${JSON.stringify({ generating_document: true, kind: block.name === "generate_word_document" ? "word" : "slides" })}\n\n`)
             );
           }
           if (block.name === "generate_chart") {
@@ -10012,7 +10012,7 @@ async function streamXAIChatCompletions(
           }
           if ((existing.name === "generate_document" || existing.name === "generate_word_document" || existing.name === "generate_slides") && tc.function?.name) {
             controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ generating_document: true })}\n\n`)
+              encoder.encode(`data: ${JSON.stringify({ generating_document: true, kind: existing.name === "generate_word_document" ? "word" : "slides" })}\n\n`)
             );
           }
           if (existing.name === "generate_chart" && tc.function?.name) {
@@ -11084,7 +11084,7 @@ async function streamGemini(
           }
           if ((existing.name === "generate_document" || existing.name === "generate_word_document" || existing.name === "generate_slides") && tc.function?.name) {
             controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ generating_document: true })}\n\n`)
+              encoder.encode(`data: ${JSON.stringify({ generating_document: true, kind: existing.name === "generate_word_document" ? "word" : "slides" })}\n\n`)
             );
           }
           if (existing.name === "generate_chart" && tc.function?.name) {
@@ -12041,7 +12041,7 @@ async function streamOpenAI(
           }
           if ((existing.name === "generate_document" || existing.name === "generate_word_document" || existing.name === "generate_slides") && tc.function?.name) {
             controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ generating_document: true })}\n\n`)
+              encoder.encode(`data: ${JSON.stringify({ generating_document: true, kind: existing.name === "generate_word_document" ? "word" : "slides" })}\n\n`)
             );
           }
           if (existing.name === "generate_chart" && tc.function?.name) {

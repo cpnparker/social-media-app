@@ -144,6 +144,9 @@ export default function ChatPanel({
   const [isSearchingWeb, setIsSearchingWeb] = useState(false);
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const [isGeneratingDocument, setIsGeneratingDocument] = useState(false);
+  // Which kind, because a Word document used to sit under "Generating
+  // presentation…" for the whole minute it took to write.
+  const [generatingKind, setGeneratingKind] = useState<"word" | "slides">("slides");
   // How far a deck build has got: the server streams the slide count while the
   // model writes the deck out, so a minute-long build shows movement instead of
   // a static pulse a user cannot tell from a stall.
@@ -861,6 +864,7 @@ export default function ChatPanel({
               toast.error(`Image generation failed: ${parsed.image_error}`);
             } else if (parsed.generating_document) {
               setIsGeneratingDocument(true);
+              setGeneratingKind(parsed.kind === "word" ? "word" : "slides");
             } else if (parsed.slides_progress) {
               setIsGeneratingDocument(true);
               const sp = parsed.slides_progress;
@@ -2049,7 +2053,9 @@ export default function ChatPanel({
                       ? `Finding photographs… ${slidesProgress.images.done} of ${slidesProgress.images.total}`
                       : slidesProgress?.writing !== undefined
                         ? `Writing the deck… slide ${slidesProgress.writing}`
-                        : "Generating presentation…"}
+                        : generatingKind === "word"
+                          ? "Writing the document…"
+                          : "Generating presentation…"}
                   </span>
                   {slidesProgress?.images ? (
                     <span className="h-1.5 w-40 rounded bg-foreground/[0.08] overflow-hidden" aria-hidden>
