@@ -10,11 +10,12 @@ export const AI_MODELS = [
   { id: "claude-opus-5", label: "Claude Opus 5", provider: "anthropic", description: "Complex agentic work, code & analysis" },
   { id: "claude-sonnet-5", label: "Claude Sonnet 5", provider: "anthropic", description: "Complex reasoning & analysis" },
   { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", provider: "anthropic", description: "Fast, cheap Claude" },
+  { id: "gpt-6-astra", label: "GPT-6 Astra", provider: "openai", description: "OpenAI's most capable — premium" },
   { id: "gpt-5-6-terra", label: "GPT-5.6 Terra", provider: "openai", description: "OpenAI's balanced model" },
-  { id: "grok-4-1-fast", label: "Grok 4 Fast", provider: "xai", description: "Fast, affordable, web search" },
+  { id: "grok-4-1-fast", label: "Grok 4.3 Fast", provider: "xai", description: "Cheapest — simple queries only" },
   { id: "grok-4-6", label: "Grok 4.6", provider: "xai", description: "xAI's flagship — most capable" },
   { id: "grok-4-3", label: "Grok 4.3", provider: "xai", description: "Strong and cheaper than 4.6" },
-  { id: "gemini-3-flash", label: "Gemini 3 Flash", provider: "gemini", description: "Fast, large context window" },
+  { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", provider: "gemini", description: "Fast, cheap, 1M context" },
 ] as const;
 
 /**
@@ -79,6 +80,11 @@ const LEGACY_MODEL_LABELS: Record<string, string> = {
   // 2026-07-24, so selecting it errored. Deliberately NOT repointed at
   // DeepSeek V4 — first-party DeepSeek stores data in the PRC.
   "deepseek-chat": "DeepSeek Chat",
+  // Retired from the picker 2026-09-05: Google deprecated Gemini 3 Flash and
+  // our slug was the PREVIEW one, which is a shutdown notice away from 404ing.
+  // Superseded by gemini-3.8-flash. The label stays so historic messages and
+  // saved preferences still render a name rather than a raw id.
+  "gemini-3-flash": "Gemini 3 Flash",
 };
 
 /** Get display label for a model ID */

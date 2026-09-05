@@ -58,6 +58,7 @@ export const MODEL_COSTS: Record<
   // the bottom of this file and billed $3/$15 instead of $2/$12. Both spellings
   // are kept: the registry id is what the ledger looks up, the apiModel is what
   // shows in provider-side reporting.
+  "gpt-6-astra": { inputPer1M: 1000, outputPer1M: 5000, cachedInputPer1M: 100 },  // $10/$50, cache $1
   "gpt-5-6-terra": { inputPer1M: 200, outputPer1M: 1200 },           // $2/$12
   "gpt-5.6-terra": { inputPer1M: 200, outputPer1M: 1200 },           // $2/$12
   "gpt-5.6-luna": { inputPer1M: 20, outputPer1M: 120 },              // $0.20/$1.20
@@ -103,6 +104,7 @@ export const MODEL_COSTS: Record<
   // $0.75/$3.75 promotional through 2026-12-31, DOUBLING to $1.50/$7.50 on
   // 2027-01-01. Was recorded at $0.50/$3, understating it.
   "gemini-3-flash": { inputPer1M: 75, outputPer1M: 375, cachedInputPer1M: 7.5 },   // cache $0.075
+  "gemini-3.8-flash": { inputPer1M: 75, outputPer1M: 375, cachedInputPer1M: 7.5 }, // $0.75/$3.75 intro, DOUBLES 2027-01-01
   // The WIRE slug as well as the registry id. calculateCostTenths is called
   // with whichever string the caller holds, and an unknown one prices at the
   // claude-sonnet-4-6 fallback without a word — so a row keyed only by the
@@ -170,6 +172,12 @@ export const RATE_EXPIRIES: {
   then: { inputPer1M: number; outputPer1M: number };
   why: string;
 }[] = [
+  {
+    model: "gemini-3.8-flash",
+    until: "2026-12-31",
+    then: { inputPer1M: 150, outputPer1M: 750 },
+    why: "Google's introductory rate for Gemini 3.8 Flash runs to 2026-12-31; from 2027-01-01 it doubles to $1.50/$7.50. Verified on ai.google.dev 2026-09-05.",
+  },
   {
     model: "gemini-3-flash",
     until: "2026-12-31",

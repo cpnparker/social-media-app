@@ -15,8 +15,35 @@
  * Uses keyword/pattern matching — no LLM call required.
  */
 
+/** The CHEAP leg, and now the exception rather than the rule.
+ *
+ *  This id maps to wire slug grok-4.3 (the retired-alias billing bug is fixed;
+ *  the mapping is correct). What was NOT known when it became the default is
+ *  its quality: Artificial Analysis scores Grok 4.3 at 38, against Grok 4.6's
+ *  61 — xAI's own launch note puts 4.6 at "+23 points compared to Grok 4.3".
+ *  It was answering most EngineAI traffic while being the weakest model in the
+ *  picker by some seventeen points.
+ *
+ *  It still earns a place: for a greeting, an acknowledgement or a one-line
+ *  instruction, 38 is plenty and $1.25/$2.50 is a fifth of the alternative.
+ *  It is now reached only when a message is DEMONSTRABLY trivial. */
 export const FAST_MODEL = "grok-4-1-fast" as const;
+/** The DEFAULT, and the workhorse.
+ *
+ *  Grok 4.6 is the best value at the frontier on the September 2026 numbers:
+ *  Artificial Analysis 61 at $2/$6, against Claude Sonnet 5's 55.3 at $2/$10
+ *  and GPT-6 Astra's 61.2 at $10/$50. It beats the grounded leg on BOTH axes,
+ *  which is why that leg stays Claude for its capabilities and never for its
+ *  quality. Roughly 1.8x a Grok 4.3 turn, for 23 index points. */
 export const REASONING_MODEL = "grok-4-6" as const;
+/** The CAPABILITY leg, not the quality leg.
+ *
+ *  Claude is here for three things no other chain does: it reads a PDF
+ *  natively as a document block, it is the only chain where query_gmail is
+ *  registered, and it calls the image tool reliably where Grok writes fake
+ *  markdown images. Sonnet 5 scores BELOW the default leg (55.3 vs 61) and
+ *  costs more per output token — so route here for what it can do, never
+ *  because it is Claude. */
 export const GROUNDED_MODEL = "claude-sonnet-5" as const;
 
 // ── Keyword patterns that signal a reasoning-heavy prompt ──
@@ -149,6 +176,29 @@ const REFINEMENT_PATTERNS = [
 /** Short enough that it cannot be carrying its own subject matter. */
 const REFINEMENT_MAX_CHARS = 260;
 
+/** A message so slight that the cheapest model answers it as well as any.
+ *
+ *  Deliberately NARROW. The cheap leg used to be the default and everything
+ *  else an escalation, so a prompt that matched no keyword — most real
+ *  questions — landed on a model scoring 38. The polarity is now reversed:
+ *  this is the only way to reach it, so the failure mode of a bad match is a
+ *  slightly dearer answer rather than a visibly worse one. */
+const TRIVIAL_MAX_CHARS = 90;
+const TRIVIAL_PATTERNS: RegExp[] = [
+  /^(hi|hey|hello|yo|morning|good morning|good afternoon|evening)\b/i,
+  /^(thanks|thank you|ta|cheers|ok|okay|got it|perfect|great|nice|lovely|brilliant)\b/i,
+  /^(yes|no|yep|nope|sure|please do|go ahead|do it|carry on|continue)\b/i,
+  /^(what|when|where|who)('s| is| are| was| were)? (the )?(time|date|day|weather)\b/i,
+  /^(say|repeat|spell|translate) /i,
+];
+
+function isTrivial(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.length > TRIVIAL_MAX_CHARS) return false;
+  if (hasCodeFence(trimmed)) return false;
+  return TRIVIAL_PATTERNS.some((p) => p.test(trimmed));
+}
+
 /**
  * Classify a user message and return the best model to use.
  * Exported for use in the messages API route.
@@ -178,6 +228,9 @@ export function routeModel(
   if (opts?.hasDocumentAttachment) return GROUNDED_MODEL;
 
   const own = routeOwn(userMessage);
+  // Only a message that routed CHEAP can be raised by what it refines; the
+  // inheritance stays one-way, so a trivial follow-up can never pull a
+  // substantive thread down a tier.
   if (own !== FAST_MODEL || !priorUserMessages?.length) return own;
   if (!isRefinement(userMessage)) return own;
 
@@ -234,6 +287,12 @@ function routeOwn(userMessage: string): typeof FAST_MODEL | typeof REASONING_MOD
   // Multi-step pattern checks
   if (MULTI_STEP_PATTERNS.some((p) => p.test(userMessage))) return REASONING_MODEL;
 
-  // Default → fast model
-  return FAST_MODEL;
+  // THE CHEAP LEG IS THE EXCEPTION. Everything above escalates for a reason;
+  // what is left is an ordinary question, and an ordinary question is what the
+  // default model is for. Reversing this line is the change: a prompt that
+  // matched no keyword used to fall to a model scoring 38 on the Artificial
+  // Analysis index, which is how most EngineAI traffic came to be answered by
+  // the weakest model on offer.
+  if (isTrivial(userMessage)) return FAST_MODEL;
+  return REASONING_MODEL;
 }

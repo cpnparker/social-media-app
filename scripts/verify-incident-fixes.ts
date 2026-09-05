@@ -78,8 +78,32 @@ console.log("\n3. Routing — the refinement inherits the stakes of what it refi
 {
   const alone = routeModel(REFINE_PROMPT);
   const withPrior = routeModel(REFINE_PROMPT, [DRAFT_PROMPT]);
-  check("classified alone it still looks trivial", alone === "grok-4-1-fast", alone);
+  // RE-BASELINED 2026-09-05. This used to assert `alone === "grok-4-1-fast"` —
+  // that Gabi's follow-up looked trivial on its own, so only the inheritance
+  // saved it. The router's polarity has since been inverted (see
+  // scripts/verify-model-routing.ts): the cheap leg was measured at 38 on the
+  // Artificial Analysis index against the workhorse's 61, so it is now reached
+  // only through a narrow trivial gate and everything else defaults upward.
+  // Her follow-up therefore never reaches the cheap model in the first place,
+  // which is a stronger fix than inheriting past it. The assertion is kept,
+  // pointed at what now matters: it must not land on the cheap leg by ANY
+  // route, with or without its prior.
+  check("classified alone it no longer falls to the cheap leg", alone !== "grok-4-1-fast", alone);
   check("with the prior turn it inherits the flagship", withPrior === "grok-4-6", withPrior);
+  // And the inheritance itself still works where it is still needed: a
+  // genuinely trivial refinement — one that passes the trivial gate — of a
+  // substantive draft.
+  const trivialRefine = routeModel("ok, try again", [DRAFT_PROMPT]);
+  check(
+    "a TRIVIAL refinement of a substantive draft still inherits",
+    trivialRefine === "grok-4-6",
+    trivialRefine
+  );
+  check(
+    "and that same message alone is cheap, so the inheritance is what moved it",
+    routeModel("ok, try again") === "grok-4-1-fast",
+    routeModel("ok, try again")
+  );
   // One-way only: a trivial thread must never drag a complex follow-up down.
   check(
     "inheritance never DOWNGRADES a turn that earned a better model",
@@ -104,10 +128,14 @@ console.log("\n3. Routing — the refinement inherits the stakes of what it refi
     routeModel("shorten it", ["shorten it", "shorten it", DRAFT_PROMPT]) ===
       routeModel("make it shorter", ["trim it down", "tighten it", DRAFT_PROMPT])
   );
-  // Nothing substantive to inherit — must not invent a tier.
+  // Nothing substantive to inherit — must not invent a tier. Driven with a
+  // message that passes the TRIVIAL gate, so the cheap leg is genuinely the
+  // base: with the polarity inverted, "shorten it" now defaults upward on its
+  // own merits and would have tested nothing here.
   check(
     "an all-refinement history does not escalate",
-    routeModel("shorten it", ["tighten it", "try again"]) === "grok-4-1-fast"
+    routeModel("ok, try again", ["ok, tighten it", "try again"]) === "grok-4-1-fast",
+    routeModel("ok, try again", ["ok, tighten it", "try again"])
   );
 }
 

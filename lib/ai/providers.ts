@@ -752,6 +752,19 @@ export const MODEL_REGISTRY: Record<string, ModelInfo> = {
     label: "Claude Haiku 4.5",
     description: "Fast, cheap Claude",
   },
+  // GA on 2026-09-02, slug verified on ai.google.dev 2026-09-05. Replaces the
+  // 3-flash PREVIEW slug below in the picker: Gemini 3 Flash is deprecated,
+  // and a preview slug is one shutdown notice away from 404ing in production.
+  // Scores 58.7 on the Artificial Analysis index against Grok 4.3's 38 — but
+  // it is NOT the auto default, because the Gemini chain registers none of the
+  // generation tools (no slides, documents, images or charts). Routing default
+  // traffic here would lose deck generation silently.
+  "gemini-3.8-flash": {
+    provider: "gemini",
+    apiModel: "gemini-3.8-flash",
+    label: "Gemini 3.8 Flash",
+    description: "Fast, cheap, 1M context",
+  },
   "gemini-3-flash": {
     provider: "gemini",
     // The API's own model list calls it gemini-3-flash-preview; the bare name
@@ -760,12 +773,27 @@ export const MODEL_REGISTRY: Record<string, ModelInfo> = {
     apiModel: "gemini-3-flash-preview",
     label: "Gemini 3 Flash",
     description: "Fast, large context window",
+    // Deprecated by Google and superseded by gemini-3.8-flash. Hidden rather
+    // than deleted so saved preferences still resolve to a real model.
+    hidden: true,
+    legacy: true,
   },
   "gemini-3.1-flash-lite": {
     provider: "gemini",
     apiModel: "gemini-3.1-flash-lite",
     label: "Gemini 3.1 Flash-Lite",
     hidden: true,
+  },
+  // OpenAI's flagship, released 2026-09-03. Slug verified on
+  // developers.openai.com 2026-09-05. Offered in the picker, never routed to:
+  // at $10/$50 it buys +0.3 Artificial Analysis points over grok-4.6 ($2/$6)
+  // for eight times the output cost, and it reprices the WHOLE request past
+  // 272K input tokens.
+  "gpt-6-astra": {
+    provider: "openai",
+    apiModel: "gpt-6-astra",
+    label: "GPT-6 Astra",
+    description: "OpenAI's most capable — premium",
   },
   "gpt-5-6-terra": {
     provider: "openai",
