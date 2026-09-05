@@ -1919,7 +1919,7 @@ const WORD_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         body: {
           type: "string",
           description:
-            "The full document in markdown. Use # ## ### for headings, - for bullets, 1. for numbered lists, | tables |, > quotes, **bold**, *italic*, [links](url). Write the COMPLETE content — this is what the file will contain, so never abbreviate or write a placeholder. The title, subtitle and date are drawn ABOVE the body for you: do not repeat them as a heading or as a 'Prepared / Generated / Source' line, or the reader sees the title twice. Start the body at the first real section.",
+            "The full document in markdown. Use # ## ### for headings, - for bullets, 1. for numbered lists, | tables |, > quotes, **bold**, *italic*, [links](url). Write the COMPLETE content — this is what the file will contain, so never abbreviate or write a placeholder. The title, subtitle and date are drawn ABOVE the body for you: do not repeat the title as a heading, or the reader sees it twice. Front matter on a client document (Prepared for, Prepared by, confidentiality, scan date) is welcome, but put a BLANK line between items — single line breaks are joined into one paragraph.",
         },
         googleDoc: {
           type: "boolean",
@@ -4275,14 +4275,36 @@ interface ThemeColors {
  * the Drive step fails the user still has their document, which is the
  * difference between a degraded answer and a lost one.
  */
+/** Below this the "document" is a title over nothing. A memo is hundreds of
+ *  characters; the empty and stub calls this catches were 0 and a sentence. */
+const WORD_BODY_MIN_CHARS = 200;
+
 export async function buildWordAndMaybeDoc(
   input: any,
   config: { workspaceId?: string; userEmail?: string }
 ): Promise<{ events: Record<string, unknown>[]; marker: string; toolText: string }> {
+  // AN EMPTY BODY IS REFUSED BEFORE ANYTHING EXISTS. The second live advisory
+  // report went out as two files: the model's first call carried a title, a
+  // subtitle and no body, this built and uploaded it, the model noticed and
+  // called again. The user saw a broken file and then a good one. Why the
+  // first call was empty is not pinned — a streamed call cut short is the
+  // likely shape — and it does not need to be: whatever the cause, a document
+  // with no content is never the right thing to make. No event, no marker,
+  // no upload; the model is told plainly and calls again.
+  const bodyText = String(input?.body || "").trim();
+  if (bodyText.length < WORD_BODY_MIN_CHARS) {
+    console.warn(`[WordGen] refused: body is ${bodyText.length} chars`);
+    return {
+      events: [],
+      marker: "",
+      toolText: `REFUSED — the body was ${bodyText.length} characters, which is not a document. Nothing was created and the user has seen nothing. Call generate_word_document again with the COMPLETE document in body; do not describe a file, because there is none.`,
+    };
+  }
+
   const { generateWordDocument } = await import("@/lib/documents/word");
   const { url, filename, buffer } = await generateWordDocument({
     title: input.title || "Document",
-    body: input.body || "",
+    body: bodyText,
     subtitle: input.subtitle,
     coverPage: input.coverPage === true,
     workspaceId: config.workspaceId,

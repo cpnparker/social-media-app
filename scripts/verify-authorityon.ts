@@ -48,6 +48,9 @@
  *   - a report mapped to a tool that does not exist  → KILLED (check 1)
  *   - parser takes the FIRST data: line              → KILLED (check 7)
  *   - a report defaulting to AuthorityOn's own docx  → KILLED (check 6)
+ *   - an empty body uploaded as a document            → KILLED (check 8), and
+ *     this one was written against the LIVE bug rather than a reintroduced
+ *     one: the check was red on first run, then the guard made it green.
  *   - one chain's key gate replaced with `if (true)` → KILLED, but only after
  *     the assertion was changed to COUNT the gates. It first tested that a
  *     gate existed anywhere in the file, so nulling one of four left the
@@ -70,6 +73,7 @@ import {
   authorityOnToolName,
   authorityOnReportIsUntrusted,
   authorityOnArgs,
+  buildWordAndMaybeDoc,
   formatAuthorityOnResult,
   AUTHORITYON_OPENAI_TOOL,
 } from "../lib/ai/providers";
@@ -247,7 +251,32 @@ console.log("\n7. The SSE envelope is parsed the way the server sends it");
   if (failures === before) ok("framed, noisy, plain and malformed bodies all handled");
 }
 
-console.log(failures
-  ? `\n✗ ${failures} failure${failures === 1 ? "" : "s"}\n`
-  : "\n✓ AuthorityOn's text is fenced and taints the turn, in every chain\n");
-process.exit(failures ? 1 : 0);
+async function check8() {
+  console.log("\n8. An empty body is refused before a file exists");
+  const before = failures;
+  // The second live advisory report went out as TWO files, the first of them
+  // title, subtitle and date over nothing: the model sent an empty body, and
+  // the builder uploaded it. The model then noticed and regenerated, so the
+  // user saw a broken file and then a good one. A body-less call must be
+  // refused with nothing created — no event, no marker, no upload.
+  const outcome = await buildWordAndMaybeDoc({ title: "Empty", body: "" }, {}).catch((e: any) => ({ threw: String(e?.message || e) }));
+  if ("threw" in outcome) {
+    fail(`an empty body reached the builder and it threw ("${outcome.threw.slice(0, 60)}") — it must be refused before any file is made`);
+  } else {
+    if (outcome.events.length) fail("an empty body produced a document event — the user was shown a file");
+    if (outcome.marker) fail("an empty body produced a marker — a file card was placed in the reply");
+    if (!/nothing was created/i.test(outcome.toolText)) fail("the refusal does not tell the model nothing was created, so it may describe a file that does not exist");
+    if (!/generate_word_document again/i.test(outcome.toolText)) fail("the refusal does not tell the model to call again with the full body");
+  }
+  // And a stub is treated the same: a title with a one-line body is not a document.
+  const stub = await buildWordAndMaybeDoc({ title: "Stub", body: "See attached." }, {}).catch(() => ({ threw: true } as any));
+  if ("threw" in stub || stub.events.length) fail("a one-line stub body was accepted as a document");
+  if (failures === before) ok("an empty or stub body is refused with nothing created");
+}
+
+check8().then(() => {
+  console.log(failures
+    ? `\n✗ ${failures} failure${failures === 1 ? "" : "s"}\n`
+    : "\n✓ AuthorityOn's text is fenced and taints the turn, in every chain\n");
+  process.exit(failures ? 1 : 0);
+});
