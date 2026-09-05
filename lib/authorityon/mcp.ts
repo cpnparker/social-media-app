@@ -130,6 +130,18 @@ function tryJson(s: string): unknown {
 
 let nextId = 1;
 
+/** One alert a minute, however many calls fail. A revoked key fails every
+ *  call in every turn, and an alert that fires a hundred times is an alert
+ *  somebody turns off. */
+let lastAlertAt = 0;
+const ALERT_INTERVAL_MS = 60_000;
+function alertOperatorOnce(message: string): void {
+  const now = Date.now();
+  if (now - lastAlertAt < ALERT_INTERVAL_MS) return;
+  lastAlertAt = now;
+  console.error(`[AuthorityOn][OPERATOR] ${message}`);
+}
+
 async function rpc(method: string, params: unknown): Promise<AuthorityOnResult> {
   const cfg = config();
   if (!cfg) {
@@ -160,7 +172,13 @@ async function rpc(method: string, params: unknown): Promise<AuthorityOnResult> 
   // described as "that brand isn't tracked". The server also advertises an
   // OAuth flow in WWW-Authenticate that is not built — do not follow it.
   if (res.status === 401 || res.status === 403) {
-    console.error(`[AuthorityOn] ${res.status} — the platform key is missing, revoked or expired. OPERATOR ACTION REQUIRED.`);
+    // OPERATOR ALERT. Logged at error level with a stable, greppable prefix so
+    // it can be alerted on in Vercel's log drain, and rate-limited to one line
+    // a minute: a revoked key fails EVERY call, and a hundred identical lines
+    // is how a real alert gets muted. The user-facing half of this is in
+    // formatAuthorityOnResult, which is careful never to let a dead key read
+    // as a fact about the brand.
+    alertOperatorOnce(`AUTHORITYON_KEY_REJECTED status=${res.status} — the platform key is missing, revoked or expired. Mint a new one and set AUTHORITYON_MCP_KEY.`);
     return { ok: false, kind: "auth", error: `AuthorityOn rejected our key (${res.status}).` };
   }
   if (!res.ok) {

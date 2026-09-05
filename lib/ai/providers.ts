@@ -7195,6 +7195,7 @@ export const AUTHORITYON_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         pillar: { type: "string", enum: ["AI_SCAN", "WEBSITE", "CONTENT", "SOCIAL"], description: "recommendations only." },
         department: { type: "string", enum: ["CONTENT_EDITORIAL", "WEB_DIGITAL", "DEMAND_GEN", "MEDIA_RELATIONS"], description: "recommendations only." },
         kind: { type: "string", enum: ["ai_performance", "exec_pack"], description: "report only. Default ai_performance." },
+        format: { type: "string", enum: ["markdown", "json"], description: "report and audit_report only. Defaults to markdown, which is what you want: hand that markdown to generate_word_document to produce the file, so a brand report is rendered by the same pipeline as every other document this app makes." },
         limit: { type: "number", description: "Rows to return, 1-50. Default 20." },
       },
       required: ["report"],
@@ -7260,6 +7261,24 @@ export function authorityOnReportIsUntrusted(report: string): boolean {
 
 export function authorityOnToolName(report: string): string | undefined {
   return AUTHORITYON_REPORTS[String(report || "").trim()];
+}
+
+/**
+ * The arguments actually sent, after the report name is stripped off.
+ *
+ * The one substantive default is FORMAT. AuthorityOn's report tools can return
+ * a Word file as a base64 blob, and taking it would mean two document
+ * renderers in one product: theirs for a brand report, ours for everything
+ * else, diverging the first time either changes. So we ask for MARKDOWN and
+ * render it with generate_word_document like every other document this app
+ * produces. A user who explicitly wants AuthorityOn's own file can still say
+ * so — the model can pass format through — but nothing defaults to it.
+ */
+export function authorityOnArgs(report: string, input: any): Record<string, unknown> {
+  const { report: _drop, ...rest } = (input || {}) as Record<string, unknown>;
+  const r = String(report || "").trim();
+  if ((r === "report" || r === "audit_report") && !rest.format) rest.format = "markdown";
+  return rest;
 }
 
 /** What the model is handed back. Fenced ALWAYS — the fence costs nothing on
@@ -9587,7 +9606,7 @@ async function streamAnthropic(
             toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `Unknown AuthorityOn report "${report}". Valid reports are listed in the tool schema.`, is_error: true });
           } else {
             const { callAuthorityOn } = await import("@/lib/authorityon/mcp");
-            const { report: _r, ...args } = (tool.input || {}) as any;
+            const args = authorityOnArgs(report, tool.input);
             const result = await callAuthorityOn(mcpTool, args);
             // THE TAINT. A report carrying scraped third-party text narrows
             // everything after it, exactly as an email read does.
@@ -10661,7 +10680,7 @@ async function streamXAIChatCompletions(
             openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Unknown AuthorityOn report "${report}". Valid reports are listed in the tool schema.` } as any);
           } else {
             const { callAuthorityOn } = await import("@/lib/authorityon/mcp");
-            const { report: _r, ...args } = input as any;
+            const args = authorityOnArgs(report, input);
             const result = await callAuthorityOn(mcpTool, args);
             // THE TAINT — see the Anthropic chain.
             if (result.ok && authorityOnReportIsUntrusted(report)) config.sawUntrustedContent = true;
@@ -11716,7 +11735,7 @@ async function streamGemini(
             geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Unknown AuthorityOn report "${report}". Valid reports are listed in the tool schema.` } as any);
           } else {
             const { callAuthorityOn } = await import("@/lib/authorityon/mcp");
-            const { report: _r, ...args } = input as any;
+            const args = authorityOnArgs(report, input);
             const result = await callAuthorityOn(mcpTool, args);
             // THE TAINT — see the Anthropic chain.
             if (result.ok && authorityOnReportIsUntrusted(report)) config.sawUntrustedContent = true;
@@ -12670,7 +12689,7 @@ async function streamOpenAI(
             openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Unknown AuthorityOn report "${report}". Valid reports are listed in the tool schema.` } as any);
           } else {
             const { callAuthorityOn } = await import("@/lib/authorityon/mcp");
-            const { report: _r, ...args } = input as any;
+            const args = authorityOnArgs(report, input);
             const result = await callAuthorityOn(mcpTool, args);
             // THE TAINT — see the Anthropic chain.
             if (result.ok && authorityOnReportIsUntrusted(report)) config.sawUntrustedContent = true;

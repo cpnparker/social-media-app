@@ -46,7 +46,8 @@
  *   - auth failure worded as "not tracked"           → KILLED (check 4)
  *   - the taint line deleted from one chain          → KILLED (check 5)
  *   - a report mapped to a tool that does not exist  → KILLED (check 1)
- *   - parser takes the FIRST data: line              → KILLED (check 6)
+ *   - parser takes the FIRST data: line              → KILLED (check 7)
+ *   - a report defaulting to AuthorityOn's own docx  → KILLED (check 6)
  *   - one chain's key gate replaced with `if (true)` → KILLED, but only after
  *     the assertion was changed to COUNT the gates. It first tested that a
  *     gate existed anywhere in the file, so nulling one of four left the
@@ -68,6 +69,7 @@ import { join } from "path";
 import {
   authorityOnToolName,
   authorityOnReportIsUntrusted,
+  authorityOnArgs,
   formatAuthorityOnResult,
   AUTHORITYON_OPENAI_TOOL,
 } from "../lib/ai/providers";
@@ -196,7 +198,27 @@ console.log("\n5. Registered, executed and TAINTED in all four chains");
   if (failures === before) ok("registered, executed and tainted in all four chains, and gated on a configured key");
 }
 
-console.log("\n6. The SSE envelope is parsed the way the server sends it");
+console.log("\n6. A report comes back as markdown, for our own renderer");
+{
+  const before = failures;
+  // Taking AuthorityOn's docx would mean two document renderers in one
+  // product, diverging the first time either changes.
+  const rep = authorityOnArgs("report", { report: "report", brand: "amrize" });
+  if (rep.format !== "markdown") fail(`a report request defaults to format="${rep.format}" — it must ask for markdown so generate_word_document produces the file`);
+  const aud = authorityOnArgs("audit_report", { report: "audit_report", brand: "amrize" });
+  if (aud.format !== "markdown") fail(`an audit_report request defaults to format="${aud.format}"`);
+  // An explicit choice still wins: a user who wants their exact file can have it.
+  const explicit = authorityOnArgs("report", { report: "report", brand: "amrize", format: "json" });
+  if (explicit.format !== "json") fail("an explicit format was overridden by the default");
+  // And the report name never leaks into the arguments sent upstream.
+  if ("report" in rep) fail("the `report` selector is passed to AuthorityOn as an argument");
+  // Nothing else acquires a format it did not ask for.
+  const overview = authorityOnArgs("overview", { report: "overview", brand: "amrize" });
+  if ("format" in overview) fail("a non-document report was given a format argument");
+  if (failures === before) ok("documents come back as markdown and render through our own pipeline");
+}
+
+console.log("\n7. The SSE envelope is parsed the way the server sends it");
 {
   const before = failures;
   const framed = 'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}\n\n';
