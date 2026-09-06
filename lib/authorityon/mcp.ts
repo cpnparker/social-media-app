@@ -404,18 +404,37 @@ async function listBrandsEverywhere(args: Record<string, unknown>, slots: KeySlo
   return { ok: true, text: JSON.stringify(merged, null, 2), data: merged, organisation: organisations.map((o) => o.organisation).join(", ") };
 }
 
-/** A tool with no brand and no organisation — tried against each key until
- *  one has the row (a frozen report id belongs to exactly one). */
+/**
+ * A tool with no brand and no organisation — tried against each key until
+ * one has the row, because a frozen report id belongs to exactly one.
+ *
+ * EVERY refusal moves on to the next organisation. The first version moved
+ * on only for wording containing "not found", and the platform's actual
+ * refusal for a report outside the key's organisation is
+ * `bad_request: No audit report <id> in this organisation` — so the first
+ * live Siemens fetch stopped at The Content Engine's "no" and never asked
+ * Siemens. A refusal from an organisation that does not hold the row is not
+ * an answer about the row; only "nobody has it" is.
+ */
 async function firstOrganisationThatHas(name: string, args: Record<string, unknown>, slots: KeySlot[]): Promise<AuthorityOnResult> {
-  let last: AuthorityOnResult | null = null;
+  let firstRefusal: AuthorityOnResult | null = null;
+  const unreachable: string[] = [];
   for (const slot of slots) {
     const r = await callOne(name, args, slot);
     if (r.ok) return r;
-    last = r;
-    if (r.kind === "auth" || r.kind === "transport") continue;   // this org cannot answer; the next may
-    if (!/not_found|not found/i.test(String(r.error || ""))) return r;   // a real refusal — do not shop it around
+    if (r.kind === "auth" || r.kind === "transport") { unreachable.push(slot.label); continue; }
+    firstRefusal = firstRefusal || r;
   }
-  return last || { ok: false, kind: "tool_error", error: "not found in any organisation" };
+  const checked = slots.filter((s) => !unreachable.includes(s.label)).map((s) => s.label).join(", ");
+  const skipped = unreachable.length ? ` ${unreachable.join(", ")} could not be checked (connection unavailable — flagged to an operator).` : "";
+  return {
+    ok: false,
+    kind: firstRefusal ? "tool_error" : "transport",
+    error: firstRefusal
+      ? `${firstRefusal.error} — looked in every organisation this deployment has keys for (${checked}).${skipped}`
+      : `No organisation could be reached.${skipped}`,
+    organisation: checked,
+  };
 }
 
 /** Per-organisation figures, fanned out and labelled. */

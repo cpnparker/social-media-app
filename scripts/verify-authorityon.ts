@@ -49,6 +49,10 @@
  *   - parser takes the FIRST data: line              → KILLED (check 7)
  *   - a report defaulting to AuthorityOn's own docx  → KILLED (check 6)
  *   - organisation names taken from config, not learned  → KILLED (check 9)
+ *   - a report id's per-organisation retry stopping at the first refusal
+ *                                                    → KILLED (check 9); LIVE on the
+ *     first Siemens fetch (the platform says bad_request, not not_found), red
+ *     against the shipped code before the fix
  *   - routing sends every brand to key #1             → KILLED (check 9)
  *   - list_brands asks the first key only             → KILLED (check 9)
  *   - a revoked key aborts the whole brand list       → KILLED (check 9)
@@ -321,7 +325,9 @@ async function check9() {
     const organisation = { slug: key === "A" ? "the-content-engine" : "siemens", name: key === "A" ? "The Content Engine" : "Siemens", plan: "x" };
     if (name === "list_brands") return ok({ ...org, organisation, meta: { notes: [`notes from ${key}`] } });
     if (name === "get_plan_and_usage") return ok({ organisation, plan: key === "A" ? "AGENCY" : "PRO" });
-    if (name === "get_audit_report") return key === "B" && a.reportId === "rep-itm" ? ok({ report: "# ITM" }) : err(`report_not_found: No report "${a.reportId}"`);
+    // The platform's actual wording (audit-reports.ts): code bad_request, no
+    // "not found" in it. The first live Siemens fetch failed on exactly this.
+    if (name === "get_audit_report") return key === "B" && a.reportId === "rep-itm" ? ok({ report: "# ITM" }) : err(`bad_request: No audit report ${a.reportId} in this organisation`);
     // The platform LISTS sub-entities only on request but RESOLVES them by
     // slug or id regardless (caller.ts: resolveBrandForCaller does not filter
     // brandType). The fake keeps that distinction, because the routing relies on it.
@@ -371,6 +377,9 @@ async function check9() {
 
     const rep = await callAuthorityOn("get_audit_report", { reportId: "rep-itm" });
     if (!rep.ok || rep.organisation !== "Siemens") fail(`a frozen report id was not found in the organisation that holds it (${rep.organisation || rep.error})`);
+    // And one that exists nowhere names every organisation it was tried in.
+    const gone = await callAuthorityOn("get_audit_report", { reportId: "rep-nope" });
+    if (gone.ok || !/The Content Engine/.test(gone.error || "") || !/Siemens/.test(gone.error || "")) fail(`a report id held by no organisation does not say where it was looked for: ${gone.error}`);
 
     const plan = await callAuthorityOn("get_plan_and_usage", {});
     if (!plan.ok || (plan.data as any)?.organisations?.length !== 3) fail("plan and usage is not reported per organisation");
