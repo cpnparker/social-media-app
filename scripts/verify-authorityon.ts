@@ -48,6 +48,13 @@
  *   - a report mapped to a tool that does not exist  → KILLED (check 1)
  *   - parser takes the FIRST data: line              → KILLED (check 7)
  *   - a report defaulting to AuthorityOn's own docx  → KILLED (check 6)
+ *   - routing sends every brand to key #1             → KILLED (check 9)
+ *   - list_brands asks the first key only             → KILLED (check 9)
+ *   - a revoked key aborts the whole brand list       → KILLED (check 9)
+ *   - an unreachable organisation returned as the answer to "who has this
+ *     brand"                                          → KILLED (check 9); this
+ *     one was a LIVE defect in the first draft of the routing, found by the
+ *     check before it shipped, then kept as a mutation
  *   - an empty body uploaded as a document            → KILLED (check 8), and
  *     this one was written against the LIVE bug rather than a reintroduced
  *     one: the check was red on first run, then the guard made it green.
@@ -77,7 +84,7 @@ import {
   formatAuthorityOnResult,
   AUTHORITYON_OPENAI_TOOL,
 } from "../lib/ai/providers";
-import { parseSseEnvelope } from "../lib/authorityon/mcp";
+import { authorityOnOrganisations, callAuthorityOn, resetAuthorityOnRouting, parseSseEnvelope } from "../lib/authorityon/mcp";
 
 let failures = 0;
 const fail = (m: string) => { failures++; console.log(`  FAIL  ${m}`); };
@@ -283,7 +290,99 @@ async function check8() {
   if (failures === before) ok("an empty or stub body is refused with nothing created");
 }
 
-check8().then(() => {
+
+async function check9() {
+  console.log("\n9. Several organisations behind one tool");
+  const before = failures;
+  // One key is one organisation (read from the platform's own caller.ts), and
+  // the Siemens audit lives in a second organisation the first key cannot
+  // see. A fake server answers per key: A holds Amrize, B holds Siemens and
+  // (as a sub-entity) the ITM, C is a revoked key. Every assertion below is
+  // about WHICH key was asked, read from the Authorization header.
+  const realFetch = globalThis.fetch;
+  const env = { ...process.env };
+  const calls: Record<string, string[]> = { A: [], B: [], C: [] };
+  const sse = (obj: unknown) => new Response(`event: message\ndata: ${JSON.stringify(obj)}\n\n`, { status: 200 });
+  globalThis.fetch = (async (_url: any, init: any) => {
+    const auth = String(init?.headers?.Authorization || "");
+    const key = auth.endsWith("KEY_A") ? "A" : auth.endsWith("KEY_B") ? "B" : auth.endsWith("KEY_C") ? "C" : "?";
+    const body = JSON.parse(String(init?.body || "{}"));
+    const name = body.params?.name as string; const a = body.params?.arguments || {};
+    if (key === "C") return new Response("", { status: 401 });
+    calls[key]?.push(name + (a.brand ? `:${a.brand}` : ""));
+    const org = key === "A"
+      ? { brands: [{ id: "id-amrize", slug: "amrize", name: "Amrize" }] }
+      : { brands: [{ id: "id-siemens", slug: "siemens", name: "Siemens" }, ...(a.includeSubEntities ? [{ id: "id-itm", slug: "infrastructure-transition-monitor", name: "ITM", brandType: "SUB_CAMPAIGN" }] : [])] };
+    const ok = (payload: unknown) => sse({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: JSON.stringify(payload) }] } });
+    const err = (msg: string) => sse({ jsonrpc: "2.0", id: body.id, result: { isError: true, content: [{ type: "text", text: msg }] } });
+    if (name === "list_brands") return ok({ ...org, meta: { notes: [`notes from ${key}`] } });
+    if (name === "get_plan_and_usage") return ok({ plan: key === "A" ? "AGENCY" : "PRO" });
+    if (name === "get_audit_report") return key === "B" && a.reportId === "rep-itm" ? ok({ report: "# ITM" }) : err(`report_not_found: No report "${a.reportId}"`);
+    // The platform LISTS sub-entities only on request but RESOLVES them by
+    // slug or id regardless (caller.ts: resolveBrandForCaller does not filter
+    // brandType). The fake keeps that distinction, because the routing relies on it.
+    const resolvable = key === "B" ? [...org.brands, { id: "id-itm", slug: "infrastructure-transition-monitor" }] : org.brands;
+    const known = resolvable.flatMap((b: any) => [b.slug, b.id]);
+    if (!known.includes(String(a.brand))) return err(`brand_not_found: No brand "${a.brand}" in this organisation`);
+    return ok({ brand: a.brand, score: key === "A" ? 40 : 61 });
+  }) as any;
+  try {
+    process.env.AUTHORITYON_MCP_KEY = "KEY_A"; process.env.AUTHORITYON_MCP_KEY_LABEL = "The Content Engine";
+    process.env.AUTHORITYON_MCP_KEY_2 = "KEY_B"; process.env.AUTHORITYON_MCP_KEY_2_LABEL = "Siemens";
+    process.env.AUTHORITYON_MCP_KEY_3 = "KEY_C"; delete process.env.AUTHORITYON_MCP_KEY_3_LABEL;
+    resetAuthorityOnRouting();
+
+    const orgs = authorityOnOrganisations();
+    if (orgs.join("|") !== "The Content Engine|Siemens|organisation 3") fail(`organisations read as ${orgs.join("|")}`);
+
+    const brands = await callAuthorityOn("list_brands", {});
+    const bd: any = brands.data;
+    if (!brands.ok) fail(`list_brands failed across organisations: ${brands.error}`);
+    else {
+      if (!Array.isArray(bd.brands) || bd.brands.length !== 2) fail(`the union holds ${bd.brands?.length} brands, expected 2 (primaries only, as asked)`);
+      const labels = (bd.brands || []).map((b: any) => b.organisation).join("|");
+      if (labels !== "The Content Engine|Siemens") fail(`brands are labelled ${labels}`);
+      const c = (bd.organisations || []).find((o: any) => o.organisation === "organisation 3");
+      if (!c || !/rejected/.test(c.status)) fail("a revoked key is not reported as rejected beside the others");
+      if (!bd.meta?.notes?.some((n: string) => /each carries the organisation/.test(n))) fail("the merged list does not say brands carry their organisation");
+    }
+
+    const itm = await callAuthorityOn("get_brand_overview", { brand: "infrastructure-transition-monitor" });
+    if (!itm.ok || itm.organisation !== "Siemens") fail(`the ITM (a sub-entity in the second organisation) resolved to ${itm.organisation || itm.error}`);
+    if (calls.A.includes("get_brand_overview:infrastructure-transition-monitor")) fail("the first organisation was asked for a brand the route table places in the second");
+
+    const amrize = await callAuthorityOn("get_brand_overview", { brand: "amrize" });
+    if (!amrize.ok || amrize.organisation !== "The Content Engine") fail(`Amrize resolved to ${amrize.organisation || amrize.error}`);
+
+    const before = { A: calls.A.length, B: calls.B.length };
+    const none = await callAuthorityOn("get_brand_overview", { brand: "coca-cola" });
+    if (none.ok || none.kind !== "tool_error") fail("an unknown brand did not come back as a tool_error");
+    if (!/The Content Engine/.test(none.error || "") || !/Siemens/.test(none.error || "")) fail(`the not-found message does not name the organisations checked: ${none.error}`);
+    if (!/organisation 3 could not be checked/.test(none.error || "")) fail(`the not-found message hides that an organisation was unreachable: ${none.error}`);
+    if (calls.A.length - before.A > 1 || calls.B.length - before.B > 1) fail("an unknown brand was asked of one organisation more than once");
+
+    const rep = await callAuthorityOn("get_audit_report", { reportId: "rep-itm" });
+    if (!rep.ok || rep.organisation !== "Siemens") fail(`a frozen report id was not found in the organisation that holds it (${rep.organisation || rep.error})`);
+
+    const plan = await callAuthorityOn("get_plan_and_usage", {});
+    if (!plan.ok || (plan.data as any)?.organisations?.length !== 3) fail("plan and usage is not reported per organisation");
+
+    // ONE KEY: the old path, byte for byte — no union, no extra request.
+    delete process.env.AUTHORITYON_MCP_KEY_2; delete process.env.AUTHORITYON_MCP_KEY_3;
+    resetAuthorityOnRouting(); calls.A.length = 0;
+    const single = await callAuthorityOn("list_brands", {});
+    if (!single.ok || (single.data as any)?.organisations) fail("with one key the result is no longer the plain passthrough");
+    if (calls.A.length !== 1) fail(`with one key list_brands made ${calls.A.length} requests, not 1`);
+  } finally {
+    globalThis.fetch = realFetch;
+    for (const k of Object.keys(process.env)) if (k.startsWith("AUTHORITYON_")) delete process.env[k];
+    for (const k of Object.keys(env)) if (k.startsWith("AUTHORITYON_")) process.env[k] = env[k];
+    resetAuthorityOnRouting();
+  }
+  if (failures === before) ok("three keys, three organisations: brands unioned and labelled, each brand routed to its own, a dead key reported not fatal");
+}
+
+check8().then(check9).then(() => {
   console.log(failures
     ? `\n✗ ${failures} failure${failures === 1 ? "" : "s"}\n`
     : "\n✓ AuthorityOn's text is fenced and taints the turn, in every chain\n");

@@ -41,6 +41,18 @@ one: the hard taint blocks every generate_* tool for the rest of the turn, and
 "pull the AI answers and build me a deck" is one turn and the headline use
 case. And the taint is per TURN — a cross-turn injection test proves nothing.
 
+One key is ONE organisation on AuthorityOn (read from its `caller.ts`), and a
+brand belongs to one organisation, so a client whose audit lives in its own
+organisation — Siemens, whose Infrastructure Transition Monitor audit sits in
+a "Siemens" organisation created 2026-08-17 — is `brand_not_found` from the
+Content Engine key however the name is spelled. `lib/authorityon/mcp.ts`
+therefore takes `AUTHORITYON_MCP_KEY_2` … `_9` (each with an optional
+`_LABEL`), unions `list_brands` across them with an `organisation` field, and
+routes brand-taking tools to the organisation that lists the brand. With one
+key it is the plain passthrough. Check 9 drives this with a fake server
+holding three keys, one revoked; it caught two routing defects on its first
+run and all four of its mutations are recorded as killed.
+
 Check 8 is the one that came from use rather than reading: an advisory report
 went out as two files because the model's first call had no body and the
 builder uploaded it. `buildWordAndMaybeDoc` now refuses under 200 characters
