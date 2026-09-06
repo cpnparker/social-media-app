@@ -17,6 +17,9 @@
 import { routeModel } from "../lib/ai/auto-router";
 import { routeQuery } from "../lib/ai/query-router";
 import { getModelInfo, isPersonnelSensitive } from "../lib/ai/providers";
+import * as providers from "../lib/ai/providers";
+import { readFileSync } from "fs";
+import { join } from "path";
 import { buildSystemPrompt } from "../lib/ai/system-prompts";
 
 let pass = 0;
@@ -341,6 +344,32 @@ console.log("\n7. The prompt carries the rules that were missing");
     src.includes("State the conversion rather than the phrase"));
   check("a date that has passed is flagged, not asserted as current",
     src.includes("may no longer hold and offer to check"));
+}
+
+console.log("\n8. A full answer is not answered twice after a refused tool call");
+{
+  // 2026-09-06: "List the brands, then call report:audits for Siemens ITM" came
+  // back as ONE message holding the entire answer twice. The model had written
+  // its answer and then asked for one more call; the guard refused it, the
+  // round executed nothing, the loop broke, and the forced-final path read
+  // "did not end cleanly" as "has not answered" and asked the model to answer
+  // again. The decision now comes from the TEXT, not from how the loop ended.
+  const nf = (providers as any).needsForcedFinal as undefined | ((clean: boolean, text: string) => boolean);
+  check("needsForcedFinal exists and is shared by the chains", typeof nf === "function");
+  if (typeof nf === "function") {
+    const ANSWER = "Here are the 17 brands currently tracked in AuthorityOn. " + "Amrize, Bahrain EDB, Contently, Dubai FDI, Formative, Galderma. ".repeat(8) + "It may need to be added as a new brand before an audit can be pulled.";
+    check("a complete answer after a refused call is left alone", !nf(false, ANSWER));
+    check("no text at all is still forced", nf(false, ""));
+    check("a trailing promise is still forced, even after a break", nf(false, ANSWER + " Pulling the audit list now."));
+    check("a short preamble before a refused call is still forced", nf(false, "Now checking for Siemens ITM specifically in the audits report."));
+    check("a clean stop never forces a second answer", !nf(true, ANSWER));
+    check("a clean stop with a dangling promise still forces", nf(true, "Found two contracts. I'll pull the details."));
+  }
+  const psrc = readFileSync(join(__dirname, "../lib/ai/providers.ts"), "utf8");
+  const uses = (psrc.match(/needsForcedFinal\(loopEndedCleanly, fullText\)/g) || []).length;
+  check("all four chains decide through the helper", uses === 4, `${uses} of 4`);
+  check("the inline condition that caused it is gone",
+    !psrc.includes("(!loopEndedCleanly || !fullText.trim() || endsWithUnfulfilledPromise(fullText))"));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

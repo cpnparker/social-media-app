@@ -463,7 +463,7 @@ export function dayLabel(iso: string | null | undefined, now?: Date): string | n
  *  suffix and the model has no reason to convert anything. */
 export const TZ_NOTE = ` All dates and times in this result are already Europe/Zurich local time (the workspace's own timezone) — report them exactly as given and do NOT convert them or apply any offset.`;
 
-function endsWithUnfulfilledPromise(text: string): boolean {
+export function endsWithUnfulfilledPromise(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed) return false;
   // Last sentence, however it is punctuated. Bullet lists and headings end in
@@ -483,6 +483,35 @@ function endsWithUnfulfilledPromise(text: string): boolean {
   return new RegExp(
     `\\b(let me|i'?ll|i will|i'?m going to|i am going to|going to|about to)\\s+(?:\\w+\\s+){0,2}(${ACTION})\\b`
   ).test(core);
+}
+
+/** A preamble is a sentence; an answer is paragraphs. Above this much visible
+ *  text, with no dangling promise at the end, the turn has answered. */
+const ANSWERED_MIN_CHARS = 400;
+
+/**
+ * Whether the turn still owes the user an answer.
+ *
+ * The forced-final path used to fire whenever the loop ended any way other
+ * than a natural stop. One of those ways is the no-progress break: every call
+ * in a round refused by the loop guard. But a model often writes its whole
+ * answer AND asks for one more call in the same round — and when that call is
+ * refused, "did not end cleanly" was read as "has not answered", the nudge
+ * went out, and the model answered again in full. One message, the entire
+ * answer twice, seen on 2026-09-06 with a brand lookup that ended in
+ * brand_not_found.
+ *
+ * So the decision comes from the text. No text: force. A dangling promise
+ * ("pulling the details now"): force. Otherwise a clean stop never forces,
+ * and an unclean one forces only when what is on screen is a preamble rather
+ * than an answer.
+ */
+export function needsForcedFinal(loopEndedCleanly: boolean, fullText: string): boolean {
+  const text = String(fullText || "").trim();
+  if (!text) return true;
+  if (endsWithUnfulfilledPromise(text)) return true;
+  if (loopEndedCleanly) return false;
+  return text.length < ANSWERED_MIN_CHARS;
 }
 
 const FORCED_FINAL_NUDGE =
@@ -9691,7 +9720,7 @@ async function streamAnthropic(
   // stop (round cap, no-progress break, stall) or produced no text at all. One
   // tools-disabled round turns the gathered tool context into an actual answer
   // instead of leaving a dangling "let me pull the details…".
-  if ((!loopEndedCleanly || !fullText.trim() || endsWithUnfulfilledPromise(fullText)) && anthropicMessages.length > 1) {
+  if (needsForcedFinal(loopEndedCleanly, fullText) && anthropicMessages.length > 1) {
     console.log(`[Anthropic] Tool loop ended without a natural stop (text=${fullText.trim().length} chars) — forcing final answer`);
     try {
       // Keep roles alternating: append the nudge to the trailing user message
@@ -10760,7 +10789,7 @@ async function streamXAIChatCompletions(
   // Forced final answer: fires when the loop ended ANY way other than a natural
   // stop, or produced no text — turns gathered tool context into an actual
   // answer instead of a dangling "let me pull the details…".
-  if ((!loopEndedCleanly || !fullText.trim() || endsWithUnfulfilledPromise(fullText)) && openaiMessages.length > 1) {
+  if (needsForcedFinal(loopEndedCleanly, fullText) && openaiMessages.length > 1) {
     console.log(`[xAI] Tool loop ended without a natural stop (text=${fullText.trim().length} chars) — forcing final answer`);
     try {
       openaiMessages.push({ role: "user", content: FORCED_FINAL_NUDGE } as any);
@@ -11808,7 +11837,7 @@ async function streamGemini(
   // Forced final answer: fires when the loop ended ANY way other than a natural
   // stop, or produced no text — turns gathered tool context into an actual
   // answer instead of a dangling "let me pull the details…".
-  if ((!loopEndedCleanly || !fullText.trim() || endsWithUnfulfilledPromise(fullText)) && geminiMessages.length > 1) {
+  if (needsForcedFinal(loopEndedCleanly, fullText) && geminiMessages.length > 1) {
     console.log(`[Gemini] Tool loop ended without a natural stop (text=${fullText.trim().length} chars) — forcing final answer`);
     try {
       geminiMessages.push({ role: "user", content: FORCED_FINAL_NUDGE } as any);
@@ -12762,7 +12791,7 @@ async function streamOpenAI(
   // Forced final answer: fires when the loop ended ANY way other than a natural
   // stop, or produced no text — turns gathered tool context into an actual
   // answer instead of a dangling "let me pull the details…".
-  if ((!loopEndedCleanly || !fullText.trim() || endsWithUnfulfilledPromise(fullText)) && openaiMessages.length > 1) {
+  if (needsForcedFinal(loopEndedCleanly, fullText) && openaiMessages.length > 1) {
     console.log(`[${options?.providerLabel ?? "OpenAI"}] Tool loop ended without a natural stop (text=${fullText.trim().length} chars) — forcing final answer`);
     try {
       openaiMessages.push({ role: "user", content: FORCED_FINAL_NUDGE } as any);
