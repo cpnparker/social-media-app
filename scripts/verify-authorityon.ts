@@ -48,6 +48,7 @@
  *   - a report mapped to a tool that does not exist  → KILLED (check 1)
  *   - parser takes the FIRST data: line              → KILLED (check 7)
  *   - a report defaulting to AuthorityOn's own docx  → KILLED (check 6)
+ *   - organisation names taken from config, not learned  → KILLED (check 9)
  *   - routing sends every brand to key #1             → KILLED (check 9)
  *   - list_brands asks the first key only             → KILLED (check 9)
  *   - a revoked key aborts the whole brand list       → KILLED (check 9)
@@ -315,8 +316,11 @@ async function check9() {
       : { brands: [{ id: "id-siemens", slug: "siemens", name: "Siemens" }, ...(a.includeSubEntities ? [{ id: "id-itm", slug: "infrastructure-transition-monitor", name: "ITM", brandType: "SUB_CAMPAIGN" }] : [])] };
     const ok = (payload: unknown) => sse({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: JSON.stringify(payload) }] } });
     const err = (msg: string) => sse({ jsonrpc: "2.0", id: body.id, result: { isError: true, content: [{ type: "text", text: msg }] } });
-    if (name === "list_brands") return ok({ ...org, meta: { notes: [`notes from ${key}`] } });
-    if (name === "get_plan_and_usage") return ok({ plan: key === "A" ? "AGENCY" : "PRO" });
+    // The platform names the organisation in every listing; that is the only
+    // place a label comes from.
+    const organisation = { slug: key === "A" ? "the-content-engine" : "siemens", name: key === "A" ? "The Content Engine" : "Siemens", plan: "x" };
+    if (name === "list_brands") return ok({ ...org, organisation, meta: { notes: [`notes from ${key}`] } });
+    if (name === "get_plan_and_usage") return ok({ organisation, plan: key === "A" ? "AGENCY" : "PRO" });
     if (name === "get_audit_report") return key === "B" && a.reportId === "rep-itm" ? ok({ report: "# ITM" }) : err(`report_not_found: No report "${a.reportId}"`);
     // The platform LISTS sub-entities only on request but RESOLVES them by
     // slug or id regardless (caller.ts: resolveBrandForCaller does not filter
@@ -327,15 +331,19 @@ async function check9() {
     return ok({ brand: a.brand, score: key === "A" ? 40 : 61 });
   }) as any;
   try {
-    process.env.AUTHORITYON_MCP_KEY = "KEY_A"; process.env.AUTHORITYON_MCP_KEY_LABEL = "The Content Engine";
-    process.env.AUTHORITYON_MCP_KEY_2 = "KEY_B"; process.env.AUTHORITYON_MCP_KEY_2_LABEL = "Siemens";
-    process.env.AUTHORITYON_MCP_KEY_3 = "KEY_C"; delete process.env.AUTHORITYON_MCP_KEY_3_LABEL;
+    process.env.AUTHORITYON_MCP_KEY = "KEY_A";
+    process.env.AUTHORITYON_MCP_KEY_2 = "KEY_B";
+    process.env.AUTHORITYON_MCP_KEY_3 = "KEY_C";
     resetAuthorityOnRouting();
 
-    const orgs = authorityOnOrganisations();
-    if (orgs.join("|") !== "The Content Engine|Siemens|organisation 3") fail(`organisations read as ${orgs.join("|")}`);
+    // Nothing is configured but the keys: before any call the organisations
+    // are only numbered, and after one listing they carry the platform's names.
+    const cold = authorityOnOrganisations();
+    if (cold.join("|") !== "organisation 1|organisation 2|organisation 3") fail(`before any call the organisations read as ${cold.join("|")}`);
 
     const brands = await callAuthorityOn("list_brands", {});
+    const orgs = authorityOnOrganisations();
+    if (orgs.join("|") !== "The Content Engine|Siemens|organisation 3") fail(`after a listing the organisations read as ${orgs.join("|")} — names must come from the platform's responses, not from configuration`);
     const bd: any = brands.data;
     if (!brands.ok) fail(`list_brands failed across organisations: ${brands.error}`);
     else {

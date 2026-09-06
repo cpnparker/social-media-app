@@ -56,7 +56,9 @@
  * that key's side it does not exist. A key cannot be widened.
  *
  * So this module holds a LIST of keys — AUTHORITYON_MCP_KEY, then
- * AUTHORITYON_MCP_KEY_2 … _9, each with an optional _LABEL — and routes:
+ * AUTHORITYON_MCP_KEY_2 … _9 — and routes. The organisation each key stands
+ * for is not configured anywhere: the platform names it in every
+ * list_brands and get_plan_and_usage response, and that is where it is read.
  *
  *   - list_brands fans out to every key and unions the result, each brand
  *     carrying the organisation it came from.
@@ -117,26 +119,37 @@ export interface AuthorityOnResult {
 }
 
 /** One platform key and the organisation it stands for. The label is what a
- *  user sees ("Siemens"); the index is what the operator alert names, so a
- *  rejected key can be identified without its value ever being written. */
+ *  user sees ("Siemens") and is LEARNED from the platform's own responses;
+ *  the index is what the operator alert names, so a rejected key can be
+ *  identified without its value ever being written. */
 interface KeySlot {
   index: number;
   key: string;
   label: string;
 }
 
+/** Organisation names by key index, as the platform reported them. */
+const learnedNames = new Map<number, string>();
+
 function keySlots(): KeySlot[] {
   const out: KeySlot[] = [];
   const first = (process.env.AUTHORITYON_MCP_KEY || "").trim();
-  if (first) {
-    out.push({ index: 1, key: first, label: (process.env.AUTHORITYON_MCP_KEY_LABEL || "").trim() || "organisation 1" });
-  }
+  if (first) out.push({ index: 1, key: first, label: learnedNames.get(1) || "organisation 1" });
   for (let n = 2; n <= MAX_KEYS; n++) {
     const k = (process.env[`AUTHORITYON_MCP_KEY_${n}`] || "").trim();
     if (!k) continue;
-    out.push({ index: n, key: k, label: (process.env[`AUTHORITYON_MCP_KEY_${n}_LABEL`] || "").trim() || `organisation ${n}` });
+    out.push({ index: n, key: k, label: learnedNames.get(n) || `organisation ${n}` });
   }
   return out;
+}
+
+/** Any response that names its organisation teaches the slot its label. */
+function learnName(slot: KeySlot, payload: any): void {
+  const name = payload?.organisation?.name;
+  if (typeof name === "string" && name.trim()) {
+    learnedNames.set(slot.index, name.trim());
+    slot.label = name.trim();
+  }
 }
 
 function baseUrl(): string {
@@ -326,6 +339,7 @@ export function resetAuthorityOnRouting(): void {
   routesBuiltAt = 0;
   toolsCache = null;
   lastAlertAt.clear();
+  learnedNames.clear();
 }
 
 function learnRoutes(rows: any[], slot: KeySlot): void {
@@ -340,7 +354,9 @@ async function buildRoutes(slots: KeySlot[]): Promise<void> {
   const results = await Promise.all(slots.map((s) => callOne("list_brands", { includeSubEntities: true }, s)));
   routes = new Map();
   for (let i = 0; i < slots.length; i++) {
-    const list = listOf(payloadOf(results[i]));
+    const payload = payloadOf(results[i]);
+    learnName(slots[i], payload);
+    const list = listOf(payload);
     if (list) learnRoutes(list.rows, slots[i]);
   }
   routesBuiltAt = Date.now();
@@ -369,6 +385,7 @@ async function listBrandsEverywhere(args: Record<string, unknown>, slots: KeySlo
     }
     anyOk = true;
     const payload = payloadOf(r);
+    learnName(slot, payload);
     const list = listOf(payload);
     const rows = list ? list.rows : [];
     if (list) field = list.field;
@@ -404,6 +421,7 @@ async function firstOrganisationThatHas(name: string, args: Record<string, unkno
 /** Per-organisation figures, fanned out and labelled. */
 async function eachOrganisation(name: string, args: Record<string, unknown>, slots: KeySlot[]): Promise<AuthorityOnResult> {
   const results = await Promise.all(slots.map((s) => callOne(name, args, s)));
+  results.forEach((r, i) => { if (r.ok) learnName(slots[i], payloadOf(r)); });
   const rows = results.map((r, i) => ({ organisation: slots[i].label, ...(r.ok ? { result: payloadOf(r) ?? r.text } : { error: r.error, kind: r.kind }) }));
   if (!results.some((r) => r.ok)) return results[0];
   const merged = { organisations: rows };
@@ -452,7 +470,7 @@ async function route(name: string, args: Record<string, unknown>, slots: KeySlot
   // new; then every organisation in turn, because the platform resolves by
   // slug some things it does not list.
   let slot = slotFor(brandRef, slots);
-  if (!slot && Date.now() - routesBuiltAt > ROUTES_TTL_MS) {
+  if (!slot && (routesBuiltAt === 0 || Date.now() - routesBuiltAt > ROUTES_TTL_MS)) {
     await buildRoutes(slots);
     slot = slotFor(brandRef, slots);
   }
