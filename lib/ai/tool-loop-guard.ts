@@ -66,6 +66,14 @@ const READ_ONLY_TOOL_BUDGET: Record<string, number> = {
   // The other half of the guard still applies: a call with the SAME arguments
   // is refused outright however large the budget, so this cannot become a loop.
   generate_slides: 6,
+
+  // SIXTEEN REPORTS BEHIND ONE NAME, and the first call is always the brand
+  // list. At the default 3 an advisory report gets brands, the full report and
+  // one more — and a probe of the audit family (brands, audits, audit_reports,
+  // audit_report) was cut off at its fourth call, measured 2026-09-06. Six
+  // matches query_drive_docs and query_meetingbrain, the other read-only tools
+  // with several reports under one name. Same-argument calls stay refused.
+  query_authorityon: 6,
 };
 
 export function toolBudgetFor(name: string): number {
