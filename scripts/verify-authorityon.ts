@@ -91,7 +91,7 @@ const SERVED = [
   "list_brands", "get_brand_overview", "get_recommendations", "get_report",
   "get_score_history", "get_visibility", "get_answers", "get_stories",
   "get_earned_media", "get_citations", "get_competitors", "get_topics",
-  "get_change_ledger", "get_audits", "list_audit_reports", "get_audit_report",
+  "get_change_ledger", "get_audits", "list_audit_reports", "get_audit_report", "get_plan_and_usage",
 ];
 
 console.log("\n1. Every report resolves to a real tool, and every tool is reachable");
@@ -125,7 +125,7 @@ console.log("\n2. Everything that can carry third-party text is marked untrusted
   }
   // And the pure-number reports are NOT tainting, or a score lookup would
   // block a deck build and teach people to route around the rule.
-  for (const r of ["brands", "overview", "score_history", "visibility"]) {
+  for (const r of ["brands", "overview", "score_history", "visibility", "plan_and_usage"]) {
     if (authorityOnReportIsUntrusted(r)) {
       fail(`"${r}" taints the turn — it returns figures and identifiers from our own platform, and tainting on it costs the user a tool they need for no security gain`);
     }
@@ -222,6 +222,15 @@ console.log("\n6. A report comes back as markdown, for our own renderer");
   if (explicit.format !== "json") fail("an explicit format was overridden by the default");
   // And the report name never leaks into the arguments sent upstream.
   if ("report" in rep) fail("the `report` selector is passed to AuthorityOn as an argument");
+  // The wire names AuthorityOn declares: get_audit_report reads `reportId`
+  // and no brand; get_audits reads `auditId`. Read from its zod schemas on
+  // 2026-09-06; a rename upstream shows up here as the model's `id` going
+  // nowhere.
+  const ar = authorityOnArgs("audit_report", { report: "audit_report", brand: "amrize", id: "rep_123" });
+  if (ar.reportId !== "rep_123") fail("audit_report does not send the frozen report id as `reportId`");
+  if ("id" in ar || "brand" in ar) fail("audit_report sends fields AuthorityOn does not read (id/brand)");
+  const au = authorityOnArgs("audits", { report: "audits", brand: "amrize", id: "aud_1" });
+  if (au.auditId !== "aud_1" || au.brand !== "amrize") fail("audits does not send `auditId` alongside the brand");
   // Nothing else acquires a format it did not ask for.
   const overview = authorityOnArgs("overview", { report: "overview", brand: "amrize" });
   if ("format" in overview) fail("a non-document report was given a format argument");

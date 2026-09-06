@@ -346,7 +346,7 @@ console.log("\n7. The prompt carries the rules that were missing");
     src.includes("may no longer hold and offer to check"));
 }
 
-console.log("\n8. A full answer is not answered twice after a refused tool call");
+console.log("\n10. A full answer is not answered twice after a refused tool call");
 {
   // 2026-09-06: "List the brands, then call report:audits for Siemens ITM" came
   // back as ONE message holding the entire answer twice. The model had written

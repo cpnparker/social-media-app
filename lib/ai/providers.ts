@@ -7235,9 +7235,9 @@ export const AUTHORITYON_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
             "brands", "overview", "recommendations", "report", "score_history",
             "visibility", "answers", "stories", "earned_media", "citations",
             "competitors", "topics", "change_ledger", "audits",
-            "audit_reports", "audit_report",
+            "audit_reports", "audit_report", "plan_and_usage",
           ],
-          description: "brands = every tracked brand with its slug (START HERE to resolve a name). overview = AI Score, grade, deltas and the eight pillar scores. recommendations = open actions with rationale, priority and effort. report = the full AI Performance report or the 13-week exec pack as markdown. score_history = the score over time. visibility = per model per day. answers = the VERBATIM answers AI assistants gave about the brand. stories = recurring narratives with hit rates. earned_media / citations = coverage and the sources models cited. competitors / topics = the comparison set and the subjects tracked. change_ledger = what changed and when. audits = the brand's WEBSITE, CONTENT and SOCIAL pillar audits (id, type, score, categories with findings, recommendations). audit_reports = the FROZEN audit deliverables for the brand (a frozen report is the exact payload delivered on a date and never updates); audit_report = one frozen report by id. A brand absent from `brands` is not tracked in THIS deployment's AuthorityOn organisation — it may exist in another organisation under a different key; say which was checked.",
+          description: "brands = every tracked PRIMARY brand with its slug and id (START HERE to resolve a name; pass includeSubEntities:true to see sub-entities too). plan_and_usage = the organisation's plan and quota use. overview = AI Score, grade, deltas and the eight pillar scores. recommendations = open actions with rationale, priority and effort. report = the full AI Performance report or the 13-week exec pack as markdown. score_history = the score over time. visibility = per model per day. answers = the VERBATIM answers AI assistants gave about the brand. stories = recurring narratives with hit rates. earned_media / citations = coverage and the sources models cited. competitors / topics = the comparison set and the subjects tracked. change_ledger = what changed and when. audits = the brand's WEBSITE, CONTENT and SOCIAL pillar audits (id, type, score, categories with findings, recommendations). audit_reports = the FROZEN audit deliverables for the brand (a frozen report is the exact payload delivered on a date and never updates); audit_report = one frozen report by id. A brand absent from `brands` is not tracked in THIS deployment's AuthorityOn organisation — it may exist in another organisation under a different key; say which was checked.",
         },
         brand: { type: "string", description: "Brand slug from the `brands` report, or its id. Required by every report except `brands`." },
         query: { type: "string", description: "Free-text filter, where the report supports one (answers, stories)." },
@@ -7247,7 +7247,14 @@ export const AUTHORITYON_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         kind: { type: "string", enum: ["ai_performance", "exec_pack"], description: "report only. Default ai_performance." },
         format: { type: "string", enum: ["markdown", "json"], description: "report and audit_report only. Defaults to markdown, which is what you want: hand that markdown to generate_word_document to produce the file, so a brand report is rendered by the same pipeline as every other document this app makes. For ANY document about a brand — advisory report, client pack, briefing — pull report:'report' FIRST and build on it: it is the full AI Performance report, and overview and recommendations are subsets of it. A document built from the subsets alone comes out without the audits, the intent breakdown or the 90-day targets, and the client notices what is missing. Then set coverPage: true, put the headline score and period in the subtitle, and keep AuthorityOn's section order (score composition, positioning, audits, evidence, roadmap, targets) — that order is the argument." },
         limit: { type: "number", description: "Rows to return, 1-50. Default 20." },
-        id: { type: "string", description: "audit_report only: the frozen report's id, from audit_reports." },
+        id: { type: "string", description: "audit_report only: the frozen report's id, from audit_reports. audits only: an auditId to fetch one pillar audit in full." },
+        includeSubEntities: { type: "boolean", description: "brands only. The default list is PRIMARY brands; set true to include sub-entities (a report, programme or product tracked under a parent brand). Try this ONCE before concluding a name is untracked." },
+        type: { type: "string", enum: ["WEBSITE", "CONTENT", "SOCIAL"], description: "audits only: one pillar audit type." },
+        days: { type: "number", description: "score_history (7-365, default 90), visibility (1-180, default 30), answers / earned_media / citations / change_ledger (1-365)." },
+        provider: { type: "string", description: "visibility and answers: one model provider, e.g. openai, google, perplexity." },
+        mentioned: { type: "boolean", description: "answers only: only answers that do (true) or do not (false) mention the brand." },
+        sentiment: { type: "string", enum: ["POSITIVE", "NEUTRAL", "NEGATIVE", "MIXED"], description: "answers only." },
+        area: { type: "string", enum: ["WEBSITE", "CONTENT", "SOCIAL", "EARNED", "AI"], description: "change_ledger only." },
       },
       required: ["report"],
     },
@@ -7280,6 +7287,7 @@ const AUTHORITYON_REPORTS: { [k: string]: string } = {
   audits: "get_audits",
   audit_reports: "list_audit_reports",
   audit_report: "get_audit_report",
+  plan_and_usage: "get_plan_and_usage",
 };
 
 /**
@@ -7347,6 +7355,15 @@ export function authorityOnArgs(report: string, input: any): Record<string, unkn
   const { report: _drop, ...rest } = (input || {}) as Record<string, unknown>;
   const r = String(report || "").trim();
   if ((r === "report" || r === "audit_report") && !rest.format) rest.format = "markdown";
+  // AuthorityOn's own field names, read from its zod schemas (2026-09-06):
+  // get_audit_report takes `reportId` and NO brand; get_audits takes an
+  // optional `auditId`. Ours is `id` in both places so the model has one
+  // field to learn; the wire name is set here. Unknown keys are stripped
+  // upstream (plain zod objects), so a stray brand does no harm — dropped
+  // anyway, because a request should not carry what the tool does not read.
+  if (r === "audit_report") { if (rest.id) rest.reportId = rest.id; delete rest.id; delete rest.brand; }
+  if (r === "audits") { if (rest.id) rest.auditId = rest.id; delete rest.id; }
+  if (r === "plan_and_usage") { delete rest.brand; }
   return rest;
 }
 
