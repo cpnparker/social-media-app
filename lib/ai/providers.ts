@@ -1929,7 +1929,7 @@ const WORD_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
   function: {
     name: "generate_word_document",
     description:
-      "Generate a Word document (.docx) when the user asks for a Word doc, document, report, letter, memo, proposal, brief, or a file they can edit or upload to Google Drive. Use this for prose documents; use generate_document for slide decks. The body is markdown and is rendered as real Word formatting — headings, bullet and numbered lists, tables, quotes and links all carry over. Set `googleDoc: true` when the user asks for a GOOGLE DOC, a Google Doc version, or something they can edit in Google Docs: the same document is then also created in their Google Drive and they get both links. You CAN create Google Docs — never tell a user that Google Docs is unsupported or that you lack the permission or scope for it.",
+      "Generate a Word document (.docx) when the user asks for a Word doc, document, report, letter, memo, proposal, brief, or a file they can edit or upload to Google Drive. Use this for prose documents; use generate_document for slide decks. The body is markdown and is rendered as real Word formatting — headings, bullet and numbered lists, tables, quotes and links all carry over. Every document is ALSO created as a Google Doc in the user's Drive and they get both links — that is the default and needs no flag. Pass `googleDoc: false` only when they want a file rather than a link: just the .docx, something to email, something to upload elsewhere. You CAN create Google Docs — never tell a user that Google Docs is unsupported or that you lack the permission or scope for it.",
     parameters: {
       type: "object",
       properties: {
@@ -1953,7 +1953,7 @@ const WORD_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         googleDoc: {
           type: "boolean",
           description:
-            "Create the document in the user's Google Drive as a Google Doc as well as producing the .docx. Set true when they ask for a Google Doc or say they want to edit it in Google Docs. They get both links. If their Google connection needs attention they are shown a reconnect button — that is a connection problem, not a missing capability.",
+            "DEFAULTS TO TRUE — every document is also created as a Google Doc in the user's Drive, and they get both links. Pass false ONLY when they want a file rather than a link: \"just the .docx\", something to email, something to upload elsewhere. You never need permission for this; if their Google connection needs attention they are shown a reconnect button and still get the .docx, which is a connection problem and not a missing capability.",
         },
         coverPage: {
           type: "boolean",
@@ -4340,8 +4340,25 @@ export async function buildWordAndMaybeDoc(
   });
 
   const { documentOutcome } = await import("@/lib/documents/google-doc");
-  if (input.googleDoc !== true || !config.userEmail) {
+
+  // A DOCUMENT IS A GOOGLE DOC BY DEFAULT, decided HERE rather than in the
+  // prompt. The flag was optional with no default, so an omitted flag meant no
+  // Doc — and "write me a report" omits it every time. Correcting the prompt
+  // wording alone would have changed nothing, because the model had no reason
+  // to pass a field it was never asked for.
+  //
+  // Opting out is explicit: `googleDoc: false` for "just the .docx", a file to
+  // email, something to upload elsewhere.
+  if (input.googleDoc === false) {
     return documentOutcome({ url, filename });
+  }
+
+  // NOT THE SAME EVENT as opting out, and it used to return the same silent
+  // success: with no signed-in Google identity we cannot make a Doc at all. The
+  // model is told why, so it can say something true instead of describing a
+  // Doc that does not exist.
+  if (!config.userEmail) {
+    return documentOutcome({ url, filename, skipped: "no-identity" });
   }
 
   const { createGoogleDoc } = await import("@/lib/documents/google-doc");

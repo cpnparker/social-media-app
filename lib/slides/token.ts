@@ -203,16 +203,31 @@ export async function getUserGoogleToken(userEmail: string): Promise<SlidesAuth>
  *  card carrying the button that does the thing, and the deck they were trying
  *  to build is on the screen behind it: directing them to another page to fix
  *  it by hand is both a longer road and a way to lose the draft they came for. */
-export function authFailureMessage(reason: SlidesAuthFailure): string {
+export function authFailureMessage(reason: SlidesAuthFailure, intent: "deck" | "doc" = "deck"): string {
+  // The SAME Google grant backs both, but the user asked for one specific
+  // thing and the card should name it. This was written for decks only, and
+  // the document path reused it verbatim — so someone who asked for a report
+  // was told to reconnect "and I'll build the deck straight away". Rare while
+  // a Google Doc had to be asked for; every failed document once it is the
+  // default.
+  const doc = intent === "doc";
   switch (reason) {
     case "needs_reconnect":
-      return "Slide creation needs one extra Google permission that your existing connection predates. Reconnect below and I'll build the deck straight away — your Gmail and Calendar access is unaffected.";
+      return doc
+        ? "Creating a Google Doc needs one extra Google permission that your existing connection predates. Reconnect below and I'll make the Doc — your Gmail and Calendar access is unaffected. The Word file above is ready either way."
+        : "Slide creation needs one extra Google permission that your existing connection predates. Reconnect below and I'll build the deck straight away — your Gmail and Calendar access is unaffected.";
     case "not_connected":
-      return "Connect your Google account below and I'll build the deck straight into your Drive.";
+      return doc
+        ? "Connect your Google account below and I'll put the document straight into your Drive as a Google Doc. The Word file above is ready either way."
+        : "Connect your Google account below and I'll build the deck straight into your Drive.";
     case "refresh_failed":
-      return "Your Google connection has expired or been revoked. Reconnect below and I'll pick the deck back up.";
+      return doc
+        ? "Your Google connection has expired or been revoked. Reconnect below and I'll make the Google Doc. The Word file above is ready either way."
+        : "Your Google connection has expired or been revoked. Reconnect below and I'll pick the deck back up.";
     case "not_configured":
-      return "Google Slides creation isn't configured on this deployment.";
+      return doc
+        ? "Google Doc creation isn't configured on this deployment."
+        : "Google Slides creation isn't configured on this deployment.";
     case "unavailable":
       return "I couldn't check your Google connection just now — that's a problem at our end, not yours. Try again in a moment.";
   }

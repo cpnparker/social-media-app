@@ -372,6 +372,57 @@ console.log("\n10. A full answer is not answered twice after a refused tool call
     !psrc.includes("(!loopEndedCleanly || !fullText.trim() || endsWithUnfulfilledPromise(fullText))"));
 }
 
+console.log("\n13. The assembled prompt never denies a capability the app has");
+{
+  // 2026-09-07: asked "can you create a googledoc", EngineAI said "I can't
+  // create Google Docs directly — that needs a separate scope I don't have",
+  // and then created one in the same reply. The sentence lived in the system
+  // prompt at system-prompts.ts:493 while the tool description said the
+  // opposite and the code worked. It had survived the very commit that built
+  // the feature BECAUSE of that refusal — lib/documents/google-doc.ts opens by
+  // quoting it.
+  //
+  // Asserted on the ASSEMBLED prompt, not by grepping the source, because a
+  // rule only matters if it reaches the model, and the previous doc check
+  // (verify-doc-export.ts) certified "the capability is advertised, not
+  // denied" without ever reading the prompt.
+  const dp = buildSystemPrompt({
+    conversationVisibility: "private",
+    userName: "Test",
+    contextConfig: { imageGeneration: "on" } as any,
+    workspaceConfig: { companyContext: "TCE.", contentTypes: [], cuDefinitions: [], formatDescriptions: {}, typeInstructions: {} } as any,
+  } as any);
+
+  const DENIALS: [RegExp, string][] = [
+    [/cannot create Docs/i, "cannot create Docs"],
+    [/can'?t create Google Docs/i, "can't create Google Docs"],
+    [/(separate|extra|another) scope/i, "blames a missing scope"],
+    [/drop it into Drive and open it with Google Docs/i, "tells the user to convert it by hand"],
+  ];
+  for (const [re, label] of DENIALS) {
+    check(`the prompt does not deny Google Docs (${label})`, !re.test(dp));
+  }
+  check("the prompt states a document is a Google Doc by default", /Google Doc by default/i.test(dp));
+  check("the prompt says how to OPT OUT rather than how to opt in", /googleDoc: false/.test(dp));
+
+  // And the server, not the wording, is what makes it the default: the flag is
+  // optional, so an omitted flag must still produce a Doc.
+  const src = readFileSync(join(__dirname, "../lib/ai/providers.ts"), "utf8");
+  check("the server defaults the Google Doc ON (opt-out, not opt-in)",
+    /if \(input\.googleDoc === false\) \{/.test(src) && !/input\.googleDoc !== true/.test(src));
+  check("a missing Google identity is reported, not silently skipped",
+    /skipped: "no-identity"/.test(src));
+
+  // The reconnect card and the Drive call, both of which every document now
+  // depends on rather than only the ones that asked for a Doc.
+  const tok = readFileSync(join(__dirname, "../lib/slides/token.ts"), "utf8");
+  check("the reconnect message can speak about a document, not only a deck",
+    /intent: "deck" \| "doc"/.test(tok) && /Creating a Google Doc needs one extra/.test(tok));
+  const gdoc = readFileSync(join(__dirname, "../lib/documents/google-doc.ts"), "utf8");
+  check("the Drive upload has a timeout (it runs inside a streaming turn)",
+    /AbortSignal\.timeout\(30_000\)/.test(gdoc));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (failures.length) { console.log("\nFailures:"); for (const f of failures) console.log(`  - ${f}`); }
 process.exit(fail ? 1 : 0);

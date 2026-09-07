@@ -659,6 +659,9 @@ export default function ChatPanel({
   // Refs rather than state: reconnectGoogle is memoised for the lifetime of the
   // panel and would otherwise close over the draft as it was when it mounted.
   const pendingPublishRef = useRef(false);
+  // Which thing the reconnect card was raised for, so the success toast can
+  // name it. Slides and Docs share one Google grant and one card.
+  const lastReauthIntentRef = useRef<"deck" | "doc">("deck");
   const publishSlidesDraftRef = useRef<null | (() => Promise<void>)>(null);
 
   useEffect(() => { publishSlidesDraftRef.current = publishSlidesDraft; }, [publishSlidesDraft]);
@@ -699,7 +702,16 @@ export default function ChatPanel({
               pendingPublishRef.current = false;
               void publishSlidesDraftRef.current?.();
             } else {
-              toast.success("Google reconnected — ask for the deck again and I'll build it.");
+              // A DOCUMENT is not a deck. Nothing is held server-side to resume
+              // for a Doc — the body lived in that turn — so this branch does
+              // ask them to repeat themselves, but it must at least name the
+              // right thing. Telling someone who asked for a report to "ask for
+              // the deck again" reads as the wrong feature failing.
+              toast.success(
+                lastReauthIntentRef.current === "doc"
+                  ? "Google reconnected — ask for the document again and I'll put it in your Drive."
+                  : "Google reconnected — ask for the deck again and I'll build it."
+              );
             }
           } else {
             setSlidesReauth({ message: j.message || "That didn't complete. Try connecting again, and make sure you approve the Google account you use here.", reason: j.reason || "needs_reconnect" });
@@ -933,6 +945,7 @@ export default function ChatPanel({
               // built is on screen, so the card's action can finish it. For a
               // document there is nothing to resume — the content lived in that
               // turn — so the card reconnects and says to ask again.
+              lastReauthIntentRef.current = parsed.slides_reauth.intent === "doc" ? "doc" : "deck";
               pendingPublishRef.current = parsed.slides_reauth.intent !== "doc";
               setIsGeneratingDocument(false);
               setSlidesProgress(null);

@@ -57,7 +57,7 @@ export async function createGoogleDoc(input: {
   const auth = await getUserGoogleToken(input.userEmail);
   if (!auth.ok || !auth.accessToken) {
     const reason = auth.reason as SlidesAuthFailure;
-    return { ok: false, error: authFailureMessage(reason), reason };
+    return { ok: false, error: authFailureMessage(reason, "doc"), reason };
   }
 
   const boundary = `engineai-${Math.random().toString(36).slice(2)}-${Date.now()}`;
@@ -85,10 +85,20 @@ export async function createGoogleDoc(input: {
         "Content-Type": `multipart/related; boundary=${boundary}`,
       },
       body: body as any,
+      // A TIMEOUT, because this runs inside the live tool loop of a streaming
+      // reply. Every other Google call in this app has one; this did not. A
+      // hung Drive request stalls the whole answer AFTER the .docx link has
+      // been emitted, so the user watches a download appear and the reply
+      // never finish. Now that a Doc is made for every document rather than
+      // only when asked for, that is every document. The catch below already
+      // degrades correctly and the .docx is already built, so a timeout costs
+      // nothing but the wait.
+      signal: AbortSignal.timeout(30_000),
     });
   } catch (e: any) {
-    console.error("[GoogleDoc] upload failed:", e?.message);
-    return { ok: false, error: "Couldn't reach Google Drive just now. Try again in a moment." };
+    const timedOut = e?.name === "TimeoutError";
+    console.error("[GoogleDoc] upload failed:", timedOut ? "timed out after 30s" : e?.message);
+    return { ok: false, error: timedOut ? "Google Drive took too long to answer, so the Google Doc was not created." : "Couldn't reach Google Drive just now. Try again in a moment." };
   }
 
   if (!res.ok) {
@@ -98,7 +108,7 @@ export async function createGoogleDoc(input: {
     // revoked between the two calls. Reported as a reconnect rather than a
     // fault, because that is what it is and the user can fix it.
     if (res.status === 401 || res.status === 403) {
-      return { ok: false, error: authFailureMessage("refresh_failed"), reason: "refresh_failed" };
+      return { ok: false, error: authFailureMessage("refresh_failed", "doc"), reason: "refresh_failed" };
     }
     return { ok: false, error: `Google Drive refused the document (${res.status}).` };
   }
@@ -132,10 +142,20 @@ export function documentOutcome(input: {
   filename: string;
   doc?: GoogleDocResult | null;
   docActionable?: boolean;
+  /** Why no Doc was attempted, when that was not the user's choice. A silent
+   *  success here would have the model describe a Doc that does not exist. */
+  skipped?: "no-identity";
 }): { events: Record<string, unknown>[]; marker: string; toolText: string } {
   const events: Record<string, unknown>[] = [{ document_ready: { url: input.url, filename: input.filename } }];
   let marker = `\n\n\u{1F4C4} [Download ${input.filename}](${input.url})\n\n`;
   let toolText = `Word document generated: ${input.filename}. Download: ${input.url} — The download link is already shown to the user. Do NOT write another link.`;
+
+  if (input.skipped === "no-identity") {
+    toolText +=
+      ` No Google Doc was created because this session has no signed-in Google identity to create it in.` +
+      ` Say that plainly if the user asked for a Google Doc. Do NOT say Google Docs is unsupported or that you lack a scope for it.`;
+    return { events, marker, toolText };
+  }
 
   if (!input.doc) return { events, marker, toolText };
 
