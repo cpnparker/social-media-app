@@ -825,3 +825,12 @@
     padding-bottom: max(0px, env(safe-area-inset-bottom));
   }
 }
+
+/* The tool-activity meter. Indeterminate by design: an external call reports
+   no progress, and a fabricated percentage that sticks at 90% is worse than an
+   honest shuttle. It exists to say the turn is alive and which service it is
+   waiting on. */
+@keyframes toolshuttle {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}

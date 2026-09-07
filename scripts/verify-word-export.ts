@@ -155,6 +155,21 @@ async function main() {
       !/<w:pPrDefault>[\s\S]{0,300}?w:spacing[^/]*w:after=/.test(styles));
     check("table cells set their own spacing", /<w:spacing w:after="0" w:line="240"\/>/.test(doc));
 
+    // THE DEFECT THAT REACHED A CLIENT DOCUMENT. Word auto-fits a table that
+    // declares no column widths; Drive's importer does not — it collapses every
+    // column to its minimum, and "Pillar | Score | Reading" arrived in the
+    // Google Doc as three one-character columns with the letters stacked
+    // vertically. The .docx passed every check at the time: the file was fine
+    // and the CONVERSION was not.
+    check("the table declares a column grid", /<w:tblGrid>/.test(doc));
+    const grid = (/<w:tblGrid>([\s\S]*?)<\/w:tblGrid>/.exec(doc) || [, ""])[1];
+    const cols = (grid.match(/w:w="(\d+)"/g) || []).map((m) => Number(m.replace(/\D/g, "")));
+    check("the grid has one width per column", cols.length === 2, `${cols.length} columns`);
+    check("no column is collapsed to nothing", cols.every((w) => w > 600), cols.join(", "));
+    check("the columns fill the text measure", Math.abs(cols.reduce((a, b) => a + b, 0) - 9360) < 40);
+    check("every cell declares its width too", (doc.match(/<w:tcW /g) || []).length >= cols.length * 3);
+    check("the table layout is fixed, so the grid is obeyed", /w:tblLayout w:type="fixed"/.test(doc));
+
     check("the table header is filled with the brand ink", /w:fill="023250"/.test(doc));
     check("rows are banded", (doc.match(/w:fill="F3F4F6"/g) || []).length >= 2);
     check("a right-aligned column is right-aligned", /<w:jc w:val="right"\/>/.test(doc));

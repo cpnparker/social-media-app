@@ -10,6 +10,7 @@ import { supabase } from "@/lib/supabase";
 import { searchNotebook } from "@/lib/notebook/search";
 import { generateSlides, updateSlides, resolveDeckImages, splitOverflowingSlides, isVisualSlide, deckWarnings, stampFooter } from "@/lib/slides/generate";
 import { authorityOnEnabled } from "@/lib/authorityon/mcp";
+import { toolActivityEvent } from "@/lib/ai/tool-activity";
 import { createToolLoopGuard, repeatedCallNotice, overBudgetNotice, stallOutcome, slidesWritten, type ToolUsage } from "@/lib/ai/tool-loop-guard";
 import { toPreviewModel } from "@/lib/slides/preview-model";
 import { signedMediaUrl } from "@/lib/media/signed";
@@ -8618,26 +8619,18 @@ async function streamAnthropic(
               encoder.encode(`data: ${JSON.stringify({ generating_image: true })}\n\n`)
             );
           }
+          // ONE generic activity event for every tool, from the shared map.
+          // The three flags above stay because the client keys specific UI off
+          // them (a document card, an image slot); this adds the labelled row.
           if (block.name === "query_engine") {
-            controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`)
-            );
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
           }
           if (block.name === "search_memory") {
-            controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ searching_memory: true })}\n\n`)
-            );
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ searching_memory: true })}\n\n`));
           }
-          if (block.name === "query_meetingbrain") {
-            controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ searching_memory: true })}\n\n`)
-            );
-          }
-          if (block.name === "query_slack") {
-            controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ searching_memory: true })}\n\n`)
-            );
-          }
+          // One labelled activity row for EVERY tool, from the shared map, so a
+          // minute spent in AuthorityOn says AuthorityOn rather than nothing.
+          controller.enqueue(encoder.encode(toolActivityEvent(block.name)));
         }
       }
 
@@ -10280,6 +10273,7 @@ async function streamXAIChatCompletions(
         continue;
       }
       executedAnyTool = true;
+      controller.enqueue(encoder.encode(toolActivityEvent(tc.function.name)));
       if (tc.function.name === "generate_image") {
         try {
           const input = JSON.parse(tc.function.arguments);
@@ -11347,6 +11341,7 @@ async function streamGemini(
         continue;
       }
       if (taintedBeforeBatch) postTaintCallsUsed++;
+      controller.enqueue(encoder.encode(toolActivityEvent(tc.function.name)));
       if (tc.function.name === "generate_image") {
         try {
           const input = JSON.parse(tc.function.arguments);
@@ -12302,6 +12297,7 @@ async function streamOpenAI(
         continue;
       }
       if (taintedBeforeBatch) postTaintCallsUsed++;
+      controller.enqueue(encoder.encode(toolActivityEvent(tc.function.name)));
       if (tc.function.name === "generate_image") {
         try {
           const input = JSON.parse(tc.function.arguments);

@@ -29,6 +29,7 @@ import {
   ShadingType,
   Table,
   TableCell,
+  TableLayoutType,
   TableRow,
   TextRun,
   WidthType,
@@ -224,7 +225,27 @@ function buildTable(headerIn: string[], rowsIn: string[][], aligns: (typeof Alig
   const header = [...headerIn, ...Array(Math.max(0, colCount - headerIn.length)).fill("")];
   const rows = rowsIn.map((r) => [...r, ...Array(Math.max(0, colCount - r.length)).fill("")]);
 
-  const width = { size: 100, type: WidthType.PERCENTAGE };
+  // EXPLICIT COLUMN WIDTHS, or the table is destroyed in Google Docs.
+  //
+  // Word auto-fits a table that declares none. Drive's importer does not: it
+  // collapses every column to its minimum, and a header of "Pillar | Score |
+  // Reading" renders as three one-character columns with the letters stacked
+  // vertically down the page. That is what a reader actually opened, while the
+  // .docx looked correct in every check — the file was fine and the CONVERSION
+  // was not, which is the failure mode this whole path is built on.
+  //
+  // Widths are proportional to the longest cell in each column, clamped so one
+  // long sentence cannot squeeze a figures column to nothing, and expressed in
+  // twips of the real text measure (letter page minus one-inch margins).
+  const TEXT_WIDTH_TWIPS = 9360;
+  const longest = header.map((h, i) =>
+    Math.max(String(h).length, ...rows.map((r) => String(r[i] ?? "").length), 3)
+  );
+  const clamped = longest.map((n) => Math.min(Math.max(n, 6), 46));
+  const total = clamped.reduce((a, b) => a + b, 0) || 1;
+  const columnWidths = clamped.map((n) => Math.round((n / total) * TEXT_WIDTH_TWIPS));
+  const colWidth = (i: number) => ({ size: columnWidths[i], type: WidthType.DXA });
+  const width = { size: TEXT_WIDTH_TWIPS, type: WidthType.DXA };
   // Size 1 is an eighth of a point — below what Word renders reliably, so the
   // grid read as a smudge. 4 is a half-point hairline that actually draws.
   const border = { style: BorderStyle.SINGLE, size: 4, color: RULE };
@@ -247,6 +268,7 @@ function buildTable(headerIn: string[], rowsIn: string[][], aligns: (typeof Alig
       (cell, i) =>
         new TableCell({
           borders,
+          width: colWidth(i),
           shading: { type: ShadingType.CLEAR, fill: INK },
           margins,
           children: [cellPara(inlineRuns(cell, { bold: true, color: "FFFFFF" }), at(i))],
@@ -262,6 +284,7 @@ function buildTable(headerIn: string[], rowsIn: string[][], aligns: (typeof Alig
           (_h, i) =>
             new TableCell({
               borders,
+              width: colWidth(i),
               margins,
               // Banded rows: a wide table of figures is much easier to read
               // across when alternate rows carry a tint.
@@ -274,7 +297,9 @@ function buildTable(headerIn: string[], rowsIn: string[][], aligns: (typeof Alig
       })
   );
 
-  return new Table({ width, rows: [headerRow, ...bodyRows] });
+  // columnWidths on the Table itself is what writes the <w:tblGrid>, and the
+  // grid is what Drive's importer reads.
+  return new Table({ width, columnWidths, layout: TableLayoutType.FIXED, rows: [headerRow, ...bodyRows] });
 }
 
 /* ─────────────── Block parsing ─────────────── */
@@ -509,21 +534,39 @@ export async function buildWordDocxBuffer(input: WordDocInput): Promise<Buffer> 
 
   const children: (Paragraph | Table)[] = [];
 
+  // A COVER IS COMPOSED, not just centred. Left-aligned on a third of the page
+  // with a brand rule above the title: the previous version put a centred
+  // title at the very top of an otherwise blank sheet, which reads as a page
+  // that failed to load rather than a cover.
+  if (coverPage) {
+    children.push(
+      new Paragraph({ spacing: { after: 0 }, children: [new TextRun({ text: "", size: 22 })] }),
+      new Paragraph({
+        spacing: { before: 2600, after: 200 },
+        border: { bottom: { style: BorderStyle.SINGLE, size: 24, color: ACCENT, space: 10 } },
+        children: [new TextRun({ text: "", size: 8 })],
+      })
+    );
+  }
+
   children.push(
     new Paragraph({
       heading: HeadingLevel.TITLE,
-      alignment: coverPage ? AlignmentType.CENTER : AlignmentType.LEFT,
-      spacing: { after: subtitle ? 120 : 320 },
-      children: inlineRuns(title, { size: 56, bold: true }),
+      alignment: AlignmentType.LEFT,
+      spacing: { after: subtitle ? 160 : 320 },
+      children: inlineRuns(title, { size: coverPage ? 60 : 56, bold: true }),
     })
   );
 
   if (subtitle) {
     children.push(
       new Paragraph({
-        alignment: coverPage ? AlignmentType.CENTER : AlignmentType.LEFT,
+        alignment: AlignmentType.LEFT,
         spacing: { after: 240 },
-        children: [new TextRun({ text: subtitle, size: 26, color: MUTED })],
+        // The standfirst is the JUDGEMENT on a report, so it is set to be read
+        // rather than to be small: brand ink, not the muted grey that made it
+        // look like a caption under the title.
+        children: [new TextRun({ text: subtitle, size: 26, color: coverPage ? PANEL_INK : MUTED, font: DOC.headingFont })],
       })
     );
   }
@@ -531,7 +574,7 @@ export async function buildWordDocxBuffer(input: WordDocInput): Promise<Buffer> 
   if (coverPage) {
     children.push(
       new Paragraph({
-        alignment: AlignmentType.CENTER,
+        alignment: AlignmentType.LEFT,
         spacing: { after: 640 },
         children: [
           new TextRun({

@@ -423,6 +423,48 @@ console.log("\n13. The assembled prompt never denies a capability the app has");
     /AbortSignal\.timeout\(30_000\)/.test(gdoc));
 }
 
+console.log("\n14. Every tool says which service it is reaching");
+{
+  // A turn that pulls a report, a mailbox and a meeting history sat for a
+  // minute showing only "Thinking…", which is indistinguishable from a hang.
+  // What existed was a hand-kept if-chain in ONE of the four chains, and it had
+  // drifted exactly as hand-kept lists do: query_slack and query_meetingbrain
+  // both raised "Searching memories…", and query_authorityon was absent, so a
+  // minute inside AuthorityOn was reported as "Querying the Engine…".
+  const { toolActivity, mappedToolNames } = require("../lib/ai/tool-activity");
+  const psrc = readFileSync(join(__dirname, "../lib/ai/providers.ts"), "utf8");
+
+  check("the activity event is emitted in all four provider chains",
+    (psrc.match(/encoder\.encode\(toolActivityEvent\(/g) || []).length === 4,
+    `${(psrc.match(/encoder\.encode\(toolActivityEvent\(/g) || []).length} of 4`);
+
+  // Each service is named for what it IS.
+  for (const [tool, expect] of [
+    ["query_authorityon", "authorityon"],
+    ["query_slack", "slack"],
+    ["query_meetingbrain", "meetings"],
+    ["query_gmail", "mail"],
+    ["query_engine", "engine"],
+  ] as [string, string][]) {
+    check(`${tool} reports the ${expect} service`, toolActivity(tool).service === expect, toolActivity(tool).service);
+  }
+  check("Slack and MeetingBrain no longer share one label",
+    toolActivity("query_slack").label !== toolActivity("query_meetingbrain").label);
+  check("an unmapped tool still says something rather than nothing",
+    /^Running /.test(toolActivity("query_something_new").label));
+
+  // THE DRIFT GUARD. Every tool the post-taint policy names is a tool a user
+  // can sit waiting on, so it must have a label. That Set is module-private, so
+  // it is read from the SOURCE — the same list the policy check reads — rather
+  // than re-typed here, because a hand-copied list is the thing that drifted.
+  const mapped = new Set(mappedToolNames());
+  const block = (/const POST_TAINT_READ_TOOLS = new Set\(\[([\s\S]*?)\]\)/.exec(psrc) || [, ""])[1];
+  const policyTools = Array.from(block.matchAll(/"([a-z_]+)"/g)).map((m) => m[1]);
+  check("the post-taint tool list was found in source", policyTools.length >= 8, `${policyTools.length} tools`);
+  const unlabelled = policyTools.filter((t) => !mapped.has(t));
+  check("every post-taint read tool has an activity label", unlabelled.length === 0, unlabelled.join(", "));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (failures.length) { console.log("\nFailures:"); for (const f of failures) console.log(`  - ${f}`); }
 process.exit(fail ? 1 : 0);

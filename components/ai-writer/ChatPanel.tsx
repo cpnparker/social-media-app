@@ -186,6 +186,11 @@ export default function ChatPanel({
   const [reauthBusy, setReauthBusy] = useState(false);
   const reauthPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [isQueryingEngine, setIsQueryingEngine] = useState(false);
+  // Which external services this turn is currently reaching, in the order they
+  // started. A turn that pulls a report, a mailbox and a meeting history can
+  // sit for a minute showing only "Thinking…", which is indistinguishable from
+  // a hang — and this session has real hangs.
+  const [runningTools, setRunningTools] = useState<{ tool: string; label: string; service: string }[]>([]);
   const [isSearchingMemory, setIsSearchingMemory] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
   const [isFactChecking, setIsFactChecking] = useState(false);
@@ -960,10 +965,17 @@ export default function ChatPanel({
               setIsGeneratingDocument(false);
               setSlidesProgress(null);
               toast.error(parsed.slides_error);
+            } else if (parsed.tool_running) {
+              const t = parsed.tool_running;
+              setRunningTools((prev) => (prev.some((x) => x.tool === t.tool) ? prev : [...prev, t]));
+            } else if (parsed.tool_done) {
+              setRunningTools((prev) => prev.filter((x) => x.tool !== parsed.tool_done.tool));
             } else if (parsed.querying_engine) {
               setIsQueryingEngine(true);
             } else if (parsed.query_result) {
               setIsQueryingEngine(false);
+              setRunningTools([]);
+      setRunningTools([]);
             } else if (parsed.searching_memory) {
               setIsSearchingMemory(true);
             } else if (parsed.memory_result) {
@@ -990,6 +1002,8 @@ export default function ChatPanel({
               setIsGeneratingDocument(false);
               setSlidesProgress(null);
               setIsQueryingEngine(false);
+              setRunningTools([]);
+      setRunningTools([]);
               setIsSearchingMemory(false);
               fullText += parsed.token;
               // Remove duplicate image markdown from display text.
@@ -1118,6 +1132,7 @@ export default function ChatPanel({
       setIsGeneratingDocument(false);
               setSlidesProgress(null);
       setIsQueryingEngine(false);
+      setRunningTools([]);
       setIsSearchingMemory(false);
       setStreamingContent("");
     }
@@ -2087,7 +2102,25 @@ export default function ChatPanel({
                 </div>
               </div>
             )}
-            {isStreaming && isQueryingEngine && (
+            {isStreaming && runningTools.length > 0 && (
+              <div className="flex flex-col gap-1.5 px-4 py-3">
+                {runningTools.map((t) => (
+                  <div key={t.tool} className="flex items-center gap-2.5 text-sm text-muted-foreground">
+                    <span className="shrink-0">{t.label}</span>
+                    {/* The meter. Indeterminate on purpose: these calls do not
+                        report progress, and a fake percentage that stalls at
+                        90% is worse than an honest shuttle. What it proves is
+                        that the turn is alive and WHICH service it is waiting
+                        on — the two things "Thinking…" never said. */}
+                    <span className="h-1 flex-1 max-w-[9rem] rounded-full bg-foreground/[0.08] overflow-hidden" aria-hidden>
+                      <span className="block h-full w-1/3 rounded-full bg-foreground/30 animate-[toolshuttle_1.1s_ease-in-out_infinite]" />
+                    </span>
+                    <span className="sr-only">{t.label}, in progress</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {isStreaming && isQueryingEngine && runningTools.length === 0 && (
               <div className="flex items-start gap-3 px-4 py-3">
                 <div className="h-7 w-7 rounded-lg bg-foreground/[0.05] flex items-center justify-center shrink-0 mt-0.5">
                   <Database className="h-3.5 w-3.5 text-muted-foreground animate-pulse" />
