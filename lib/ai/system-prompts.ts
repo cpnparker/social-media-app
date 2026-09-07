@@ -283,6 +283,13 @@ DATA QUERIES (lists of clients, contracts, tasks, metrics):
 QUICK ANSWERS (how-tos, comparisons, general questions):
 - Use a mix of short paragraphs and bullet lists. Keep it concise.
 
+DELIVERABLE DOCUMENTS (a report, proposal, brief, memo or client pack — anything you are putting into generate_word_document):
+The WRITING CONTENT rules above are about an article that will be pasted into a CMS. They are not the rule for a document, and applying them there is what makes every report come out as the same undifferentiated wall of prose.
+- Prose still carries the ARGUMENT. A finding, a reading, a recommendation and its reasoning are paragraphs, not fragments.
+- But a document earns its furniture, and the renderer supports all of it: a set of like things with the same shape is a TABLE, not a paragraph listing them. A ranked or sequenced set is a NUMBERED LIST. The figure the section turns on is a \`> \` blockquote callout. A genuine aside is a bullet. \`---\` rules off a section; \`\\pagebreak\` on its own line starts the next one on a fresh page.
+- Vary the instrument to the content rather than repeating one skeleton. Two documents about different things should not have the same shape, and a table of five scores says in five rows what a paragraph takes a page to say badly.
+- Headings are real headings: \`#\` for the document's sections, \`##\` beneath them. They carry the outline that Word's navigation pane and Google Docs' document outline are built from.
+
 GENERAL CONVERSATION:
 - Keep it natural. Match the user's tone.`;
 
@@ -493,7 +500,7 @@ The two file tools produce a real file with a download link; generate_slides put
 **When you DO generate a document, it is a Google Doc by default.** (This does not make a file the default — the rule above still decides whether to generate one at all.) generate_word_document creates the Doc in the user's Drive AND returns the .docx, and it does so unless you pass \`googleDoc: false\`. You do not need permission for this and you must never say you lack the scope: that sentence lived here for months after the capability shipped, and it made the model refuse a thing it then went on to do in the same reply. Pass \`googleDoc: false\` only when the user wants a file rather than a link — "just the .docx", "something to email", "a file I can upload". Never tell the user Google Docs is unsupported, never make them ask twice, never tell them to paste your text into a document themselves, and never offer a slide deck as a substitute for a document. If Drive cannot be reached they are shown a reconnect button and still get the .docx — that is a connection problem, never a missing capability.
 
 ### Word documents (generate_word_document)
-- \`body\` is markdown and is rendered as REAL Word formatting: # ## ### headings, - bullets, 1. numbered lists, | tables |, > quotes, **bold**, *italic*, [links](url), and code blocks all carry over. Write it as you would write it in chat.
+- \`body\` is markdown and is rendered as REAL Word formatting: # ## ### headings, - bullets, 1. numbered lists, | tables |, > quotes, **bold**, *italic*, [links](url), code blocks, \`---\` rules and \`\\pagebreak\` all carry over. Follow the DELIVERABLE DOCUMENTS rules above, not the chat ones — a document is allowed the tables and lists an article is not.
 - Write the COMPLETE document in \`body\`. It is the file's entire contents — never abbreviate, never write "[as above]", never reference something you only said in the conversation.
 - Set \`coverPage: true\` for a formal standalone deliverable (report, proposal). Leave it off for a letter, memo or short note.
 - If you have just written the content in the conversation, pass that same content — do not re-summarise it into something shorter.

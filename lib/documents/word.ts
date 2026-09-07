@@ -23,6 +23,7 @@ import {
   HeadingLevel,
   PageNumber,
   Packer,
+  PageBreak,
   Paragraph,
   ShadingType,
   Table,
@@ -37,6 +38,22 @@ const BODY_SIZE = 22; // half-points → 11pt
 const MUTED = "6B7280";
 const RULE = "D1D5DB";
 const HEADER_SHADE = "F3F4F6";
+
+/**
+ * Heading sizes in half-points, indexed by markdown depth.
+ *
+ * NEEDED because `inlineRuns` defaults every run to BODY_SIZE, and in OOXML a
+ * size on the RUN beats the one on the paragraph style. So a heading carried
+ * the Heading1 style and an explicit 11pt run, and Word obeyed the run: every
+ * heading in every generated document came out at body size and unbolded. The
+ * whole hierarchy collapsed to a 28pt title, a 13pt subtitle, then a wall of
+ * flat text — which is most of why the documents read as formless.
+ *
+ * The style is still applied, so Word's navigation pane, a table of contents
+ * and Google Docs' outline all keep working; these sizes only stop the run
+ * from contradicting it.
+ */
+const HEADING_SIZES = [32, 26, 24, 22, 22, 22]; // 16, 13, 12, 11pt
 
 /** Word's built-in heading levels, indexed by markdown depth (1-6). */
 const HEADINGS = [
@@ -261,6 +278,16 @@ export function markdownToDocxBlocks(markdown: string): (Paragraph | Table)[] {
       continue;
     }
 
+    // An explicit page break the model can place. A long report wants its
+    // sections to start on a fresh page, and until now it had no way to say so
+    // — the renderer's expressive range was larger than anything the tool
+    // description admitted, which is a theme of this file.
+    if (/^(\\pagebreak|<!--\s*pagebreak\s*-->)$/i.test(trimmed)) {
+      blocks.push(new Paragraph({ children: [new PageBreak()] }));
+      i++;
+      continue;
+    }
+
     // Horizontal rule
     if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
       blocks.push(
@@ -282,7 +309,7 @@ export function markdownToDocxBlocks(markdown: string): (Paragraph | Table)[] {
         new Paragraph({
           heading: HEADINGS[depth - 1],
           spacing: { before: depth <= 2 ? 320 : 220, after: 120 },
-          children: inlineRuns(heading[2]),
+          children: inlineRuns(heading[2], { size: HEADING_SIZES[depth - 1], bold: true }),
         })
       );
       i++;
@@ -395,14 +422,17 @@ function displayFilename(title: string): string {
   return `${stem}.docx`;
 }
 
-export async function generateWordDocument(
-  input: WordDocInput
-  // The BUFFER comes back as well as the link. A Google Doc is made by handing
-  // Drive these exact bytes and asking it to convert them, so the Doc and the
-  // .docx are the same document by construction rather than by two builders
-  // that agree today.
-): Promise<{ url: string; filename: string; buffer: Buffer }> {
-  const { title, body, subtitle, coverPage = false, workspaceId } = input;
+/**
+ * The document itself, as bytes. No network, no blob token, no upload.
+ *
+ * Split out so the rendered RESULT can be asserted — heading sizes, the cover
+ * page's page break — rather than only the block objects that go into it. The
+ * cover page shipped for months as a centred masthead with no page break at
+ * all, and every existing assertion passed, because nothing ever rendered a
+ * whole document and looked at it.
+ */
+export async function buildWordDocxBuffer(input: WordDocInput): Promise<Buffer> {
+  const { title, body, subtitle, coverPage = false } = input;
 
   const children: (Paragraph | Table)[] = [];
 
@@ -439,6 +469,13 @@ export async function generateWordDocument(
         ],
       })
     );
+    // AND A PAGE BREAK, which is what makes it a cover PAGE. Without one the
+    // whole feature was a centred title, a centred subtitle, a date and 0.44
+    // inch of air, with the first body heading directly beneath it on the same
+    // page — a masthead. The schema promises "a formal standalone deliverable"
+    // and the AuthorityOn report path sets it on every client document, so
+    // every one of those shipped without the cover it was asked for.
+    children.push(new Paragraph({ children: [new PageBreak()] }));
   }
 
   children.push(...markdownToDocxBlocks(body));
@@ -477,7 +514,23 @@ export async function generateWordDocument(
     ],
   });
 
-  const buffer = await Packer.toBuffer(doc);
+  return Packer.toBuffer(doc).then((b) => Buffer.from(b));
+}
+
+/**
+ * Build the .docx AND upload it.
+ *
+ * The building is `buildWordDocxBuffer` above, deliberately separate: a check
+ * can render a real document and read its XML back without a blob token and
+ * without writing anything anywhere. Stubbing the upload from outside does not
+ * work — `put` is a static import, already bound by the time a test could
+ * intercept it — so the seam has to exist in the code rather than in the test.
+ */
+export async function generateWordDocument(
+  input: WordDocInput
+): Promise<{ url: string; filename: string; buffer: Buffer }> {
+  const { title, workspaceId } = input;
+  const buffer = await buildWordDocxBuffer(input);
 
   // Workspace-scoped, unlike the .pptx path's flat `presentations/` prefix.
   //

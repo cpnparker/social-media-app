@@ -84,6 +84,58 @@ async function main() {
   check("produced blocks", blocks.length > 10, `got ${blocks.length}`);
   check("headings become real Word headings", /w:pStyle w:val="Heading1"/.test(xml));
   check("h2 becomes Heading2", /w:pStyle w:val="Heading2"/.test(xml));
+
+  // A HEADING MUST LOOK LIKE ONE. The style was applied and then contradicted:
+  // inlineRuns defaults every run to BODY_SIZE, and in OOXML a size on the run
+  // beats the paragraph style, so every heading in every generated document
+  // rendered at 11pt and unbolded — smaller than the subtitle. The old
+  // assertion above passed throughout, because it only checked the style TAG
+  // existed. These check the rendered SIZE.
+  {
+    const h1 = /<w:pStyle w:val="Heading1"\/>[\s\S]{0,400}?<w:sz w:val="(\d+)"\/>/.exec(xml);
+    const h2 = /<w:pStyle w:val="Heading2"\/>[\s\S]{0,400}?<w:sz w:val="(\d+)"\/>/.exec(xml);
+    check("h1 renders LARGER than body text", !!h1 && Number(h1[1]) > 22, h1 ? `${Number(h1[1]) / 2}pt` : "no size found");
+    check("h2 renders larger than body text", !!h2 && Number(h2[1]) > 22, h2 ? `${Number(h2[1]) / 2}pt` : "no size found");
+    check("h1 renders larger than h2", !!h1 && !!h2 && Number(h1[1]) > Number(h2[1]));
+    check("headings are bold", /<w:pStyle w:val="Heading1"\/>[\s\S]{0,400}?<w:b\/>/.test(xml));
+  }
+
+  // A COVER PAGE MUST BE A PAGE. `coverPage: true` produced a centred title, a
+  // centred subtitle, a date and 0.44 inch of air, with the first body heading
+  // directly beneath on the SAME page — a masthead. The schema promises "a
+  // formal standalone deliverable" and the AuthorityOn report path sets it on
+  // every client document, so every one shipped without the cover it asked for.
+  // Rendered through the real builder: buildWordDocxBuffer is the upload-free
+  // seam, so this reads the actual document.xml with no blob token involved.
+  {
+    const { buildWordDocxBuffer } = await import("../lib/documents/word");
+    const { execSync } = await import("child_process");
+    const { writeFileSync, mkdtempSync } = await import("fs");
+    const { tmpdir } = await import("os");
+    const { join } = await import("path");
+    const xmlOf = async (coverPage: boolean) => {
+      const buf = await buildWordDocxBuffer({ title: "T", subtitle: "S", body: "# One\n\nProse.", coverPage });
+      const dir = mkdtempSync(join(tmpdir(), "coverchk-"));
+      const f = join(dir, "o.docx");
+      writeFileSync(f, buf);
+      return execSync(`unzip -p ${JSON.stringify(f)} word/document.xml`, { maxBuffer: 20 * 1024 * 1024 }).toString();
+    };
+    check("coverPage:true puts the body on a NEW page", /<w:br w:type="page"\/>/.test(await xmlOf(true)));
+    check("coverPage:false adds no page break", !/<w:br w:type="page"\/>/.test(await xmlOf(false)));
+  }
+
+  // A PAGE BREAK the model can place. Without it a long report cannot start a
+  // section on a fresh page, and the renderer's range was larger than anything
+  // the tool description admitted.
+  {
+    const broken = markdownToDocxBlocks("Before.\n\n\\pagebreak\n\nAfter.");
+    const bx = await renderXml(broken);
+    check("an explicit \\pagebreak becomes a real page break", /<w:br w:type="page"\/>/.test(bx));
+    const html = markdownToDocxBlocks("Before.\n\n<!-- pagebreak -->\n\nAfter.");
+    check("the HTML-comment spelling works too", /<w:br w:type="page"\/>/.test(await renderXml(html)));
+    const notBreak = markdownToDocxBlocks("Before.\n\n---\n\nAfter.");
+    check("a plain --- rule is still a rule, not a page break", !/<w:br w:type="page"\/>/.test(await renderXml(notBreak)));
+  }
   check("a table element exists", /<w:tbl>/.test(xml));
   check("table has a header cell", xml.includes("Monthly cost"));
   check("table body cell present", xml.includes("£12,000"));
