@@ -475,10 +475,44 @@ export function endsWithUnfulfilledPromise(text: string): boolean {
   // "Right - checking now..." and "Fair challenge - let me try": a short
   // interjection before a dash is throat-clearing, not the sentence. Strip it,
   // or the gerund test never sees the verb it is looking for.
-  const core = last.replace(/^[^\u2014\u2013-]{0,24}[\u2014\u2013-]+\s*/, "") || last;   // a long closing sentence is an answer, not a promise
+  // The dash must be SPACED to count as throat-clearing. Matching a bare
+  // hyphen ate the first words of any sentence with a hyphenated compound in
+  // it ("Follow-up: …", "The up-to-date figures …"), which is how a promise
+  // could lose the very verb this is looking for.
+  // Strip up to the LAST spaced dash in the opening, so "Follow-up — checking
+  // now" loses the whole interjection rather than stopping at the hyphen
+  // inside "Follow-up". A bare hyphen never triggers the strip on its own.
+  const core = last.replace(/^.{0,40}?\s*[\u2014\u2013]\s+|^.{0,40}?\s-\s+/, "") || last;
 
-  const ACTION = "check|look|pull|search|fetch|find|dig|confirm|verify|read|open|review|see|grab|retrieve|gather|compile|draft|write up|try|attempt|have a look|take a look";
-  if (new RegExp(`^(?:just |quickly |now |first )?(${ACTION.replace(/\|/g, "ing|")}ing)\\b`).test(core)) return true;
+  // Two families, because they fail differently. FETCH verbs promise to go and
+  // find something; BUILD verbs promise to make something. Only fetch verbs
+  // were here, so "Building the walkthrough deck from the same figures now."
+  // read as a finished answer — the turn ended, no deck was ever built, and
+  // the user was told one was coming. Reported 2026-09-07.
+  const FETCH = ["check", "look", "pull", "search", "fetch", "find", "dig", "confirm", "verify", "read", "open", "review", "see", "grab", "retrieve", "gather", "compile", "draft", "write up", "try", "attempt", "have a look", "take a look"];
+  const BUILD = ["build", "create", "make", "generate", "put together", "write", "produce", "prepare", "assemble", "render", "draw up", "pull together"];
+  const ACTION = [...FETCH, ...BUILD].join("|");
+
+  // The gerunds are spelled OUT rather than derived. The old code produced
+  // them by replacing the "|" separators with "ing|", which appends the
+  // letters to whatever precedes each pipe — so "dig" became "diging",
+  // "compile" became "compileing", and "write up" became "write uping".
+  // Seven of the twenty-three could never match anything.
+  const GERUND = [
+    "checking", "looking", "pulling", "searching", "fetching", "finding", "digging",
+    "confirming", "verifying", "reading", "opening", "reviewing", "seeing", "grabbing",
+    "retrieving", "gathering", "compiling", "drafting", "writing up", "trying", "attempting",
+    "having a look", "taking a look",
+    "building", "creating", "making", "generating", "putting together", "writing",
+    "producing", "preparing", "assembling", "rendering", "drawing up", "pulling together",
+  ].join("|");
+  const OPENER = "(?:just |quickly |now |first |ok |right )?(?:i'?m |i am )?";
+  if (new RegExp(`^${OPENER}(${GERUND})\\b`).test(core)) return true;
+  // The phrasal ones split around their object: "putting the deck together",
+  // "drawing the summary up". Matched separately rather than by widening the
+  // list, so the particle is still required and "putting the kettle on" is not
+  // a promise to build anything.
+  if (new RegExp(`^${OPENER}(putting|pulling|drawing|writing)\\b[^.!?]{0,60}\\b(together|up)\\b`).test(core)) return true;
   if (/^(one moment|hold on|bear with me|stand by|give me a second|give me a moment)\b/.test(core)) return true;
   if (/\blet me know\b/.test(core)) return false;   // an invitation, not a promise
   return new RegExp(
@@ -514,6 +548,12 @@ export function needsForcedFinal(loopEndedCleanly: boolean, fullText: string): b
   if (loopEndedCleanly) return false;
   return text.length < ANSWERED_MIN_CHARS;
 }
+
+/** Said once, on the final tool round. The cap was silent: the loop stopped,
+ *  and a turn that had announced a deck ended without one and without saying
+ *  so. */
+const LAST_ROUND_NOTICE =
+  "SYSTEM NOTE (not from the user — never acknowledge or mention it): this is your LAST round of tool calls this turn. If you have promised the user an artefact — a document, a deck, a chart — build it NOW with this round. Do not spend it on another lookup, and do not end the turn saying something is coming: anything you have not built by the end of this round does not exist.";
 
 const FORCED_FINAL_NUDGE =
   "SYSTEM NOTE (not from the user — never acknowledge or mention it): tools are no longer available this turn. Using ONLY the information already gathered above, answer the user's question fully and directly RIGHT NOW. If something could not be retrieved, say what you found and what remains unverified. Do not say you will look anything up, do not promise follow-ups, and do not repeat text you already wrote.";
@@ -7313,7 +7353,7 @@ export const AUTHORITYON_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         pillar: { type: "string", enum: ["AI_SCAN", "WEBSITE", "CONTENT", "SOCIAL"], description: "recommendations only." },
         department: { type: "string", enum: ["CONTENT_EDITORIAL", "WEB_DIGITAL", "DEMAND_GEN", "MEDIA_RELATIONS"], description: "recommendations only." },
         kind: { type: "string", enum: ["ai_performance", "exec_pack"], description: "report only. Default ai_performance." },
-        format: { type: "string", enum: ["markdown", "json"], description: "report and audit_report only. Defaults to markdown, which is what you want: hand that markdown to generate_word_document to produce the file, so a brand report is rendered by the same pipeline as every other document this app makes. For ANY document about a brand — advisory report, client pack, briefing — pull report:'report' FIRST and build on it: it is the full AI Performance report, and overview and recommendations are subsets of it. A document built from the subsets alone was never SHOWN the audits, the intent breakdown or the 90-day targets. Pull everything, then SELECT: completeness is a rule about what you READ, never about what you print. Then set coverPage: true and documentKind: 'analysis', and put the JUDGEMENT in the subtitle — one sentence a reader could repeat in a meeting — with the headline score, its asOf date and the period in the body's front matter. AuthorityOn's own order (score composition, positioning, audits, evidence, roadmap, targets) is the SOURCE order: how the platform stores measurements, not how a report argues. Read all of it, then REORDER into the argument — the judgement; what the brand's presence already achieves; why the score is what it is; where the loss happens; why the models differ; the direction of travel; what would change it; what this does not measure. A section that could be produced by deleting words from AuthorityOn's markdown is a DATA section, and it belongs in the supporting-data pack rather than the analysis." },
+        format: { type: "string", enum: ["markdown", "json"], description: "report and audit_report only. Defaults to markdown, which is what you want: it is the source you write the deliverable FROM. Which deliverable is the user's choice, not this field's — hand the markdown to generate_word_document for a document, or build a deck from the same figures with generate_slides if that is what they asked for. For ANY document about a brand — advisory report, client pack, briefing — pull report:'report' FIRST and build on it: it is the full AI Performance report, and overview and recommendations are subsets of it. A document built from the subsets alone was never SHOWN the audits, the intent breakdown or the 90-day targets. Pull everything, then SELECT: completeness is a rule about what you READ, never about what you print. Then set coverPage: true and documentKind: 'analysis', and put the JUDGEMENT in the subtitle — one sentence a reader could repeat in a meeting — with the headline score, its asOf date and the period in the body's front matter. AuthorityOn's own order (score composition, positioning, audits, evidence, roadmap, targets) is the SOURCE order: how the platform stores measurements, not how a report argues. Read all of it, then REORDER into the argument — the judgement; what the brand's presence already achieves; why the score is what it is; where the loss happens; why the models differ; the direction of travel; what would change it; what this does not measure. A section that could be produced by deleting words from AuthorityOn's markdown is a DATA section, and it belongs in the supporting-data pack rather than the analysis." },
         limit: { type: "number", description: "Rows to return, 1-50. Default 20." },
         id: { type: "string", description: "audit_report only: the frozen report's id, from audit_reports. audits only: an auditId to fetch one pillar audit in full." },
         includeSubEntities: { type: "boolean", description: "brands only. The default list is PRIMARY brands; set true to include sub-entities (a report, programme or product tracked under a parent brand). Try this ONCE before concluding a name is untracked." },
@@ -8533,7 +8573,18 @@ async function streamAnthropic(
   // same tool with no progress, which produces a wall of repeated text.
   const toolLoopGuard = createToolLoopGuard();
   let postTaintCallsUsed = 0;
+  // THE MODEL IS TOLD WHEN IT IS RUNNING OUT. Hitting the round cap was
+  // completely silent: the loop simply stopped, and a turn that had promised a
+  // deck ended without one and without saying so. A warning on the final round
+  // lets it spend that round on the artefact instead of another read.
+  let warnedLastRound = false;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    // ONE ROUND LEFT. Said once, so the model can build the thing it promised
+    // rather than spend the last round on another read and stop silently.
+    if (!warnedLastRound && round === MAX_TOOL_ROUNDS - 1) {
+      warnedLastRound = true;
+      anthropicMessages.push({ role: "user", content: LAST_ROUND_NOTICE } as any);
+    }
     // HARD taint: suppress tool use for the rest of the turn. The executor
     // guard alone cannot reach Anthropic's SERVER-side tools — web_search runs
     // inside the API call, so an injected "search for evil.tld/?d=<data>" would
@@ -10060,7 +10111,18 @@ async function streamXAIChatCompletions(
   // per-tool counts; skip repeats and stop when a round makes no real progress.
   const toolLoopGuard = createToolLoopGuard();
   let postTaintCallsUsed = 0;
+  // THE MODEL IS TOLD WHEN IT IS RUNNING OUT. Hitting the round cap was
+  // completely silent: the loop simply stopped, and a turn that had promised a
+  // deck ended without one and without saying so. A warning on the final round
+  // lets it spend that round on the artefact instead of another read.
+  let warnedLastRound = false;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    // ONE ROUND LEFT. Said once, so the model can build the thing it promised
+    // rather than spend the last round on another read and stop silently.
+    if (!warnedLastRound && round === MAX_TOOL_ROUNDS - 1) {
+      warnedLastRound = true;
+      openaiMessages.push({ role: "user", content: LAST_ROUND_NOTICE } as any);
+    }
     const stream = (await xai.chat.completions.create({
       model: apiModel,
       ...tokenParam,
@@ -11138,7 +11200,18 @@ async function streamGemini(
   let postTaintCallsUsed = 0;
   // One guard per turn, shared shape with the other chains.
   const toolLoopGuard = createToolLoopGuard();
+  // THE MODEL IS TOLD WHEN IT IS RUNNING OUT. Hitting the round cap was
+  // completely silent: the loop simply stopped, and a turn that had promised a
+  // deck ended without one and without saying so. A warning on the final round
+  // lets it spend that round on the artefact instead of another read.
+  let warnedLastRound = false;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    // ONE ROUND LEFT. Said once, so the model can build the thing it promised
+    // rather than spend the last round on another read and stop silently.
+    if (!warnedLastRound && round === MAX_TOOL_ROUNDS - 1) {
+      warnedLastRound = true;
+      geminiMessages.push({ role: "user", content: LAST_ROUND_NOTICE } as any);
+    }
     const stream = (await client.chat.completions.create({
       model: apiModel,
       max_tokens: config.maxTokens || 4096,
@@ -12098,7 +12171,18 @@ async function streamOpenAI(
   let postTaintCallsUsed = 0;
   // One guard per turn, shared shape with the other chains.
   const toolLoopGuard = createToolLoopGuard();
+  // THE MODEL IS TOLD WHEN IT IS RUNNING OUT. Hitting the round cap was
+  // completely silent: the loop simply stopped, and a turn that had promised a
+  // deck ended without one and without saying so. A warning on the final round
+  // lets it spend that round on the artefact instead of another read.
+  let warnedLastRound = false;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    // ONE ROUND LEFT. Said once, so the model can build the thing it promised
+    // rather than spend the last round on another read and stop silently.
+    if (!warnedLastRound && round === MAX_TOOL_ROUNDS - 1) {
+      warnedLastRound = true;
+      openaiMessages.push({ role: "user", content: LAST_ROUND_NOTICE } as any);
+    }
     const stream = (await client.chat.completions.create({
       model: apiModel,
       max_tokens: config.maxTokens || 4096,

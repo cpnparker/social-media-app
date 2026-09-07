@@ -234,26 +234,13 @@ console.log("\n7. The prompt carries the rules that were missing");
 
 {
   console.log("\n9. A reply that promises an action it never took is not 'finished'");
-  // Not exported — mirrored here so the property is pinned even though the
-  // implementation lives inside providers.ts.
-  const endsWithUnfulfilledPromise = (text: string): boolean => {
-    const trimmed = text.trim();
-    if (!trimmed) return false;
-    const parts = trimmed.split(/(?<=[.!?])\s+|\n+/).filter((x) => x.trim());
-    const last = (parts[parts.length - 1] || "").trim().toLowerCase();
-    if (!last || last.length > 220) return false;
-  // "Right - checking now..." and "Fair challenge - let me try": a short
-  // interjection before a dash is throat-clearing, not the sentence. Strip it,
-  // or the gerund test never sees the verb it is looking for.
-  const core = last.replace(/^[^\u2014\u2013-]{0,24}[\u2014\u2013-]+\s*/, "") || last;
-    const ACTION = "check|look|pull|search|fetch|find|dig|confirm|verify|read|open|review|see|grab|retrieve|gather|compile|draft|write up|try|attempt|have a look|take a look";
-    if (new RegExp(`^(?:just |quickly |now |first )?(${ACTION.replace(/\|/g, "ing|")}ing)\\b`).test(core)) return true;
-    if (/^(one moment|hold on|bear with me|stand by|give me a second|give me a moment)\b/.test(core)) return true;
-    if (/\blet me know\b/.test(core)) return false;
-    return new RegExp(
-      `\\b(let me|i'?ll|i will|i'?m going to|i am going to|going to|about to)\\s+(?:\\w+\\s+){0,2}(${ACTION})\\b`
-    ).test(core);
-  };
+  // THE REAL FUNCTION, imported. This mirrored a hand-copied duplicate and
+  // said "Not exported" — which stopped being true when needsForcedFinal was
+  // added and the function was exported for it. A check that re-implements the
+  // thing it checks passes while the product is wrong, which is the failure
+  // this repo has booked more than once; it would have missed the missing
+  // build verbs entirely.
+  const endsWithUnfulfilledPromise = providers.endsWithUnfulfilledPromise;
   // Every one of these is a REAL stall from Chris's sessions. The first
   // version of this guard caught only the second, because it was written from
   // that single example — and the other three shipped looking fixed.
@@ -463,6 +450,60 @@ console.log("\n14. Every tool says which service it is reaching");
   check("the post-taint tool list was found in source", policyTools.length >= 8, `${policyTools.length} tools`);
   const unlabelled = policyTools.filter((t) => !mapped.has(t));
   check("every post-taint read tool has an activity label", unlabelled.length === 0, unlabelled.join(", "));
+}
+
+console.log("\n15. A promised deck is built, or the turn is not finished");
+{
+  // 2026-09-07: "make a google presentation to walk through the findings"
+  // produced a Word document and a Google Doc, then the reply said "Building
+  // the walkthrough deck from the same figures now." and the turn ENDED. No
+  // deck was ever built.
+  //
+  // Three causes, all pinned here.
+  const P = providers as any;
+
+  // (a) The promise detector knew only FETCH verbs. Every build verb read as a
+  //     finished answer, so the forced-final path never fired.
+  for (const t of [
+    "The analysis is in a Google Doc. Building the walkthrough deck from the same figures now.",
+    "Creating the deck now.", "Making the presentation now.", "Generating the slides now.",
+    "Putting the deck together now.", "I'll build the deck next.",
+  ]) check(`catches a promised BUILD: "${t.slice(-42)}"`, P.endsWithUnfulfilledPromise(t));
+  check("the real reply now forces a final answer",
+    P.needsForcedFinal(true, "The analysis is in a Google Doc. Building the walkthrough deck from the same figures now."));
+  // …without swallowing sentences that merely describe what was made.
+  for (const t of [
+    "I have created the document and it is linked above.",
+    "The deck is building on the same figures you already have.",
+    "That is the complete picture, drawn from the September scan.",
+  ]) check(`leaves a finished sentence alone: "${t.slice(0, 34)}…"`, !P.endsWithUnfulfilledPromise(t));
+
+  // (b) Two latent bugs in the same function, found while fixing it: seven
+  //     gerunds were misspelled by deriving them from the verb list, and the
+  //     throat-clearing strip ate any hyphenated opening.
+  for (const t of ["Digging into the contract now.", "Compiling the figures now.", "Retrieving the thread now.", "Writing up the notes now."])
+    check(`a correctly spelled gerund matches: "${t.slice(0, 22)}…"`, P.endsWithUnfulfilledPromise(t));
+  check("a hyphenated opening does not hide the promise",
+    P.endsWithUnfulfilledPromise("Follow-up — checking the contract now."));
+
+  const src = readFileSync(join(__dirname, "../lib/ai/providers.ts"), "utf8");
+  const prompt = readFileSync(join(__dirname, "../lib/ai/system-prompts.ts"), "utf8");
+
+  // (c) The guidance offered no deck for AuthorityOn work, and the tool schema
+  //     named the Word tool before the model had chosen a deliverable.
+  check("the AuthorityOn guidance names the deliverable choice", /WHICH DELIVERABLE/.test(prompt));
+  check("it tells the model to build a deck when a deck was asked for", /Asked for a presentation, build the deck/.test(prompt));
+  check("it maps AuthorityOn measures onto slide layouts", /line-chart\\` for score history/.test(prompt));
+  check("the format field no longer hard-wires the Word tool",
+    !/hand that markdown to generate_word_document to produce the file/.test(src));
+  check("the user's own noun decides the format", /The user's own noun decides it/.test(prompt));
+  check("the deck/document substitution rule runs both ways", /nor a document as a substitute for a deck/.test(prompt));
+
+  // And the round cap is no longer silent.
+  check("the model is warned on its last tool round", /LAST_ROUND_NOTICE/.test(src));
+  check("the warning is wired into all four chains",
+    (src.match(/push\(\{ role: "user", content: LAST_ROUND_NOTICE \}/g) || []).length === 4,
+    `${(src.match(/push\(\{ role: "user", content: LAST_ROUND_NOTICE \}/g) || []).length} of 4`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -70,10 +70,15 @@ const READ_ONLY_TOOL_BUDGET: Record<string, number> = {
   // SIXTEEN REPORTS BEHIND ONE NAME, and the first call is always the brand
   // list. At the default 3 an advisory report gets brands, the full report and
   // one more — and a probe of the audit family (brands, audits, audit_reports,
-  // audit_report) was cut off at its fourth call, measured 2026-09-06. Six
-  // matches query_drive_docs and query_meetingbrain, the other read-only tools
-  // with several reports under one name. Same-argument calls stay refused.
-  query_authorityon: 6,
+  // audit_report) was cut off at its fourth call, measured 2026-09-06.
+  //
+  // Raised again to 8 on 2026-09-07: the guidance now MANDATES brands, the full
+  // report, score_history and change_ledger for any brand analysis, and asks
+  // for recommendations on top — five before a single artefact is built. At 6
+  // a request for a report AND a deck spent its whole allowance on the reading
+  // and had nothing left for the second deliverable. Same-argument calls stay
+  // refused however large the budget, so this cannot become a loop.
+  query_authorityon: 8,
 };
 
 export function toolBudgetFor(name: string): number {
