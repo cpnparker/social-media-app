@@ -842,6 +842,15 @@ export default function ChatPanel({
       // scheduled_proposal). Buffer the trailing partial line between reads —
       // without this, both halves of a split frame are silently dropped.
       let sseBuf = "";
+      // The server ends a healthy stream with `data: [DONE]`. If the reader
+      // finishes WITHOUT it, the turn was cut off — the serverless function hit
+      // its 300s ceiling mid-flight, or the connection dropped. That is
+      // currently INVISIBLE: a turn that promised a deck, called the tool, and
+      // died during the build looks exactly like one that finished, because
+      // nothing distinguishes the two. Observed 2026-09-07 on a request that
+      // produced the analysis, said "Building the walkthrough deck…", reached
+      // "Finding photographs 3 of 5" and stopped with no deck and no error.
+      let sawDone = false;
 
       while (reader) {
         const { done, value } = await reader.read();
@@ -854,7 +863,7 @@ export default function ChatPanel({
 
         for (const line of lines) {
           const data = line.slice(6);
-          if (data === "[DONE]") continue;
+          if (data === "[DONE]") { sawDone = true; continue; }
 
           try {
             const parsed = JSON.parse(data);
@@ -1069,7 +1078,13 @@ export default function ChatPanel({
           id: assistantIdRef.current || `assistant-${Date.now()}`,
           conversationId: conversationId,
           role: "assistant",
-          content: dedupedText,
+          // A CUT-OFF TURN SAYS SO. Without the closing [DONE] the stream did
+          // not finish: the function hit its ceiling or the connection went.
+          // Anything the reply promised was NOT built, and saying nothing
+          // leaves the user waiting for a deck that will never arrive.
+          content: sawDone
+            ? dedupedText
+            : `${dedupedText}\n\n---\n\n*This reply was cut off before it finished, so anything it said it was building was not created. Ask again and it will pick up from here.*`,
           model: conversation.model,
           createdBy: null,
           createdAt: new Date().toISOString(),

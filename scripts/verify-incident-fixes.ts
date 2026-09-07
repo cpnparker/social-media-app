@@ -506,6 +506,36 @@ console.log("\n15. A promised deck is built, or the turn is not finished");
     `${(src.match(/push\(\{ role: "user", content: LAST_ROUND_NOTICE \}/g) || []).length} of 4`);
 }
 
+console.log("\n16. A turn that runs out of time says so");
+{
+  // The deck fix worked — the tool ran, "Finding photographs 3 of 5" appeared —
+  // and then the turn stopped with no deck, no error and no explanation. The
+  // chat route's ceiling is 300s; the function was killed mid-build. Two gaps
+  // made that invisible: the model was never told its time was nearly gone, and
+  // the client could not tell a killed stream from a finished one.
+  const src = readFileSync(join(__dirname, "../lib/ai/providers.ts"), "utf8");
+  const panel = readFileSync(join(__dirname, "../components/ai-writer/ChatPanel.tsx"), "utf8");
+  const route = readFileSync(join(__dirname, "../app/api/ai/conversations/[id]/messages/route.ts"), "utf8");
+
+  // The warning must fire BEFORE the ceiling, with room to build.
+  const ceiling = Number((/export const maxDuration = (\d+)/.exec(route) || [, "0"])[1]);
+  const warnAt = Number((/TURN_BUDGET_WARN_MS = ([\d_]+)/.exec(src) || [, "0"])[1].replace(/_/g, ""));
+  check("the route's ceiling is known", ceiling >= 60, `${ceiling}s`);
+  check("the model is warned before the ceiling", warnAt > 0 && warnAt < ceiling * 1000, `${warnAt}ms vs ${ceiling * 1000}ms`);
+  check("the warning leaves at least a minute to build",
+    ceiling * 1000 - warnAt >= 60_000, `${Math.round((ceiling * 1000 - warnAt) / 1000)}s left`);
+  check("the time warning is wired into all four chains",
+    (src.match(/content: TIME_BUDGET_NOTICE/g) || []).length === 4,
+    `${(src.match(/content: TIME_BUDGET_NOTICE/g) || []).length} of 4`);
+  check("it tells the model to build rather than gather", /Build any artefact you have promised NOW/.test(src));
+
+  // And the client can tell a killed stream from a finished one.
+  check("the server closes a healthy stream with [DONE]", /encode\("data: \[DONE\]/.test(src));
+  check("the client records having seen it", /\[DONE\]"\) \{ sawDone = true/.test(panel));
+  check("a stream without [DONE] is reported to the user", /This reply was cut off before it finished/.test(panel));
+  check("a healthy stream is left unannotated", /sawDone\s*\?\s*dedupedText/.test(panel));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (failures.length) { console.log("\nFailures:"); for (const f of failures) console.log(`  - ${f}`); }
 process.exit(fail ? 1 : 0);

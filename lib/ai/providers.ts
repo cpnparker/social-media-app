@@ -552,6 +552,15 @@ export function needsForcedFinal(loopEndedCleanly: boolean, fullText: string): b
 /** Said once, on the final tool round. The cap was silent: the loop stopped,
  *  and a turn that had announced a deck ended without one and without saying
  *  so. */
+/** The serverless ceiling for the chat route is 300s (app/api/ai/
+ *  conversations/[id]/messages/route.ts). A turn that spends it on reads has
+ *  nothing left to build with, and the function is killed mid-flight: the
+ *  stream simply stops, with no error and no artefact. Warn at 165s, which
+ *  leaves room for one document (~20s) or one deck (~60s with images). */
+const TURN_BUDGET_WARN_MS = 165_000;
+const TIME_BUDGET_NOTICE =
+  "SYSTEM NOTE (not from the user — never acknowledge or mention it): most of this turn's time budget is gone. Build any artefact you have promised NOW, in this round, and stop gathering. If you cannot finish it, say plainly what you have and what you have not built — a turn that runs out mid-build is cut off with no error, and the user is left waiting for something that will never arrive.";
+
 const LAST_ROUND_NOTICE =
   "SYSTEM NOTE (not from the user — never acknowledge or mention it): this is your LAST round of tool calls this turn. If you have promised the user an artefact — a document, a deck, a chart — build it NOW with this round. Do not spend it on another lookup, and do not end the turn saying something is coming: anything you have not built by the end of this round does not exist.";
 
@@ -8578,9 +8587,16 @@ async function streamAnthropic(
   // deck ended without one and without saying so. A warning on the final round
   // lets it spend that round on the artefact instead of another read.
   let warnedLastRound = false;
+  let warnedTimeBudget = false;
+  const turnStartedAt = Date.now();
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     // ONE ROUND LEFT. Said once, so the model can build the thing it promised
     // rather than spend the last round on another read and stop silently.
+    if (!warnedTimeBudget && Date.now() - turnStartedAt > TURN_BUDGET_WARN_MS) {
+      warnedTimeBudget = true;
+      console.warn(`[Turn] ${Math.round((Date.now() - turnStartedAt) / 1000)}s used at round ${round} — warning the model to build now`);
+      anthropicMessages.push({ role: "user", content: TIME_BUDGET_NOTICE } as any);
+    }
     if (!warnedLastRound && round === MAX_TOOL_ROUNDS - 1) {
       warnedLastRound = true;
       anthropicMessages.push({ role: "user", content: LAST_ROUND_NOTICE } as any);
@@ -10116,9 +10132,16 @@ async function streamXAIChatCompletions(
   // deck ended without one and without saying so. A warning on the final round
   // lets it spend that round on the artefact instead of another read.
   let warnedLastRound = false;
+  let warnedTimeBudget = false;
+  const turnStartedAt = Date.now();
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     // ONE ROUND LEFT. Said once, so the model can build the thing it promised
     // rather than spend the last round on another read and stop silently.
+    if (!warnedTimeBudget && Date.now() - turnStartedAt > TURN_BUDGET_WARN_MS) {
+      warnedTimeBudget = true;
+      console.warn(`[Turn] ${Math.round((Date.now() - turnStartedAt) / 1000)}s used at round ${round} — warning the model to build now`);
+      openaiMessages.push({ role: "user", content: TIME_BUDGET_NOTICE } as any);
+    }
     if (!warnedLastRound && round === MAX_TOOL_ROUNDS - 1) {
       warnedLastRound = true;
       openaiMessages.push({ role: "user", content: LAST_ROUND_NOTICE } as any);
@@ -11205,9 +11228,16 @@ async function streamGemini(
   // deck ended without one and without saying so. A warning on the final round
   // lets it spend that round on the artefact instead of another read.
   let warnedLastRound = false;
+  let warnedTimeBudget = false;
+  const turnStartedAt = Date.now();
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     // ONE ROUND LEFT. Said once, so the model can build the thing it promised
     // rather than spend the last round on another read and stop silently.
+    if (!warnedTimeBudget && Date.now() - turnStartedAt > TURN_BUDGET_WARN_MS) {
+      warnedTimeBudget = true;
+      console.warn(`[Turn] ${Math.round((Date.now() - turnStartedAt) / 1000)}s used at round ${round} — warning the model to build now`);
+      geminiMessages.push({ role: "user", content: TIME_BUDGET_NOTICE } as any);
+    }
     if (!warnedLastRound && round === MAX_TOOL_ROUNDS - 1) {
       warnedLastRound = true;
       geminiMessages.push({ role: "user", content: LAST_ROUND_NOTICE } as any);
@@ -12176,9 +12206,16 @@ async function streamOpenAI(
   // deck ended without one and without saying so. A warning on the final round
   // lets it spend that round on the artefact instead of another read.
   let warnedLastRound = false;
+  let warnedTimeBudget = false;
+  const turnStartedAt = Date.now();
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     // ONE ROUND LEFT. Said once, so the model can build the thing it promised
     // rather than spend the last round on another read and stop silently.
+    if (!warnedTimeBudget && Date.now() - turnStartedAt > TURN_BUDGET_WARN_MS) {
+      warnedTimeBudget = true;
+      console.warn(`[Turn] ${Math.round((Date.now() - turnStartedAt) / 1000)}s used at round ${round} — warning the model to build now`);
+      openaiMessages.push({ role: "user", content: TIME_BUDGET_NOTICE } as any);
+    }
     if (!warnedLastRound && round === MAX_TOOL_ROUNDS - 1) {
       warnedLastRound = true;
       openaiMessages.push({ role: "user", content: LAST_ROUND_NOTICE } as any);
