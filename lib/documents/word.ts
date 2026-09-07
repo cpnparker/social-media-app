@@ -13,6 +13,7 @@
  * the /api/media/file auth proxy. Nothing new to secure, nothing new to learn.
  */
 import { put } from "@vercel/blob";
+import { COLOR as BRAND } from "@/lib/slides/brand";
 import {
   AlignmentType,
   BorderStyle,
@@ -34,10 +35,40 @@ import {
   convertInchesToTwip,
 } from "docx";
 
+/**
+ * The document's type and colour, taken from the DECK's brand so the two
+ * deliverables look like they came from the same firm.
+ *
+ * Until this existed a generated document declared no font at all and no
+ * colour of its own: the one colour in the file was #2E74B5, Microsoft's stock
+ * heading blue, arriving by default from the docx library. The same .docx also
+ * rendered in a different typeface in Word than in the Google Doc, because an
+ * empty docDefaults leaves the face to whatever the reader happens to open it
+ * in.
+ *
+ * FONTS ARE CHOSEN TO EXIST IN BOTH TARGETS. The deck's Playfair Display and
+ * Roboto are Google Fonts: perfect in the Google Doc, substituted in Word.
+ * Georgia and Arial are present in Word on both platforms and in Google Docs'
+ * core list, so one file looks the same in both. Embedding the real faces is
+ * possible (docx takes `fonts`) at ~300KB a document and no benefit to the
+ * Doc; not worth it here.
+ */
+const DOC = {
+  headingFont: "Georgia",
+  bodyFont: "Arial",
+} as const;
+
 const BODY_SIZE = 22; // half-points → 11pt
 const MUTED = "6B7280";
 const RULE = "D1D5DB";
 const HEADER_SHADE = "F3F4F6";
+
+/** Brand colours, from the deck's palette. One direction only: lib/slides must
+ *  never import from lib/documents. */
+const INK = BRAND.navy;        // 13.3:1 on white
+const ACCENT = BRAND.blue;     // headings and rules
+const PANEL = BRAND.tintBlue;  // callout fill, validated against inkBlue
+const PANEL_INK = BRAND.inkBlue;
 
 /**
  * Heading sizes in half-points, indexed by markdown depth.
@@ -156,6 +187,20 @@ function isTableDivider(line: string): boolean {
   return cells.length > 0 && cells.every((c) => /^:?-{1,}:?$/.test(c.trim()));
 }
 
+/** The `:--:` markers, which were parsed to identify the divider and then
+ *  thrown away — so a column of figures the model explicitly right-aligned
+ *  came out ragged left like everything else. */
+function alignmentsOf(divider: string): (typeof AlignmentType[keyof typeof AlignmentType])[] {
+  return splitRow(divider).map((c) => {
+    const t = c.trim();
+    const left = t.startsWith(":");
+    const right = t.endsWith(":");
+    if (left && right) return AlignmentType.CENTER;
+    if (right) return AlignmentType.RIGHT;
+    return AlignmentType.LEFT;
+  });
+}
+
 /** Does this line start a new block? Used to stop the table-row scanner. */
 function startsNewBlock(line: string): boolean {
   const t = line.trim();
@@ -170,7 +215,7 @@ function startsNewBlock(line: string): boolean {
   );
 }
 
-function buildTable(headerIn: string[], rowsIn: string[][]): Table {
+function buildTable(headerIn: string[], rowsIn: string[][], aligns: (typeof AlignmentType[keyof typeof AlignmentType])[] = []): Table {
   // A cell value containing an unescaped "|" splits into two, pushing the real
   // last column off the end. Widening to the longest row keeps that content in
   // the document — misaligned, but present. Silently dropping it would put the
@@ -180,33 +225,50 @@ function buildTable(headerIn: string[], rowsIn: string[][]): Table {
   const rows = rowsIn.map((r) => [...r, ...Array(Math.max(0, colCount - r.length)).fill("")]);
 
   const width = { size: 100, type: WidthType.PERCENTAGE };
-  const border = { style: BorderStyle.SINGLE, size: 1, color: RULE };
+  // Size 1 is an eighth of a point — below what Word renders reliably, so the
+  // grid read as a smudge. 4 is a half-point hairline that actually draws.
+  const border = { style: BorderStyle.SINGLE, size: 4, color: RULE };
   const borders = { top: border, bottom: border, left: border, right: border };
+  const margins = { top: 100, bottom: 100, left: 140, right: 140 };
+  const at = (i: number) => aligns[i] ?? AlignmentType.LEFT;
+  // NO trailing space inside a cell. Body paragraphs want space after them and
+  // cells do not, and cell paragraphs carry no properties of their own — so
+  // whatever the document default is reaches them. Set here explicitly rather
+  // than relying on the default staying empty.
+  const cellPara = (children: any[], alignment: any) =>
+    new Paragraph({ children, alignment, spacing: { after: 0, line: 240 } });
 
   const headerRow = new TableRow({
     tableHeader: true,
+    // A header row that repeats when a table breaks across pages, and does not
+    // itself split.
+    cantSplit: true,
     children: header.map(
-      (cell) =>
+      (cell, i) =>
         new TableCell({
           borders,
-          shading: { type: ShadingType.CLEAR, fill: HEADER_SHADE },
-          margins: { top: 80, bottom: 80, left: 120, right: 120 },
-          children: [new Paragraph({ children: inlineRuns(cell, { bold: true }) })],
+          shading: { type: ShadingType.CLEAR, fill: INK },
+          margins,
+          children: [cellPara(inlineRuns(cell, { bold: true, color: "FFFFFF" }), at(i))],
         })
     ),
   });
 
   const bodyRows = rows.map(
-    (cells) =>
+    (cells, r) =>
       new TableRow({
+        cantSplit: true,
         children: header.map(
           (_h, i) =>
             new TableCell({
               borders,
-              margins: { top: 80, bottom: 80, left: 120, right: 120 },
+              margins,
+              // Banded rows: a wide table of figures is much easier to read
+              // across when alternate rows carry a tint.
+              ...(r % 2 === 1 ? { shading: { type: ShadingType.CLEAR, fill: HEADER_SHADE } } : {}),
               // Ragged rows are common in model output — pad rather than drop
               // the row, so a missing trailing cell can't shift a whole column.
-              children: [new Paragraph({ children: inlineRuns(cells[i] ?? "") })],
+              children: [cellPara(inlineRuns(cells[i] ?? ""), at(i))],
             })
         ),
       })
@@ -262,6 +324,7 @@ export function markdownToDocxBlocks(markdown: string): (Paragraph | Table)[] {
     // Table: a header line followed by a divider line.
     if (trimmed.includes("|") && i + 1 < lines.length && isTableDivider(lines[i + 1])) {
       const header = splitRow(trimmed);
+      const aligns = alignmentsOf(lines[i + 1]);
       i += 2;
       const rows: string[][] = [];
       // Stop at anything that opens a new block, not just at a blank line —
@@ -272,7 +335,7 @@ export function markdownToDocxBlocks(markdown: string): (Paragraph | Table)[] {
         rows.push(splitRow(lines[i]));
         i++;
       }
-      blocks.push(buildTable(header, rows));
+      blocks.push(buildTable(header, rows, aligns));
       // Word collapses adjacent tables into one; a spacer keeps them apart.
       blocks.push(new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: "", size: BODY_SIZE })] }));
       continue;
@@ -308,6 +371,8 @@ export function markdownToDocxBlocks(markdown: string): (Paragraph | Table)[] {
       blocks.push(
         new Paragraph({
           heading: HEADINGS[depth - 1],
+          // A heading alone at the foot of a page belongs to nothing.
+          keepNext: true,
           spacing: { before: depth <= 2 ? 320 : 220, after: 120 },
           children: inlineRuns(heading[2], { size: HEADING_SIZES[depth - 1], bold: true }),
         })
@@ -321,10 +386,15 @@ export function markdownToDocxBlocks(markdown: string): (Paragraph | Table)[] {
     if (quote) {
       blocks.push(
         new Paragraph({
-          indent: { left: convertInchesToTwip(0.3) },
-          spacing: { after: 120 },
-          border: { left: { style: BorderStyle.SINGLE, size: 12, color: RULE, space: 8 } },
-          children: inlineRuns(quote[1], { color: MUTED }),
+          spacing: { before: 120, after: 160 },
+          indent: { left: convertInchesToTwip(0.12) },
+          // A CALLOUT, not a whisper. This is the construct the prompt names
+          // for the figure a section turns on, and it was rendered in muted
+          // grey — lighter than the body text it was supposed to stand out
+          // from. Brand rule, brand tint, brand ink, and a size up.
+          border: { left: { style: BorderStyle.SINGLE, size: 18, color: ACCENT, space: 10 } },
+          shading: { type: ShadingType.CLEAR, fill: PANEL },
+          children: inlineRuns(quote[1], { color: PANEL_INK, size: BODY_SIZE + 1 }),
         })
       );
       i++;
@@ -349,7 +419,10 @@ export function markdownToDocxBlocks(markdown: string): (Paragraph | Table)[] {
     // Ordered list. docx's `numbering` needs a configured instance, which would
     // renumber across every list in the document; rendering the model's own
     // numbers keeps each list independent and matches what the user was shown.
-    const ordered = /^(\s*)(\d+)[.)]\s+(.+)$/.exec(line);
+    // The bold form counts too: a model writing `**1. Publish the page**`
+    // produced a plain unindented paragraph, because the digit had to be the
+    // first thing on the line.
+    const ordered = /^(\s*)(?:\*\*)?(\d+)[.)]\s+(.+?)(?:\*\*)?$/.exec(line);
     if (ordered) {
       const level = Math.min(Math.floor(ordered[1].replace(/\t/g, "  ").length / 2), 4);
       blocks.push(
@@ -484,12 +557,53 @@ export async function buildWordDocxBuffer(input: WordDocInput): Promise<Buffer> 
     title,
     creator: "EngineAI",
     description: subtitle || undefined,
+    // THE DOCUMENT'S TYPE AND COLOUR.
+    //
+    // Three deliberate restrictions, each one a trap that was verified rather
+    // than guessed:
+    //   - NO `size` in docDefaults. Nearly every run carries an explicit size
+    //     from BODY_SIZE, and a run beats docDefaults, so a default size here
+    //     would be dead code that reads as if it worked.
+    //   - NO paragraph `spacing.after` in docDefaults. Table cells are emitted
+    //     with no paragraph properties at all and there is no table style, so
+    //     docDefaults is the ONLY layer that reaches them: a document-wide
+    //     `after` silently adds trailing space to every cell in every table.
+    //     Line spacing alone is safe and is what body copy actually needed.
+    //   - COLOUR moves into the heading styles, but SIZE and BOLD stay on the
+    //     runs. Two live assertions read the run-level size, and more
+    //     importantly a style-level size is overridden by the run anyway.
+    styles: {
+      default: {
+        document: { run: { font: DOC.bodyFont, color: INK }, paragraph: { spacing: { line: 276 } } },
+        title: { run: { font: DOC.headingFont, color: INK } },
+        heading1: { run: { font: DOC.headingFont, color: INK } },
+        heading2: { run: { font: DOC.headingFont, color: ACCENT } },
+        heading3: { run: { font: DOC.headingFont, color: ACCENT } },
+        heading4: { run: { font: DOC.headingFont, color: INK } },
+        heading5: { run: { font: DOC.headingFont, color: INK } },
+        heading6: { run: { font: DOC.headingFont, color: INK } },
+      },
+    },
     sections: [
       {
         properties: {
-          page: { margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 } },
+          page: {
+            margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 },
+            // Numbering belongs to the PAGE properties, not the section root.
+            // Start at 0 so the cover is 0 and the first content page is 1.
+            ...(coverPage ? { pageNumbers: { start: 0 } } : {}),
+          },
+          // A COVER PAGE CARRIES NO FURNITURE. Without this the cover showed
+          // the running header and a page number, and counted as page 1 — so
+          // the first page of actual content was numbered 2, which reads as a
+          // missing page. `titlePage` gives the first page its own (empty)
+          // header and footer; the numbering then starts at 0 so the first
+          // content page is 1.
+          ...(coverPage ? { titlePage: true } : {}),
         },
         headers: {
+          // Empty on the cover.
+          ...(coverPage ? { first: new Header({ children: [new Paragraph({ children: [] })] }) } : {}),
           default: new Header({
             children: [
               new Paragraph({
@@ -500,6 +614,7 @@ export async function buildWordDocxBuffer(input: WordDocInput): Promise<Buffer> 
           }),
         },
         footers: {
+          ...(coverPage ? { first: new Footer({ children: [new Paragraph({ children: [] })] }) } : {}),
           default: new Footer({
             children: [
               new Paragraph({

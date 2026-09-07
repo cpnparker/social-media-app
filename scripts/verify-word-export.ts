@@ -124,6 +124,56 @@ async function main() {
     check("coverPage:false adds no page break", !/<w:br w:type="page"\/>/.test(await xmlOf(false)));
   }
 
+  // THE DOCUMENT HAS A DESIGN. Before this it declared no font at all, so the
+  // same .docx was a different typeface in Word than in the Google Doc, and
+  // its only colour was #2E74B5 — Microsoft's stock heading blue, arriving by
+  // default from the library rather than by choice.
+  {
+    const { buildWordDocxBuffer } = await import("../lib/documents/word");
+    const { execSync } = await import("child_process");
+    const { writeFileSync, mkdtempSync } = await import("fs");
+    const { tmpdir } = await import("os");
+    const { join } = await import("path");
+    const built = async (coverPage: boolean, body: string) => {
+      const buf = await buildWordDocxBuffer({ title: "T", subtitle: "S", body, coverPage });
+      const dir = mkdtempSync(join(tmpdir(), "designchk-"));
+      const f = join(dir, "o.docx");
+      writeFileSync(f, buf);
+      const r = (part: string) => execSync(`unzip -p ${JSON.stringify(f)} ${part}`, { maxBuffer: 20 * 1024 * 1024 }).toString();
+      return { doc: r("word/document.xml"), styles: r("word/styles.xml") };
+    };
+    const { doc, styles } = await built(true, "## Section\n\nProse.\n\n> A callout.\n\n| A | B |\n|---|---:|\n| x | 1 |\n| y | 2 |\n\n**1. First**\n2. Second\n");
+
+    check("a body font is declared, so Word and Google Docs agree", /w:rFonts w:ascii="Arial"/.test(styles));
+    check("headings use a different face from body", /Heading2[\s\S]{0,600}?w:rFonts w:ascii="Georgia"/.test(styles));
+    check("no stock Microsoft heading blue anywhere", !/2E74B5/.test(styles) && !/1F4D78/.test(styles));
+    check("headings carry a brand colour", /Heading2[\s\S]{0,600}?w:color w:val="3950FF"/.test(styles));
+
+    // The trap: cell paragraphs carry no properties of their own, so a
+    // document-wide `after` would silently pad every cell in every table.
+    check("no document-wide paragraph spacing-after (it would inflate every table cell)",
+      !/<w:pPrDefault>[\s\S]{0,300}?w:spacing[^/]*w:after=/.test(styles));
+    check("table cells set their own spacing", /<w:spacing w:after="0" w:line="240"\/>/.test(doc));
+
+    check("the table header is filled with the brand ink", /w:fill="023250"/.test(doc));
+    check("rows are banded", (doc.match(/w:fill="F3F4F6"/g) || []).length >= 2);
+    check("a right-aligned column is right-aligned", /<w:jc w:val="right"\/>/.test(doc));
+    check("table rows do not split across pages", /<w:cantSplit\/>/.test(doc));
+    check("headings keep with the text under them", /<w:keepNext\/>/.test(doc));
+    check("the callout is tinted, not muted grey", /w:fill="E6F1FB"/.test(doc));
+
+    // The cover carried the running header and a page number, and counted as
+    // page 1 — so the first content page was numbered 2.
+    check("the cover page has its own (empty) header and footer", /<w:titlePg\/>/.test(doc));
+    check("numbering starts at 0 so the first content page is 1", /w:pgNumType w:start="0"/.test(doc));
+    const plain = await built(false, "Prose.");
+    check("a document with no cover page has no title-page split", !/<w:titlePg\/>/.test(plain.doc));
+
+    // `**1. Item**` never matched the ordered-list regex, so a bolded roadmap
+    // became an unindented plain paragraph.
+    check("a BOLD numbered item is still a numbered item", (doc.match(/>\d+\.\t</g) || []).length === 2);
+  }
+
   // A PAGE BREAK the model can place. Without it a long report cannot start a
   // section on a fresh page, and the renderer's range was larger than anything
   // the tool description admitted.
