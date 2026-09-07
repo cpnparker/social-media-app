@@ -8,6 +8,7 @@
  */
 
 import type { NormalizedContextConfig } from "./system-prompts";
+import { MAIL_INTENT } from "./personal-data-intent";
 
 /* ─────────────── Types ─────────────── */
 
@@ -182,7 +183,15 @@ const NEEDS_MAILBOX = [
  * that could never have had it.
  */
 export function textNeedsMailbox(text: string): boolean {
-  return NEEDS_MAILBOX.some((p) => p.test(text));
+  // MAIL_INTENT too, because this file and personal-data-intent.ts were two
+  // descriptions of one idea and they had already drifted: the invitation
+  // clauses added there on 2026-09-07 left this list still answering "no" to
+  // "who invited me". Both feed model escalation — this one also decides
+  // whether a short follow-up INHERITS the mailbox need — so a question that
+  // escalates on one path and not the other gets the mailbox for the first
+  // turn and loses it for "now write the reply", which is the exact failure
+  // the inheritance was built to prevent.
+  return NEEDS_MAILBOX.some((p) => p.test(text)) || MAIL_INTENT.test(text);
 }
 
 const COMPOSITION_REQUEST =

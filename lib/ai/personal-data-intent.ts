@@ -28,6 +28,23 @@ export const MAIL_INTENT = new RegExp(
     "\\b(e-?mails?|mail) (i|we) (got|received|have|missed)\\b",
     "\\breceived (an?|any) (e-?mails?|mail)\\b",
     "\\bthe (e-?mail|thread) (from|about)\\b",
+    // AN INVITATION IS MAIL, and nobody says "email" when they ask about one.
+    // Reported live 2026-09-07: "who invited me to the Sustainability Live
+    // conference this week and reply saying I can't make it" matched none of
+    // the clauses above, routed to Grok, found nothing, and told the user to
+    // "switch to Claude or EngineAI Auto" — which is what they were already
+    // using. The sender's name is in the invitation mail, and the organiser is
+    // a calendar field; both live on the Claude chains.
+    //
+    // Kept narrow deliberately. "invited ME/US" and "who sent me" are about a
+    // real message that exists. Writing one is not: "write an invitation for
+    // the launch" and "who should we invite" stay on the cheap leg, and the
+    // decoy list in the check pins that.
+    "\\bwho (invited|added|sent|asked) (me|us)\\b",
+    "\\b(invited|added) (me|us) to\\b",
+    "\\bwho sent (me|us) (the|this|that|an?) \\w+",
+    "\\b(reply|respond|replying|decline|declining|accept|accepting|rsvp)\\w*\\b[^.?!]{0,40}\\b(invite|invitation|guest pass)\\b",
+    "\\b(invite|invitation|guest pass)\\b[^.?!]{0,30}\\b(from|for me|i (got|received))\\b",
   ].join("|"),
   "i"
 );

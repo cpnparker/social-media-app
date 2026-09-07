@@ -70,6 +70,18 @@ const MUST_ESCALATE = [
   "am I free at 3?",
   "when do I next meet Sharanya?",
   "what's my next meeting?",
+  // 2026-09-07, reported from a live Auto turn. Nobody says "email" when they
+  // ask who invited them — the invitation IS the mail, and the organiser is a
+  // calendar field. The turn routed to Grok, found nothing, and told the user
+  // to "switch to Claude or EngineAI Auto", which is what they were already
+  // using. Every one of these must reach a model with a mailbox.
+  "can you work out who invited me to the Sustainability Live conference this week and reply saying that unfortunately I can't make it",
+  "who invited me to the conference",
+  "who sent me the invite",
+  "who added me to this event",
+  "reply to the invitation and decline it",
+  "can you decline the invite for me",
+  "rsvp no to the summit invitation",
 ];
 for (let i = 0; i < MUST_ESCALATE.length; i++) {
   const q = MUST_ESCALATE[i];
@@ -106,6 +118,10 @@ console.log("\n3. Decoys — ordinary work that must NOT be moved off the fast m
 // Everyday words in a content agency. Escalating these would silently swap the
 // model mid-conversation, and pay Claude prices, for routine work.
 const MUST_NOT_ESCALATE = [
+  // Drafting an invitation is not reading one. These must stay cheap.
+  "write an invitation for the launch party",
+  "draft an invite for the webinar",
+  "who should we invite to the roundtable",
   "draft an email campaign for Galderma",
   "write the email subject lines for the newsletter",
   "how many emails did the campaign send?",
