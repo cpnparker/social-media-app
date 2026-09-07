@@ -1943,7 +1943,7 @@ const WORD_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
           // layouts and dark-index slides inside the Word tool's schema. A
           // document has no bar-chart layout, so the model was being briefed on
           // a field that does not exist here.
-          description: "A standfirst: one sentence under the title saying what the document is or argues, drawn in larger, lighter type. Optional — use it for a report or proposal, skip it for a letter or memo where a subtitle would read oddly.",
+          description: "A standfirst: one sentence stating what the document ARGUES, not what it is about, drawn in larger, lighter type. On a report or proposal this is where the judgement goes and it is required — 'A review of X' is a label, not a standfirst. Skip it only for a letter or memo, where a subtitle reads oddly.",
         },
         body: {
           type: "string",
@@ -1958,7 +1958,18 @@ const WORD_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         coverPage: {
           type: "boolean",
           description:
-            "true for a formal standalone deliverable (report, proposal) — centres the title and adds a date. false or omitted for a letter, memo or short note.",
+            "true for a formal standalone deliverable (report, proposal) — centres the title, adds a date and starts the body on a new page. false or omitted for a letter, memo or short note.",
+        },
+        documentKind: {
+          type: "string",
+          enum: ["analysis", "supporting_data", "briefing", "proposal", "memo", "letter"],
+          description:
+            "What KIND of document this is, which decides its shape. analysis = argues ONE claim; every figure you print must have a sentence in the same section arguing FROM it, and no section may be a walkthrough of a data source. supporting_data = the measurements in full as tables with their dates and definitions, and NO narrative — this is the companion to an analysis, not a substitute for it. The others behave as their names suggest. A brand or client report is `analysis`.",
+        },
+        argument: {
+          type: "string",
+          description:
+            "REQUIRED when documentKind is analysis. One sentence: the single claim this document exists to prove, stated so a client could disagree with it. A thesis, not a topic — \"the brand is retrieved when named and absent when not, so this is a distribution problem rather than a content problem\" is an argument; \"AI visibility review\" is a label. Write it before you write the body, and make every section carry, qualify or act on it.",
         },
       },
       required: ["title", "body"],
@@ -4308,6 +4319,33 @@ interface ThemeColors {
  *  characters; the empty and stub calls this catches were 0 and a sentence. */
 const WORD_BODY_MIN_CHARS = 200;
 
+/**
+ * Should this document be refused before anything is built?
+ *
+ * PURE, and separate from the building, so every branch can be checked without
+ * a blob token and without uploading anything — the refusal path is cheap to
+ * test and the acceptance path was not, which is how a guard ends up asserted
+ * in one direction only.
+ */
+export function wordDocRefusal(input: any): { why: string; toolText: string } | null {
+  // AN ANALYSIS MUST STATE ITS CLAIM. A document whose thesis was never written
+  // down is the one that comes back as a walkthrough of whatever data source fed
+  // it, which is exactly what the first Zurich Instruments advisory was. Making
+  // the field required in the SCHEMA is not enough: a model that omits an
+  // optional-looking field would silently get the old behaviour back.
+  const argument = String(input?.argument || "").trim();
+  if (String(input?.documentKind || "").trim() === "analysis" && argument.length < 40) {
+    return {
+      why: `analysis with a ${argument.length}-char argument`,
+      toolText:
+        `REFUSED — documentKind is "analysis" but no argument was given (${argument.length} characters). Nothing was created and the user has seen nothing.` +
+        ` Write the single claim this document exists to prove, as one sentence a client could disagree with, then call generate_word_document again with it in \`argument\`.` +
+        ` If this document is a set of tables rather than an argument, it is documentKind "supporting_data" instead.`,
+    };
+  }
+  return null;
+}
+
 export async function buildWordAndMaybeDoc(
   input: any,
   config: { workspaceId?: string; userEmail?: string }
@@ -4320,6 +4358,18 @@ export async function buildWordAndMaybeDoc(
   // likely shape — and it does not need to be: whatever the cause, a document
   // with no content is never the right thing to make. No event, no marker,
   // no upload; the model is told plainly and calls again.
+  // AN ANALYSIS MUST STATE ITS CLAIM. Refused before anything is built, for the
+  // same reason as the empty body: a document whose thesis was never written
+  // down is the one that comes back as a walkthrough of whatever data source
+  // fed it — which is exactly what the first Zurich Instruments advisory was.
+  // Making the field required in the schema is not enough; a model that omits
+  // an optional-looking field silently gets the old behaviour back.
+  const refusal = wordDocRefusal(input);
+  if (refusal) {
+    console.warn(`[WordGen] refused: ${refusal.why}`);
+    return { events: [], marker: "", toolText: refusal.toolText };
+  }
+
   const bodyText = String(input?.body || "").trim();
   if (bodyText.length < WORD_BODY_MIN_CHARS) {
     console.warn(`[WordGen] refused: body is ${bodyText.length} chars`);
@@ -7262,7 +7312,7 @@ export const AUTHORITYON_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         pillar: { type: "string", enum: ["AI_SCAN", "WEBSITE", "CONTENT", "SOCIAL"], description: "recommendations only." },
         department: { type: "string", enum: ["CONTENT_EDITORIAL", "WEB_DIGITAL", "DEMAND_GEN", "MEDIA_RELATIONS"], description: "recommendations only." },
         kind: { type: "string", enum: ["ai_performance", "exec_pack"], description: "report only. Default ai_performance." },
-        format: { type: "string", enum: ["markdown", "json"], description: "report and audit_report only. Defaults to markdown, which is what you want: hand that markdown to generate_word_document to produce the file, so a brand report is rendered by the same pipeline as every other document this app makes. For ANY document about a brand — advisory report, client pack, briefing — pull report:'report' FIRST and build on it: it is the full AI Performance report, and overview and recommendations are subsets of it. A document built from the subsets alone comes out without the audits, the intent breakdown or the 90-day targets, and the client notices what is missing. Then set coverPage: true, put the headline score and period in the subtitle, and keep AuthorityOn's section order (score composition, positioning, audits, evidence, roadmap, targets) — that order is the argument." },
+        format: { type: "string", enum: ["markdown", "json"], description: "report and audit_report only. Defaults to markdown, which is what you want: hand that markdown to generate_word_document to produce the file, so a brand report is rendered by the same pipeline as every other document this app makes. For ANY document about a brand — advisory report, client pack, briefing — pull report:'report' FIRST and build on it: it is the full AI Performance report, and overview and recommendations are subsets of it. A document built from the subsets alone was never SHOWN the audits, the intent breakdown or the 90-day targets. Pull everything, then SELECT: completeness is a rule about what you READ, never about what you print. Then set coverPage: true and documentKind: 'analysis', and put the JUDGEMENT in the subtitle — one sentence a reader could repeat in a meeting — with the headline score, its asOf date and the period in the body's front matter. AuthorityOn's own order (score composition, positioning, audits, evidence, roadmap, targets) is the SOURCE order: how the platform stores measurements, not how a report argues. Read all of it, then REORDER into the argument — the judgement; what the brand's presence already achieves; why the score is what it is; where the loss happens; why the models differ; the direction of travel; what would change it; what this does not measure. A section that could be produced by deleting words from AuthorityOn's markdown is a DATA section, and it belongs in the supporting-data pack rather than the analysis." },
         limit: { type: "number", description: "Rows to return, 1-50. Default 20." },
         id: { type: "string", description: "audit_report only: the frozen report's id, from audit_reports. audits only: an auditId to fetch one pillar audit in full." },
         includeSubEntities: { type: "boolean", description: "brands only. The default list is PRIMARY brands; set true to include sub-entities (a report, programme or product tracked under a parent brand). Try this ONCE before concluding a name is untracked." },

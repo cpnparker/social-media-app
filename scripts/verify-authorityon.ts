@@ -48,6 +48,8 @@
  *   - a report mapped to a tool that does not exist  → KILLED (check 1)
  *   - parser takes the FIRST data: line              → KILLED (check 7)
  *   - a report defaulting to AuthorityOn's own docx  → KILLED (check 6)
+ *   - "keep AuthorityOn's section order" restored    → KILLED (check 10)
+ *   - the argument guard made advisory-only          → KILLED (check 10)
  *   - organisation names taken from config, not learned  → KILLED (check 9)
  *   - a report id's per-organisation retry stopping at the first refusal
  *                                                    → KILLED (check 9); LIVE on the
@@ -86,6 +88,7 @@ import {
   authorityOnReportIsUntrusted,
   authorityOnArgs,
   buildWordAndMaybeDoc,
+  wordDocRefusal,
   formatAuthorityOnResult,
   AUTHORITYON_OPENAI_TOOL,
 } from "../lib/ai/providers";
@@ -415,7 +418,67 @@ async function check9() {
   if (failures === before) ok("three keys, three organisations: brands unioned and labelled, each brand routed to its own, a dead key reported not fatal");
 }
 
-check8().then(check9).then(() => {
+async function check10() {
+  console.log("\n10. A brand report is an ARGUMENT, not a walkthrough of the data");
+  const before = failures;
+  // The first Zurich Instruments advisory came back as one section per
+  // dataset: 1,861 words, ten sections, each naming a number and explaining
+  // what the column meant. The cause was an instruction of ours telling the
+  // model to keep AuthorityOn's own section order and calling that order "the
+  // argument". It is not an argument, it is a storage schema.
+  const src = readFileSync(join(__dirname, "../lib/ai/providers.ts"), "utf8");
+  const prompt = readFileSync(join(__dirname, "../lib/ai/system-prompts.ts"), "utf8");
+
+  if (/that order is the argument/i.test(src)) {
+    fail("the tool still tells the model AuthorityOn's storage order IS the argument");
+  }
+  if (!/SOURCE order/.test(src)) fail("the tool does not distinguish AuthorityOn's source order from the argument order");
+  if (!/could be produced by deleting words from AuthorityOn's markdown/.test(src)) {
+    fail("nothing gives the model a test for whether a section is analysis or transcription");
+  }
+  // The sentence that made omission feel like a defect.
+  if (/the client notices what is missing/.test(src)) fail("the tool still frames omission as a defect, which is what produced the walkthrough");
+  if (!/completeness is a rule about what you READ/i.test(src) && !/completeness is a rule about what you READ/i.test(prompt)) {
+    fail("nothing separates what the model must READ from what it should PRINT");
+  }
+
+  // The judgement has somewhere to live, and the standfirst is not a data slot.
+  if (/put the headline score and period in the subtitle/.test(src)) fail("the subtitle is still specified as a data slot rather than the judgement");
+  if (!/one sentence stating what the document ARGUES/.test(src)) fail("the standfirst does not require a claim");
+
+  // documentKind makes analysis and data separable, and `argument` is enforced
+  // rather than merely declared — a model that omits an optional-looking field
+  // silently gets the old behaviour back.
+  if (!/documentKind/.test(src)) fail("there is no document kind, so an analysis and a data pack are the same call");
+  if (!/supporting_data/.test(src)) fail("there is no supporting-data kind to ask for separately");
+  // Every branch through the PURE seam: no blob token, nothing uploaded.
+  const noArg = wordDocRefusal({ title: "T", body: "x".repeat(400), documentKind: "analysis" });
+  if (!noArg) fail("an analysis with no stated argument was accepted");
+  else {
+    if (!/no argument was given/i.test(noArg.toolText)) fail("the refusal does not say the argument is missing");
+    if (!/supporting_data/.test(noArg.toolText)) fail("the refusal does not offer the data-pack kind as the alternative");
+  }
+  if (wordDocRefusal({ title: "T", body: "x".repeat(400), documentKind: "analysis", argument: "A label" })) {
+    // a too-short claim is still a refusal — that is the point
+  } else fail("a three-word 'argument' was accepted as a claim");
+  if (wordDocRefusal({ title: "T", body: "x".repeat(400), documentKind: "analysis", argument: "The brand is retrieved when named and absent when not, so this is distribution rather than content." })) {
+    fail("an analysis WITH a real argument was refused");
+  }
+  if (wordDocRefusal({ title: "T", body: "x".repeat(400) })) fail("a document with no documentKind was caught by the analysis guard");
+  if (wordDocRefusal({ title: "T", body: "x".repeat(400), documentKind: "supporting_data" })) fail("a supporting-data pack was required to carry an argument");
+
+  // The prompt's own half.
+  for (const [re, what] of [
+    [/A brand report is TWO documents/i, "the analysis / supporting-data split"],
+    [/DIRECTION OF TRAVEL/i, "the trend section"],
+    [/What this does not measure/i, "the limits section"],
+  ] as [RegExp, string][]) {
+    if (!re.test(prompt)) fail(`the AuthorityOn guidance is missing ${what}`);
+  }
+  if (failures === before) ok("the argument order replaces the storage order, and an analysis must state its claim");
+}
+
+check8().then(check9).then(check10).then(() => {
   console.log(failures
     ? `\n✗ ${failures} failure${failures === 1 ? "" : "s"}\n`
     : "\n✓ AuthorityOn's text is fenced and taints the turn, in every chain\n");
