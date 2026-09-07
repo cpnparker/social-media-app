@@ -323,7 +323,18 @@ async function check9() {
     // The platform names the organisation in every listing; that is the only
     // place a label comes from.
     const organisation = { slug: key === "A" ? "the-content-engine" : "siemens", name: key === "A" ? "The Content Engine" : "Siemens", plan: "x" };
-    if (name === "list_brands") return ok({ ...org, organisation, meta: { notes: [`notes from ${key}`] } });
+    if (name === "list_brands") {
+      // Key A itself reads ACROSS organisations (the platform gained that in
+      // 1e17545), so its rows carry their OWN organisation and one of them
+      // belongs to a third organisation this deployment has no key for.
+      const rows = key === "A"
+        ? [
+            { id: "id-amrize", slug: "amrize", name: "Amrize", organisation: { slug: "the-content-engine", name: "The Content Engine" } },
+            { id: "id-gavi", slug: "gavi", name: "Gavi", organisation: { slug: "gavi", name: "Gavi" } },
+          ]
+        : org.brands.map((b: any) => ({ ...b, organisation }));
+      return ok({ brands: rows, organisation, meta: { notes: [`notes from ${key}`] } });
+    }
     if (name === "get_plan_and_usage") return ok({ organisation, plan: key === "A" ? "AGENCY" : "PRO" });
     // The platform's actual wording (audit-reports.ts): code bad_request, no
     // "not found" in it. The first live Siemens fetch failed on exactly this.
@@ -353,9 +364,14 @@ async function check9() {
     const bd: any = brands.data;
     if (!brands.ok) fail(`list_brands failed across organisations: ${brands.error}`);
     else {
-      if (!Array.isArray(bd.brands) || bd.brands.length !== 2) fail(`the union holds ${bd.brands?.length} brands, expected 2 (primaries only, as asked)`);
+      if (!Array.isArray(bd.brands) || bd.brands.length !== 3) fail(`the union holds ${bd.brands?.length} brands, expected 3`);
+      // EACH BRAND CARRIES ITS OWN ORGANISATION. Labelling by the key that
+      // fetched it collapsed five organisations into one and hid Gavi inside
+      // another client's list — live, 2026-09-07.
       const labels = (bd.brands || []).map((b: any) => b.organisation).join("|");
-      if (labels !== "The Content Engine|Siemens") fail(`brands are labelled ${labels}`);
+      if (labels !== "The Content Engine|Gavi|Siemens") fail(`brands are labelled ${labels} — a brand must carry ITS OWN organisation, not the key's`);
+      const gavi = (bd.organisations || []).find((o: any) => o.organisation === "Gavi");
+      if (!gavi || gavi.brands !== 1) fail("the organisation summary does not count Gavi, whose brand arrived through another organisation's key");
       const c = (bd.organisations || []).find((o: any) => o.organisation === "organisation 3");
       if (!c || !/rejected/.test(c.status)) fail("a revoked key is not reported as rejected beside the others");
       if (!bd.meta?.notes?.some((n: string) => /each carries the organisation/.test(n))) fail("the merged list does not say brands carry their organisation");

@@ -389,10 +389,30 @@ async function listBrandsEverywhere(args: Record<string, unknown>, slots: KeySlo
     const list = listOf(payload);
     const rows = list ? list.rows : [];
     if (list) field = list.field;
-    for (const b of rows) brands.push({ ...b, organisation: slot.label });
+    // THE BRAND'S OWN ORGANISATION WINS. A key may itself read across
+    // organisations, in which case the platform already labels every brand
+    // and the key's label is merely where the request went. Overwriting it
+    // with the key's label collapsed sixty-five brands from five
+    // organisations into "The Content Engine", and Gavi vanished into the
+    // wrong client — the labels were wrong, not the data.
+    for (const b of rows) {
+      const own = b && typeof b.organisation === "object" && b.organisation?.name ? String(b.organisation.name) : null;
+      brands.push({ ...b, organisation: own || slot.label });
+    }
     learnRoutes(rows, slot);
     for (const n of payload?.meta?.notes || []) if (typeof n === "string") notes.add(n);
-    organisations.push({ organisation: slot.label, brands: rows.length, status: "ok" });
+    // Count by the organisation each brand belongs to, not by which key
+    // fetched it, for the same reason.
+    const perOrg = new Map<string, number>();
+    for (const b of rows) {
+      const own = b && typeof b.organisation === "object" && b.organisation?.name ? String(b.organisation.name) : slot.label;
+      perOrg.set(own, (perOrg.get(own) || 0) + 1);
+    }
+    for (const [name, n] of Array.from(perOrg.entries())) {
+      const existing = organisations.find((o) => o.organisation === name && o.status === "ok");
+      if (existing) existing.brands += n;
+      else organisations.push({ organisation: name, brands: n, status: "ok" });
+    }
   }
   if (!anyOk) {
     // Every organisation failed: report the first failure as the failure,
