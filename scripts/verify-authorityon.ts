@@ -87,6 +87,7 @@ import {
   authorityOnToolName,
   authorityOnReportIsUntrusted,
   authorityOnArgs,
+  runAuthorityOnReports,
   buildWordAndMaybeDoc,
   wordDocRefusal,
   formatAuthorityOnResult,
@@ -205,7 +206,13 @@ console.log("\n5. Registered, executed and TAINTED in all four chains");
   if (executed !== 4) fail(`the tool is executed in ${executed} of 4 chains — a chain that registers it without a handler answers "unknown tool"`);
   // THE ONE THAT MATTERS. A chain that registers the tool but forgets the
   // taint line reads scraped text with every write tool still open.
-  const tainted = (src.match(/authorityOnReportIsUntrusted\(report\)\) config\.sawThirdPartyContent = true/g) || []).length;
+  // The taint moved into runAuthorityOnReports when batching landed, so the
+  // chains now set it from that result. Both halves are asserted: the chains
+  // apply it, and the reader is what decides it.
+  if (!/const tainted = results\.some\(\(\{ report, result \}\) => result\.ok && authorityOnReportIsUntrusted\(report\)\)/.test(src)) {
+    fail("the batched reader no longer decides the taint from authorityOnReportIsUntrusted");
+  }
+  const tainted = (src.match(/if \(out\.tainted\) config\.sawThirdPartyContent = true;/g) || []).length;
   if (tainted !== 4) {
     fail(`the taint is set in ${tainted} of 4 chains — a chain that registers the tool without it lets planted text become a standing memory`);
   }
@@ -478,7 +485,57 @@ async function check10() {
   if (failures === before) ok("the argument order replaces the storage order, and an analysis must state its claim");
 }
 
-check8().then(check9).then(check10).then(() => {
+async function check11() {
+  console.log("\n11. Several reports arrive in ONE call");
+  const before = failures;
+  // 2026-09-07: a request for a report AND a deck spent all EIGHT tool rounds
+  // fetching AuthorityOn reports one at a time. The loop ended, the forced-
+  // final nudge told the model tools were gone, and it wrote the deck out as
+  // prose and told the user "file generation was not available on this turn" —
+  // which was true, and entirely our doing.
+  const realFetch = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = (async (_u: any, init: any) => {
+    const body = JSON.parse(String(init?.body || "{}"));
+    calls.push(body.params?.name);
+    return new Response(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: JSON.stringify({ ok: body.params?.name }) }] } })}\n\n`, { status: 200 });
+  }) as any;
+  try {
+    process.env.AUTHORITYON_MCP_KEY = "KEY_A";
+    resetAuthorityOnRouting();
+    const out = await runAuthorityOnReports({ report: "report,score_history,change_ledger", brand: "amrize" });
+    if (calls.length !== 3) fail(`a three-report call made ${calls.length} upstream calls`);
+    for (const t of ["get_report", "get_score_history", "get_change_ledger"]) {
+      if (!calls.includes(t)) fail(`${t} was not fetched from the batched call`);
+      if (!out.text.includes(t.replace("get_", ""))) fail(`the combined result does not label the ${t} section`);
+    }
+    // A text-bearing report anywhere in the batch taints the turn.
+    if (!out.tainted) fail("a batch containing `report` did not set the taint");
+    calls.length = 0;
+    const clean = await runAuthorityOnReports({ report: "brands,overview", brand: "amrize" });
+    if (clean.tainted) fail("a batch of score-only reports tainted the turn");
+    // An unknown name is reported, not silently dropped, and does not kill the rest.
+    calls.length = 0;
+    const mixed = await runAuthorityOnReports({ report: "overview,not_a_report", brand: "amrize" });
+    if (!mixed.unknown.includes("not_a_report")) fail("an unknown report name was swallowed");
+    if (!mixed.text) fail("one bad name discarded the whole batch");
+    // And a single report still behaves exactly as before — no section header.
+    calls.length = 0;
+    const one = await runAuthorityOnReports({ report: "overview", brand: "amrize" });
+    if (/^### /m.test(one.text)) fail("a single-report call gained a section header it never had");
+  } finally {
+    globalThis.fetch = realFetch;
+    for (const k of Object.keys(process.env)) if (k.startsWith("AUTHORITYON_")) delete process.env[k];
+    resetAuthorityOnRouting();
+  }
+  const src = readFileSync(join(__dirname, "../lib/ai/providers.ts"), "utf8");
+  const wired = (src.match(/await runAuthorityOnReports\(/g) || []).length;
+  if (wired !== 4) fail(`only ${wired} of 4 chains use the batched reader`);
+  if (!/SEVERAL REPORTS IN ONE CALL/.test(src)) fail("the schema does not tell the model it can batch");
+  if (failures === before) ok("a comma-separated list is fetched in one round, labelled, and taints correctly");
+}
+
+check8().then(check9).then(check10).then(check11).then(() => {
   console.log(failures
     ? `\n✗ ${failures} failure${failures === 1 ? "" : "s"}\n`
     : "\n✓ AuthorityOn's text is fenced and taints the turn, in every chain\n");

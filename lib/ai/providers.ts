@@ -7354,7 +7354,7 @@ export const AUTHORITYON_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
             "competitors", "topics", "change_ledger", "audits",
             "audit_reports", "audit_report", "plan_and_usage",
           ],
-          description: "brands = every tracked PRIMARY brand with its slug and id, across every organisation this deployment holds a key for — each brand carries its organisation (START HERE to resolve a name; pass includeSubEntities:true to see sub-entities too). plan_and_usage = the organisation's plan and quota use. overview = AI Score, grade, deltas and the eight pillar scores. recommendations = open actions with rationale, priority and effort. report = the full AI Performance report or the 13-week exec pack as markdown. score_history = the score over time. visibility = per model per day. answers = the VERBATIM answers AI assistants gave about the brand. stories = recurring narratives with hit rates. earned_media / citations = coverage and the sources models cited. competitors / topics = the comparison set and the subjects tracked. change_ledger = what changed and when. audits = the brand's WEBSITE, CONTENT and SOCIAL pillar audits (id, type, score, categories with findings, recommendations). audit_reports = the FROZEN audit deliverables for the brand (a frozen report is the exact payload delivered on a date and never updates); audit_report = one frozen report by id. A brand absent from `brands` is not tracked in THIS deployment's AuthorityOn organisation — it may exist in another organisation under a different key; say which was checked.",
+          description: "SEVERAL REPORTS IN ONE CALL: pass a comma-separated list (report: 'report,score_history,change_ledger,recommendations') and they are fetched together in one round. Do this — a brand analysis needs four or five of them, and fetching them one at a time spends the whole turn reading with nothing left to build the document or deck with. brands = every tracked PRIMARY brand with its slug and id, across every organisation this deployment holds a key for — each brand carries its organisation (START HERE to resolve a name; pass includeSubEntities:true to see sub-entities too). plan_and_usage = the organisation's plan and quota use. overview = AI Score, grade, deltas and the eight pillar scores. recommendations = open actions with rationale, priority and effort. report = the full AI Performance report or the 13-week exec pack as markdown. score_history = the score over time. visibility = per model per day. answers = the VERBATIM answers AI assistants gave about the brand. stories = recurring narratives with hit rates. earned_media / citations = coverage and the sources models cited. competitors / topics = the comparison set and the subjects tracked. change_ledger = what changed and when. audits = the brand's WEBSITE, CONTENT and SOCIAL pillar audits (id, type, score, categories with findings, recommendations). audit_reports = the FROZEN audit deliverables for the brand (a frozen report is the exact payload delivered on a date and never updates); audit_report = one frozen report by id. A brand absent from `brands` is not tracked in THIS deployment's AuthorityOn organisation — it may exist in another organisation under a different key; say which was checked.",
         },
         brand: { type: "string", description: "Brand slug from the `brands` report, or its id. Required by every report except `brands`." },
         query: { type: "string", description: "Free-text filter, where the report supports one (answers, stories)." },
@@ -7486,6 +7486,40 @@ export function authorityOnArgs(report: string, input: any): Record<string, unkn
 
 /** What the model is handed back. Fenced ALWAYS — the fence costs nothing on
  *  a score and is the whole defence on a verbatim answer. */
+/**
+ * Run one AuthorityOn call, or SEVERAL in one go.
+ *
+ * `report` accepts a comma-separated list, because the alternative is what
+ * happened on 2026-09-07: a brand analysis needs the report, the history, the
+ * ledger, the recommendations and the per-model detail, the model spent all
+ * EIGHT tool rounds fetching them one at a time, and the turn ended with the
+ * forced-final nudge telling it tools were gone. It wrote the deck out as prose
+ * and told the user file generation "was not available on this turn" — which
+ * was true, and entirely our doing.
+ *
+ * Fetched in parallel: they are independent reads of the same platform, and
+ * serially they cost five round-trips of latency as well as five rounds.
+ */
+export async function runAuthorityOnReports(
+  input: any
+): Promise<{ text: string; tainted: boolean; unknown: string[] }> {
+  const raw = String(input?.report || "");
+  const names = raw.split(",").map((r) => r.trim()).filter(Boolean);
+  const unknown = names.filter((r) => !authorityOnToolName(r));
+  const known = names.filter((r) => authorityOnToolName(r));
+  if (!known.length) return { text: "", tainted: false, unknown };
+
+  const { callAuthorityOn } = await import("@/lib/authorityon/mcp");
+  const results = await Promise.all(
+    known.map(async (r) => ({ report: r, result: await callAuthorityOn(authorityOnToolName(r)!, authorityOnArgs(r, input)) }))
+  );
+  const tainted = results.some(({ report, result }) => result.ok && authorityOnReportIsUntrusted(report));
+  const text = results
+    .map(({ report, result }) => (known.length > 1 ? `### ${report}\n${formatAuthorityOnResult(report, result)}` : formatAuthorityOnResult(report, result)))
+    .join("\n\n");
+  return { text, tainted, unknown };
+}
+
 export function formatAuthorityOnResult(
   report: string,
   r: { ok: boolean; text?: string; data?: unknown; error?: string; kind?: string }
@@ -9813,18 +9847,15 @@ async function streamAnthropic(
       } else if (tool.name === "query_authorityon") {
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
-          const report = String(tool.input?.report || "");
-          const mcpTool = authorityOnToolName(report);
-          if (!mcpTool) {
-            toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `Unknown AuthorityOn report "${report}". Valid reports are listed in the tool schema.`, is_error: true });
+          const out = await runAuthorityOnReports(tool.input);
+          if (!out.text) {
+            toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `Unknown AuthorityOn report "${out.unknown.join(", ")}". Valid reports are listed in the tool schema.`, is_error: true });
           } else {
-            const { callAuthorityOn } = await import("@/lib/authorityon/mcp");
-            const args = authorityOnArgs(report, tool.input);
-            const result = await callAuthorityOn(mcpTool, args);
             // THE TAINT. A report carrying scraped third-party text narrows
             // everything after it, exactly as an email read does.
-            if (result.ok && authorityOnReportIsUntrusted(report)) config.sawThirdPartyContent = true;
-            toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: formatAuthorityOnResult(report, result) });
+            if (out.tainted) config.sawThirdPartyContent = true;
+            const note = out.unknown.length ? `\n\n(Ignored unknown report(s): ${out.unknown.join(", ")}.)` : "";
+            toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: out.text + note });
           }
         } catch (err: any) {
           toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `AuthorityOn error: ${err.message}`, is_error: true });
@@ -10906,17 +10937,14 @@ async function streamXAIChatCompletions(
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
           const input = JSON.parse(tc.function.arguments);
-          const report = String(input?.report || "");
-          const mcpTool = authorityOnToolName(report);
-          if (!mcpTool) {
-            openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Unknown AuthorityOn report "${report}". Valid reports are listed in the tool schema.` } as any);
+          const out = await runAuthorityOnReports(input);
+          if (!out.text) {
+            openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Unknown AuthorityOn report "${out.unknown.join(", ")}". Valid reports are listed in the tool schema.` } as any);
           } else {
-            const { callAuthorityOn } = await import("@/lib/authorityon/mcp");
-            const args = authorityOnArgs(report, input);
-            const result = await callAuthorityOn(mcpTool, args);
             // THE TAINT — see the Anthropic chain.
-            if (result.ok && authorityOnReportIsUntrusted(report)) config.sawThirdPartyContent = true;
-            openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: formatAuthorityOnResult(report, result) } as any);
+            if (out.tainted) config.sawThirdPartyContent = true;
+            const note = out.unknown.length ? `\n\n(Ignored unknown report(s): ${out.unknown.join(", ")}.)` : "";
+            openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: out.text + note } as any);
           }
         } catch (err: any) {
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `AuthorityOn error: ${err.message}` } as any);
@@ -11980,17 +12008,14 @@ async function streamGemini(
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
           const input = JSON.parse(tc.function.arguments);
-          const report = String(input?.report || "");
-          const mcpTool = authorityOnToolName(report);
-          if (!mcpTool) {
-            geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Unknown AuthorityOn report "${report}". Valid reports are listed in the tool schema.` } as any);
+          const out = await runAuthorityOnReports(input);
+          if (!out.text) {
+            geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Unknown AuthorityOn report "${out.unknown.join(", ")}". Valid reports are listed in the tool schema.` } as any);
           } else {
-            const { callAuthorityOn } = await import("@/lib/authorityon/mcp");
-            const args = authorityOnArgs(report, input);
-            const result = await callAuthorityOn(mcpTool, args);
             // THE TAINT — see the Anthropic chain.
-            if (result.ok && authorityOnReportIsUntrusted(report)) config.sawThirdPartyContent = true;
-            geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: formatAuthorityOnResult(report, result) } as any);
+            if (out.tainted) config.sawThirdPartyContent = true;
+            const note = out.unknown.length ? `\n\n(Ignored unknown report(s): ${out.unknown.join(", ")}.)` : "";
+            geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: out.text + note } as any);
           }
         } catch (err: any) {
           geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: `AuthorityOn error: ${err.message}` } as any);
@@ -12953,17 +12978,14 @@ async function streamOpenAI(
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ querying_engine: true })}\n\n`));
           const input = JSON.parse(tc.function.arguments);
-          const report = String(input?.report || "");
-          const mcpTool = authorityOnToolName(report);
-          if (!mcpTool) {
-            openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Unknown AuthorityOn report "${report}". Valid reports are listed in the tool schema.` } as any);
+          const out = await runAuthorityOnReports(input);
+          if (!out.text) {
+            openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Unknown AuthorityOn report "${out.unknown.join(", ")}". Valid reports are listed in the tool schema.` } as any);
           } else {
-            const { callAuthorityOn } = await import("@/lib/authorityon/mcp");
-            const args = authorityOnArgs(report, input);
-            const result = await callAuthorityOn(mcpTool, args);
             // THE TAINT — see the Anthropic chain.
-            if (result.ok && authorityOnReportIsUntrusted(report)) config.sawThirdPartyContent = true;
-            openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: formatAuthorityOnResult(report, result) } as any);
+            if (out.tainted) config.sawThirdPartyContent = true;
+            const note = out.unknown.length ? `\n\n(Ignored unknown report(s): ${out.unknown.join(", ")}.)` : "";
+            openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: out.text + note } as any);
           }
         } catch (err: any) {
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `AuthorityOn error: ${err.message}` } as any);
