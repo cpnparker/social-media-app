@@ -528,6 +528,9 @@ console.log("\n16. A turn that runs out of time says so");
     (src.match(/content: TIME_BUDGET_NOTICE/g) || []).length === 4,
     `${(src.match(/content: TIME_BUDGET_NOTICE/g) || []).length} of 4`);
   check("it tells the model to build rather than gather", /Build any artefact you have promised NOW/.test(src));
+  const prompt2 = readFileSync(join(__dirname, "../lib/ai/system-prompts.ts"), "utf8");
+  check("when both are asked for, the expensive artefact is built FIRST",
+    /BUILD THE DECK FIRST/.test(prompt2) && !/write the analysis first and then build the deck/.test(prompt2));
 
   // And the client can tell a killed stream from a finished one.
   check("the server closes a healthy stream with [DONE]", /encode\("data: \[DONE\]/.test(src));
