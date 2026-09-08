@@ -176,6 +176,18 @@ export function applyEditSlide(
   // puts it first and slides.length appends. Without this the tool could only
   // patch, so "add a slide after slide 5" was structurally impossible — and
   // because the patch path failed silently, it looked like it had worked.
+  // `insertSlides` WITH NO TARGET MEANS APPEND. There is nothing else it can
+  // mean: a batch of new slides and no slideNumber to replace and no
+  // insertAfter to sit behind. It used to be an error telling the model to
+  // pass insertAfter, and the model then did — a round later. On a turn with a
+  // hard time limit that round is not free: the ITM regeneration spent one
+  // here and was cut off by the platform ceiling while still appending, so a
+  // recoverable malformed call cost part of the deliverable. Default it to the
+  // end of the deck rather than bouncing it back.
+  if (edit.insertAfter == null && edit.slideNumber == null && Array.isArray(edit.insertSlides) && edit.insertSlides.length) {
+    edit = { ...edit, insertAfter: slides.length };
+  }
+
   if (edit.insertAfter != null) {
     const at = edit.insertAfter;
     if (!Number.isInteger(at) || at < 0 || at > slides.length) {
