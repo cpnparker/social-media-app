@@ -3406,6 +3406,69 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   }
   if (failures === before30) pass("every label a shape encloses is centred in it; only the bodies that share a row baseline stay top-aligned");
 
+  // ── 31 ─────────────────────────────────────────────────────────────────
+  // A quadrant caption is a claim about the axes, and it used to be a claim
+  // the CALLER had to translate into a corner. One got it inverted: a deck
+  // printed "Later" over the high-impact/low-effort corner, where its own
+  // subtitle said the single half-day move lived, and the "Do now" it HAD
+  // supplied was never drawn at all because the renderer read indices 0 and 1
+  // only. Both halves are asserted here — the placement follows the axes, and
+  // nothing supplied is silently dropped.
+  const before31 = failures;
+  console.log(`\n31. A quadrant caption lands where its own axes put it`);
+  {
+    const m = {
+      xAxis: ["Low effort", "High effort"] as [string, string],
+      yAxis: ["Low impact", "High impact"] as [string, string],
+      quadrants: [
+        { label: "Do now", x: "low", y: "high" },
+        { label: "Plan it", x: "high", y: "high" },
+        { label: "Fill-ins", x: "low", y: "low" },
+        { label: "Drop", x: "high", y: "low" },
+      ],
+      // Schema: the cheap move the subtitle names. It must plot INSIDE the
+      // quadrant the caption calls the one to do first.
+      items: [{ label: "Schema", x: 0.12, y: 0.88, highlight: true }, { label: "Rebuild", x: 0.85, y: 0.2 }],
+    };
+    const rq: any[] = buildSlideRequests({ layout: "matrix", title: "Priorities", subtitle: "Schema is the single half-day move.", matrix: m } as any, 0, "n");
+    const box = (sfx: string) => {
+      const r = rq.find((q) => (q.createShape?.objectId || "").endsWith(sfx));
+      const e = r?.createShape?.elementProperties;
+      return e ? { x: e.transform.translateX, y: e.transform.translateY, w: e.size.width.magnitude, h: e.size.height.magnitude } : null;
+    };
+    const textOf = (sfx: string) => {
+      const r = rq.find((q) => (q.insertText?.objectId || "").endsWith(sfx));
+      return r?.insertText?.text ?? null;
+    };
+    // Every caption supplied is drawn. Two of four used to reach the slide.
+    const caps = ["_mql0", "_mql1", "_mql2", "_mql3"].map((k) => ({ k, b: box(k), t: textOf(k) }));
+    const drawn = caps.filter((c) => c.b);
+    if (drawn.length !== 4) fail(`matrix drew ${drawn.length} of 4 quadrant captions — the rest were dropped without a word`);
+    // Placement follows the axes, not the order they were written in.
+    const want: Record<string, string> = { _mql0: "Do now", _mql1: "Plan it", _mql2: "Fill-ins", _mql3: "Drop" };
+    caps.forEach((c) => { if (c.b && c.t !== want[c.k]) fail(`matrix put "${c.t}" where "${want[c.k]}" belongs by its axes`); });
+    const dot = box("_md0"), doNow = box("_mql0"), plan = box("_mql1"), fill = box("_mql2");
+    if (!dot || !doNow || !plan || !fill) fail("matrix did not draw both the highlighted item and its quadrant captions");
+    else {
+      // The caption for low-effort/high-impact sits in the same half-plane as
+      // an item plotted at low x and high y. This is the assertion the shipped
+      // deck violated.
+      const midX = (doNow.x + plan.x + plan.w) / 2, midY = (doNow.y + fill.y) / 2;
+      if (!(dot.x < midX)) fail("a low-effort item did not plot in the same half as the low-effort captions");
+      if (!(dot.y < midY)) fail("a high-impact item did not plot in the same half as the high-impact caption");
+      if (!(doNow.x < midX && doNow.y < midY)) fail("the low-effort/high-impact caption is not in the low-effort/high-impact quadrant");
+    }
+    // The legacy four-tuple keeps its documented reading, so decks already
+    // built still re-render the way they were composed.
+    const legacy: any[] = buildSlideRequests({ layout: "matrix", title: "T",
+      matrix: { xAxis: ["l", "h"], yAxis: ["l", "h"], quadrants: ["TL", "TR", "BL", "BR"], items: [{ label: "A", x: 0.5, y: 0.5 }] } } as any, 0, "n");
+    const legacyText = (sfx: string) => legacy.find((q) => (q.insertText?.objectId || "").endsWith(sfx))?.insertText?.text ?? null;
+    [["_mql0", "TL"], ["_mql1", "TR"], ["_mql2", "BL"], ["_mql3", "BR"]].forEach(([k, t]) => {
+      if (legacyText(k) !== t) fail(`the legacy tuple no longer reads as TL,TR,BL,BR: ${k} held "${legacyText(k)}"`);
+    });
+  }
+  if (failures === before31) pass("every quadrant caption is drawn, and each sits in the quadrant its own axes name");
+
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);
 })();

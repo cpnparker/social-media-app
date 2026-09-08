@@ -1508,11 +1508,15 @@ const DOCUMENT_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
               },
               matrix: {
                 type: "object",
-                description: "A 2x2 priority matrix (matrix layout) — impact/effort, risk/reward. Place each item by `x` and `y` from 0 to 1 (x: 0 left to 1 right; y: 0 bottom to 1 top). Give axis end-labels and optional quadrant names.",
+                description: "A 2x2 priority matrix (matrix layout) — impact/effort, risk/reward. Place each item by `x` and `y` from 0 to 1 (x: 0 left to 1 right; y: 0 bottom to 1 top). Give axis end-labels, and quadrant names addressed by their axis position rather than by a corner. Everything on the slide reads against the two axes: if the subtitle says one item is the cheap high-value move, that item's dot belongs at low x and high y, in the quadrant your own label calls the one to do first.",
                 properties: {
                   xAxis: { type: "array", items: { type: "string" }, description: "[low, high] labels for the horizontal axis." },
                   yAxis: { type: "array", items: { type: "string" }, description: "[low, high] labels for the vertical axis." },
-                  quadrants: { type: "array", items: { type: "string" }, description: "Four corner labels: top-left, top-right, bottom-left, bottom-right." },
+                  quadrants: { type: "array", items: { type: "object", properties: {
+                    label: { type: "string" },
+                    x: { type: "string", enum: ["low", "high"] },
+                    y: { type: "string", enum: ["low", "high"] },
+                  }, required: ["label", "x", "y"] }, description: "Up to four quadrant names, each addressed by WHERE IT SITS ON THE AXES, not by a corner: { label, x: \"low\"|\"high\", y: \"low\"|\"high\" }, read against the same axes as the items. So on an impact (y) against effort (x) grid, the quadrant to act on first is { label: \"Do now\", x: \"low\", y: \"high\" } — low effort, high impact. Name the quadrant for what it tells the reader to do; a label that contradicts its own axes is the defect this shape exists to stop." },
                   items: { type: "array", items: { type: "object", properties: {
                     label: { type: "string" }, x: { type: "number" }, y: { type: "number" }, highlight: { type: "boolean" },
                   }, required: ["label", "x", "y"] } },

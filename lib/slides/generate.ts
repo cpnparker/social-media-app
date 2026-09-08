@@ -72,7 +72,15 @@ export interface SlideInput {
    *  x and y in 0..1 (0 = left/bottom, 1 = right/top). */
   matrix?: {
     xAxis?: [string, string]; yAxis?: [string, string];
-    quadrants?: [string, string, string, string];   // TL, TR, BL, BR
+    /** Quadrant labels. Give each one the axis position it belongs at —
+     *  { label, x: "low"|"high", y: "low"|"high" } — so the label follows
+     *  from the axes rather than from a corner the caller has to work out.
+     *  A deck shipped with "Later" written over the high-impact/low-effort
+     *  corner and no "do now" anywhere, because the caller ordered the old
+     *  four-tuple by its own reading of the grid and the renderer drew only
+     *  the first two. The tuple is still accepted, as TL, TR, BL, BR. */
+    quadrants?: [string, string, string, string]
+      | { label: string; x: "low" | "high"; y: "low" | "high" }[];
     items?: { label: string; x: number; y: number; highlight?: boolean }[];
   };
   /** A comparison table: a header row of options, then criterion rows. A cell
@@ -3933,11 +3941,35 @@ function matrixRequests(
       ...textBox(id("myt"), page, m.yAxis[1], TYPE.axisEnd, { x: GRID.margin, y: top, width: 44, height: 12 }),
     );
   }
-  // Quadrant names are drawn as faint captions in the TOP-OUTER corners only
-  // — top-left flush left, top-right flush right — where a plotted item is least
-  // likely to sit, and never in the bottom corners, which collide with the axis
-  // labels and the densest cluster of items. The axes carry the rest.
-  if (m.quadrants) {
+  // Quadrant names are drawn as faint captions in the OUTER corners, each one
+  // placed by its own axis coordinates. The caller may address them that way
+  // ({ label, x, y }) or pass the legacy four-tuple, read as TL, TR, BL, BR.
+  //
+  // Both halves of this used to be wrong at once. The tuple made the caller
+  // derive a corner from the axes it had just written — and one got it exactly
+  // inverted, printing "Later" over high-impact/low-effort — while the renderer
+  // drew indices 0 and 1 only, so the "do now" the caller HAD supplied was
+  // dropped without a word. Two labels silently discarded is not a layout
+  // decision; the bottom captions sit inside the plot above the axis line and
+  // the item labels dodge them, the way they already dodge the top pair.
+  const quadCaps: Record<string, string> = {};
+  if (Array.isArray(m.quadrants)) {
+    const corner = ["lowhigh", "highhigh", "lowlow", "highlow"];  // TL, TR, BL, BR
+    (m.quadrants as unknown[]).forEach((q, i) => {
+      if (typeof q === "string") { if (q.trim() && corner[i]) quadCaps[corner[i]] = q; }
+      else if (q && typeof q === "object") {
+        const { label, x, y } = q as { label?: string; x?: string; y?: string };
+        if (label?.trim()) quadCaps[`${x === "high" ? "high" : "low"}${y === "high" ? "high" : "low"}`] = label;
+      }
+    });
+  }
+  // The bottom pair sits clear of the x-axis end labels below the plot, and
+  // declares the two lines a wrapped caption actually takes: at 12pt high it
+  // overran onto "LOW EFFORT", which is the overlap battery doing its job.
+  const capBandTop = bottom - 30;
+  const capBandH = 26;
+  const hasBottomCaps = !!(quadCaps.lowlow || quadCaps.highlow);
+  {
     // Sized to the TEXT, not to the half-quadrant.
     //
     // These were w/2 - 12 wide with the right-hand one set END-aligned, so the
@@ -3946,15 +3978,18 @@ function matrixRequests(
     // overlapped it by geometry — which the overlap battery reports, correctly,
     // because a box that wide is a claim on space the caption does not use.
     const capW = (t: string) => Math.min(w / 2 - 12, Math.max(40, t.length * 4.8 + 10));
-    if (m.quadrants[0]) out.push(...textBox(id("mql0"), page, m.quadrants[0], TYPE.quadLabel, {
-      x: left + 6, y: top + 4, width: capW(m.quadrants[0]), height: 12,
-    }));
-    if (m.quadrants[1]) {
-      const cw = capW(m.quadrants[1]);
-      out.push(...textBox(id("mql1"), page, m.quadrants[1], TYPE.quadLabel, {
-        x: right - 6 - cw, y: top + 4, width: cw, height: 12,
-      }, { align: "END" }));
-    }
+    const cap = (key: string, n: string, yTop: number, h: number, atRight: boolean) => {
+      const t = quadCaps[key];
+      if (!t) return;
+      const cw = capW(t);
+      out.push(...textBox(id(n), page, t, TYPE.quadLabel, {
+        x: atRight ? right - 6 - cw : left + 6, y: yTop, width: cw, height: h,
+      }, atRight ? { align: "END" } : {}));
+    };
+    cap("lowhigh",  "mql0", top + 4,    12,        false);
+    cap("highhigh", "mql1", top + 4,    12,        true);
+    cap("lowlow",   "mql2", capBandTop, capBandH,  false);
+    cap("highlow",  "mql3", capBandTop, capBandH,  true);
   }
 
   // Items: a dot at (x,y), label beside it. y is inverted (1 = top). A label
@@ -3974,7 +4009,10 @@ function matrixRequests(
     // the dot: a dot at the very top of the plot put its label straight into
     // the caption. Only surfaced when the content band grew and the plot moved
     // up with it, which is exactly what the overlap battery is for.
-    const ly = py < top + 22 ? Math.max(py + r + 3, top + 19) : py - 7;
+    let ly = py < top + 22 ? Math.max(py + r + 3, top + 19) : py - 7;
+    // Mirror of the top dodge: with bottom captions drawn, a label that would
+    // land in their strip goes ABOVE its dot rather than beside it.
+    if (hasBottomCaps && ly + 14 > capBandTop) ly = Math.min(py - r - 3 - 14, capBandTop - 15);
     out.push(...textBox(id(`ml${i}`), page, it.label, it.highlight ? { ...TYPE.dotLabel, bold: true } : TYPE.dotLabel, {
       x: Math.max(left, lx), y: ly, width: lw, height: 14,
     }, lx < px ? { align: "END" } : {}));
