@@ -678,8 +678,17 @@ export async function POST(
     const [historyRes, workspaceConfig, settingsRes] = await Promise.all([
       intelligenceDb
         .from("ai_messages")
-        .select("role_message, document_message, attachments")
+        .select("role_message, document_message, attachments, status_message")
         .eq("id_conversation", conversationId)
+        // A PENDING row is an assistant turn with an empty body — the
+        // placeholder this route inserts before it starts generating. Sending
+        // one to a model is not a degraded prompt, it is an invalid one: an
+        // Anthropic request with a non-final empty assistant message is
+        // rejected outright. It becomes reachable the moment two turns run in
+        // the same conversation at once, which is exactly what fire-and-forget
+        // invites. Excluded here rather than in the mapper, so every caller of
+        // this history is covered.
+        .neq("status_message", "pending")
         .order("date_created", { ascending: true }),
       fetchWorkspaceConfig(conversation.id_workspace),
       intelligenceDb
@@ -1780,13 +1789,26 @@ export async function POST(
     // message so the preview outlives the browser tab that produced it.
     let lastSlidesDraft: any = null;
     let lastToolCard: any = null;
+    aiConfigRef.onSlidesDraft = (draft: any) => { lastSlidesDraft = draft; };
+    aiConfigRef.onToolCard = (card: any) => { lastToolCard = card; };
 
     const aiStream = createStreamingResponse(
       messages,
       // userEmail is passed for team threads too: the MeetingBrain/Slack tools
       // gate personal reports server-side via conversationVisibility, while the
       // workspace-shared client_meetings report stays available to everyone.
-      { ...aiConfigRef, onSlidesDraft: (draft: any) => { lastSlidesDraft = draft; }, onToolCard: (card: any) => { lastToolCard = card; } },
+      // aiConfigRef ITSELF, not a spread of it. The comment above says this
+      // object is "named so the completion callback can read flags the tool
+      // executors set on it during the turn" — and then `{ ...aiConfigRef }`
+      // handed the chains a COPY. They mutated the copy; the taint gates at
+      // the foot of this file read the original; sawUntrustedContent was
+      // therefore always undefined there, so memory extraction and summary
+      // generation ran on tainted turns. That is the exact channel the gate
+      // exists to close: the extractor has a standing-instruction category
+      // with no approval step, so an injected line in a mail body could
+      // become permanent guidance. The protection was written and then
+      // severed by a spread on the next line.
+      aiConfigRef,
       // modelUsed, not `model`. `model` is what this route CHOSE; four paths make
       // the answering model differ from it — Anthropic falling back to grok-4.3,
       // xAI falling back to claude-sonnet-5 on error OR on an empty reply, and a

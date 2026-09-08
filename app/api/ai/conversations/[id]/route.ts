@@ -97,7 +97,14 @@ export async function GET(
     // so the user sees a retry affordance immediately instead of a long spinner.
     // (If a generation somehow is still live, its onComplete overwrites this
     // back to 'complete' with the real text — updates key on id, not status.)
-    const STALE_PENDING_MS = 150_000; // 2.5 min — longer than any real generation
+    // LONGER THAN THE ROUTE'S OWN CEILING, which 2.5 minutes was not. The
+    // messages route sets maxDuration = 300s, so between 150s and 300s this
+    // reaper was flipping LIVE generations to "Generation failed — please
+    // retry." while they were still running and still billing. The user saw a
+    // failure and a retry button on a turn that then completed underneath
+    // them. Any deck or long analysis crosses 150s routinely. Only a row that
+    // has outlived the platform's own kill can be called dead.
+    const STALE_PENDING_MS = 330_000; // 5.5 min — above the messages route's maxDuration of 300s
     const nowMs = Date.now();
     const deadPending = (rawMessages || []).filter(
       (m: any) =>

@@ -19,6 +19,11 @@ export interface AIConversation {
   myPermission?: "owner" | "view" | "collaborate";
   sharedByName?: string;
   shareCount?: number;
+  /** A reply is generating in this thread right now. Set by the list API from
+   *  a pending assistant row younger than the messages route's own ceiling, so
+   *  a user who fired several messages and walked away can see which threads
+   *  are still working. */
+  generating?: boolean;
   // Conversation summary (thread memory)
   summary?: string | null;
 }

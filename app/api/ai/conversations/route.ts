@@ -196,11 +196,36 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // WHICH THREADS ARE STILL GENERATING. Replies survive the browser leaving
+    // — the messages route persists a pending row before it starts and keeps
+    // draining if the client goes away — but nothing outside the open thread
+    // ever said so, so firing three messages and walking away left the user
+    // with no way to tell which were running, which were done, and which had
+    // failed. One query over the page of conversations already fetched.
+    //
+    // Bounded the same way the reaper is (330s, above the messages route's
+    // 300s ceiling): a row older than that is abandoned rather than live, and
+    // showing it as generating would be a spinner that never stops.
+    const listIds = (conversations || []).map((c: any) => c.id_conversation);
+    const generating = new Set<string>();
+    if (listIds.length) {
+      const since = new Date(Date.now() - 330_000).toISOString();
+      const { data: pendingRows } = await intelligenceDb
+        .from("ai_messages")
+        .select("id_conversation")
+        .in("id_conversation", listIds)
+        .eq("role_message", "assistant")
+        .eq("status_message", "pending")
+        .gte("date_created", since);
+      for (const r of pendingRows || []) generating.add(r.id_conversation);
+    }
+
     const enriched = (conversations || []).map((c: any) => {
       const isSharedWithMe = c.user_created !== userId && sharedByMap.has(c.id_conversation);
       const shareInfo = sharedByMap.get(c.id_conversation);
       return {
         ...mapConversation(c),
+        generating: generating.has(c.id_conversation) || undefined,
         customerName: c.id_client ? customerNameMap.get(c.id_client) || null : null,
         sharedWithMe: isSharedWithMe || undefined,
         myPermission: c.user_created === userId

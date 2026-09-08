@@ -499,6 +499,19 @@ function EngineAIContent() {
     fetchConversations();
   }, [fetchConversations, customerLoaded]);
 
+  // KEEP THE GENERATING DOTS HONEST. The list is otherwise fetched once, so a
+  // thread that finished while the user was elsewhere would keep its
+  // "Generating…" dot until something else happened to refetch — a spinner
+  // that never stops is worse than none. Polls only while at least one thread
+  // is actually generating, and stops as soon as the last one lands, so an
+  // idle sidebar costs nothing.
+  const anyGenerating = conversations.some((c) => c.generating);
+  useEffect(() => {
+    if (!anyGenerating) return;
+    const id = window.setInterval(() => { fetchConversations(); }, 5000);
+    return () => window.clearInterval(id);
+  }, [anyGenerating, fetchConversations]);
+
   // Sync selectedId ↔ URL ?thread= and client ↔ URL ?client=
   // Sync state → URL. Only delete a param if we previously wrote it
   // (prevents race conditions from stripping URL params on load).
@@ -1374,6 +1387,12 @@ const ORAC_ENABLED = false;
                               </div>
                             </div>
                           </div>
+                          {conv.generating && (
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+                              <p className="text-[11px] text-emerald-300/80 truncate">Generating…</p>
+                            </div>
+                          )}
                           {conv.sharedWithMe && conv.sharedByName && (
                             <div className="flex items-center gap-1 mt-0.5">
                               <UserPlus className="h-3 w-3 text-white/30 shrink-0" />
@@ -1421,6 +1440,12 @@ const ORAC_ENABLED = false;
                           {timeAgo(conv.updatedAt)}
                         </span>
                       </div>
+                      {conv.generating && (
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+                          <p className="text-[11px] text-emerald-300/80 truncate">Generating…</p>
+                        </div>
+                      )}
                       {conv.sharedWithMe && conv.sharedByName && (
                         <div className="flex items-center gap-1 mt-0.5">
                           <UserPlus className="h-3 w-3 text-white/30 shrink-0" />

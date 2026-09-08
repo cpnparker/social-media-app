@@ -282,6 +282,8 @@ export default function ChatPanel({
         if (!res.ok) return;
         const data = await res.json();
         setMessages(data.messages || []);
+        hydrateSlidesFromMessages(data.messages || []);
+        hydrateToolCardsFromMessages(data.messages || []);
       } catch {
         // best-effort
       }
@@ -301,7 +303,10 @@ export default function ChatPanel({
     if (!pendingAssistantId || isStreaming) return;
 
     const POLL_INTERVAL_MS = 2000;
-    const POLL_TIMEOUT_MS = 3 * 60 * 1000; // 3 min cap
+    // Above the server's own ceiling, for the same reason as STALE_PENDING_MS:
+    // at 3 minutes this rewrote a live turn as failed in local state, so a
+    // reply that arrived at 4 minutes was never shown to the user who waited.
+    const POLL_TIMEOUT_MS = 5.5 * 60 * 1000; // > the messages route's 300s maxDuration
     const startedAt = Date.now();
     let cancelled = false;
 
@@ -330,7 +335,16 @@ export default function ChatPanel({
           serverLast.status !== "pending"
         ) {
           window.clearInterval(intervalId);
-          if (!cancelled) setMessages(data.messages);
+          if (!cancelled) {
+            setMessages(data.messages);
+            // The SAME hydrators the initial load runs. Without them a deck
+            // built while the user was on another thread came back as prose
+            // with no preview card and no "Create in Google Slides" button —
+            // the draft was in the row all along, nothing rebuilt it. Any
+            // path that replaces the whole message list has to rehydrate.
+            hydrateSlidesFromMessages(data.messages || []);
+            hydrateToolCardsFromMessages(data.messages || []);
+          }
         }
       } catch {
         // Swallow transient fetch errors; keep polling
