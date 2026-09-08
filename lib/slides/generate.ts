@@ -1731,10 +1731,49 @@ export const TEXT_INSET_Y = SLIDES_TEXT_INSET.y * 2;
 /** The footer line's top: its text sits ~15pt clear of the bottom edge, which
  *  is outside the overscan of the projectors this deck is shown on. */
 export const FOOTER_Y = CANVAS.height - 24;
-const PER_CHAR = 0.55;              // widest average advance across the deck's faces
+/** Average glyph advance in ems, PER FACE, plus 6%.
+ *
+ *  Measured rather than assumed: canvas measureText against Google's own
+ *  webfonts, over four real body lines of this deck's copy — Roboto Light
+ *  0.418, Playfair Display 0.465, Poppins 0.526 (see the check that pins
+ *  these). One global worst case was Poppins, and it over-measured ROBOTO —
+ *  the body face every bullet is drawn in — by nearly a third. A bullet that
+ *  draws on one line was counted as two, so seven bullets that fitted a slide
+ *  were split across two, which is what the deck's bullet slides splitting
+ *  unnecessarily was. */
+const FACE_ADVANCE: Record<string, number> = {
+  "Roboto": 0.443,
+  "Playfair Display": 0.493,
+  "Poppins": 0.558,
+};
+/** All-caps advance for a face, absolute rather than a ratio off the mixed
+ *  case. Roboto bold caps measures 0.616em, a ratio of 1.47 to Roboto's own
+ *  mixed case and nothing like the 1.2 that fits the unnamed default — so one
+ *  global ratio cannot serve both. Raising the ratio to Roboto's widened every
+ *  caps label measured WITHOUT a face by a quarter, and the overlap battery
+ *  caught it on the stacked-bar labels. */
+const FACE_CAPS_ADVANCE: Record<string, number> = {
+  "Roboto": 0.653,
+};
+const PER_CHAR = 0.55;              // unchanged, for a caller that names no face
+/** The advance for a named face, falling back to the unnamed default. Only a
+ *  caller that KNOWS the face gets the narrower measure; every other call
+ *  measures exactly as it did before. */
+export function faceAdvance(font?: string, caps = false): number {
+  if (caps) return (font && FACE_CAPS_ADVANCE[font]) || PER_CHAR * CAPS_WIDEN;
+  return (font && FACE_ADVANCE[font]) || PER_CHAR;
+}
 const LINE_LEAD = 1.45;             // 115% paragraph spacing on a ~1.26em face
 /** How much wider an all-caps run runs than that mixed-case average. Measured
- *  against Google's own render of the deck's caps labels and status pills. */
+ *  against Google's own render of the deck's caps labels and status pills:
+ *  Roboto bold caps is 0.616em against Light's 0.418, a ratio of 1.47.
+ *
+ *  This moved WITH the per-face advances above and had to. At the old global
+ *  0.55 a caps label came out at 0.66em; at Roboto's own 0.443 the old 1.2
+ *  would have made it 0.53 — under-measuring every caps label by a seventh,
+ *  which is how a correct fix to body copy quietly breaks the eyebrows. The
+ *  pair now lands at 0.653 for Roboto and 0.66 for everything else, which is
+ *  where caps sat before. */
 export const CAPS_WIDEN = 1.2;
 
 /** The lower edge a layout may draw to: its own natural bottom, or the content
@@ -1771,10 +1810,22 @@ export function pillWidth(token: string, size: number): number {
   return token.length * size * PER_CHAR * CAPS_WIDEN + TEXT_INSET_X + 10;
 }
 
+/** The characters Slides will actually hold, once the markup this pipeline
+ *  strips has been stripped.
+ *
+ *  Measurement has to run on this, not on the source. The house style opens
+ *  almost every bullet with a bold lead-in, and four asterisks a bullet made a
+ *  six-line body measure as ten — so the splitter cut slides in half that fit
+ *  on one, which is what the bullet slides splitting over two slides was. A
+ *  markdown link is worse: the whole URL was counted and none of it is drawn. */
+export function drawnText(source: string): string {
+  return parseAccents(parseBold(extractLinks(source).text).text).text;
+}
+
 export function estimateLines(
-  text: string | undefined, boxWidth: number, size: number, bullets = false, caps = false
+  text: string | undefined, boxWidth: number, size: number, bullets = false, caps = false, font?: string
 ): number {
-  const s = (text ?? "").trim();
+  const s = drawnText(text ?? "").trim();
   if (!s) return 0;
   const usable = Math.max(size, boxWidth - TEXT_INSET_X - (bullets ? BULLET_INDENT : 0));
   // CAPITALS ARE WIDER. PER_CHAR is a mixed-case average, and a `caps: true`
@@ -1782,7 +1833,7 @@ export function estimateLines(
   // came back from Google as three, and the source line underneath it was drawn
   // straight through the third. The line COUNT changes; the leading does not,
   // so callers still ask drawnTextHeight for the height at the real size.
-  const perLine = Math.max(1, Math.floor(usable / (size * PER_CHAR * (caps ? CAPS_WIDEN : 1))));
+  const perLine = Math.max(1, Math.floor(usable / (size * faceAdvance(font, caps))));
   const paras = s.split("\n");
   let lines = 0;
   for (let i = 0; i < paras.length; i++) {
@@ -2599,6 +2650,50 @@ export function deckWarnings(slides: SlideInput[]): string {
   if (adjacentDark.length) {
     notes.push(`slides ${adjacentDark.join(", ")} each follow another dark slide — two dark grounds in a row reads as a mistake in this brand`);
   }
+  // LAYOUT VARIETY. The prompt has said for months that content is the
+  // fallback, that no more than a third of a deck may be content and that two
+  // in a row is the limit — and nothing measured it, so a deck could break all
+  // three and be told nothing. This is the same lesson as every other check in
+  // this repo: a rule that is only WRITTEN is a rule that is only sometimes
+  // followed. Advisory, like the ground rhythm above; the deck still builds.
+  //
+  // Continuations are skipped throughout. A split slide repeats its parent's
+  // layout by construction, and counting that as monotony would report the
+  // splitter's work as the author's.
+  const authored = slides.filter((sl) => !sl.continuation);
+  if (authored.length >= 6) {
+    const layoutOf = (sl: SlideInput) => sl.layout || "content";
+    const prose = authored.filter((sl) => layoutOf(sl) === "content").length;
+    if (prose / authored.length > 1 / 3) {
+      notes.push(
+        `${prose} of ${authored.length} slides are the plain \`content\` layout, over the house limit of a third` +
+        ` — a list of things that are the same KIND of thing is \`cards\`, a slide whose point is a figure is \`stat\`,` +
+        ` and a comparison is \`comparison\` or \`table\``
+      );
+    }
+    const distinct = new Set(authored.map(layoutOf));
+    // Roughly one distinct layout per three slides, capped: a 20-slide deck
+    // does not need 20 formats, but six formats in twenty slides is a template.
+    const want = Math.min(8, Math.max(4, Math.round(authored.length / 2.5)));
+    if (distinct.size < want) {
+      notes.push(
+        `the deck uses ${distinct.size} layout${distinct.size === 1 ? "" : "s"} across ${authored.length} slides (${Array.from(distinct).join(", ")})` +
+        ` — around ${want} is the house range at this length, and there are 28 to choose from`
+      );
+    }
+    const runs: string[] = [];
+    let run = 1;
+    for (let i = 1; i < authored.length; i++) {
+      if (layoutOf(authored[i]) === layoutOf(authored[i - 1])) { run += 1; continue; }
+      if (run >= 3) runs.push(`${run} × ${layoutOf(authored[i - 1])} ending at slide ${slides.indexOf(authored[i - 1]) + 1}`);
+      run = 1;
+    }
+    if (run >= 3) runs.push(`${run} × ${layoutOf(authored[authored.length - 1])} ending at slide ${slides.length}`);
+    if (runs.length) {
+      notes.push(`a run of identical layouts reads as one long slide: ${runs.join("; ")} — break it with a different format`);
+    }
+  }
+
   // The house dash rule. Em and en dashes are not part of TCE materials.
   const dashed: number[] = [];
   for (let i = 0; i < slides.length; i++) {
@@ -5638,7 +5733,7 @@ let PROBING = false;
 
 function bodyBox(
   slide: SlideInput, index: number, field: "body" | "bodyRight"
-): { width: number; height: number; size: number; bullets: boolean; spaceBelow: number } | undefined {
+): { width: number; height: number; size: number; bullets: boolean; spaceBelow: number; font?: string } | undefined {
   // The probe must measure the box this slide will END UP with, not the box it
   // has right now. On content/case-study a picture becomes a RIGHT-HAND RAIL
   // that narrows the body from 540pt to 432pt — but splitting runs BEFORE image
@@ -5663,6 +5758,7 @@ function bodyBox(
   }
   if (!id) return undefined;   // this layout does not draw that field at all
   let width = 0, height = 0, size = TYPE.body.size, bullets = false, spaceBelow = SPACE_BELOW;
+  let font: string | undefined;
   for (const r of reqs) {
     if (r.createShape && r.createShape.objectId === id) {
       width = r.createShape.elementProperties.size.width.magnitude;
@@ -5671,6 +5767,11 @@ function bodyBox(
     if (r.updateTextStyle && r.updateTextStyle.objectId === id && r.updateTextStyle.style?.fontSize) {
       size = r.updateTextStyle.style.fontSize.magnitude;
     }
+    // The FACE, read the same way as the size. Measuring body copy against the
+    // widest face in the deck is what split slides that fitted.
+    if (r.updateTextStyle && r.updateTextStyle.objectId === id && r.updateTextStyle.style?.weightedFontFamily?.fontFamily) {
+      font = r.updateTextStyle.style.weightedFontFamily.fontFamily;
+    }
     if (r.createParagraphBullets && r.createParagraphBullets.objectId === id) bullets = true;
     // The gap the layout actually draws between paragraphs, so the splitter
     // and the renderer never disagree about how tall a list is.
@@ -5678,18 +5779,18 @@ function bodyBox(
       spaceBelow = r.updateParagraphStyle.style.spaceBelow.magnitude;
     }
   }
-  return { width, height, size, bullets, spaceBelow };
+  return { width, height, size, bullets, spaceBelow, font };
 }
 
 /** How much room a block of paragraphs needs in a given box. */
 const SPACE_BELOW = 6;
 
 function blockHeight(
-  paras: string[], box: { width: number; size: number; bullets: boolean; spaceBelow?: number }
+  paras: string[], box: { width: number; size: number; bullets: boolean; spaceBelow?: number; font?: string }
 ): number {
   let lines = 0;
   for (let i = 0; i < paras.length; i++) {
-    lines += Math.max(1, estimateLines(paras[i], box.width, box.size, box.bullets));
+    lines += Math.max(1, estimateLines(paras[i], box.width, box.size, box.bullets, false, box.font));
   }
   return drawnTextHeight(lines, box.size, box.spaceBelow ?? SPACE_BELOW, paras.length);
 }

@@ -14,7 +14,7 @@ import {
   buildSlideRequests, textBandsFor, splitOverflowingSlides, isoDate, isVisualSlide,
   estimateLines, drawnTextHeight, inheritContinuationImages, resolveDeckImages,
   niceTicks, isNumericColumn, fitCell, fitColumnWidths, parseAccents, parseBold, deckWarnings, cardGeometry, bandHeightFor,
-  CAPS_WIDEN, TEXT_INSET_X, TEXT_INSET_Y, pillWidth, droppedContent, fitHeading, FOOTER_Y, captionParagraphs, splitStageOwner, slideStyle,
+  CAPS_WIDEN, faceAdvance, TEXT_INSET_X, TEXT_INSET_Y, pillWidth, droppedContent, fitHeading, FOOTER_Y, captionParagraphs, splitStageOwner, slideStyle,
   type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel } from "../lib/slides/preview-model";
@@ -505,11 +505,18 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   /* 9. The splitter measures the box the layout actually draws into. */
   const before9 = failures;
   console.log(`\n9. A body is split against its OWN box, not the widest one`);
-  // Five bullets fit the full-width body box and do NOT fit the half-width one.
-  // A splitter measuring both against 671pt leaves the second overflowing.
-  const five = Array.from({ length: 5 }, (_, i) => `Bullet ${i + 1}: ${"x".repeat(110)}`).join("\n");
-  const wide = splitOverflowingSlides([{ layout: "content", title: "T", body: five }]);
-  const narrow = splitOverflowingSlides([{ layout: "image-split", title: "T", body: five }]);
+  // Seven bullets fit the full-width body box and do NOT fit the half-width
+  // one. A splitter measuring both against 671pt leaves the second overflowing.
+  //
+  // Re-pointed from five 110-character bullets when the estimator learned each
+  // face's real advance. That fixture had been calibrated against a measure a
+  // third too wide, and once the measure was right it fitted BOTH boxes — the
+  // check went red saying the narrow layout had stopped splitting, when what
+  // had actually changed was that the body now fitted. The property is
+  // unchanged; only the size of body that exercises it moved.
+  const seven = Array.from({ length: 7 }, (_, i) => `Bullet ${i + 1}: ${"x".repeat(80)}`).join("\n");
+  const wide = splitOverflowingSlides([{ layout: "content", title: "T", body: seven }]);
+  const narrow = splitOverflowingSlides([{ layout: "image-split", title: "T", body: seven }]);
   if (wide.length !== 1) fail(`the full-width layout split a body that fits it (${wide.length} slides)`);
   if (narrow.length < 2) fail(`the half-width layout did not split a body too tall for its box`);
   const eleven = Array.from({ length: 11 }, (_, i) => `Bullet ${i + 1}: ${"x".repeat(110)}`).join("\n");
@@ -3468,6 +3475,67 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     });
   }
   if (failures === before31) pass("every quadrant caption is drawn, and each sits in the quadrant its own axes name");
+
+  // ── 32 ─────────────────────────────────────────────────────────────────
+  // The estimator's width constants, pinned to how they were obtained.
+  //
+  // Measured with canvas measureText against Google's own webfonts, over four
+  // real lines of this deck's body copy: Roboto Light 0.4183em, Playfair
+  // Display 0.4652, Poppins 0.5256, Roboto bold caps 0.6163. The table carries
+  // those plus 6%. Re-measure before changing one — a number invented here
+  // silently splits slides that fit, or overruns ones that do not, and neither
+  // shows up as an error anywhere.
+  const before32 = failures;
+  console.log(`\n32. The estimator measures the face it is drawing, and only what is drawn`);
+  {
+    const near = (a: number, b: number, tol: number, what: string) => {
+      if (Math.abs(a - b) > tol) fail(`${what}: ${a.toFixed(4)} is not within ${tol} of ${b.toFixed(4)}`);
+    };
+    near(faceAdvance("Roboto"), 0.4183 * 1.06, 0.005, "Roboto's advance has drifted from the measured 0.4183em + 6%");
+    near(faceAdvance("Playfair Display"), 0.4652 * 1.06, 0.005, "Playfair Display's advance has drifted from the measured 0.4652em + 6%");
+    near(faceAdvance("Roboto", true), 0.6163 * 1.06, 0.005, "Roboto's caps advance has drifted from the measured 0.6163em + 6%");
+    // The body face must be measured NARROWER than the unnamed default: that
+    // gap is the whole fix. If a refactor stops passing the font through, this
+    // equalises and the unnecessary splits come back.
+    if (!(faceAdvance("Roboto") < faceAdvance() * 0.9)) {
+      fail("Roboto is no longer measured narrower than the unnamed default — the face is not reaching the estimator");
+    }
+    // An unnamed caller measures exactly as it did before the table existed.
+    // Widening the caps ratio globally instead broke the stacked-bar labels.
+    near(faceAdvance(), 0.55, 1e-9, "the unnamed default advance moved");
+    near(faceAdvance(undefined, true), 0.55 * CAPS_WIDEN, 1e-9, "the unnamed caps advance moved");
+
+    // Only what Slides will actually hold is counted. The house style opens
+    // almost every bullet with a bold lead-in, and the markers are stripped
+    // before drawing; counting them made a six-line body measure as ten.
+    const bold = "**Finding:** the crawl found no organisation schema at all";
+    const plain = "Finding: the crawl found no organisation schema at all";
+    if (estimateLines(bold, 432, 13, true, false, "Roboto") !== estimateLines(plain, 432, 13, true, false, "Roboto")) {
+      fail("bold markers are counted as text — a bulleted body measures wider than it draws");
+    }
+    const linked = "See [the ITM 2026 report](https://example.com/reports/itm-2026-full-edition) for the detail";
+    const bare = "See the ITM 2026 report for the detail";
+    if (estimateLines(linked, 432, 13, true, false, "Roboto") !== estimateLines(bare, 432, 13, true, false, "Roboto")) {
+      fail("a link's URL is counted as text — the whole address is measured and none of it is drawn");
+    }
+    // A body written in the house style splits at the same point as the same
+    // words written plainly. That equality IS the fix: the markers cost the
+    // slide nothing, where before they cost it a whole extra slide. Asserted
+    // as a sweep rather than at one length, because the interesting failure is
+    // a threshold that moves, not a single body that happens to fit.
+    const bullets = (n: number) => Array.from({ length: n }, (_, i) =>
+      `**Finding ${i + 1}:** the crawl found no organisation schema on any page`).join("\n");
+    for (let n = 3; n <= 10; n++) {
+      const b = bullets(n), plainer = b.replace(/\*\*/g, "");
+      const withMarks = splitOverflowingSlides([{ layout: "content", title: "Where the gaps are", body: b }]).length;
+      const without = splitOverflowingSlides([{ layout: "content", title: "Where the gaps are", body: plainer }]).length;
+      if (withMarks !== without) fail(`${n} bullets: bold lead-ins cost the slide ${withMarks - without} extra slide(s)`);
+    }
+    // Seven of them fit one slide, which the old measure denied.
+    const built = splitOverflowingSlides([{ layout: "content", title: "Where the gaps are", body: bullets(7) }]);
+    if (built.length !== 1) fail(`seven bold bullets were split across ${built.length} slides`);
+  }
+  if (failures === before32) pass("each face is measured as itself, unnamed callers are unchanged, and markup that is stripped is not counted");
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);
