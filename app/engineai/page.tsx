@@ -461,7 +461,12 @@ function EngineAIContent() {
       // Exclude design-mode sessions — they live in /engineai/design.
       let url = `/api/ai/conversations?workspaceId=${workspaceId}&mode=general`;
       if (customerId) url += `&customerId=${customerId}`;
-      const res = await fetch(url);
+      // NO CACHE. This list now carries live per-thread state (`generating`),
+      // and a cached payload shows a thread as idle while it is still working
+      // — or as working after it has finished. A conversation list was always
+      // slightly wrong when cached; with a running indicator on it, it is
+      // wrong in a way the user can see.
+      const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) return;
       const data = await res.json();
       setConversations(data.conversations || []);
@@ -505,11 +510,19 @@ function EngineAIContent() {
   // that never stops is worse than none. Polls only while at least one thread
   // is actually generating, and stops as soon as the last one lands, so an
   // idle sidebar costs nothing.
+  // Fast while something is running so a dot clears promptly; slow otherwise
+  // so a thread that STARTED generating in another tab, or that was already
+  // running when this list was first fetched, still shows up. Polling only
+  // while anyGenerating is a chicken and egg: if the first fetch misses the
+  // pending row, nothing ever looks again. Both stop when the tab is hidden.
   const anyGenerating = conversations.some((c) => c.generating);
   useEffect(() => {
-    if (!anyGenerating) return;
-    const id = window.setInterval(() => { fetchConversations(); }, 5000);
-    return () => window.clearInterval(id);
+    const period = anyGenerating ? 5000 : 20000;
+    const tick = () => { if (!document.hidden) fetchConversations(); };
+    const id = window.setInterval(tick, period);
+    const onVisible = () => { if (!document.hidden) fetchConversations(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { window.clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
   }, [anyGenerating, fetchConversations]);
 
   // Sync selectedId ↔ URL ?thread= and client ↔ URL ?client=
