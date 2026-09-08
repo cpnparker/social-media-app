@@ -14,7 +14,7 @@ import {
   buildSlideRequests, textBandsFor, splitOverflowingSlides, isoDate, isVisualSlide,
   estimateLines, drawnTextHeight, inheritContinuationImages, resolveDeckImages,
   niceTicks, isNumericColumn, fitCell, fitColumnWidths, parseAccents, parseBold, deckWarnings, cardGeometry, bandHeightFor,
-  CAPS_WIDEN, faceAdvance, TEXT_INSET_X, TEXT_INSET_Y, pillWidth, droppedContent, fitHeading, FOOTER_Y, captionParagraphs, splitStageOwner, slideStyle,
+  CAPS_WIDEN, faceAdvance, stripImageMarkdown, drawnText, TEXT_INSET_X, TEXT_INSET_Y, pillWidth, droppedContent, fitHeading, FOOTER_Y, captionParagraphs, splitStageOwner, slideStyle,
   type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel } from "../lib/slides/preview-model";
@@ -3512,6 +3512,25 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     const plain = "Finding: the crawl found no organisation schema at all";
     if (estimateLines(bold, 432, 13, true, false, "Roboto") !== estimateLines(plain, 432, 13, true, false, "Roboto")) {
       fail("bold markers are counted as text — a bulleted body measures wider than it draws");
+    }
+    // An IMAGE reduces to its caption. AuthorityOn's rebuilt audit documents
+    // carry every chart as `![caption](chart:id)`, and the whole string was
+    // being drawn on the slide verbatim — brackets, bang and the chart id.
+    // The caption carries the instrument and the date, so it is the half
+    // worth keeping.
+    const chart = "![Presence by product. The audit run, 2 September 2026.](chart:presence-by-product)";
+    if (stripImageMarkdown(chart) !== "Presence by product. The audit run, 2 September 2026.") {
+      fail(`image markdown is not reduced to its caption: got "${stripImageMarkdown(chart)}"`);
+    }
+    if (drawnText(chart).indexOf("chart:") >= 0 || drawnText(chart).indexOf("![") >= 0) {
+      fail("a chart id or image syntax survives into the text a slide draws");
+    }
+    // A real link still renders, and a bare exclamation mark is not eaten.
+    if (drawnText("See [the report](https://example.com/x) now") !== "See the report now") {
+      fail("stripping images broke ordinary link handling");
+    }
+    if (drawnText("Wow! [a link](https://e.com) here") !== "Wow! a link here") {
+      fail("an exclamation mark before a link was swallowed as image syntax");
     }
     const linked = "See [the ITM 2026 report](https://example.com/reports/itm-2026-full-edition) for the detail";
     const bare = "See the ITM 2026 report for the detail";

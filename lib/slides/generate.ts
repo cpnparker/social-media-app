@@ -343,6 +343,22 @@ interface BoxOptions {
  *  Returns the text with the markup removed, plus where each link now falls.
  *  Offsets are computed against the stripped string because that is what
  *  Slides will hold. */
+/** An IMAGE in markdown — `![caption](target)` — reduced to its caption.
+ *
+ *  Run before links, because an image is a link with a bang in front and the
+ *  link matcher would otherwise leave the bang and the brackets behind.
+ *
+ *  AuthorityOn's rebuilt audit documents carry their charts this way, as
+ *  `![Presence by product. The audit run, 2 September 2026.](chart:presence-by-product)`,
+ *  where the target is a `chart:` id rather than a URL. Nothing here can draw
+ *  that chart — the vectors are not on the API — but the caption carries the
+ *  instrument and the date, which is the part a slide needs. Untouched, the
+ *  whole string was drawn on the slide verbatim, brackets and id and all.
+ *  Any image markdown reduces the same way, whatever the target scheme. */
+export function stripImageMarkdown(raw: string): string {
+  return raw.replace(/!\[([^\]]*)\]\([^)\s]*\)/g, "$1");
+}
+
 function extractLinks(raw: string): { text: string; links: { start: number; end: number; url: string }[] } {
   const links: { start: number; end: number; url: string }[] = [];
   let text = "";
@@ -537,7 +553,7 @@ function textBox(
 ): Req[] {
   const source = (text ?? "").trim();
   if (!source) return [];
-  const { text: content, links } = extractLinks(source);
+  const { text: content, links } = extractLinks(stripImageMarkdown(source));
   if (!content) return [];
   // A blank line between bullets is how people type a list, and Slides turns
   // every paragraph into a bullet — including the empty ones, which drew a disc
@@ -1819,7 +1835,7 @@ export function pillWidth(token: string, size: number): number {
  *  on one, which is what the bullet slides splitting over two slides was. A
  *  markdown link is worse: the whole URL was counted and none of it is drawn. */
 export function drawnText(source: string): string {
-  return parseAccents(parseBold(extractLinks(source).text).text).text;
+  return parseAccents(parseBold(extractLinks(stripImageMarkdown(source)).text).text).text;
 }
 
 export function estimateLines(
