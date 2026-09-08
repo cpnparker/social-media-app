@@ -3537,6 +3537,66 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   }
   if (failures === before32) pass("each face is measured as itself, unnamed callers are unchanged, and markup that is stripped is not counted");
 
+  // ── 33 ─────────────────────────────────────────────────────────────────
+  // A chart callout carries the FINDING on these slides, and when it cannot
+  // fit beside its bar it falls back to a line under the source. That line was
+  // not in the plot's budget, so seven bars painted it straight through the
+  // footer — 354pt of overlap, on the slide whose whole point it was. The
+  // battery passed throughout, because no fixture put a callout on a full
+  // plot; that gap is what this closes. Swept across bar counts because the
+  // collision only appears once the plot is tall enough to push the source
+  // block down, and across title lengths because a two-line title moves the
+  // band top and was how every earlier collision hid.
+  const before33 = failures;
+  console.log(`\n33. A chart callout stays on the slide, whatever the plot does`);
+  {
+    const mk = (n: number, longTitle: boolean): SlideInput => ({
+      layout: "bar-chart",
+      title: longTitle ? "One model retrieves it and the other six do not reach it at all" : "One model retrieves it",
+      subtitle: "Presence: answers that named the report, of each model's audit answers.",
+      chart: {
+        source: "Audit run, 2 September 2026. 243 of 2,131 answers named the report.",
+        callout: { point: 0, text: "Unprompted, by the exhibit rule: Perplexity 67 of 275. The other six models: 0 of 1,646." },
+        series: [{ name: "Presence", points: Array.from({ length: n }, (_, i) => ({ label: `Model ${i + 1}`, value: 32 - i * 3 })) }],
+      },
+    } as SlideInput);
+    let sawFallback = 0;
+    for (const longTitle of [false, true]) {
+      for (const n of [2, 3, 5, 7, 8, 10, 12]) {
+        const rq: any[] = buildSlideRequests(mk(n, longTitle), 0, "n");
+        const boxes = rq.filter((r) => r.createShape).map((r) => {
+          const e = r.createShape.elementProperties;
+          return { id: r.createShape.objectId as string, x: e.transform.translateX, y: e.transform.translateY, w: e.size.width.magnitude, h: e.size.height.magnitude };
+        });
+        const textOf = (oid: string) => rq.find((q) => q.insertText?.objectId === oid)?.insertText?.text ?? "";
+        const callout = boxes.find((b) => b.id.endsWith("_cnote"));
+        if (!callout) fail(`${n} bars, ${longTitle ? "two-line" : "one-line"} title: the callout was not drawn at all`);
+        else {
+          if (callout.y + callout.h > FOOTER_Y - 1) {
+            fail(`${n} bars: the callout runs to ${(callout.y + callout.h).toFixed(0)}pt, into the footer at ${FOOTER_Y}`);
+          }
+          if (callout.y > GRID.bodyY) sawFallback += 1;
+        }
+        for (let i = 0; i < boxes.length; i++) {
+          for (let j = i + 1; j < boxes.length; j++) {
+            const a = boxes[i], b = boxes[j];
+            if (!textOf(a.id) || !textOf(b.id)) continue;
+            const ox = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+            const oy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+            if (ox > 0.6 && oy > 0.6) {
+              fail(`${n} bars, ${longTitle ? "two-line" : "one-line"} title: ${a.id.split("_").pop()} and ${b.id.split("_").pop()} overlap by ${ox.toFixed(0)}x${oy.toFixed(1)}pt`);
+            }
+          }
+        }
+      }
+    }
+    // The sweep has to actually REACH the fallback path, or it proves nothing
+    // about the case that broke: a callout that always fits beside its bar
+    // never exercises the reserved line.
+    if (sawFallback < 4) fail(`only ${sawFallback} of 14 fixtures put the callout on its fallback line — the sweep is not reaching the path that failed`);
+  }
+  if (failures === before33) pass("a chart callout keeps clear of the source, the footer and every other box, at every plot height");
+
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);
 })();

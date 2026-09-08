@@ -2200,7 +2200,15 @@ function barChartRequests(
   // The source line is part of the block, so it has to be inside the budget.
   // It was not: eight bars pushed it to y=397 on a 405pt canvas, where the
   // attribution for the numbers simply did not exist in the built deck.
-  const fit = fitRows(ranked.length, MAX_BARS, CHART.barHeight, CHART.barGap, SOURCE_BLOCK, bandTop);
+  // A callout that cannot fit beside its bar falls back to its own line under
+  // the source, so that line has to be in the budget too. It was not: seven
+  // bars put the fallback callout straight through the footer, 354pt of
+  // overlap, and the overlap battery never saw it because no fixture combined
+  // a callout with a full plot. The callout carries the finding on these
+  // slides, so losing it loses the point of the chart.
+  const calloutReserve = chart.callout?.text?.trim() ? 22 : 0;
+  const sourceBlock = SOURCE_BLOCK + calloutReserve;
+  const fit = fitRows(ranked.length, MAX_BARS, CHART.barHeight, CHART.barGap, sourceBlock, bandTop);
   // A ranking truncated to the top N drops the SMALLEST; a sequence truncated
   // from the front would drop the earliest months and lie about where the line
   // starts, so a sequence keeps its most recent points instead.
@@ -2222,7 +2230,7 @@ function barChartRequests(
   // Same treatment as the stats: five bars centre in the band, eight fill it.
   const bandH = GRID.bodyY + band - bandTop;
   const plotTop = bandTop +
-    Math.max(0, (bandH - (points.length * fit.rowH + SOURCE_BLOCK)) / 2);
+    Math.max(0, (bandH - (points.length * fit.rowH + sourceBlock)) / 2);
 
   // A highlighted bar is the whole point of the slide: it is drawn in the
   // accent and every other bar is muted to a neutral, so the eye lands on the
@@ -2290,7 +2298,7 @@ function barChartRequests(
   const note = barChartNote(chart, ranked.length, points.length);
   out.push(...textBox(id("csrc"), page, chart.source, TYPE.chartAxis, {
     x: GRID.margin, y: srcY,
-    width: GRID.contentWidth - (note ? noteWidth(note) : 0), height: 16,
+    width: GRID.contentWidth - (note ? noteWidth(note) : 0), height: 18,
   }));
   out.push(...noteBox(id("cdrop"), page, note, srcY));
 
@@ -2313,9 +2321,14 @@ function barChartRequests(
           x: valueEnd, y: y + 3, width: room, height: fit.barH,
         }));
       } else {
-        // No room beside the bar — the finding still gets said, on the source
-        // line's own slot, rather than silently dropped.
-        out.push(...noteBox(id("cnote"), page, chart.callout.text, srcY + 18));
+        // No room beside the bar — the finding still gets said, on its own
+        // reserved line under the source, rather than silently dropped.
+        // Two points below the source box, on the line reserved for it above.
+        // NOT clamped upward against the footer: a clamp rode the callout back
+        // into the source line, trading a collision with the brand mark for a
+        // collision with the attribution. The reserve is what keeps it on the
+        // slide; if it ever cannot fit, the fix is more reserve, not a clamp.
+        out.push(...noteBox(id("cnote"), page, chart.callout.text, srcY + 20));
       }
     }
   }
