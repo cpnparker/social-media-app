@@ -2703,7 +2703,18 @@ export function deckWarnings(slides: SlideInput[]): string {
     notes.push(`slide${dashed.length > 1 ? "s" : ""} ${dashed.join(", ")} use em or en dashes — house style is hyphens, rewrite those lines`);
   }
   if (!notes.length) return "";
-  return ` TELL THE USER, briefly and without apologising: ${notes.join("; ")}.`;
+  // ADVISORY, and the wording has to say so. The deck is already built and on
+  // screen by the time these are read. A run that saw three notes at once —
+  // dropped fields, a run of dark grounds, and em dashes — answered by
+  // REBUILDING the whole deck, which costs a second full generation including
+  // its photographs, and the turn was cut off mid-rebuild with the first deck
+  // still the only one that existed. Relaying takes a sentence; rebuilding
+  // takes the rest of the turn.
+  return ` The deck is BUILT and shown. These notes are advisory, not errors,` +
+    ` and not a rebuild instruction: relay them to the user in one short line,` +
+    ` without apologising, and OFFER to redraw. Do not resend the deck in this` +
+    ` turn unless they ask — a redraw is a second full generation and the turn` +
+    ` has a hard time limit. Notes: ${notes.join("; ")}.`;
 }
 
 /** Where a prose slide's picture goes: down the right, bleeding to the right
