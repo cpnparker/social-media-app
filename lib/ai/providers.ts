@@ -8240,16 +8240,19 @@ export function createStreamingResponse(
             // Fallback to Grok if Anthropic fails for any reason (rate limits, overloaded, timeouts, etc.)
             const errMsg = anthropicErr?.message || String(anthropicErr);
             const status = anthropicErr?.status || 0;
-            console.warn(`[AI] Anthropic failed (status=${status}, ${errMsg.slice(0, 150)}), falling back to Grok`);
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ fallback: true, reason: "Claude unavailable — using Grok" })}\n\n`));
-            result = await streamXAI(messages, config, "grok-4.3", controller, encoder);
+            console.warn(`[AI] Anthropic failed (status=${status}, ${errMsg.slice(0, 150)}), falling back to ${FALLBACK_MODEL}`);
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ fallback: true, reason: "Claude unavailable — using Grok 4.6" })}\n\n`));
+            // grok-4.6, not the grok-4.3 this used for months. 4.3 measures 38
+            // on Artificial Analysis against 4.6's 60.9, so every Claude
+            // failure was landing on the weakest model in the picker.
+            result = await streamXAI(messages, config, FALLBACK_MODEL, controller, encoder);
             console.log(`[AI] Grok fallback result: ${result.fullText.length} chars, ${result.inputTokens} in, ${result.outputTokens} out`);
           }
         } else if (modelInfo.provider === "gemini") {
-          result = await withClaudeFallback("Gemini", messages, config, controller, encoder,
+          result = await withGrokFallback("Gemini", messages, config, controller, encoder,
             () => streamGemini(messages, config, modelInfo.apiModel, controller, encoder));
         } else if (modelInfo.provider === "openai") {
-          result = await withClaudeFallback("OpenAI", messages, config, controller, encoder,
+          result = await withGrokFallback("OpenAI", messages, config, controller, encoder,
             () => streamOpenAI(messages, config, modelInfo.apiModel, controller, encoder));
         } else if (modelInfo.provider === "deepseek") {
           // DeepSeek is OpenAI-compatible — reuse streamOpenAI with a different client.
@@ -8261,7 +8264,7 @@ export function createStreamingResponse(
           const prevImageGen = config.imageGeneration;
           config.imageGeneration = false;
           try {
-            result = await withClaudeFallback("DeepSeek", messages, config, controller, encoder,
+            result = await withGrokFallback("DeepSeek", messages, config, controller, encoder,
               () => streamOpenAI(
                 messages,
                 config,
@@ -8274,7 +8277,7 @@ export function createStreamingResponse(
             config.imageGeneration = prevImageGen;
           }
         } else if (modelInfo.provider === "perplexity") {
-          result = await withClaudeFallback("Perplexity", messages, config, controller, encoder,
+          result = await withGrokFallback("Perplexity", messages, config, controller, encoder,
             () => streamPerplexity(messages, config, modelInfo.apiModel, controller, encoder));
         } else {
           // xAI (Grok) — with fallback to Anthropic on failure or empty response
@@ -8384,7 +8387,21 @@ export function createStreamingResponse(
   });
 }
 
-/** Run a provider chain, and on failure log it and fall back to Claude.
+/** The house fallback model.
+ *
+ *  Grok 4.6, on measured price/performance rather than habit: Artificial
+ *  Analysis 60.9 at $2/$6 against Claude Sonnet 5's 55.3 at $2/$10 (audit of
+ *  4 Sep 2026). It beats Sonnet on BOTH axes, so falling back to Claude was
+ *  paying more for a weaker answer.
+ *
+ *  NOT grok-4.3, which is what the Anthropic path fell back to for months.
+ *  That slug measures 38 — the weakest model in this picker, ~23 points below
+ *  4.6 — so "fall back to Grok" done carelessly would have made every Claude
+ *  failure land on the worst option available. The two slugs differ by one
+ *  character and by a third of the quality range. */
+const FALLBACK_MODEL = "grok-4.6";
+
+/** Run a provider chain, and on failure log it and fall back.
  *
  *  Anthropic has fallen back to Grok and Grok to Claude for a long time; the
  *  other four chains had no catch at all, so a failure on any of them threw
@@ -8392,10 +8409,10 @@ export function createStreamingResponse(
  *  nothing. The user saw "Generation failed — please retry" and the logs held
  *  two setup lines and silence. That is how a GPT-6 Astra turn was lost.
  *
- *  Same shape as the xAI path deliberately, including telling the user which
- *  model actually answered — a silent substitution is worse than the failure,
- *  because the reply then carries the wrong model's name in the ledger. */
-async function withClaudeFallback(
+ *  Tells the user which model actually answered — a silent substitution is
+ *  worse than the failure, because the reply then carries the wrong model's
+ *  name in the ledger. */
+async function withGrokFallback(
   label: string,
   messages: AIMessage[],
   config: AIProviderConfig,
@@ -8407,9 +8424,9 @@ async function withClaudeFallback(
     return await run();
   } catch (err: any) {
     const errMsg = err?.message || String(err);
-    console.warn(`[AI] ${label} failed (status=${err?.status ?? "?"}, ${errMsg.slice(0, 200)}), falling back to Claude`);
-    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ fallback: true, reason: `${label} unavailable — using Claude` })}\n\n`));
-    return await streamAnthropic(messages, config, "claude-sonnet-5", controller, encoder);
+    console.warn(`[AI] ${label} failed (status=${err?.status ?? "?"}, ${errMsg.slice(0, 200)}), falling back to ${FALLBACK_MODEL}`);
+    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ fallback: true, reason: `${label} unavailable — using Grok 4.6` })}\n\n`));
+    return await streamXAI(messages, config, FALLBACK_MODEL, controller, encoder);
   }
 }
 
