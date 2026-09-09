@@ -47,57 +47,63 @@ export async function GET(req: NextRequest) {
       ])
     );
 
-    // Build query — always exclude incognito conversations
-    let query = intelligenceDb
-      .from("ai_conversations")
-      .select("*")
-      .eq("id_workspace", workspaceId)
-      .eq("flag_incognito", 0);
-
+    // Build query — always exclude incognito conversations.
+    //
+    // Applied through a function rather than inline because the pinned-thread
+    // top-up below runs the SAME access rules over a different id set. Two
+    // copies of an access filter is how one of them ends up looser than the
+    // other, and this one decides who can read whose conversations.
+    const applyScope = (q: any) => {
+      q = q.eq("id_workspace", workspaceId).eq("flag_incognito", 0);
     if (visibility === "private") {
       // User's own private conversations + shared-with-me private conversations
       if (sharedConvoIds.length > 0) {
-        query = query.or(
+        q = q.or(
           `and(type_visibility.eq.private,user_created.eq.${userId}),and(type_visibility.eq.private,id_conversation.in.(${sharedConvoIds.join(",")}))`
         );
       } else {
-        query = query.eq("type_visibility", "private").eq("user_created", userId);
+        q = q.eq("type_visibility", "private").eq("user_created", userId);
       }
     } else if (visibility === "team") {
-      query = query.eq("type_visibility", "team");
+      q = q.eq("type_visibility", "team");
     } else {
       // Default: user's private + shared-with-me + all team conversations
       if (sharedConvoIds.length > 0) {
-        query = query.or(
+        q = q.or(
           `and(type_visibility.eq.private,user_created.eq.${userId}),and(type_visibility.eq.private,id_conversation.in.(${sharedConvoIds.join(",")})),type_visibility.eq.team`
         );
       } else {
-        query = query.or(
+        q = q.or(
           `and(type_visibility.eq.private,user_created.eq.${userId}),type_visibility.eq.team`
         );
       }
     }
 
     if (contentObjectId) {
-      query = query.eq("id_content", parseInt(contentObjectId, 10));
+      q = q.eq("id_content", parseInt(contentObjectId, 10));
     }
 
     if (customerId === "general") {
       // "General" = show ALL threads across all clients (no client filter)
     } else if (customerId) {
-      query = query.eq("id_client", parseInt(customerId, 10));
+      q = q.eq("id_client", parseInt(customerId, 10));
     }
 
     if (mode === "design") {
-      query = query.eq("type_conversation_mode", "design");
+      q = q.eq("type_conversation_mode", "design");
     } else if (mode === "meeting") {
-      query = query.eq("type_conversation_mode", "meeting");
+      q = q.eq("type_conversation_mode", "meeting");
     } else if (mode === "general") {
       // Default chat surface — exclude design AND meeting sessions so they
       // don't pollute the main EngineAI list (column is NOT NULL DEFAULT
       // 'general', so a plain not-in is safe).
-      query = query.not("type_conversation_mode", "in", '("design","meeting")');
+      q = q.not("type_conversation_mode", "in", '("design","meeting")');
     }
+
+      return q;
+    };
+
+    let query = applyScope(intelligenceDb.from("ai_conversations").select("*"));
 
     if (search) {
       // Search across title AND summary (covers conversation content)
@@ -110,6 +116,39 @@ export async function GET(req: NextRequest) {
       .limit(limit);
 
     if (error) throw error;
+
+    // PINNED THREADS ARE ALWAYS INCLUDED, whatever the date window.
+    //
+    // Pinning was a client-side SORT over a server-side page that knew nothing
+    // about pins. The page is the 100 most recently updated conversations, so
+    // the moment a workspace holds more than that, a pinned thread older than
+    // the cutoff simply is not in the payload — and a pin quietly means the
+    // opposite of what it says. Chris lost all four of his that way: still
+    // stored, none returned, the oldest row in the page being three weeks
+    // newer than any of them.
+    //
+    // Skipped while SEARCHING: a pin means keep this to hand, not force it
+    // into results it does not match.
+    if (!search) {
+      const have = new Set((conversations || []).map((c: any) => c.id_conversation));
+      const { data: prefRow } = await supabase
+        .from("users")
+        .select("data_pinned_conversations")
+        .eq("id_user", userId)
+        .maybeSingle();
+      const pinnedIds: string[] = Array.isArray((prefRow as any)?.data_pinned_conversations)
+        ? (prefRow as any).data_pinned_conversations
+        : [];
+      const absent = pinnedIds.filter((id) => id && !have.has(id));
+      if (absent.length) {
+        // Same access rules as the page above, by construction rather than by
+        // a second copy of them — a pin must never widen what a user can read.
+        const { data: pinnedRows } = await applyScope(
+          intelligenceDb.from("ai_conversations").select("*")
+        ).in("id_conversation", absent);
+        if (pinnedRows?.length) (conversations || []).push(...pinnedRows);
+      }
+    }
 
     // If searching and few results from title/summary, also search message content
     let messageMatchIds: string[] = [];
