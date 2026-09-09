@@ -8246,9 +8246,11 @@ export function createStreamingResponse(
             console.log(`[AI] Grok fallback result: ${result.fullText.length} chars, ${result.inputTokens} in, ${result.outputTokens} out`);
           }
         } else if (modelInfo.provider === "gemini") {
-          result = await streamGemini(messages, config, modelInfo.apiModel, controller, encoder);
+          result = await withClaudeFallback("Gemini", messages, config, controller, encoder,
+            () => streamGemini(messages, config, modelInfo.apiModel, controller, encoder));
         } else if (modelInfo.provider === "openai") {
-          result = await streamOpenAI(messages, config, modelInfo.apiModel, controller, encoder);
+          result = await withClaudeFallback("OpenAI", messages, config, controller, encoder,
+            () => streamOpenAI(messages, config, modelInfo.apiModel, controller, encoder));
         } else if (modelInfo.provider === "deepseek") {
           // DeepSeek is OpenAI-compatible — reuse streamOpenAI with a different client.
           // Image generation isn't supported, so force it off regardless of UI toggle.
@@ -8259,19 +8261,21 @@ export function createStreamingResponse(
           const prevImageGen = config.imageGeneration;
           config.imageGeneration = false;
           try {
-            result = await streamOpenAI(
-              messages,
-              config,
-              modelInfo.apiModel,
-              controller,
-              encoder,
-              { clientOverride: getDeepSeekClient(), providerLabel: "DeepSeek" },
-            );
+            result = await withClaudeFallback("DeepSeek", messages, config, controller, encoder,
+              () => streamOpenAI(
+                messages,
+                config,
+                modelInfo.apiModel,
+                controller,
+                encoder,
+                { clientOverride: getDeepSeekClient(), providerLabel: "DeepSeek" },
+              ));
           } finally {
             config.imageGeneration = prevImageGen;
           }
         } else if (modelInfo.provider === "perplexity") {
-          result = await streamPerplexity(messages, config, modelInfo.apiModel, controller, encoder);
+          result = await withClaudeFallback("Perplexity", messages, config, controller, encoder,
+            () => streamPerplexity(messages, config, modelInfo.apiModel, controller, encoder));
         } else {
           // xAI (Grok) — with fallback to Anthropic on failure or empty response
           try {
@@ -8362,6 +8366,15 @@ export function createStreamingResponse(
         }
       } catch (error: any) {
         const errMsg = error?.message || "Unknown error";
+        // LOG IT. This catch reported the failure to the browser and to nobody
+        // else, so a turn that died here left two setup lines in the log and
+        // then silence — no provider, no status, no message. A GPT-6 Astra
+        // turn failed exactly that way and was undiagnosable from the logs
+        // alone. The user's side already showed a bare "Generation failed".
+        console.error(
+          `[AI] Stream failed for model=${config.model} status=${error?.status ?? "?"}: ${errMsg.slice(0, 300)}`,
+          error?.stack ? String(error.stack).split("\n").slice(0, 3).join(" | ") : ""
+        );
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: errMsg })}\n\n`));
       } finally {
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
@@ -8369,6 +8382,35 @@ export function createStreamingResponse(
       }
     },
   });
+}
+
+/** Run a provider chain, and on failure log it and fall back to Claude.
+ *
+ *  Anthropic has fallen back to Grok and Grok to Claude for a long time; the
+ *  other four chains had no catch at all, so a failure on any of them threw
+ *  past the dispatch to an outer catch that told the browser and logged
+ *  nothing. The user saw "Generation failed — please retry" and the logs held
+ *  two setup lines and silence. That is how a GPT-6 Astra turn was lost.
+ *
+ *  Same shape as the xAI path deliberately, including telling the user which
+ *  model actually answered — a silent substitution is worse than the failure,
+ *  because the reply then carries the wrong model's name in the ledger. */
+async function withClaudeFallback(
+  label: string,
+  messages: AIMessage[],
+  config: AIProviderConfig,
+  controller: ReadableStreamDefaultController,
+  encoder: TextEncoder,
+  run: () => Promise<StreamResult>
+): Promise<StreamResult> {
+  try {
+    return await run();
+  } catch (err: any) {
+    const errMsg = err?.message || String(err);
+    console.warn(`[AI] ${label} failed (status=${err?.status ?? "?"}, ${errMsg.slice(0, 200)}), falling back to Claude`);
+    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ fallback: true, reason: `${label} unavailable — using Claude` })}\n\n`));
+    return await streamAnthropic(messages, config, "claude-sonnet-5", controller, encoder);
+  }
 }
 
 /* ─────────────── Anthropic Streaming ─────────────── */

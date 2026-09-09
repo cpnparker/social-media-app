@@ -1963,19 +1963,27 @@ export async function POST(
         const reader = aiStream.getReader();
         let capturedText = "";
         let clientDisconnected = false;
+        // The provider's own error message, if the turn died. The stream
+        // carries it to the browser as an `error` event and it was going
+        // nowhere else, so the ROW got the generic "Generation failed" and the
+        // user had nothing to act on — not the provider, not the status, not
+        // whether retrying was even worth it.
+        let streamError = "";
         try {
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
 
-            // Capture text tokens for memory extraction
-            if (memoryEnabled) {
+            // Scan the frames. Tokens are only accumulated when memory
+            // extraction will use them; the error is always worth catching.
+            {
               const chunk = decoder.decode(value, { stream: true });
               for (const line of chunk.split("\n")) {
                 if (line.startsWith("data: ") && line.slice(6) !== "[DONE]") {
                   try {
                     const parsed = JSON.parse(line.slice(6));
-                    if (parsed.token) capturedText += parsed.token;
+                    if (memoryEnabled && parsed.token) capturedText += parsed.token;
+                    if (typeof parsed.error === "string" && parsed.error.trim()) streamError = parsed.error;
                   } catch {}
                 }
               }
@@ -2008,7 +2016,11 @@ export async function POST(
             await intelligenceDb
               .from("ai_messages")
               .update({
-                document_message: "Generation failed — please retry.",
+                // Say WHAT failed. "Generation failed — please retry" told the
+                // user nothing and told the next person debugging it less.
+                document_message: streamError
+                  ? `Generation failed: ${streamError.slice(0, 400)}`
+                  : "Generation failed — please retry.",
                 status_message: "failed",
               })
               .eq("id_message", pendingMessageId)
