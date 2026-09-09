@@ -24,6 +24,7 @@ import {
   isHardStop, HARD_END_RE, BARE_STOP_RE,
   idleVerdict, IDLE_WARN_MS, IDLE_END_MS,
   toolLabel, toolArgsPhrase, TOOL_LABEL_TEXT,
+  shouldSendMicAudio, shouldPlayAssistantAudio,
 } from "../lib/ai/voice-session";
 
 let failures = 0;
@@ -203,6 +204,51 @@ if (process.argv.indexOf("--self-test") >= 0) {
 
   if (selfFails) { console.log(`\n  ${selfFails} detector(s) do not work — nothing above can be trusted.\n`); process.exit(2); }
   console.log("  — all detectors confirmed working");
+}
+
+console.log("\n5. Mute stops the microphone and the spend, and NOT the answer");
+{
+  const before = failures;
+  const live = { paused: false, muted: false, micHold: false, socketOpen: true };
+
+  // THE MONEY ASSERTION. A realtime session bills for the audio it is fed, so
+  // a mute that leaves this true costs exactly what no mute costs. Chris asked
+  // for mute specifically so it would stop spending while it finished an
+  // answer.
+  if (shouldSendMicAudio({ ...live, muted: true })) {
+    fail("muted still sends microphone audio upstream — the session keeps billing while 'muted'");
+  }
+  if (!shouldSendMicAudio(live)) fail("an ordinary live session does not send microphone audio at all");
+
+  // THE ASYMMETRY, which is the whole feature. Mute exists so a question
+  // already asked keeps being answered while the room carries on talking. A
+  // mute that also stopped the reply is Pause with a different icon, and the
+  // obvious "tidy-up" — reusing the paused guard for both — is exactly what
+  // would break it.
+  if (!shouldPlayAssistantAudio({ paused: false, muted: true })) {
+    fail("muted drops the assistant's audio — that is Pause, not Mute, and it loses the answer already asked for");
+  }
+
+  // Pause still stops BOTH. Mute must not have loosened it.
+  if (shouldSendMicAudio({ ...live, paused: true })) fail("paused still sends microphone audio");
+  if (shouldPlayAssistantAudio({ paused: true, muted: false })) fail("paused no longer stops assistant audio");
+
+  // The two other reasons to withhold a frame still hold.
+  if (shouldSendMicAudio({ ...live, socketOpen: false })) fail("audio is sent on a closed socket");
+  if (shouldSendMicAudio({ ...live, micHold: true })) fail("micHold no longer withholds audio — the wake path will deliver the command twice");
+
+  // VoiceDock must USE the seam rather than keep its own copy of the rule.
+  // A predicate nothing calls is the failure this repo has shipped twice.
+  const dock = readFileSync("components/ai-writer/VoiceDock.tsx", "utf8");
+  if (!dock.includes("shouldSendMicAudio(")) fail("VoiceDock does not call shouldSendMicAudio — the rule above guards nothing");
+  if (!dock.includes("shouldPlayAssistantAudio(")) fail("VoiceDock does not call shouldPlayAssistantAudio — the rule above guards nothing");
+  // Muting mid-sentence must discard what the server already holds, or its
+  // voice-activity detector commits the half-sentence and answers it. That is
+  // the reported complaint: carrying on talking produced unasked-for replies.
+  if (!dock.includes("input_audio_buffer.clear")) {
+    fail("mute does not clear the upstream input buffer — a half-sentence already buffered still gets committed and answered");
+  }
+  if (failures === before) pass("mute stops the audio leaving and the buffer upstream, pause stops both, and the answer survives a mute");
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);

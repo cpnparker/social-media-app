@@ -134,3 +134,36 @@ export function toolArgsPhrase(raw: unknown): string {
   }
   return out.join(" · ");
 }
+
+/**
+ * Whether a microphone frame may be sent upstream.
+ *
+ * Here rather than inline in VoiceDock because this is the line that decides
+ * what the session COSTS: a realtime session bills for the audio it is fed, so
+ * a mute that only silences the speakers is billed exactly like no mute at
+ * all. VoiceDock cannot be imported by a check (it opens a socket and a
+ * microphone at mount), and a check that re-implemented this would be testing
+ * its own copy — which this repo has shipped twice.
+ *
+ * `micHold` is the wake path: the captured command has not been flushed yet,
+ * and live audio appended now would deliver the same sentence twice.
+ */
+export function shouldSendMicAudio(s: {
+  paused: boolean; muted: boolean; micHold: boolean; socketOpen: boolean;
+}): boolean {
+  if (!s.socketOpen) return false;
+  return !s.paused && !s.muted && !s.micHold;
+}
+
+/**
+ * Whether an assistant audio delta may be played.
+ *
+ * MUTED IS ABSENT FROM THIS ON PURPOSE, and that asymmetry is the entire
+ * feature. Mute exists so a question already asked keeps being answered while
+ * the room carries on talking; a mute that also stopped the reply would just
+ * be Pause with a different icon. Pause stops both, which is what pause is
+ * for.
+ */
+export function shouldPlayAssistantAudio(s: { paused: boolean; muted: boolean }): boolean {
+  return !s.paused;
+}

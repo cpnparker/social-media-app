@@ -16,12 +16,13 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Pause, Play, Square, Database, Brain, ListChecks, MessageSquare, Sparkles, Loader2 } from "lucide-react";
+import { Pause, Play, Square, Mic, MicOff, Database, Brain, ListChecks, MessageSquare, Sparkles, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
   HARD_END_RE, BARE_STOP_RE, IDLE_WARN_MS, IDLE_END_MS,
   toolLabel, toolArgsPhrase,
+  shouldSendMicAudio, shouldPlayAssistantAudio,
 } from "@/lib/ai/voice-session";
 
 type VoiceStatus = "connecting" | "listening" | "thinking" | "speaking" | "paused" | "error";
@@ -159,6 +160,17 @@ export default function VoiceDock({
   const pendingResponseCreateRef = useRef(false);
   const pendingCreateRound1Ref = useRef(false);
   const pausedRef = useRef(false);
+  /** MUTED IS NOT PAUSED, and the difference is the whole point of it.
+   *
+   *  Pause stops the reply as well: it flushes playback and drops every
+   *  assistant audio delta. That is wrong for the case this exists for —
+   *  asking a question, then carrying on talking to the people in the room
+   *  while it answers. The session picked that side conversation up as new
+   *  prompts and answered them.
+   *
+   *  Muted stops the microphone reaching xAI and leaves the answer alone. */
+  const mutedRef = useRef(false);
+  const [muted, setMuted] = useState(false);
   const statusRef = useRef<VoiceStatus>("connecting");
   const prePauseStatusRef = useRef<VoiceStatus>("listening");
   // Transcript items keyed by the realtime API's item_id. xAI re-emits the
@@ -532,6 +544,8 @@ export default function VoiceDock({
     if (!open) return;
     closingRef.current = false;
     pausedRef.current = false;
+    mutedRef.current = false;
+    setMuted(false);
     endingRef.current = false;
     followUpDeadlineRef.current = null;
     initialSentRef.current = false;
@@ -784,7 +798,14 @@ export default function VoiceDock({
             // flushed yet, and appending live audio now would deliver the same
             // sentence twice. Dropped rather than queued on purpose — this is
             // the tail of audio the wake engine already holds in full.
-            if (pausedRef.current || micHoldRef.current || ws.readyState !== WebSocket.OPEN) return;
+            // The rule lives in lib/ai/voice-session.ts so a check can import
+            // it: this is the line that decides what the session costs.
+            if (!shouldSendMicAudio({
+              paused: pausedRef.current,
+              muted: mutedRef.current,
+              micHold: micHoldRef.current,
+              socketOpen: ws.readyState === WebSocket.OPEN,
+            })) return;
             const f32 = e.inputBuffer.getChannelData(0);
             ws.send(
               JSON.stringify({
@@ -875,8 +896,9 @@ export default function VoiceDock({
             }
             case "response.output_audio.delta":
             case "response.audio.delta": {
-              // Drop assistant audio entirely while paused
-              if (pausedRef.current) break;
+              // Paused drops the reply; MUTED DOES NOT. Same seam as the mic
+              // guard above, so the asymmetry is asserted rather than assumed.
+              if (!shouldPlayAssistantAudio({ paused: pausedRef.current, muted: mutedRef.current })) break;
               // A cancelled response's in-flight deltas are not played. The
               // probe measured zero leakage when cancel is sent at created,
               // but a delta already on the wire costs nothing to drop and a
@@ -1386,6 +1408,33 @@ export default function VoiceDock({
     onClose();
   };
 
+  /** Mute: stop listening, keep answering.
+   *
+   *  Three things happen, and the third is the one that matters for the
+   *  complaint this came from. The track is disabled, so the browser's own
+   *  microphone indicator goes out and nothing is captured. The send guard
+   *  stops audio reaching xAI, which is where the money goes. And the input
+   *  buffer is CLEARED upstream, so the half-sentence already sitting in it is
+   *  discarded rather than committed by the server's voice-activity detector
+   *  and answered as a question nobody asked. Without that last step, muting
+   *  mid-sentence still buys one more unwanted reply.
+   *
+   *  Playback is deliberately untouched: the answer already asked for keeps
+   *  arriving, which is the difference from Pause. */
+  const toggleMute = () => {
+    if (statusRef.current === "connecting" || statusRef.current === "error") return;
+    const next = !mutedRef.current;
+    mutedRef.current = next;
+    setMuted(next);
+    micStreamRef.current?.getAudioTracks().forEach((t) => { t.enabled = !next; });
+    if (next) {
+      try {
+        wsRef.current?.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
+      } catch { /* socket may be closing; the send guard still holds */ }
+      setUserSaid("");
+    }
+  };
+
   const togglePause = () => {
     if (statusRef.current === "connecting" || statusRef.current === "error") return;
     if (pausedRef.current) {
@@ -1458,6 +1507,15 @@ export default function VoiceDock({
             className="flex items-center gap-2 text-[11px] text-white/50 leading-tight"
           >
             <span>{STATUS_TEXT[status]}</span>
+            {/* Said in words, not only as a button colour. A microphone the
+                user believes is live when it is not — or the reverse — is the
+                one state in this dock worth spelling out. */}
+            {muted && (
+              <span className="flex items-center gap-1 text-amber-300/90 shrink-0">
+                <MicOff className="h-3 w-3" />
+                Mic muted
+              </span>
+            )}
             <span className="text-white/30 tabular-nums">
               {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
             </span>
@@ -1513,7 +1571,22 @@ export default function VoiceDock({
         </div>
 
         {/* Controls — Stop is the primary action (ends the conversation;
-            wake mode returns to local-only listening). Pause is secondary. */}
+            wake mode returns to local-only listening). Mute and Pause are
+            secondary, and they are NOT the same thing: mute keeps the answer
+            coming and only stops listening, pause stops both. */}
+        <button
+          onClick={toggleMute}
+          disabled={status === "connecting" || status === "error"}
+          className={cn(
+            "h-9 w-9 shrink-0 rounded-full flex items-center justify-center transition-colors disabled:opacity-40",
+            muted ? "bg-amber-500/90 hover:bg-amber-500 text-white" : "bg-white/5 hover:bg-white/15 text-white/70"
+          )}
+          aria-label={muted ? "Unmute the microphone" : "Mute the microphone (it keeps answering)"}
+          aria-pressed={muted}
+          title={muted ? "Unmute — start listening again" : "Mute — stop listening, keep the answer coming"}
+        >
+          {muted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+        </button>
         <button
           onClick={togglePause}
           disabled={status === "connecting" || status === "error"}
