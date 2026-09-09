@@ -131,10 +131,15 @@ export async function GET(req: NextRequest) {
     // into results it does not match.
     if (!search) {
       const have = new Set((conversations || []).map((c: any) => c.id_conversation));
-      const { data: prefRow } = await supabase
-        .from("users")
+      // SAME SOURCE THE PREFERENCES ROUTE USES: intelligence users_access,
+      // keyed by workspace and user_target. My first attempt read
+      // supabase.users by id_user, which matches nothing and returns no error
+      // — so the top-up silently did nothing and the pins stayed missing.
+      const { data: prefRow } = await intelligenceDb
+        .from("users_access")
         .select("data_pinned_conversations")
-        .eq("id_user", userId)
+        .eq("id_workspace", workspaceId)
+        .eq("user_target", userId)
         .maybeSingle();
       const pinnedIds: string[] = Array.isArray((prefRow as any)?.data_pinned_conversations)
         ? (prefRow as any).data_pinned_conversations
