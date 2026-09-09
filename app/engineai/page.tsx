@@ -112,6 +112,35 @@ interface OptimizerArticle {
   updatedAt: string;
 }
 
+/** Do two conversation lists differ in anything the sidebar DRAWS?
+ *
+ *  Only the fields a row renders, plus id and order. A background poll returns
+ *  a fresh array every time; without this every idle tick re-renders every row
+ *  to paint exactly the same pixels. Anything a row starts drawing has to be
+ *  added here, which is the cost of the optimisation and the reason the list
+ *  is written out rather than JSON.stringify'd over the whole object — a
+ *  server-side field nobody displays would otherwise churn the list forever.
+ */
+function sameConversationList(a: AIConversation[], b: AIConversation[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i], y = b[i];
+    if (
+      x.id !== y.id ||
+      x.title !== y.title ||
+      x.updatedAt !== y.updatedAt ||
+      x.generating !== y.generating ||
+      x.customerName !== y.customerName ||
+      x.customerId !== y.customerId ||
+      x.visibility !== y.visibility ||
+      x.sharedWithMe !== y.sharedWithMe ||
+      x.sharedByName !== y.sharedByName
+    ) return false;
+  }
+  return true;
+}
+
 export default function EngineAIPage() {
   return (
     <Suspense>
@@ -454,9 +483,15 @@ function EngineAIContent() {
     : "?";
 
   // Fetch conversations
-  const fetchConversations = useCallback(async () => {
+  // `quiet` is for BACKGROUND refreshes. The sidebar replaces the whole list
+  // with a centred spinner while `loading` is true (EngineAISidebar, the
+  // conversationsLoading branch), so a poll that toggles it makes the list
+  // vanish and come back on every tick. That is fine for the first load, where
+  // there is nothing to blank, and unacceptable on a timer — the running-thread
+  // poll I added made the sidebar flash every few seconds.
+  const fetchConversations = useCallback(async (opts?: { quiet?: boolean }) => {
     if (!workspaceId) return;
-    setLoading(true);
+    if (!opts?.quiet) setLoading(true);
     try {
       // Exclude design-mode sessions — they live in /engineai/design.
       let url = `/api/ai/conversations?workspaceId=${workspaceId}&mode=general`;
@@ -469,11 +504,16 @@ function EngineAIContent() {
       const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) return;
       const data = await res.json();
-      setConversations(data.conversations || []);
+      const next = data.conversations || [];
+      // Don't re-render when nothing moved. A background poll that replaces
+      // the array every tick re-renders every row for no reason; on an idle
+      // sidebar the payload is usually identical. Compares only the fields the
+      // rows actually draw, so a change to any of them still lands.
+      setConversations((prev) => (sameConversationList(prev, next) ? prev : next));
     } catch (err) {
       console.error("Failed to fetch conversations:", err);
     } finally {
-      setLoading(false);
+      if (!opts?.quiet) setLoading(false);
     }
   }, [workspaceId, customerId]);
 
@@ -517,10 +557,13 @@ function EngineAIContent() {
   // pending row, nothing ever looks again. Both stop when the tab is hidden.
   const anyGenerating = conversations.some((c) => c.generating);
   useEffect(() => {
-    const period = anyGenerating ? 5000 : 20000;
-    const tick = () => { if (!document.hidden) fetchConversations(); };
+    // Quiet, always: see fetchConversations. 5s while something is running so
+    // a dot clears promptly; a minute otherwise, which is only there to catch
+    // a thread started in another tab and is not worth a query every 20s.
+    const period = anyGenerating ? 5000 : 60000;
+    const tick = () => { if (!document.hidden) fetchConversations({ quiet: true }); };
     const id = window.setInterval(tick, period);
-    const onVisible = () => { if (!document.hidden) fetchConversations(); };
+    const onVisible = () => { if (!document.hidden) fetchConversations({ quiet: true }); };
     document.addEventListener("visibilitychange", onVisible);
     return () => { window.clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
   }, [anyGenerating, fetchConversations]);
