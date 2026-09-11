@@ -1,43 +1,7 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
-import {
-  Lock,
-  Users,
-  MoreHorizontal,
-  Download,
-  Trash2,
-  Pencil,
-  Globe,
-  ArrowLeft,
-  Building2,
-  Link2,
-  Bug,
-  ChevronRight,
-  Menu,
-  Upload,
-  ScrollText,
-  Newspaper,
-  Share2,
-  Lightbulb,
-  SlidersHorizontal,
-  Check,
-  Brain,
-  ListChecks,
-  UserPlus,
-  ChevronsUpDown,
-  ImageIcon,
-  X,
-  ShieldCheck,
-  FileText,
-  Database,
-  BrainCircuit,
-  ChevronDown,
-  Search,
-  Sparkles,
-  ArrowDown,
-  Gauge,
-} from "lucide-react";
+import { useState, useEffect, useRef, useCallback, Fragment } from "react";
+import { Lock, Users, MoreHorizontal, Download, Trash2, Pencil, Globe, ArrowLeft, Building2, Link2, Bug, ChevronRight, Menu, Upload, ScrollText, Newspaper, Share2, Lightbulb, SlidersHorizontal, Check, Brain, ListChecks, UserPlus, ChevronsUpDown, ImageIcon, X, ShieldCheck, FileText, Database, BrainCircuit, ChevronDown, Search, Sparkles, ArrowDown, Gauge, Pin, PinOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   Popover,
@@ -173,6 +137,34 @@ export default function ChatPanel({
   const slidesDraftRef = useRef<SlideDraft | null>(null);
   slidesDraftRef.current = slidesDraft;
   const [slidesDraftMessageId, setSlidesDraftMessageId] = useState<string | null>(null);
+  /** Decks the user has sent back into the conversation, by message id.
+   *
+   *  A deck used to be pinned below the thread for good, so once the session
+   *  moved on to other work the pinned card was describing something three
+   *  questions ago. Unpinning drops it back to where it was made, in order,
+   *  like any other reply. Per conversation and remembered locally: it is a
+   *  view preference, not content, so it does not belong on the row.
+   */
+  const [unpinnedDecks, setUnpinnedDecks] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(`engineai:unpinned-decks:${conversationId}`);
+      setUnpinnedDecks(new Set(raw ? (JSON.parse(raw) as string[]) : []));
+    } catch { setUnpinnedDecks(new Set()); }
+  }, [conversationId]);
+  const setDeckPinned = useCallback((messageId: string, pinned: boolean) => {
+    setUnpinnedDecks((prev) => {
+      const next = new Set(prev);
+      if (pinned) next.delete(messageId); else next.add(messageId);
+      try {
+        window.localStorage.setItem(
+          `engineai:unpinned-decks:${conversationId}`,
+          JSON.stringify(Array.from(next))
+        );
+      } catch { /* a private window still gets the toggle, just not the memory */ }
+      return next;
+    });
+  }, [conversationId]);
   const [slidesZoom, setSlidesZoom] = useState<number | null>(null);
   const [slidesFixText, setSlidesFixText] = useState("");
   const previewRefreshRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -618,17 +610,18 @@ export default function ChatPanel({
    * On failure the draft is deliberately KEPT — the user has been iterating on
    * it, and clearing it because a network call failed would throw that away.
    */
-  const publishSlidesDraft = useCallback(async () => {
-    if (!slidesDraft) return;
+  const publishDeck = useCallback(async (deck: SlideDraft | null, messageId: string | null) => {
+    if (!deck) return;
+    const isActive = messageId === slidesDraftMessageId;
     setPublishingSlides(true);
     try {
       const res = await fetch("/api/slides/publish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          title: slidesDraft.title,
-          slides: slidesDraft.slides,
-          messageId: slidesDraftMessageId,
+          title: deck.title,
+          slides: deck.slides,
+          messageId,
         }),
       });
       const j = await res.json();
@@ -644,7 +637,10 @@ export default function ChatPanel({
         return;
       }
       pendingPublishRef.current = false;
-      setSlidesDraft(null);
+      // Only clear the pinned draft when the pinned draft is what was
+      // published. Publishing an EARLIER deck from the thread must not wipe
+      // the one the user is currently working on.
+      if (isActive) setSlidesDraft(null);
       setSlidesPreview({
         url: j.url, title: j.title, slideCount: j.slideCount ?? 0,
         updated: !!j.updated, thumbnails: j.thumbnails || [],
@@ -661,7 +657,13 @@ export default function ChatPanel({
     } finally {
       setPublishingSlides(false);
     }
-  }, [slidesDraft, slidesDraftMessageId]);
+  }, [slidesDraftMessageId]);
+
+  /** The pinned deck's own publish, unchanged for every existing caller. */
+  const publishSlidesDraft = useCallback(
+    () => publishDeck(slidesDraftRef.current, slidesDraftMessageId),
+    [publishDeck, slidesDraftMessageId]
+  );
 
   /**
    * Reconnect Google from inside the conversation.
@@ -1953,7 +1955,43 @@ export default function ChatPanel({
               // an empty bubble. Failed rows render normally so the user sees
               // the error + retry affordance.
               if (msg.role === "assistant" && msg.status === "pending") return null;
-              return (
+              // A DECK BELONGS WHERE IT WAS MADE. Each message carries its own
+              // on its row, and only the newest was ever rendered — a thread
+              // that built three decks showed one and silently hid two. Drawn
+              // here so it sits in the conversation in order, except whichever
+              // is currently pinned below, which would otherwise appear twice.
+              //
+              // An older deck offers viewing and creating in Drive but NOT
+              // editing: an edit is applied by the model to the deck the
+              // SERVER holds for this conversation, which is the newest one,
+              // so an edit button here would silently patch a different deck.
+              const rowDeck = (msg as any).slidesDraft as SlideDraft | undefined;
+              const deckIsPinned = !!rowDeck && msg.id === slidesDraftMessageId && !unpinnedDecks.has(msg.id);
+              const deckCard = rowDeck && !deckIsPinned ? (
+                <div className="flex items-start gap-3 px-4 py-3">
+                  <div className="h-7 w-7 rounded-lg bg-foreground/[0.05] flex items-center justify-center shrink-0 mt-0.5">
+                    <ImageIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    {msg.id === slidesDraftMessageId && (
+                      <button
+                        onClick={() => setDeckPinned(msg.id, true)}
+                        className="mb-1.5 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                        title="Pin this deck below the conversation while you work on it"
+                      >
+                        <Pin className="h-3 w-3" />
+                        Pin below
+                      </button>
+                    )}
+                    <SlideDraftPreview
+                      draft={rowDeck}
+                      publishing={publishingSlides}
+                      onPublish={() => publishDeck(rowDeck, msg.id)}
+                    />
+                  </div>
+                </div>
+              ) : null;
+              const bubble = (
                 <MessageBubble
                   key={msg.id}
                   messageId={msg.id}
@@ -2010,6 +2048,13 @@ export default function ChatPanel({
                       : undefined
                   }
                 />
+              );
+              if (!deckCard) return bubble;
+              return (
+                <Fragment key={msg.id}>
+                  {bubble}
+                  {deckCard}
+                </Fragment>
               );
             })}
             {pendingAssistantId && !isStreaming && !isFactChecking && (
@@ -2195,11 +2240,22 @@ export default function ChatPanel({
                 <ContentScoreCard data={scoreCard} onOpen={openScoreInOptimizer} opening={openingScore} />
               </div>
             )}
-            {slidesDraft && (
+            {slidesDraft && !(slidesDraftMessageId && unpinnedDecks.has(slidesDraftMessageId)) && (
               <div className="flex items-start gap-3 px-4 py-3">
                 <div className="h-7 w-7 rounded-lg bg-foreground/[0.05] flex items-center justify-center shrink-0 mt-0.5">
                   <ImageIcon className="h-3.5 w-3.5 text-muted-foreground" />
                 </div>
+                <div className="flex-1 min-w-0">
+                {slidesDraftMessageId && (
+                  <button
+                    onClick={() => setDeckPinned(slidesDraftMessageId, false)}
+                    className="mb-1.5 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                    title="Unpin — put the deck back in the conversation where it was made"
+                  >
+                    <PinOff className="h-3 w-3" />
+                    Unpin
+                  </button>
+                )}
                 <SlideDraftPreview
                   draft={slidesDraft}
                   publishing={publishingSlides}
@@ -2212,6 +2268,7 @@ export default function ChatPanel({
                   }
                   onEdit={applyDraftEdit}
                 />
+                </div>
               </div>
             )}
             {slidesPreview && (
