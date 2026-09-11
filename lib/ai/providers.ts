@@ -4531,6 +4531,43 @@ export function sourceSlideCount(messages?: AIMessage[]): number {
   return 0;
 }
 
+/**
+ * A conversion that was ASKED FOR and never STARTED, said out loud.
+ *
+ * `fidelityAudit` polices a deck that came out short, and it can only speak
+ * from inside a generate_slides tool result — so the one case it cannot see is
+ * the tool never running at all. That case is not hypothetical: a 35-slide
+ * client audit was attached, no deck was built, the turn ended with a
+ * description of what the deck WOULD contain, and the user had to ask "is
+ * everything okay?" to find out nothing had been made. They then got an offer
+ * to do the job rather than the job.
+ *
+ * Deterministic, and appended to the reply rather than whispered to the model:
+ * every input is something the server knows at end of turn — a document with
+ * slide or page markers is in the conversation, and the tool that converts one
+ * was never called. Guidance telling the model to finish already existed and
+ * is what failed; this states a fact the user can act on instead.
+ *
+ * Silent unless BOTH hold, so an ordinary chat about an attached deck never
+ * trips it.
+ */
+export function unstartedConversionNotice(
+  sourceCount: number,
+  toolsUsed: { name: string; calls: number }[] | undefined
+): string {
+  if (!sourceCount) return "";
+  const used = toolsUsed || [];
+  for (let i = 0; i < used.length; i++) {
+    if (used[i].name === "generate_slides" && used[i].calls > 0) return "";
+  }
+  return (
+    `\n\n---\n\n⚠ **No deck was built in this turn.** The document in this conversation has ` +
+    `${sourceCount} pages and generate_slides was never called, so nothing was created — whatever is ` +
+    `described above is a plan, not a deck.\n\nSay "go ahead" and it will be built. A conversion this ` +
+    `long goes in batches of about ten slides, so it takes a few calls.`
+  );
+}
+
 /** What the model is told when a conversion has come out a different length
  *  from the document it is converting. */
 export function fidelityAudit(deckLength: number, sourceCount: number, preserve: boolean): string {
@@ -10046,6 +10083,19 @@ async function streamAnthropic(
     throw new StreamStallError(STREAM_STALL_MS, "rethrown after a stalled round left nothing on screen");
   }
 
+  // A conversion asked for and never started is announced, not left for the
+  // user to discover by asking whether anything is wrong. Streamed as well as
+  // returned, so it reaches a client that has already rendered the text.
+  {
+    const unstarted = unstartedConversionNotice(sourceSlideCount(messages), toolLoopGuard.usage());
+    if (unstarted) {
+      fullText += unstarted;
+      try {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: unstarted })}\n\n`));
+      } catch { /* client gone; the text is still on the row */ }
+    }
+  }
+
   return {
     fullText,
     inputTokens: totalInputTokens,
@@ -11088,6 +11138,19 @@ async function streamXAIChatCompletions(
       console.log(`[xAI] Forced final response: ${fullText.length} chars`);
     } catch (err: any) {
       console.error(`[xAI] Forced final response failed:`, err.message);
+    }
+  }
+
+  // A conversion asked for and never started is announced, not left for the
+  // user to discover by asking whether anything is wrong. Streamed as well as
+  // returned, so it reaches a client that has already rendered the text.
+  {
+    const unstarted = unstartedConversionNotice(sourceSlideCount(messages), toolLoopGuard.usage());
+    if (unstarted) {
+      fullText += unstarted;
+      try {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: unstarted })}\n\n`));
+      } catch { /* client gone; the text is still on the row */ }
     }
   }
 
@@ -12151,6 +12214,19 @@ async function streamGemini(
     }
   }
 
+  // A conversion asked for and never started is announced, not left for the
+  // user to discover by asking whether anything is wrong. Streamed as well as
+  // returned, so it reaches a client that has already rendered the text.
+  {
+    const unstarted = unstartedConversionNotice(sourceSlideCount(messages), toolLoopGuard.usage());
+    if (unstarted) {
+      fullText += unstarted;
+      try {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: unstarted })}\n\n`));
+      } catch { /* client gone; the text is still on the row */ }
+    }
+  }
+
   return {
     fullText,
     inputTokens: totalInputTokens,
@@ -13118,6 +13194,19 @@ async function streamOpenAI(
       console.log(`[${options?.providerLabel ?? "OpenAI"}] Forced final response: ${fullText.length} chars`);
     } catch (err: any) {
       console.error(`[${options?.providerLabel ?? "OpenAI"}] Forced final response failed:`, err.message);
+    }
+  }
+
+  // A conversion asked for and never started is announced, not left for the
+  // user to discover by asking whether anything is wrong. Streamed as well as
+  // returned, so it reaches a client that has already rendered the text.
+  {
+    const unstarted = unstartedConversionNotice(sourceSlideCount(messages), toolLoopGuard.usage());
+    if (unstarted) {
+      fullText += unstarted;
+      try {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: unstarted })}\n\n`));
+      } catch { /* client gone; the text is still on the row */ }
     }
   }
 

@@ -508,6 +508,8 @@ Volumes are Content Units (CUs) unless a field says hours or CHF. Money is in CH
   // ── Document generation capability ──
   if (ctx.contextConfig?.imageGeneration === "on") {
     prompt += `\n\n## Document Generation
+**DO IT, DO NOT OFFER TO DO IT.** When you have the tool and the request, the answer is the work, not an offer to start it. "Would you like me to pull the details from that meeting?" is not an answer to "summarise the meeting" — it is the same question handed back, and it costs the user a second turn to say the yes they already said. Two flagged answers were exactly this: a deck that was described but never built, and a meeting that was never looked up because the reply offered to look it up. Ask only when the fork is REAL and you cannot resolve it — two different deliverables, a destructive action, a genuine ambiguity about who or what they mean. Needing permission to begin is not a fork. If you can see a way to do most of it, do that and say what you could not reach; a partial answer with its gaps named beats a question every time.
+
 You can produce three kinds of deliverable. The user's own noun decides it. They asked for a deck, a document or both, and that is what you make — 'pick by the content' is how a request for a presentation comes back as a Word file. Only when they name no format do you choose by what the content IS:
 - **generate_word_document** → a Word .docx. Prose documents: letters, cover letters, memos, reports, proposals, briefs, summaries, anything the user wants to edit or send on.
 - **generate_slides** → a branded deck, rendered as a PREVIEW in the chat. It reaches the user's own Google Drive only when they approve it. This is the DEFAULT for a deck.

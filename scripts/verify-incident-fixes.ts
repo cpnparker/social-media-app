@@ -539,6 +539,69 @@ console.log("\n16. A turn that runs out of time says so");
   check("a healthy stream is left unannotated", /sawDone\s*\?\s*dedupedText/.test(panel));
 }
 
+/* ── A conversion asked for and never started says so ───────────────────────
+ *
+ * From the 2026-09-11 thumbs-down review, flag #5 (31 Aug): a 35-slide client
+ * audit was attached, no deck was built, and the turn ended describing what
+ * the deck WOULD contain. The user had to ask "is everything okay?" to learn
+ * nothing had been made, and was then offered the job rather than given it.
+ *
+ * fidelityAudit cannot see this case — it only speaks from inside a
+ * generate_slides tool result, so the tool never running is its blind spot.
+ */
+console.log("\nUnstarted conversion");
+{
+  const notice = (providers as any).unstartedConversionNotice as
+    (n: number, used: { name: string; calls: number }[] | undefined) => string;
+  check("the notice function is exported", typeof notice === "function");
+  if (typeof notice === "function") {
+    // THE FLAGGED SHAPE: a document is in the conversation, the tool never ran.
+    const fired = notice(35, [{ name: "query_drive_docs", calls: 1 }]);
+    check("a 35-page source with no generate_slides call is announced", /No deck was built/.test(fired));
+    check("it names the size so the user knows what was skipped", fired.indexOf("35") >= 0);
+    check("it does not claim a deck exists", !/preview|rendered/i.test(fired));
+
+    // SILENT when the tool ran — otherwise every successful conversion would
+    // carry a warning that nothing was built.
+    check("silent when generate_slides ran", notice(35, [{ name: "generate_slides", calls: 1 }]) === "");
+    // Silent with no document at all: an ordinary chat must not trip it.
+    check("silent with no source document", notice(0, []) === "");
+    check("silent with no source even when no tools ran", notice(0, undefined) === "");
+    // A REFUSED call still counts as an attempt the user can see; only zero
+    // calls means nothing was tried.
+    check("a blocked-but-attempted call counts as started", notice(35, [{ name: "generate_slides", calls: 2 }]) === "");
+    check("undefined usage with a source still announces", /No deck was built/.test(notice(35, undefined)));
+  }
+
+  // ASSERT IT IS USED, not merely present — the failure this repo has shipped
+  // twice. Every chain must call it, or the function guards nothing.
+  const src = readFileSync(join(process.cwd(), "lib/ai/providers.ts"), "utf8");
+  const callSites = (src.match(/unstartedConversionNotice\(/g) || []).length;
+  check("every chain calls it (4 call sites + 1 definition)", callSites >= 5, `found ${callSites}`);
+}
+
+/* ── Offering is not answering ─────────────────────────────────────────────
+ * Flag #6 (3 Sep): asked to summarise a call, the reply offered to fetch the
+ * meeting instead of fetching it. The deck case above is code; this class is
+ * broader than decks, so the prompt has to carry it.
+ */
+console.log("\nAct, do not offer");
+{
+  const prompt = buildSystemPrompt({
+    conversationVisibility: "private",
+    userName: "Test",
+    contextConfig: { imageGeneration: "on" } as any,
+    workspaceConfig: {
+      companyContext: "TCE is a content agency.",
+      contentTypes: [], cuDefinitions: [], formatDescriptions: {}, typeInstructions: {},
+    } as any,
+  } as any);
+  check("the assembled prompt tells it to do the work rather than offer",
+    /DO IT, DO NOT OFFER TO DO IT/.test(prompt));
+  check("it names the real fork so the rule does not ban every question",
+    /fork is REAL|genuine ambiguity/.test(prompt));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (failures.length) { console.log("\nFailures:"); for (const f of failures) console.log(`  - ${f}`); }
 process.exit(fail ? 1 : 0);
