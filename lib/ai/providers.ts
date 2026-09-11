@@ -6759,6 +6759,8 @@ export function formatGmailResult(report: string, result: GmailQueryResult): str
   // passes includeBody=true there and false everywhere else). Everything else
   // is metadata plus a ~500-char snippet.
   const bodiesIncluded = report === "thread" || report === "search_messages";
+  /** Which cap produced any "(truncated)" below — the advice differs. */
+  const isThreadReport = report === "thread";
 
   // MeetingBrain caps a body at MAX_BODY (2000 chars) and appends
   // "… (truncated)". Detecting it matters because RETRYING CHANGES NOTHING —
@@ -6793,8 +6795,19 @@ export function formatGmailResult(report: string, result: GmailQueryResult): str
       // the whole fix; the old wording ("if you need the rest of a
       // conversation…") read as an optional extra rather than the only route
       // to the text.
-      truncatedBody
-        ? `AT LEAST ONE MESSAGE BODY WAS CUT SHORT at 2000 characters — look for "… (truncated)" at the end of a body. CALLING THIS TOOL AGAIN WILL RETURN THE SAME CUT: the cap is applied before EngineAI receives the message, so a retry is wasted. Use what you have, and if the missing part matters — a date, a figure, a decision — say plainly WHICH message was cut and what you could not see, then ask the user to paste that part. Do not guess at the remainder, and do not describe the message as unreadable when you have most of it.`
+      // THE CAP DEPENDS ON THE REPORT, and so does what to do about it.
+      // A SEARCH caps a body at 2,000 characters because it can return 25 of
+      // them; a THREAD caps at 12,000 because it is one conversation someone
+      // asked to read. Telling the model a retry is wasted is true of a
+      // thread and false of a search — and it was being said to both, so a
+      // search that clipped a quoted email told the user it could not see the
+      // rest and asked them to paste it, while the report that would have
+      // returned six times as much sat one call away. Chris hit exactly that.
+      truncatedBody && !isThreadReport
+        ? `AT LEAST ONE MESSAGE BODY WAS CUT SHORT at 2000 characters — look for "… (truncated)" at the end of a body. THIS IS THE SEARCH CAP, NOT THE LIMIT OF WHAT YOU CAN READ. Search returns many messages, so each body is clipped short. To read a cut message in full, CALL query_gmail AGAIN with report "thread" and that message's thread_id — a thread returns up to 12,000 characters per message, six times this. Do that BEFORE telling the user anything is missing, and never ask them to paste text one call would fetch.`
+        : "",
+      truncatedBody && isThreadReport
+        ? `AT LEAST ONE MESSAGE BODY WAS CUT SHORT at 12,000 characters — look for "… (truncated)" at the end of a body. This is the largest this tool returns, and CALLING IT AGAIN RETURNS THE IDENTICAL CUT: the cap is applied before EngineAI receives the message, so a retry is wasted. Use what you have, and if the missing part matters — a date, a figure, a decision — say plainly WHICH message was cut and what you could not see, then ask the user to paste that part. Do not guess at the remainder, and do not describe the message as unreadable when you have most of it.`
         : "",
       bodiesIncluded
         ? ""
