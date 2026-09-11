@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabase";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
 
 /**
  * Resolve the default workspace and user IDs for API routes.
@@ -16,7 +17,7 @@ export async function resolveWorkspaceAndUser(
 
   if (!workspaceId || workspaceId === nullUUID) {
     try {
-      const { data } = await supabase
+      const { data } = await intelligenceDb
         .from("workspaces")
         .select("id")
         .limit(1)

@@ -1,0 +1,468 @@
+/**
+ * Phase 0 analysis of the resourcing base, shared by the CLI script and the
+ * admin endpoint so the two cannot drift.
+ *
+ * This answers the three questions the plan says decide the shape of every
+ * report downstream. It is deliberately opinionated about the first one: the
+ * identity join is the part that fails silently and expensively, so a missing
+ * email column is reported as a blocker rather than as an observation.
+ */
+import { cellNumber, getBaseSchema, listRecords, type AirtableTable } from "./client";
+
+const EMAIL_HINTS = ["email", "e-mail", "mail"];
+const PERSON_HINTS = ["person", "people", "team", "staff", "member", "resource", "employee", "freelanc"];
+const CLIENT_HINTS = ["client", "customer", "account", "company", "organisation", "organization"];
+const PERIOD_HINTS = ["month", "period", "forecast", "plan", "expectation", "target", "quota", "capacity"];
+const SELECT_TYPES = new Set(["singleSelect", "multipleSelects"]);
+
+/**
+ * A column carrying an Engine user or client id outright.
+ *
+ * This is a better join key than email, not a worse one — it is the id itself
+ * rather than a proxy for it. The first version of this file only looked for
+ * email and therefore called `Team.Engine_IDs` a blocker, which was exactly
+ * backwards: the base already solved the identity problem, in the one way that
+ * cannot be confounded by two colleagues sharing a name.
+ */
+const ENGINE_ID_RE = /engine[\s_-]*id|id[\s_-]*engine/i;
+
+const has = (s: string, hints: string[]) => hints.some((h) => s.toLowerCase().includes(h));
+
+export interface FieldSummary {
+  name: string;
+  type: string;
+  linkedTableId?: string;
+  /**
+   * Option strings for select fields.
+   *
+   * Worth carrying even though it makes the payload bigger: these are the
+   * literal values a filter has to match. Without them the only way to learn
+   * that a status is "Active and extended" rather than "active" is to read
+   * records — which means reading real business data to answer a question the
+   * schema already knows the answer to.
+   */
+  choices?: string[];
+}
+
+export interface TableSummary {
+  name: string;
+  id: string;
+  fields: FieldSummary[];
+  views: string[];
+  /** Populated only when counts are requested — each count costs API calls. */
+  rowCount?: number;
+  truncated?: boolean;
+  countError?: string;
+}
+
+export interface Phase0Findings {
+  tables: TableSummary[];
+  people: {
+    table: string;
+    emailFields: string[];
+    /** Columns holding an Engine id directly — the strongest join available. */
+    engineIdFields: string[];
+    /** The design-blocking case: neither an Engine id nor an email, which
+     *  leaves display name as the only join — and that merges two colleagues
+     *  who happen to share one. */
+    blocked: boolean;
+  }[];
+  periodTables: { table: string; periodFields: string[]; linkFields: string[] }[];
+  clientTables: { table: string; idLikeFields: string[]; mustMatchOnName: boolean }[];
+  warnings: string[];
+}
+
+export function analyseSchema(tables: AirtableTable[]): Phase0Findings {
+  const warnings: string[] = [];
+
+  const summaries: TableSummary[] = tables.map((t) => ({
+    name: t.name,
+    id: t.id,
+    fields: t.fields.map((f) => ({
+      name: f.name,
+      type: f.type,
+      linkedTableId: f.type === "multipleRecordLinks" ? ((f.options as any)?.linkedTableId as string | undefined) : undefined,
+      choices: SELECT_TYPES.has(f.type)
+        ? (((f.options as any)?.choices as { name: string }[] | undefined) || []).map((c) => c.name)
+        : undefined,
+    })),
+    views: (t.views || []).map((v) => v.name),
+  }));
+
+  const people = tables
+    .filter((t) => has(t.name, PERSON_HINTS))
+    .map((t) => {
+      const emailFields = t.fields.filter((f) => f.type === "email" || has(f.name, EMAIL_HINTS)).map((f) => f.name);
+      const engineIdFields = t.fields.filter((f) => ENGINE_ID_RE.test(f.name)).map((f) => f.name);
+      // A table of links and rollups with no identity column of its own is a
+      // junction — it inherits identity from what it points at, so it is not
+      // missing anything. Only tables that name people directly can be blocked.
+      const namesPeopleDirectly = t.fields.some(
+        (f) => f.type === "singleLineText" && /name|person|member/i.test(f.name)
+      );
+      return {
+        table: t.name,
+        emailFields,
+        engineIdFields,
+        blocked: !emailFields.length && !engineIdFields.length && namesPeopleDirectly,
+      };
+    });
+
+  if (!people.length) {
+    warnings.push("No table name looked like people/team — the people table needs identifying by eye from the field lists.");
+  }
+  for (const p of people.filter((x) => x.blocked)) {
+    warnings.push(
+      `"${p.table}" has neither an Engine id nor an email column, so the only way to join it to Engine users is display name — and that is unsafe: production has two distinct users called "Mike Parsons" and two called "Faher Elfayez", whose capacity would silently merge. Add an id or email column before building reports on this table.`
+    );
+  }
+
+  const periodTables = tables
+    .filter((t) => has(t.name, PERIOD_HINTS) || t.fields.some((f) => has(f.name, PERIOD_HINTS)))
+    .map((t) => ({
+      table: t.name,
+      periodFields: t.fields.filter((f) => ["date", "dateTime"].includes(f.type) || has(f.name, PERIOD_HINTS)).map((f) => f.name),
+      linkFields: t.fields.filter((f) => f.type === "multipleRecordLinks").map((f) => f.name),
+    }));
+
+  if (!periodTables.length) {
+    warnings.push(
+      "Nothing matched on monthly expectations or capacity. Those forward-looking numbers are the whole reason for this integration — confirm they exist before building the monthly_plan report."
+    );
+  }
+
+  const clientTables = tables
+    // The name test alone is not enough: "Account Manage" is a person↔contract
+    // junction that matches on the word "Account", and calling it a client
+    // table produced a confident warning about a problem it does not have.
+    // A real client table names its clients in a text column of its own.
+    .filter((t) => has(t.name, CLIENT_HINTS) && t.fields.some((f) => f.type === "singleLineText"))
+    .map((t) => {
+      const idLikeFields = t.fields.filter((f) => /\bid\b|code|ref/i.test(f.name)).map((f) => f.name);
+      return { table: t.name, idLikeFields, mustMatchOnName: idLikeFields.length === 0 };
+    });
+
+  for (const c of clientTables.filter((x) => x.mustMatchOnName)) {
+    warnings.push(
+      `"${c.table}" carries no id-like field, so clients must be matched to app_clients on normalised name. Unmatched rows must be REPORTED, never dropped silently.`
+    );
+  }
+
+  return { tables: summaries, people, periodTables, clientTables, warnings };
+}
+
+export interface IdentityProbe {
+  table: string;
+  field: string;
+  /** Scoped to a view when one was named — "35 rows" means nothing if most
+   *  of them are leavers or scenario placeholders. */
+  view?: string;
+  total: number;
+  populated: number;
+  /** Distinct shapes seen, not the values themselves — see below. */
+  shapes: { pattern: string; example: string; count: number }[];
+  /**
+   * Who is missing the id, by display name.
+   *
+   * The coverage ratio says how big the problem is; this says whose row to
+   * open. Names of colleagues, to a workspace admin, on their own roster —
+   * which is a different thing from the address list the shapes rule exists
+   * to protect, and it is the only output here anyone can act on.
+   */
+  unlinked: string[];
+}
+
+/**
+ * What is actually IN the identity columns.
+ *
+ * The schema says `Team.Engine_IDs` is single-line text and the plural name
+ * hints at more than one id per row, but neither tells you whether the cell
+ * holds `41`, `41,58`, or `chris@thecontentengine.com`. The join cannot be
+ * written until that is known, and it is the one Phase 0 question the schema
+ * genuinely cannot answer.
+ *
+ * It reports SHAPES rather than values — `digits`, `digits,digits`, `email` —
+ * with one example per shape. That is enough to write the parser and stops a
+ * diagnostic endpoint from turning into a staff-roster export.
+ */
+export async function probeIdentity(opts: { view?: string } = {}): Promise<IdentityProbe[]> {
+  const { tables } = await getBaseSchema();
+  const { people } = analyseSchema(tables);
+  const out: IdentityProbe[] = [];
+
+  for (const p of people) {
+    const table = tables.find((t) => t.name === p.table);
+    // The primary field is whatever the base shows as the row's label. Reading
+    // it from primaryFieldId rather than guessing at a column called "Name"
+    // means this keeps working on a table that labels rows some other way.
+    const labelField = table?.fields.find((f) => f.id === table.primaryFieldId)?.name;
+
+    for (const field of [...p.engineIdFields, ...p.emailFields]) {
+      // A view is only applied where it exists on this table, so naming
+      // "Live team" does not silently return the whole of some other table.
+      const view = opts.view && table?.views?.some((v) => v.name === opts.view) ? opts.view : undefined;
+      const res = await listRecords(p.table, {
+        fields: labelField && labelField !== field ? [field, labelField] : [field],
+        ...(view ? { view } : {}),
+      });
+      const shapes = new Map<string, { example: string; count: number }>();
+      const unlinked: string[] = [];
+      let populated = 0;
+
+      for (const rec of res.records) {
+        const raw = rec.fields[field];
+        if (raw === undefined || raw === null || raw === "") {
+          const label = labelField ? rec.fields[labelField] : undefined;
+          unlinked.push(label ? String(label) : `(unnamed row ${rec.id})`);
+          continue;
+        }
+        populated++;
+        const value = String(raw);
+        const pattern = value
+          .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/g, "email")
+          .replace(/\d+/g, "digits")
+          .replace(/\s+/g, " ")
+          .trim();
+        const seen = shapes.get(pattern);
+        if (seen) seen.count++;
+        // An example is only safe once the pattern shows it holds no address.
+        // Otherwise the "shapes, not values" promise above would be a lie the
+        // first time this ran over the Freelancers table.
+        else shapes.set(pattern, { example: pattern.includes("email") ? "(withheld)" : value.slice(0, 40), count: 1 });
+      }
+
+      out.push({
+        table: p.table,
+        field,
+        view,
+        total: res.count,
+        populated,
+        shapes: Array.from(shapes.entries())
+          .map(([pattern, v]) => ({ pattern, ...v }))
+          .sort((a, b) => b.count - a.count),
+        unlinked: unlinked.sort(),
+      });
+    }
+  }
+
+  return out;
+}
+
+export interface MonthCoverage {
+  /** The primary text label, verbatim — its format is not knowable from schema. */
+  month: string;
+  order: string | null;
+  /** The date field, which may or may not be populated on every row. */
+  date: string | null;
+  /** How many Team resourcing rows link to this month — i.e. is capacity loaded. */
+  capacityRows: number;
+}
+
+/**
+ * How far the resourcing plan actually reaches, and by which column.
+ *
+ * This exists because "the plan runs to June 2025" is a claim the reports make
+ * to justify refusing an answer, and a refusal built on a misread column is
+ * indistinguishable from a refusal built on a real gap. `Monthly resourcing`
+ * carries three candidate month identifiers — a text `Month` (the primary
+ * field), a text `Order`, and a `Date` — and only reading the rows tells you
+ * which are populated and which agree.
+ *
+ * Also counts the Team resourcing rows per month: a month can exist in the
+ * plan with no capacity loaded against it, which is a different gap and needs
+ * a different answer.
+ */
+export async function monthCoverage(): Promise<{ months: MonthCoverage[]; teamResourcingRows: number; datePopulated: number }> {
+  const monthly = await listRecords("Monthly resourcing", { fields: ["Month", "Order", "Date"] });
+  const resourcing = await listRecords("Team resourcing", { fields: ["Months"] });
+
+  const capacityByMonthId = new Map<string, number>();
+  for (const row of resourcing.records) {
+    const months = row.fields["Months"];
+    if (!Array.isArray(months)) continue;
+    for (const id of months) capacityByMonthId.set(String(id), (capacityByMonthId.get(String(id)) || 0) + 1);
+  }
+
+  const months = monthly.records.map((r) => ({
+    month: String(r.fields["Month"] ?? ""),
+    order: r.fields["Order"] == null ? null : String(r.fields["Order"]),
+    date: r.fields["Date"] == null ? null : String(r.fields["Date"]),
+    capacityRows: capacityByMonthId.get(r.id) || 0,
+  }));
+
+  return {
+    months,
+    teamResourcingRows: resourcing.count,
+    datePopulated: months.filter((m) => m.date).length,
+  };
+}
+
+/**
+ * How capacity, allocation and demand actually relate — read from the data.
+ *
+ * Written after a capacity report shipped that subtracted a COMPANY-WIDE
+ * booked figure from ONE PERSON's capacity and reported the result as their
+ * headroom. Everyone came out negative, which is the signature of an
+ * aggregation-level mismatch rather than an overloaded team.
+ *
+ * The structural questions this settles, none of which the schema alone can
+ * answer:
+ *   1. Are `Team resourcing.* CUs booked` identical across every person in a
+ *      month? If so they are lookups through `Months` — a company total copied
+ *      onto each row — and are not per-person demand at any level.
+ *   2. Does that value equal `Monthly resourcing.<Discipline> CU booked`?
+ *      That confirms which column it is a lookup OF.
+ *   3. What is per-person ALLOCATION, then? `Account Manage` joins a person to
+ *      a contract with a CU value, which is the only per-person demand in the
+ *      base.
+ *   4. Are the freelancer estimates in the same units as capacity? A capacity
+ *      of 17 beside an estimate of 2,477 is not a forecast, it is two
+ *      different quantities printed in one table.
+ */
+export interface ModelProbe {
+  month: string;
+  monthly: Record<string, unknown>;
+  perPerson: {
+    name: string;
+    capacity: Record<string, number | null>;
+    booked: Record<string, number | null>;
+  }[];
+  /** Distinct values of each booked column across people. Length 1 = uniform. */
+  bookedDistinct: Record<string, unknown[]>;
+  /**
+   * Account Manage rows, reading BOTH worlds.
+   *
+   * The live and scenario allocations live in separate column PAIRS on the same
+   * row — `Content Units`/`CU Manage` against `Scenario Content Units`/`Scenario
+   * CU Manage` — with `live or scenario` naming which pair is filled. Reading
+   * only the live pair made every scenario row look empty, which read as
+   * "scenario planning is not used" when it is how next month gets allocated.
+   */
+  allocation: {
+    person: string;
+    role: string | null;
+    liveOrScenario: string | null;
+    contentUnits: number | null;
+    scenarioContentUnits: number | null;
+    bookedCurrentMonth: number | null;
+    scenarioBookedCurrentMonth: number | null;
+    contracts: number;
+    scenarioContracts: number;
+  }[];
+  /** Live vs scenario totals per person, the comparison the user actually wants. */
+  allocationTotals: { person: string; live: number; scenario: number }[];
+}
+
+export async function modelProbe(month: string): Promise<ModelProbe> {
+  const CAP = [
+    "AM capacity",
+    "Text production capacity",
+    "Video production capacity",
+    "Visuals production capacity",
+    "Strategy production capacity",
+  ];
+  const BOOKED = ["Total CUs booked", "Text CUs booked", "Video CUs booked", "Visuals CUs booked", "Strategy CUs booked"];
+
+  const monthlyRows = await listRecords("Monthly resourcing");
+  const want = month.trim().toLowerCase();
+  const monthRow = monthlyRows.records.find((r) => String(r.fields["Month"] ?? "").trim().toLowerCase() === want);
+  if (!monthRow) {
+    const have = monthlyRows.records.map((r) => String(r.fields["Month"] ?? "")).filter(Boolean);
+    throw new Error(`No Monthly resourcing row for "${month}". Months present: ${have.slice(0, 80).join(", ")}`);
+  }
+
+  const team = await listRecords("Team", { fields: ["Name"] });
+  const teamNames = new Map(team.records.map((r) => [r.id, String(r.fields["Name"] ?? "")]));
+
+  const resourcing = await listRecords("Team resourcing");
+  const rows = resourcing.records.filter((r) => {
+    const months = r.fields["Months"];
+    return Array.isArray(months) && months.includes(monthRow.id);
+  });
+
+  const num = (v: unknown): number | null => {
+    const n = cellNumber(v);
+    return typeof n === "number" ? n : null;
+  };
+
+  const perPerson = rows.map((r) => {
+    const memberId = Array.isArray(r.fields["Team member"]) ? String((r.fields["Team member"] as unknown[])[0]) : "";
+    return {
+      name: teamNames.get(memberId) || "(unknown)",
+      capacity: Object.fromEntries(CAP.map((c) => [c, num(r.fields[c])])),
+      booked: Object.fromEntries(BOOKED.map((c) => [c, num(r.fields[c])])),
+    };
+  });
+
+  // The decisive test: if a booked column has ONE distinct value across all
+  // people, it is not describing individuals.
+  const bookedDistinct = Object.fromEntries(
+    BOOKED.map((c) => [c, Array.from(new Set(rows.map((r) => JSON.stringify(r.fields[c]) ?? "null"))).map((s) => JSON.parse(s ?? "null"))])
+  );
+
+  const allocRows = await listRecords("Account Manage");
+  const allocation = allocRows.records.map((r) => {
+    const memberId = Array.isArray(r.fields["Editorial team"]) ? String((r.fields["Editorial team"] as unknown[])[0]) : "";
+    const manage = r.fields["CU Manage"];
+    const scenarioManage = r.fields["Scenario CU Manage"];
+    return {
+      person: teamNames.get(memberId) || "(unknown)",
+      role: (r.fields["Role"] as string) ?? null,
+      liveOrScenario: r.fields["live or scenario"] == null ? null : String(r.fields["live or scenario"]),
+      contentUnits: num(r.fields["Content Units"]),
+      scenarioContentUnits: num(r.fields["Scenario Content Units"]),
+      bookedCurrentMonth: num(r.fields["CUs booked in current month"]),
+      scenarioBookedCurrentMonth: num(r.fields["Scenario CUs booked in current month"]),
+      contracts: Array.isArray(manage) ? manage.length : 0,
+      scenarioContracts: Array.isArray(scenarioManage) ? scenarioManage.length : 0,
+    };
+  });
+
+  // Totals respect `live or scenario`, which is derived from the LINK columns
+  // rather than the CU columns. A row can therefore carry Scenario Content
+  // Units with no Scenario CU Manage link and no world — an allocation with no
+  // contract attached. Summing the column blindly folded two such rows into
+  // the scenario totals, inflating two people by 4.5 and 4 CU. They are
+  // counted separately instead, because an orphaned allocation is a data
+  // question, not capacity.
+  const totals = new Map<string, { live: number; scenario: number }>();
+  const orphaned: { person: string; cu: number; role: string | null }[] = [];
+  for (const a of allocation) {
+    const world = (a.liveOrScenario || "").toLowerCase();
+    const t = totals.get(a.person) || { live: 0, scenario: 0 };
+    if (world === "live") t.live += a.contentUnits ?? 0;
+    else if (world === "scenario") t.scenario += a.scenarioContentUnits ?? 0;
+    else if (a.contentUnits || a.scenarioContentUnits) {
+      orphaned.push({ person: a.person, cu: a.contentUnits ?? a.scenarioContentUnits ?? 0, role: a.role });
+    }
+    totals.set(a.person, t);
+  }
+  const allocationTotals = Array.from(totals.entries())
+    .map(([person, t]) => ({ person, ...t }))
+    .filter((t) => t.live || t.scenario)
+    .sort((a, b) => b.scenario - a.scenario);
+  (allocationTotals as any).orphaned = orphaned;
+
+  return { month, monthly: monthRow.fields, perPerson, bookedDistinct, allocation, allocationTotals };
+}
+
+/** Full Phase 0: schema + analysis, optionally with row counts (extra API calls). */
+export async function runPhase0(opts: { withCounts?: boolean } = {}): Promise<Phase0Findings> {
+  const { tables } = await getBaseSchema();
+  const findings = analyseSchema(tables);
+
+  if (opts.withCounts) {
+    for (const t of findings.tables) {
+      try {
+        const first = t.fields[0]?.name;
+        const res = await listRecords(t.name, first ? { fields: [first] } : {});
+        t.rowCount = res.count;
+        t.truncated = res.truncated;
+      } catch (e: any) {
+        t.countError = String(e?.message || e).slice(0, 120);
+      }
+    }
+  }
+
+  return findings;
+}

@@ -21,7 +21,10 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
+import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
 import { categorizeContentType, CATEGORY_ORDER, CATEGORY_ICONS } from "@/lib/content-type-utils";
+import { TEAMS, getLeafIds, type TeamNode } from "@/lib/teams";
 import {
   addDays,
   subDays,
@@ -148,6 +151,26 @@ export default function TimelineResourcingPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [assigneeFilter, setAssigneeFilter] = useState("all");
   const [excludeTestClients, setExcludeTestClients] = useState(true);
+
+  // Team filter: a set of branch IDs from TEAMS (e.g. "writers", "video").
+  // Empty set = no team filter (all teams shown).
+  const [selectedTeamBranches, setSelectedTeamBranches] = useState<Set<string>>(new Set());
+  const selectedTeamUserIds = useMemo(() => {
+    if (selectedTeamBranches.size === 0) return null;
+    const ids = new Set<string>();
+    const walk = (node: TeamNode) => {
+      if (selectedTeamBranches.has(node.value)) {
+        getLeafIds(node).forEach((id) => ids.add(id));
+      } else if (node.children) {
+        node.children.forEach(walk);
+      }
+    };
+    TEAMS.forEach(walk);
+    return ids;
+  }, [selectedTeamBranches]);
+
+  // Global customer filter from the TopBar selector
+  const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
   const EXCLUDE_CLIENT_IDS = "1,2";
 
   // Custom date pickers
@@ -236,6 +259,12 @@ export default function TimelineResourcingPage() {
   /* ─── Filtered tasks ─── */
   const filtered = useMemo(() => {
     let t = tasks;
+    if (globalCustomerId) {
+      t = t.filter((r) => r.customerId === globalCustomerId);
+    }
+    if (selectedTeamUserIds && selectedTeamUserIds.size > 0) {
+      t = t.filter((r) => r.assigneeId && selectedTeamUserIds.has(r.assigneeId));
+    }
     if (assigneeFilter !== "all") {
       t = t.filter((r) => r.assigneeName === assigneeFilter);
     }
@@ -250,7 +279,7 @@ export default function TimelineResourcingPage() {
       );
     }
     return t;
-  }, [tasks, assigneeFilter, searchQuery]);
+  }, [tasks, assigneeFilter, searchQuery, globalCustomerId, selectedTeamUserIds]);
 
   /* ─── Assignee list for filter ─── */
   const assignees = useMemo(() => {
@@ -463,7 +492,7 @@ export default function TimelineResourcingPage() {
         type: "group",
         id: group.id,
         label: group.label,
-        sublabel: `${group.contentCount} content · ${group.periodTaskCUs.toFixed(1)} task CUs · ${group.totalCUs.toFixed(1)} content CUs`,
+        sublabel: `${group.contentCount} content · ${group.periodTaskCUs.toFixed(2)} task CUs · ${group.totalCUs.toFixed(2)} content CUs`,
         indent: 0,
         isExpanded: groupExpanded,
         onToggle: () => toggleGroup(group.id),
@@ -485,7 +514,7 @@ export default function TimelineResourcingPage() {
           type: "content",
           id: cg.contentId,
           label: cg.contentTitle,
-          sublabel: `${cg.contentType} · ${cg.periodTaskCUs.toFixed(1)} task CUs · ${cg.totalCUs.toFixed(1)} content CUs`,
+          sublabel: `${cg.contentType} · ${cg.periodTaskCUs.toFixed(2)} task CUs · ${cg.totalCUs.toFixed(2)} content CUs`,
           indent: 1,
           isExpanded: contentExpanded,
           onToggle: () => toggleContent(cg.contentId),
@@ -563,15 +592,19 @@ export default function TimelineResourcingPage() {
           <span>·</span>
           <span>{stats.totalItems} content</span>
           <span>·</span>
-          <span title="Task CUs in period">{stats.totalPeriodTaskCUs.toFixed(1)} task CUs</span>
+          <span title="Task CUs in period">{stats.totalPeriodTaskCUs.toFixed(2)} task CUs</span>
           <span>·</span>
-          <span className="font-semibold text-foreground" title="Content CUs in period">{stats.totalCUs.toFixed(1)} content CUs</span>
+          <span className="font-semibold text-foreground" title="Content CUs in period">{stats.totalCUs.toFixed(2)} content CUs</span>
         </div>
       </div>
 
       {/* Controls */}
       <Card className="border-0 shadow-sm">
-        <CardContent className="p-3 flex flex-wrap items-center gap-3">
+        <CardContent className="p-3 space-y-3">
+          <div className="flex flex-wrap items-end gap-3">
+            <CustomerDropdownFilter />
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
           {/* View toggle */}
           <div className="flex items-center gap-1 bg-muted/50 rounded-lg p-0.5">
             {(["customer", "contentType"] as ViewMode[]).map((m) => (
@@ -648,15 +681,61 @@ export default function TimelineResourcingPage() {
 
           <div className="flex-1" />
 
-          {/* Team filter */}
+          {/* Team filter (branch-level multi-select) */}
+          <Popover>
+            <PopoverTrigger asChild>
+              <button className="h-7 text-xs rounded-md border border-input bg-background px-2.5 flex items-center gap-1.5 hover:bg-muted/50 focus:outline-none">
+                <Filter className="h-3.5 w-3.5 text-muted-foreground" />
+                {selectedTeamBranches.size === 0
+                  ? "All teams"
+                  : `${selectedTeamBranches.size} team${selectedTeamBranches.size === 1 ? "" : "s"}`}
+                <ChevronDown className="h-3 w-3 text-muted-foreground" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-56 p-1.5">
+              {TEAMS[0].children?.map((branch) => {
+                const checked = selectedTeamBranches.has(branch.value);
+                return (
+                  <label
+                    key={branch.value}
+                    className="flex items-center gap-2 px-2 py-1 rounded text-xs hover:bg-muted/50 cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() =>
+                        setSelectedTeamBranches((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(branch.value)) next.delete(branch.value);
+                          else next.add(branch.value);
+                          return next;
+                        })
+                      }
+                      className="rounded border-muted-foreground/30 h-3.5 w-3.5"
+                    />
+                    <span>{branch.label}</span>
+                  </label>
+                );
+              })}
+              {selectedTeamBranches.size > 0 && (
+                <button
+                  onClick={() => setSelectedTeamBranches(new Set())}
+                  className="w-full mt-1 pt-1 border-t text-xs text-muted-foreground hover:text-foreground"
+                >
+                  Clear ({selectedTeamBranches.size})
+                </button>
+              )}
+            </PopoverContent>
+          </Popover>
+
+          {/* Individual filter */}
           <div className="flex items-center gap-1.5">
-            <Filter className="h-3.5 w-3.5 text-muted-foreground" />
             <select
               value={assigneeFilter}
               onChange={(e) => setAssigneeFilter(e.target.value)}
               className="h-7 text-xs rounded-md border border-input bg-background px-2 focus:outline-none"
             >
-              <option value="all">All Team Members</option>
+              <option value="all">All people</option>
               {assignees.map((a) => (
                 <option key={a} value={a}>{a}</option>
               ))}
@@ -674,6 +753,7 @@ export default function TimelineResourcingPage() {
             <input type="checkbox" checked={excludeTestClients} onChange={(e) => setExcludeTestClients(e.target.checked)} className="rounded border-muted-foreground/30 h-3.5 w-3.5" />
             Hide TCE &amp; test
           </label>
+          </div>
         </CardContent>
       </Card>
 
@@ -755,7 +835,7 @@ export default function TimelineResourcingPage() {
                                   </div>
                                   <div className="flex justify-between">
                                     <span className="text-muted-foreground">Total CUs</span>
-                                    <span className="font-medium tabular-nums">{cg.totalCUs.toFixed(1)}</span>
+                                    <span className="font-medium tabular-nums">{cg.totalCUs.toFixed(2)}</span>
                                   </div>
                                   <div className="flex justify-between">
                                     <span className="text-muted-foreground">Tasks</span>
@@ -801,16 +881,16 @@ export default function TimelineResourcingPage() {
                     <span className="text-[9px] text-muted-foreground tabular-nums pr-2 shrink-0 flex items-center gap-1">
                       <span title="Content items in period">{row.contentCount}</span>
                       <span className="text-border">|</span>
-                      <span title="Task CUs in period — CUs from tasks with deadlines in this window">{(row.periodTaskCUs ?? 0).toFixed(1)}</span>
+                      <span title="Task CUs in period — CUs from tasks with deadlines in this window">{(row.periodTaskCUs ?? 0).toFixed(2)}</span>
                       <span className="text-border">|</span>
-                      <span title="Content CUs — total CUs from all content in this period">{row.cus.toFixed(1)}</span>
+                      <span title="Content CUs — total CUs from all content in this period">{row.cus.toFixed(2)}</span>
                     </span>
                   )}
                   {row.type === "content" && row.cus !== undefined && (
                     <span className="text-[9px] text-muted-foreground tabular-nums pr-2 shrink-0 flex items-center gap-1">
-                      <span title="Task CUs in period — CUs from tasks with deadlines in this window">{(row.periodTaskCUs ?? 0).toFixed(1)}</span>
+                      <span title="Task CUs in period — CUs from tasks with deadlines in this window">{(row.periodTaskCUs ?? 0).toFixed(2)}</span>
                       <span className="text-border">|</span>
-                      <span title="Content CUs — total CUs from all tasks for this content">{row.cus.toFixed(1)}</span>
+                      <span title="Content CUs — total CUs from all tasks for this content">{row.cus.toFixed(2)}</span>
                     </span>
                   )}
                 </div>
@@ -923,7 +1003,7 @@ export default function TimelineResourcingPage() {
                         key={`bar-${row.type}-${row.id}`}
                         className={cn("absolute rounded-sm transition-all", row.barColor)}
                         style={{ left: clampedLeft, width: Math.max(clampedWidth, 4), top: topOffset, height: barH }}
-                        title={`${row.label}${row.cus ? ` (${row.cus.toFixed(1)} CUs)` : ""}`}
+                        title={`${row.label}${row.cus ? ` (${row.cus.toFixed(2)} CUs)` : ""}`}
                       >
                         {clampedWidth > 60 && row.type === "task" && (
                           <span className="absolute inset-0 flex items-center px-1.5 text-[8px] font-medium text-white truncate">

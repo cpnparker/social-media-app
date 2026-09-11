@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabase";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { notFound } from "next/navigation";
 import { Metadata } from "next";
 import { ExternalLink, Zap } from "lucide-react";
@@ -9,7 +10,7 @@ interface Props {
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { slug } = await params;
-  const { data: workspace } = await supabase
+  const { data: workspace } = await intelligenceDb
     .from("workspaces")
     .select("name")
     .eq("slug", slug)
@@ -26,7 +27,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 export default async function PublicLinksPage({ params }: Props) {
   const { slug } = await params;
 
-  const { data: workspace } = await supabase
+  const { data: workspace } = await intelligenceDb
     .from("workspaces")
     .select("id, name, slug")
     .eq("slug", slug)

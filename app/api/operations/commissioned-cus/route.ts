@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { requireAuth } from "@/lib/permissions";
+import { fetchAllRows } from "@/lib/supabase-paginate";
+import { nextDay } from "@/lib/date-utils";
+import { canSignMedia, signMediaUrl } from "@/lib/gcs-sign";
+
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 // GET /api/operations/commissioned-cus
 // Returns tasks (content + social promo) with metadata for the CU dashboard.
@@ -14,35 +20,54 @@ export async function GET(req: NextRequest) {
   const from = searchParams.get("from"); // YYYY-MM-DD
   const to = searchParams.get("to"); // YYYY-MM-DD
   const excludeClientIds = searchParams.get("excludeClients"); // comma-separated IDs
+  // Optional single-client scope — a wide date range over all clients is a
+  // multi-MB payload; scoping server-side keeps customer-filtered views fast.
+  const clientIdParam = parseInt(searchParams.get("clientId") || "", 10);
+  const clientId = isNaN(clientIdParam) ? null : clientIdParam;
+  // Which date the range filters on. Commissioned CUs asks for the default
+  // ("created"); Delivered asks for "completed". Filtering on creation and
+  // then keeping the rows that happen to be done answers NEITHER question: it
+  // counts work created in the period but finished later, and misses work
+  // finished in the period but created earlier. For CGAP's Member 5 contract
+  // in May 2026 that was +13.25 / -3.75 CU, showing 31.40 where the true
+  // delivered figure is 21.90 (and 31.40 is just the commissioned number).
+  const basis = searchParams.get("basis") === "completed" ? "completed" : "created";
+  const dateColumn = basis === "completed" ? "date_completed" : "date_created";
 
   try {
-    // ── 1. Fetch content tasks from the enriched view ──
-    let contentTaskQuery = supabase
-      .from("app_tasks_content")
-      .select("*")
-      .order("date_created", { ascending: false })
-      .limit(5000);
+    // ── 1. Fetch ALL content tasks from the enriched view (paginated) ──
+    // Order by the unique id_task: .range() pagination over a non-unique sort
+    // (date_created has large clusters of identical timestamps) duplicates and
+    // skips rows at page boundaries, which inflates the CU totals.
+    // Date bounds: the view's date columns are TEXT bare dates — bare gte and
+    // lt(nextDay) are the only correct comparisons (see lib/date-utils.ts).
+    const buildContentQuery = (start: number, end: number) => {
+      let q = supabase
+        .from("app_tasks_content")
+        .select("*")
+        .order("id_task", { ascending: true });
+      if (from) q = q.gte(dateColumn, from);
+      if (to) q = q.lt(dateColumn, nextDay(to));
+      if (clientId !== null) q = q.eq("id_client", clientId);
+      return q.range(start, end);
+    };
 
-    if (from) contentTaskQuery = contentTaskQuery.gte("date_created", `${from}T00:00:00.000Z`);
-    if (to) contentTaskQuery = contentTaskQuery.lte("date_created", `${to}T23:59:59.999Z`);
+    // ── 2. Fetch ALL social promo tasks from the enriched view (paginated) ──
+    const buildSocialQuery = (start: number, end: number) => {
+      let q = supabase
+        .from("app_tasks_social")
+        .select("*")
+        .order("id_task", { ascending: true });
+      if (from) q = q.gte(dateColumn, from);
+      if (to) q = q.lt(dateColumn, nextDay(to));
+      if (clientId !== null) q = q.eq("id_client", clientId);
+      return q.range(start, end);
+    };
 
-    // ── 2. Fetch social promo tasks from the enriched view ──
-    let socialTaskQuery = supabase
-      .from("app_tasks_social")
-      .select("*")
-      .order("date_created", { ascending: false })
-      .limit(5000);
-
-    if (from) socialTaskQuery = socialTaskQuery.gte("date_created", `${from}T00:00:00.000Z`);
-    if (to) socialTaskQuery = socialTaskQuery.lte("date_created", `${to}T23:59:59.999Z`);
-
-    const [contentTaskRes, socialTaskRes] = await Promise.all([contentTaskQuery, socialTaskQuery]);
-
-    if (contentTaskRes.error) throw contentTaskRes.error;
-    if (socialTaskRes.error) throw socialTaskRes.error;
-
-    const contentTasks = contentTaskRes.data || [];
-    const socialTasks = socialTaskRes.data || [];
+    const [contentTasks, socialTasks] = await Promise.all([
+      fetchAllRows(buildContentQuery),
+      fetchAllRows(buildSocialQuery),
+    ]);
 
     // ── 3. Parse excluded client IDs ──
     const excludedIds = new Set(
@@ -146,26 +171,113 @@ export async function GET(req: NextRequest) {
     if (contractIdSet.size > 0) {
       const contractIdArr = Array.from(contractIdSet);
       const batchSize = 200;
+
+      // 6a. Fetch contract metadata
+      const contractMetaMap: Record<number, { name: string; clientId: number | null; clientName: string; units: number }> = {};
       for (let i = 0; i < contractIdArr.length; i += batchSize) {
         const batch = contractIdArr.slice(i, i + batchSize);
         const { data: rows } = await supabase
           .from("app_contracts")
-          .select("id_contract, name_contract, id_client, name_client, units_contract, units_total_completed")
+          .select("id_contract, name_contract, id_client, name_client, units_contract")
           .in("id_contract", batch);
         for (const c of rows || []) {
-          contracts.push({
-            contractId: String(c.id_contract),
-            contractName: c.name_contract || "Unnamed",
-            clientId: c.id_client ? String(c.id_client) : null,
+          contractMetaMap[c.id_contract] = {
+            name: c.name_contract || "Unnamed",
+            clientId: c.id_client || null,
             clientName: c.name_client || "Unknown",
-            totalContractCUs: Number(c.units_contract) || 0,
-            completedContractCUs: Number(c.units_total_completed) || 0,
-          });
+            units: Number(c.units_contract) || 0,
+          };
         }
+      }
+
+      // 6b. Aggregate task CUs per contract (all time, no date filter).
+      // Paginated — a contract can have far more than the default 1000 tasks,
+      // which previously truncated the commissioned/remaining totals.
+      const cuAgg: Record<number, { commissioned: number; completed: number }> = {};
+      for (let i = 0; i < contractIdArr.length; i += batchSize) {
+        const batch = contractIdArr.slice(i, i + batchSize);
+        const [contentRows, socialRows] = await Promise.all([
+          fetchAllRows((s, e) =>
+            supabase
+              .from("app_tasks_content")
+              .select("id_contract, units_content, date_completed, flag_spiked")
+              .in("id_contract", batch)
+              .order("id_task", { ascending: true })
+              .range(s, e)
+          ),
+          fetchAllRows((s, e) =>
+            supabase
+              .from("app_tasks_social")
+              .select("id_contract, units_content, date_completed, flag_spiked")
+              .in("id_contract", batch)
+              .order("id_task", { ascending: true })
+              .range(s, e)
+          ),
+        ]);
+        for (const t of [...contentRows, ...socialRows]) {
+          if (t.flag_spiked === 1 && !t.date_completed) continue;
+          const cid = t.id_contract;
+          if (!cuAgg[cid]) cuAgg[cid] = { commissioned: 0, completed: 0 };
+          const cus = Number(t.units_content) || 0;
+          cuAgg[cid].commissioned += cus;
+          if (t.date_completed) cuAgg[cid].completed += cus;
+        }
+      }
+
+      // 6c. Build contract list
+      for (const id of contractIdArr) {
+        const meta = contractMetaMap[id];
+        if (!meta) continue;
+        const agg = cuAgg[id] || { commissioned: 0, completed: 0 };
+        contracts.push({
+          contractId: String(id),
+          contractName: meta.name,
+          clientId: meta.clientId ? String(meta.clientId) : null,
+          clientName: meta.clientName,
+          totalContractCUs: meta.units,
+          commissionedContractCUs: agg.commissioned,
+          completedContractCUs: agg.completed,
+        });
       }
     }
 
-    return NextResponse.json({ tasks, contracts, totalTasks: tasks.length });
+    // ── 7. Final-revision media download links (single-client scope only) ──
+    // Signed URLs for the current revision's files, so customer-scoped CSV
+    // exports (e.g. offboarding) can include direct download links. Only for
+    // clientId-scoped requests: an unscoped range could span thousands of
+    // content items. Empty when GOOGLE_SERVICE isn't configured.
+    const mediaByContent: Record<string, { fileName: string; url: string }[]> = {};
+    if (clientId !== null && canSignMedia()) {
+      const mediaContentIds = Array.from(
+        new Set(tasks.filter((t) => t.source === "content" && t.contentId).map((t) => Number(t.contentId)))
+      );
+      const expires = Math.floor(Date.now() / 1000) + 365 * 24 * 3600;
+      const batchSize = 100;
+      for (let i = 0; i < mediaContentIds.length; i += batchSize) {
+        const batch = mediaContentIds.slice(i, i + batchSize);
+        const mediaRows = await fetchAllRows((s, e) =>
+          supabase
+            .from("app_media_content")
+            .select("id_content, file_name, file_path, order_sort")
+            .eq("flag_current", 1)
+            .in("id_content", batch)
+            .order("id_media", { ascending: true })
+            .range(s, e)
+        );
+        for (const m of mediaRows) {
+          if (!m.file_path) continue;
+          const url = signMediaUrl(m.file_path, expires);
+          if (!url) continue;
+          const key = String(m.id_content);
+          (mediaByContent[key] ||= []).push({ fileName: m.file_name || "", url });
+        }
+      }
+      for (const list of Object.values(mediaByContent)) {
+        list.sort((a, b) => a.fileName.localeCompare(b.fileName));
+      }
+    }
+
+    return NextResponse.json({ tasks, contracts, totalTasks: tasks.length, mediaByContent });
   } catch (error: any) {
     console.error("Commissioned CUs GET error:", error.message);
     return NextResponse.json(

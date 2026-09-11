@@ -1,31 +1,40 @@
 "use client";
 
-import { useState } from "react";
-import Link from "next/link";
 import { signIn } from "next-auth/react";
+import { useSearchParams } from "next/navigation";
+import { Suspense } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Separator } from "@/components/ui/separator";
 
 export default function LoginPage() {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
+  return (
+    <Suspense>
+      <LoginContent />
+    </Suspense>
+  );
+}
 
-  const handleEmailLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsLoading(true);
-    await signIn("credentials", {
-      email,
-      password,
-      callbackUrl: "/dashboard",
-    });
-    setIsLoading(false);
-  };
+/** Return the correct post-login destination based on the current subdomain. */
+function getSubdomainDefault(): string {
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname;
+    if (host === "ai.thecontentengine.com") return "/";
+    if (host === "operations.thecontentengine.com")
+      return "/operations/commissioned-cus";
+  }
+  return "/dashboard";
+}
+
+function LoginContent() {
+  const searchParams = useSearchParams();
+  // Respect callbackUrl from URL params (e.g. /login?callbackUrl=/)
+  // so each subdomain returns to the right page after OAuth.
+  // Fallback is subdomain-aware so the AI & ops subdomains never
+  // accidentally land on /dashboard if the param is lost.
+  const explicitUrl = searchParams.get("callbackUrl");
+  const callbackUrl = explicitUrl || getSubdomainDefault();
 
   const handleGoogleLogin = () => {
-    signIn("google", { callbackUrl: "/dashboard" });
+    signIn("google", { callbackUrl });
   };
 
   return (
@@ -74,67 +83,8 @@ export default function LoginPage() {
         Continue with Google
       </Button>
 
-      <div className="relative">
-        <div className="absolute inset-0 flex items-center">
-          <Separator />
-        </div>
-        <div className="relative flex justify-center text-xs uppercase">
-          <span className="bg-background px-2 text-muted-foreground">
-            Or continue with email
-          </span>
-        </div>
-      </div>
-
-      <form onSubmit={handleEmailLogin} className="space-y-4">
-        <div className="space-y-2">
-          <Label htmlFor="email">Email</Label>
-          <Input
-            id="email"
-            type="email"
-            placeholder="you@company.com"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            className="h-12"
-          />
-        </div>
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <Label htmlFor="password">Password</Label>
-            <Link
-              href="#"
-              className="text-sm text-primary hover:underline"
-            >
-              Forgot password?
-            </Link>
-          </div>
-          <Input
-            id="password"
-            type="password"
-            placeholder="Enter your password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            className="h-12"
-          />
-        </div>
-        <Button
-          type="submit"
-          className="w-full h-12 text-base font-medium bg-[#023250] hover:bg-[#034170] text-white"
-          disabled={isLoading}
-        >
-          {isLoading ? "Signing in..." : "Sign in"}
-        </Button>
-      </form>
-
       <p className="text-center text-sm text-muted-foreground">
-        Don&apos;t have an account?{" "}
-        <Link
-          href="/register"
-          className="font-medium text-primary hover:underline"
-        >
-          Create one free
-        </Link>
+        Sign in with your Google workspace account to get started.
       </p>
     </div>
   );
