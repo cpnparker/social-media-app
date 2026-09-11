@@ -113,12 +113,21 @@ export async function PATCH(
       // The question that prompted the answer, snapshotted alongside it. Without
       // it a reviewer reads a reply with nothing to judge it against — which is
       // why one of the three flags on record cannot be diagnosed at all.
+      // lte, NOT lt. A VOICE turn persists the user's transcript and the
+      // assistant's reply with the SAME timestamp, so a strict less-than
+      // skipped the question being answered and walked back to an earlier
+      // one. A real review found flag #2 stored "write me a thank you note
+      // for Slack" against an answer about Rob's handover list — an hour and
+      // two turns apart — which made the flag look like a non-sequitur and
+      // cost a reviewer the diagnosis. role_message = "user" already excludes
+      // the assistant row this is anchored on, so lte cannot pick up the
+      // answer itself.
       const { data: prior } = await intelligenceDb
         .from("ai_messages")
         .select("document_message")
         .eq("id_conversation", (message as any).id_conversation)
         .eq("role_message", "user")
-        .lt("date_created", (message as any).date_created)
+        .lte("date_created", (message as any).date_created)
         .order("date_created", { ascending: false })
         .limit(1);
 
