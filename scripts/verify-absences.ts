@@ -15,7 +15,7 @@
  * PRIVACY: this is colleagues' leave. Nothing here prints a full name.
  */
 import { readFileSync, existsSync } from "fs";
-import { parseIcs, coalesce, splitAbsences, parseSummary, addDays, isUnparsedLeaveType } from "../lib/hr/absences";
+import { parseIcs, coalesce, splitAbsences, parseSummary, addDays, isUnparsedLeaveType, formatAbsenceBlock } from "../lib/hr/absences";
 
 let pass = 0, fail = 0;
 const check = (n: string, ok: boolean, d?: string) => { console.log(`  ${ok ? "✓" : "✗"} ${n}${d ? ` — ${d}` : ""}`); ok ? pass++ : fail++; };
@@ -39,6 +39,64 @@ check("'X holiday'", parseSummary("Jane Doe holiday (26th Feb - 13th Mar)").name
 check("type is holiday", parseSummary("Jane Doe holiday (26th Feb - 13th Mar)").type === "holiday");
 check("'X public holiday deductible leave'", parseSummary("Jane Doe public holiday deductible leave - Swiss National Day").name === "Jane Doe");
 check("'X: Trip'", parseSummary("Jane Doe: COP30 (10th Nov - 21st Nov)").name === "Jane Doe");
+
+console.log("\n3b. A half day is a half day");
+// From the 2026-09-11 thumbs-down review, flag #1 (24 Aug): "is Gabi working
+// today?" was answered "no" from a booking the pipeline could not tell from a
+// whole day off. The duration qualifier was parsed and thrown away, so a
+// colleague working the morning rendered identically to one away all day.
+//
+// These run in section 3 rather than 4 ON PURPOSE: section 4 needs
+// /tmp/charlie.ics and exits 0 without it, so anything put there asserts
+// nothing on a laptop or in CI.
+check("a half-day booking keeps its marker",
+  parseSummary("Gabi Beer holiday - Half Day").partial === "half day");
+check("a half day still parses the person",
+  parseSummary("Gabi Beer holiday - Half Day").name === "Gabi Beer");
+check("a whole day carries no marker",
+  parseSummary("Gabi Beer holiday - One Day").partial === undefined);
+check("a multi-day booking carries no marker",
+  parseSummary("Gabi Beer holiday - 2 Days").partial === undefined);
+check("a fractional day counts as partial",
+  parseSummary("Gabi Beer holiday - 0.5 Days").partial === "half day");
+
+// THE MERGE IS THE SECOND WAY THE DETAIL DIES. A half day absorbed into a
+// range is indistinguishable again, so it must stand alone.
+{
+  const merged = coalesce([
+    { name: "Gabi Beer", type: "holiday", from: "2026-08-20", to: "2026-08-20" },
+    { name: "Gabi Beer", type: "holiday", from: "2026-08-21", to: "2026-08-21" },
+    { name: "Gabi Beer", type: "holiday", from: "2026-08-24", to: "2026-08-24", partial: "half day" },
+  ]);
+  const half = merged.filter((a) => a.partial);
+  check("a half day is not swallowed by the range beside it", half.length === 1);
+  check("it stays a single day", half.length === 1 && half[0].from === "2026-08-24" && half[0].to === "2026-08-24");
+  check("the whole days still coalesce", merged.some((a) => !a.partial && a.from === "2026-08-20" && a.to === "2026-08-21"));
+
+  // THE TRAP the obvious implementation falls into: keying the group on
+  // `partial` instead of skipping it. Two half days two days apart share that
+  // key, sit inside the three-day bridge, and merge — inventing a Tuesday.
+  const apart = coalesce([
+    { name: "Gabi Beer", type: "holiday", from: "2026-08-24", to: "2026-08-24", partial: "half day" },
+    { name: "Gabi Beer", type: "holiday", from: "2026-08-26", to: "2026-08-26", partial: "half day" },
+  ]);
+  check("two half days two days apart stay two entries", apart.length === 2);
+  check("neither invents the day between them", apart.every((a) => a.from === a.to));
+}
+
+// IT HAS TO REACH THE MODEL, or none of the above matters.
+{
+  const block = formatAbsenceBlock(
+    { ok: true, fetchedAt: "2026-08-24T09:00:00.000Z", absences: [
+      { name: "Gabi Beer", type: "holiday", from: "2026-08-24", to: "2026-08-24", partial: "half day" },
+    ] },
+    "2026-08-24"
+  );
+  check("the block prints the half day", /half day/.test(block));
+  check("the block says booked leave is not attendance", /NOT AN ATTENDANCE RECORD/.test(block));
+  check("the block says a half day means working part of it", /working part of that day/.test(block));
+  check("the block dates itself", block.indexOf("2026-08-24 09:00") >= 0);
+}
 
 console.log("\n4. Against the REAL feed");
 if (!existsSync("/tmp/charlie.ics")) {

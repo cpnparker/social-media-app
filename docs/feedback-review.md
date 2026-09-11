@@ -21,12 +21,12 @@ anything.
 
 | # | Date | Reason given | What it actually was | Status |
 |---|---|---|---|---|
-| 1 | 24 Aug | wrong_facts | "Is Gabi working today?" answered from booked leave as if it were an attendance record. The HR pipeline parses half-day markers and throws them away, so a morning-working colleague renders identically to a whole day off. | **Open** |
+| 1 | 24 Aug | wrong_facts | "Is Gabi working today?" answered from booked leave as if it were an attendance record. The HR pipeline parses half-day markers and throws them away, so a morning-working colleague renders identically to a whole day off. | **Fixed** 11 Sep |
 | 2 | 24 Aug | missed_data | Voice, asked what was left on Rob's handover list. The list had been pasted into that thread 151 messages earlier and the voice assistant could not read its own conversation. | **Fixed** 24 Aug (8694f43, completed by 80cc529) |
 | 3 | 27 Aug | wrong_facts | Asked to finish a half-written email, it reported the draft as already SENT. The mail bridge strips every Gmail label except UNREAD, so a draft and a sent message are indistinguishable to the model. | **Open** |
 | 4 | 27 Aug | ignored_request | User corrected a wrong claim; the redrafted note still opened with the exact sentence being corrected. It patched around the error instead of reissuing a clean draft. | **Open** |
-| 5 | 31 Aug | ignored_request | A 35-slide conversion produced no deck; asked "is everything okay?", it described its own internal state and asked permission to do the job it already had. | **Partly** — the no-deck half is closed; asking instead of acting is not |
-| 6 | 3 Sep | wrong_datetime | Asked to summarise a call with Thomas, it never looked the meeting up, answered from a stale cached snapshot and offered to fetch the real data instead of fetching it. | **Open** |
+| 5 | 31 Aug | ignored_request | A 35-slide conversion produced no deck; asked "is everything okay?", it described its own internal state and asked permission to do the job it already had. | **Fixed** 11 Sep |
+| 6 | 3 Sep | wrong_datetime | Asked to summarise a call with Thomas, it never looked the meeting up, answered from a stale cached snapshot and offered to fetch the real data instead of fetching it. | **Partly** 11 Sep — offering rather than acting is closed; the routing that never reached a meeting lookup is not |
 
 ### Cross-cutting
 
@@ -51,13 +51,15 @@ that reason alone. Fixed 2026-09-11.
 
 Ordered by how often the class would recur, not by how loud the flag was.
 
-1. **Act, do not offer** (#5, #6). The only non-prompt mechanism today speaks
-   after a deck renders, so a job that never started produces no signal. The
-   server knows at end of turn whether a conversion was asked for and whether
-   the tool ever ran; that is checkable rather than hoped for.
-2. **Half-days and gap-bridging in the HR feed** (#1). Keep the half-day marker
-   instead of discarding it, and stop bridging gaps that are not weekends. Add
-   the two fixtures that would have caught both.
+1. ~~**Act, do not offer** (#5, #6).~~ **Done 11 Sep.** A deterministic
+   end-of-turn notice when a conversion was asked for and generate_slides never
+   ran, plus a general prompt rule for the cases that are not decks.
+2. ~~**Half-days in the HR feed** (#1).~~ **Done 11 Sep.** The marker survives
+   parsing, a part-day booking is never merged into a range, and the block says
+   booked leave is not an attendance record. STILL OPEN from the same file: the
+   three-day gap bridge applies to any gap, not only weekends, so two bookings
+   either side of a midweek gap merge and assert days nobody booked. Separate
+   latent defect, not what caused #1.
 3. **Gmail labels** (#3). Carry the labels through the bridge so a draft is
    distinguishable from a sent message. This is a MeetingBrain change.
 4. **Re-issue, do not patch around** (#4). When a correction lands, the redraft

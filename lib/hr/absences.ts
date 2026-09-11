@@ -30,6 +30,16 @@ export interface Absence {
   from: string;
   /** Inclusive, YYYY-MM-DD — DTEND has already been decremented. */
   to: string;
+  /**
+   * The booking covers only PART of the day, as CharlieHR worded it
+   * ("half day"). Absent on a whole-day booking.
+   *
+   * The from/to range can say which days are booked and nothing about how much
+   * of a day. So a colleague working Monday morning and off Monday afternoon
+   * rendered identically to one away all day, and "is Gabi working today?" was
+   * answered "no" on the strength of it. That answer was flagged.
+   */
+  partial?: string;
 }
 
 export interface AbsenceResult {
@@ -102,7 +112,7 @@ const NON_PERSON_LABELS = new Set(["restricted date", "company", "company holida
 const NON_PERSON_SUMMARIES = /^(company\s+holiday|bank\s+holiday|office\s+closed|public\s+holiday)$/i;
 
 /** "Jane Doe holiday (26th Feb - 13th Mar)" -> { name: "Jane Doe", type: "holiday" } */
-export function parseSummary(raw: string): { name: string; type: string; isPerson: boolean } {
+export function parseSummary(raw: string): { name: string; type: string; isPerson: boolean; partial?: string } {
   // Strip the trailing human-readable range CharlieHR appends. It repeats the
   // dates we already have from DTSTART/DTEND, and describes the WHOLE booking
   // rather than the single day this event represents.
@@ -120,6 +130,18 @@ export function parseSummary(raw: string): { name: string; type: string; isPerso
   // DURATION, not part of the type and certainly not part of the name. Stripped
   // generically: an earlier version handled only "One Day", so every half-day
   // booking produced a separate fictional colleague.
+  //
+  // KEPT, not merely stripped, when it says the day is only PARTLY booked. A
+  // whole-day qualifier tells us nothing the date range does not already say,
+  // so it is dropped as before; "half" and any fraction are the one thing the
+  // range cannot express, and throwing it away is what made a morning-working
+  // colleague read as away.
+  const durationMatch = s.match(/\s*[–—-]\s*(a\s+)?(half|one|two|three|\d+(\.\d+)?)\s+days?\s*$/i);
+  const qualifier = durationMatch ? durationMatch[2].toLowerCase() : "";
+  const partial =
+    qualifier === "half" || (qualifier !== "" && Number(qualifier) > 0 && Number(qualifier) < 1)
+      ? "half day"
+      : undefined;
   s = s.replace(/\s*[–—-]\s*(a\s+)?(half|one|two|three|\d+(\.\d+)?)\s+days?\s*$/i, "").trim();
 
   // "Restricted Date: COP30" — a company-wide entry wearing a person's shape.
@@ -144,12 +166,12 @@ export function parseSummary(raw: string): { name: string; type: string; isPerso
     const at = new RegExp(`^(.*?)\\s+${t.replace(/ /g, "\\s+")}(\\b|$)`, "i");
     const m = s.match(at);
     if (m && m[1].trim()) {
-      return { name: m[1].trim(), type: t, isPerson: true };
+      return { name: m[1].trim(), type: t, isPerson: true, partial };
     }
   }
   // Unrecognised. Kept, but flagged by isUnparsedLeaveType so a new CharlieHR
   // type shows up as a test failure rather than as a new colleague.
-  return { name: s, type: "away", isPerson: true };
+  return { name: s, type: "away", isPerson: true, partial };
 }
 
 /** True when parseSummary could not identify the leave type. */
@@ -172,10 +194,10 @@ export function parseIcs(text: string): Absence[] {
         // fall back to a single day when DTEND is absent.
         const rawEnd = cur.DTEND ? cur.DTEND.slice(0, 8).replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3") : null;
         const to = rawEnd ? addDays(rawEnd, -1) : from;
-        const { name, type, isPerson } = parseSummary(cur.SUMMARY);
+        const { name, type, isPerson, partial } = parseSummary(cur.SUMMARY);
         // Company-wide entries ("Restricted Date: COP30") are not somebody's
         // absence and must not appear under "who is away".
-        if (name && isPerson) out.push({ name, type, from, to: to < from ? from : to });
+        if (name && isPerson) out.push({ name, type, from, to: to < from ? from : to, ...(partial ? { partial } : {}) });
       }
       cur = null; continue;
     }
@@ -198,11 +220,21 @@ export function parseIcs(text: string): Absence[] {
  */
 export function coalesce(list: Absence[]): Absence[] {
   const byKey = new Map<string, Absence[]>();
+  const out: Absence[] = [];
   for (const a of list) {
+    // A PART-DAY BOOKING IS NEVER MERGED. It stands alone as its own single
+    // day, because merging one into a range destroys the detail a second
+    // time: a half day cannot describe the days either side of it.
+    //
+    // NOT done by adding `partial` to the group key, which looks equivalent
+    // and is not — two half days on Monday and Wednesday would share that
+    // key, sit two days apart, fall inside the three-day bridge below, and
+    // merge into "Monday to Wednesday, half day", inventing a Tuesday
+    // nobody booked.
+    if (a.partial) { out.push({ ...a }); continue; }
     const k = `${a.name} ${a.type}`;
     byKey.set(k, [...(byKey.get(k) || []), a]);
   }
-  const out: Absence[] = [];
   for (const group of Array.from(byKey.values())) {
     group.sort((x, y) => x.from.localeCompare(y.from));
     let run = { ...group[0] };
@@ -275,13 +307,16 @@ export function formatAbsenceBlock(result: AbsenceResult, day: string): string {
   if (!current.length && !soon.length) {
     return `\n\n## Who is away\nNobody is recorded as away today or in the next 14 days, per the HR calendar.`;
   }
-  const fmt = (a: Absence) =>
-    a.from === a.to
-      ? `${a.name} — ${a.from} (${a.type})`
-      : `${a.name} — ${a.from} to ${a.to} inclusive (${a.type})`;
+  const fmt = (a: Absence) => {
+    const what = a.partial ? `${a.type}, ${a.partial}` : a.type;
+    return a.from === a.to
+      ? `${a.name} — ${a.from} (${what})`
+      : `${a.name} — ${a.from} to ${a.to} inclusive (${what})`;
+  };
   return [
     `\n\n## Who is away`,
-    `From the HR calendar. This is CURRENT and overrides any holiday claim you read in an email, meeting note or message — those were written on an earlier date and may describe leave that has since ended.`,
+    `From the HR calendar as at ${result.fetchedAt.slice(0, 16).replace("T", " ")} UTC. This is CURRENT and overrides any holiday claim you read in an email, meeting note or message — those were written on an earlier date and may describe leave that has since ended.`,
+    `THIS IS BOOKED LEAVE, NOT AN ATTENDANCE RECORD. It says what someone has booked off, not whether they are at their desk. Asked "is X working today?", answer with what the calendar holds — "the HR calendar has X on holiday today" — and offer to check if it matters. A booking marked HALF DAY means they are working part of that day, so the answer to whether they are working is YES for part of it; never report a half day as a day off.`,
     current.length ? `\nAway today:\n${current.map((a) => `- ${fmt(a)}`).join("\n")}` : `\nNobody is away today.`,
     soon.length ? `\nAway within 14 days:\n${soon.map((a) => `- ${fmt(a)}`).join("\n")}` : "",
     `\nIf someone is not listed here, do not assert that they are away. If you need leave beyond this window, say so rather than guessing.`,
