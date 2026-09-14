@@ -602,6 +602,46 @@ console.log("\nAct, do not offer");
     /fork is REAL|genuine ambiguity/.test(prompt));
 }
 
+/* ── Whose mailbox is this? ────────────────────────────────────────────────
+ *
+ * 14 Sep: a reply about a colleague's first morning back described results as
+ * "sitting unread in his inbox" and "his unread email thread". Every one of
+ * those messages came from the SIGNED-IN user's own mailbox, and the unread
+ * flags were the signed-in user's. The wording read as though a colleague's
+ * mail had been searched, and it cost a privacy investigation to disprove.
+ *
+ * Two things are asserted here: that the guarantee holds in the code, and
+ * that the result says so in words.
+ */
+console.log("\nMailbox identity");
+{
+  const src = readFileSync(join(process.cwd(), "lib/ai/providers.ts"), "utf8");
+
+  // THE GUARANTEE. The model must have no way to name a mailbox, and identity
+  // must be bound from the session at every call site.
+  const toolBlock = src.slice(src.indexOf('name: "query_gmail"'), src.indexOf('name: "query_gmail"') + 2500);
+  const props = (toolBlock.match(/^\s{8}(\w+): \{/gm) || []).map((l) => l.trim().split(":")[0]);
+  check("the tool exposes no mailbox/account/user parameter",
+    !props.some((p) => /mailbox|account|user|email|as_user|on_behalf/i.test(p)), props.join(","));
+  const callSites = (src.match(/queryGmail\(\s*(tool\.)?input\.report,\s*config\.userEmail!/g) || []).length;
+  check("every chain binds the session address", callSites === 4, `found ${callSites}`);
+  check("the bridge result is discarded on a mailbox mismatch", /mailbox mismatch — discarding results/.test(src));
+  check("a non-solo audience is refused", /Blocked \$\{report\}: audience=/.test(src));
+
+  // THE WORDING. A guarantee nobody states is a guarantee the reply can
+  // contradict, which is exactly what happened.
+  const fmt = (providers as any).formatGmailResult as
+    (r: string, res: any, email?: string) => string;
+  check("formatGmailResult is exported", typeof fmt === "function");
+  if (typeof fmt === "function") {
+    const out = fmt("find_from_person", { data: [{ subject: "Refined proposal" }], count: 1 }, "chris@thecontentengine.com");
+    check("the result names the mailbox it read", out.indexOf("chris@thecontentengine.com") >= 0);
+    check("it says no other mailbox is readable", /No other mailbox is readable/.test(out));
+    check("it says read/unread are the user's own flags", /Read and unread are THEIR flags/i.test(out));
+    check("it forbids describing results as a colleague's inbox", /NEVER "Gary's inbox"|never .*inbox/i.test(out));
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (failures.length) { console.log("\nFailures:"); for (const f of failures) console.log(`  - ${f}`); }
 process.exit(fail ? 1 : 0);

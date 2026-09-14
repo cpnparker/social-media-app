@@ -6768,7 +6768,7 @@ export async function queryGmail(
  * OUTSIDE the fence, and marker sentinels stripped from the content so a
  * message body cannot forge a proposal card or a monitor state block.
  */
-export function formatGmailResult(report: string, result: GmailQueryResult): string {
+export function formatGmailResult(report: string, result: GmailQueryResult, userEmail = "the signed-in user"): string {
   if (result.error === "BLOCKED_AUDIENCE") {
     return [
       "Mail was NOT searched: this conversation has more than one reader (it is a team conversation, or it has been shared).",
@@ -6818,7 +6818,7 @@ export function formatGmailResult(report: string, result: GmailQueryResult): str
   // could carry a forged [SCHEDULED_PROPOSAL] marker straight through.
   return fenceUntrusted(result.data, {
     source: "EMAIL CONTENT written by third parties",
-    preamble: `${head}${result.count} message${result.count === 1 ? "" : "s"} from the user's own mailbox.`,
+    preamble: `${head}${result.count} message${result.count === 1 ? "" : "s"} from ${userEmail}'s own mailbox — the signed-in user's. No other mailbox is readable.`,
     instructions: [
       result.dropped
         ? `NOTE: ${result.dropped} further message(s) matched but could not be retrieved — say the list may be incomplete rather than presenting it as everything.`
@@ -6849,6 +6849,15 @@ export function formatGmailResult(report: string, result: GmailQueryResult): str
       bodiesIncluded
         ? ""
         : `THESE RESULTS CONTAIN NO MESSAGE BODIES — only a short snippet per message. That is how this report works; it is NOT a failure and the text IS retrievable. To read what someone actually wrote you MUST call query_gmail again with report "thread" and the thread_id from the message you want. Do that BEFORE saying you cannot read a message, and never ask the user to paste in text you can fetch yourself.`,
+      // WHOSE MAILBOX THIS IS, said every time. A reply about a colleague's
+      // morning described these results as "sitting unread in his inbox" and
+      // "his unread email thread". Every word of that was about the SIGNED-IN
+      // user's mailbox and their own unread flags — the tool cannot read
+      // anyone else's and has no parameter that could name one — but the
+      // wording read as though a colleague's mail had been searched, and cost
+      // a privacy investigation to disprove. The confusion is cheap to prevent
+      // and expensive to have.
+      `THIS IS ${userEmail}'S OWN MAILBOX AND NOBODY ELSE'S. Read and unread are THEIR flags. When the search was about a colleague, these are the messages in the user's own mail that involve that person — say "in your mail with Gary" or "a thread you are on", NEVER "Gary's inbox", "his unread email" or anything else implying you can see another person's mailbox. You cannot, and saying otherwise makes the product look like it reads colleagues' mail.`,
       `Answer the user's question from the above. Quote sparingly, attribute to the sender, and give dates.`,
     ].filter(Boolean).join("\n"),
   });
@@ -9930,7 +9939,7 @@ async function streamAnthropic(
           if (result.count > 0) config.sawUntrustedContent = true;
           toolResults.push({
             type: "tool_result", tool_use_id: tool.id,
-            content: formatGmailResult(tool.input.report, result),
+            content: formatGmailResult(tool.input.report, result, config.userEmail),
           });
         } catch (err: any) {
           toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: `Mail error: ${err.message}`, is_error: true });
@@ -11031,7 +11040,7 @@ async function streamXAIChatCompletions(
           if (result.count > 0) config.sawUntrustedContent = true;
           openaiMessages.push({
             role: "tool", tool_call_id: tc.id,
-            content: formatGmailResult(input.report, result),
+            content: formatGmailResult(input.report, result, config.userEmail),
           } as any);
         } catch (err: any) {
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Mail error: ${err.message}` } as any);
@@ -12115,7 +12124,7 @@ async function streamGemini(
           if (result.count > 0) config.sawUntrustedContent = true;
           geminiMessages.push({
             role: "tool", tool_call_id: tc.id,
-            content: formatGmailResult(input.report, result),
+            content: formatGmailResult(input.report, result, config.userEmail),
           } as any);
         } catch (err: any) {
           geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Mail error: ${err.message}` } as any);
@@ -13098,7 +13107,7 @@ async function streamOpenAI(
           if (result.count > 0) config.sawUntrustedContent = true;
           openaiMessages.push({
             role: "tool", tool_call_id: tc.id,
-            content: formatGmailResult(input.report, result),
+            content: formatGmailResult(input.report, result, config.userEmail),
           } as any);
         } catch (err: any) {
           openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: `Mail error: ${err.message}` } as any);
