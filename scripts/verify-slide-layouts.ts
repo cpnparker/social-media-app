@@ -3616,6 +3616,105 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   }
   if (failures === before33) pass("a chart callout keeps clear of the source, the footer and every other box, at every plot height");
 
+  // ── 34 ─────────────────────────────────────────────────────────────────
+  // A PHRASE IN A STAT ROW MUST NOT SHRINK THE FIGURES BESIDE IT.
+  //
+  // The row used one size for every value, solved from the longest string of
+  // any kind. A team-briefing deck put "Monitoring-only" beside "66" and "5",
+  // and both numbers — the two figures the slide existed for — drew at 22pt
+  // where the same row of numbers draws at 54pt.
+  const before34 = failures;
+  console.log(`\n34. A phrase in a stat row does not shrink the figures beside it`);
+  {
+    const sizes = (values: string[]) => {
+      const rq: any[] = buildSlideRequests({ layout: "stat", title: "By the numbers",
+        stats: values.map((v, i) => ({ value: v, label: `Label ${i + 1}` })) } as SlideInput, 0, "n");
+      return values.map((_, i) => {
+        const st = rq.find((q) => (q.updateTextStyle?.objectId || "").endsWith(`_sv${i}`) && q.updateTextStyle.style?.fontSize);
+        return st ? st.updateTextStyle.style.fontSize.magnitude as number : NaN;
+      });
+    };
+    const numbers = sizes(["66", "5", "40"]);
+    const mixed = sizes(["66", "5", "Monitoring-only"]);
+    if (numbers.some((n) => !Number.isFinite(n)) || mixed.some((n) => !Number.isFinite(n))) {
+      fail("could not read the stat value sizes — the check is not measuring anything");
+    } else {
+      if (mixed[0] !== numbers[0] || mixed[1] !== numbers[1]) {
+        fail(`a phrase shrank the figures: "66" and "5" drew at ${mixed[0]}/${mixed[1]}pt beside it, ${numbers[0]}/${numbers[1]}pt beside a number`);
+      }
+      if (mixed[2] > mixed[0]) fail(`the phrase (${mixed[2]}pt) out-sizes the figures beside it (${mixed[0]}pt)`);
+      // One size across FIGURES still holds — that rule was right.
+      const figs = sizes(["92.5 GW", "66", "5"]);
+      if (!(figs[0] === figs[1] && figs[1] === figs[2])) fail(`figures in one row no longer share a size: ${figs.join("/")}`);
+      // A row of phrases only has no figure to defer to, and must still draw.
+      const words = sizes(["Weekly", "Monthly", "Quarterly"]);
+      if (words.some((n) => !(n > 0))) fail("a row with no figures in it no longer sizes its values");
+    }
+  }
+  if (failures === before34) pass("a phrase takes its own size, figures keep theirs, and figures still share one size");
+
+  // ── 35 ─────────────────────────────────────────────────────────────────
+  // THE TAKEAWAY NOTE KEEPS CLEAR OF THE PICTURE RAIL.
+  //
+  // The note bar was always drawn at full content width, and the rail sits in
+  // the right-hand column, so on any prose slide with a photograph the bar ran
+  // underneath it — 206pt of a team-briefing deck's key sentence, under a
+  // picture. Check 11 never saw it: it compares TEXT with text, and a rail is
+  // an image.
+  //
+  // The second half is the trap in the obvious fix. Narrow the bar without
+  // narrowing the height it is measured at, and the sentence wraps to more
+  // lines than the bar was sized for and overflows its own panel.
+  const before35 = failures;
+  console.log(`\n35. A takeaway note keeps clear of the picture rail, and still fits its bar`);
+  {
+    const note = "Monitoring rate and audit rate come from different prompt sets — never quote one as the other, and say which one a figure came from.";
+    const body = "**AI Score:** website, content and social pillars.\n**Recommendations:** by department.\n**Verbatim answers:** what the models actually say.";
+    const geo = (slide: any) => {
+      const rq: any[] = buildSlideRequests(slide, 0, "n");
+      const box = (sfx: string) => {
+        const r = rq.find((q) => ((q.createShape || q.createImage)?.objectId || "").endsWith(sfx));
+        const e = r && (r.createShape || r.createImage).elementProperties;
+        return e ? { x: e.transform.translateX, y: e.transform.translateY, w: e.size.width.magnitude, h: e.size.height.magnitude } : null;
+      };
+      const sizeRq = rq.find((q) => (q.updateTextStyle?.objectId || "").endsWith("_noteTxt") && q.updateTextStyle.style?.fontSize);
+      return { bar: box("_noteBar"), txt: box("_noteTxt"), rail: box("_rail"), size: sizeRq ? sizeRq.updateTextStyle.style.fontSize.magnitude : NaN };
+    };
+    const railed = geo({ layout: "content", title: "What it measures", body, note, resolvedImage: { url: "https://example.com/x.jpg", scrim: 0 } });
+    const plain = geo({ layout: "content", title: "What it measures", body, note });
+    const caseStudy = geo({ layout: "case-study", title: "What it measures", body, note, resolvedImage: { url: "https://example.com/x.jpg", scrim: 0 } });
+
+    if (!railed.bar || !railed.rail || !railed.txt) {
+      fail("the railed fixture did not draw a note bar, its text and a rail — the check is not measuring anything");
+    } else {
+      if (railed.bar.x + railed.bar.w > railed.rail.x + 0.5) {
+        fail(`the note bar runs ${(railed.bar.x + railed.bar.w - railed.rail.x).toFixed(0)}pt under the picture rail`);
+      }
+      // The text must fit the bar at the width it is actually drawn at.
+      const lines = estimateLines(note, railed.txt.w, railed.size, false, false, "Roboto");
+      const need = drawnTextHeight(lines, railed.size, 0, 1, 1.15);
+      if (need > railed.txt.h + 1) {
+        fail(`the narrowed note needs ${need.toFixed(0)}pt for its text but its box is ${railed.txt.h.toFixed(0)}pt — the height was measured at the wrong width`);
+      }
+      if (railed.txt.y + railed.txt.h > railed.bar.y + railed.bar.h + 1) {
+        fail("the note's text box extends past the bottom of its own bar");
+      }
+    }
+    if (caseStudy.bar && caseStudy.rail && caseStudy.bar.x + caseStudy.bar.w > caseStudy.rail.x + 0.5) {
+      fail("a case-study note still runs under its picture rail");
+    }
+    // REGRESSION GUARD, in both directions. A slide with no picture keeps the
+    // full-width bar, and it must be wider than the bar beside a rail — equal
+    // widths mean either nothing narrowed or everything did, and the message
+    // says which rather than guessing.
+    if (plain.bar && railed.bar && !(plain.bar.w > railed.bar.w)) {
+      fail(plain.bar.w === railed.bar.w
+        ? `the note is ${plain.bar.w.toFixed(0)}pt wide with a picture and without one — the rail is not narrowing it`
+        : `a note with no picture (${plain.bar.w.toFixed(0)}pt) is narrower than one beside a rail (${railed.bar.w.toFixed(0)}pt)`);
+    }
+  }
+  if (failures === before35) pass("a note clears the rail on content and case-study, fits its narrowed bar, and stays full width without a picture");
+
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);
 })();

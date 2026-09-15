@@ -397,11 +397,15 @@ function toneAt(tones: string[] | undefined, i: number) {
   return TONES[key];
 }
 
-/** How tall the takeaway bar needs to be for its text. */
-function noteHeight(note: string | undefined): number {
+/** How tall the takeaway bar needs to be for its text, at the width the bar is
+ *  actually drawn at. Measured at full width while the bar was narrowed, the
+ *  sentence wraps to more lines than it was sized for and overflows its panel —
+ *  and the band above, shortened by the SAME wrong height, leaves it too little
+ *  room, so it climbs into the prose. Width and height have to agree. */
+function noteHeight(note: string | undefined, width: number = GRID.contentWidth): number {
   const text = (note || "").trim();
   if (!text) return 0;
-  const lines = estimateLines(text, GRID.contentWidth - NOTE.pad * 2, NOTE.fontSize);
+  const lines = estimateLines(text, width - NOTE.pad * 2, NOTE.fontSize);
   return Math.min(NOTE.maxHeight, Math.max(NOTE.minHeight, lines * NOTE.lineHeight + NOTE.pad * 2));
 }
 
@@ -422,8 +426,8 @@ export function stampFooter(slides: SlideInput[], title: string | undefined): Sl
   return slides;
 }
 
-export function bandHeightFor(slide: Pick<SlideInput, "note">): number {
-  const h = noteHeight(slide.note);
+export function bandHeightFor(slide: Pick<SlideInput, "note">, noteWidth: number = GRID.contentWidth): number {
+  const h = noteHeight(slide.note, noteWidth);
   if (!h) return GRID.bandHeight;
   return Math.max(90, NOTE.bottom - h - NOTE.gap - GRID.bodyY);
 }
@@ -438,11 +442,12 @@ export function bandHeightFor(slide: Pick<SlideInput, "note">): number {
  */
 function noteRequests(
   page: string, id: (s: string) => string, note: string | undefined, onDark: boolean,
-  below?: number
+  below?: number,
+  width: number = GRID.contentWidth
 ): Req[] {
   const text = (note || "").trim();
   if (!text) return [];
-  const h = noteHeight(text);
+  const h = noteHeight(text, width);
   // UNDER THE CONTENT, not at the foot of the page. The reference deck sets
   // its takeaway bar a few points beneath the boxes it comments on, and lets
   // the empty space fall BELOW it; pinned to the bottom, the bar sat up to
@@ -453,12 +458,12 @@ function noteRequests(
   const y = below !== undefined ? Math.min(below, NOTE.bottom - h) : NOTE.bottom - h;
   const out: Req[] = [
     ...filledShape(id("noteBar"), page, "ROUND_RECTANGLE", onDark ? COLOR.white : COLOR.tintBlue, {
-      x: GRID.margin, y, width: GRID.contentWidth, height: h,
+      x: GRID.margin, y, width, height: h,
     }, onDark ? 0.1 : 1),
     ...textBox(id("noteTxt"), page, text,
       { font: "Roboto", size: NOTE.fontSize, weight: 300, color: onDark ? COLOR.greyLight : COLOR.navy }, {
         x: GRID.margin + NOTE.pad, y: y + NOTE.pad - 3,
-        width: GRID.contentWidth - NOTE.pad * 2, height: h - NOTE.pad,
+        width: width - NOTE.pad * 2, height: h - NOTE.pad,
       }, { lineSpacing: 1.15 }),
   ];
   // The bold lead-in, when the note opens with one. Drawn as a RUN rather than
@@ -1619,10 +1624,30 @@ function statRequests(
   // allowance, "92.5 GW" was computed to fit at 50pt and wrapped anyway.
   const INSET = 15;
   const PER_CHAR = 0.62;
-  const longest = Math.max(...shown.map((sx) => sx.value.length), 1);
+  // A FIGURE SETS THE ROW'S SIZE; A PHRASE DOES NOT.
+  //
+  // One size across the row is right for figures — "66" beside "5" must read
+  // as the same kind of thing. But the size was solved from the longest value
+  // of ANY kind, so one phrase in the row set it for everything: a deck put
+  // "Monitoring-only" beside "66" and "5", and both numbers drew at 22pt where
+  // the same row of numbers draws at 54pt — the two figures the slide existed
+  // for, shrunk to under half by a caption sitting in a value's slot.
+  //
+  // A figure is anything with a digit in it: "66", "92.5 GW", "CHF 12,500",
+  // "70%". A value with none is a phrase, and gets its own fit, never larger
+  // than the figures beside it so it cannot out-shout them either.
+  const isFigure = (v: string) => /\d/.test(v);
+  const figures = shown.filter((sx) => isFigure(sx.value));
+  const sizeBasis = figures.length ? figures : shown;
+  const longest = Math.max(...sizeBasis.map((sx) => sx.value.length), 1);
 
   const fitted = Math.floor((cell - INSET) / (longest * PER_CHAR));
   const valueStyle = { ...TYPE.statValue, size: Math.max(22, Math.min(TYPE.statValue.size, fitted)) };
+  const styleFor = (v: string) => {
+    if (!figures.length || isFigure(v)) return valueStyle;
+    const own = Math.floor((cell - INSET) / (Math.max(v.length, 1) * PER_CHAR));
+    return { ...valueStyle, size: Math.max(16, Math.min(valueStyle.size, own)) };
+  };
 
   // MEASURE THE LABEL. It used to get a fixed 0.3in and the source line was
   // placed immediately below that, so a label wrapping to three lines — "MORE
@@ -1654,7 +1679,8 @@ function statRequests(
     const x = GRID.margin + i * (cell + CHART.statGap);
     // The primary column keeps the others' size but takes the lime accent, so
     // one of three numbers reads as THE number without shrinking the rest.
-    const thisValue = sx.primary ? { ...valueStyle, color: COLOR.lime } : valueStyle;
+    const base = styleFor(sx.value);
+    const thisValue = sx.primary ? { ...base, color: COLOR.lime } : base;
     out.push(
       ...textBox(id(`sv${i}`), page, sx.value, thisValue, {
         x, y: top, width: cell, height: CHART.statValueHeight,
@@ -4832,11 +4858,23 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
   // fits it to a column the panel is about to take a third of.
   // The content band, shortened when a takeaway bar is present. Computed once
   // here so every layout below measures against the same number.
-  const band = bandHeightFor(slide);
   const hasPanel = !!(slide.panel && ((slide.panel.items || []).length || slide.panel.title?.trim()));
+  // ONE decision about whether the right-hand column is taken — by a picture
+  // rail or a panel — and every width that depends on it reads this boolean.
+  //
+  // The prose column always narrowed for it. The takeaway bar did not: it was
+  // drawn at full content width on every layout, so on any prose slide with a
+  // photograph the slide's key sentence ran underneath the picture. Deriving
+  // the bar's width here, beside the column's, rather than re-testing for a
+  // rail at the call site, is what keeps the two from drifting apart again.
+  const rightColumnTaken = isProse && !!(railBox(slide) || hasPanel);
   const proseColumn = isProse
-    ? (railBox(slide) || hasPanel ? GRID.proseNarrow : GRID.proseWidth)
+    ? (rightColumnTaken ? GRID.proseNarrow : GRID.proseWidth)
     : GRID.contentWidth;
+  const noteWidth = rightColumnTaken ? GRID.proseNarrow : GRID.contentWidth;
+  // After the width is known: the band is shortened by the note's height AT
+  // that width, so the prose above leaves room for the bar it actually gets.
+  const band = bandHeightFor(slide, noteWidth);
   const titleWidth = layout === "image-split" ? IMAGE.splitTextWidth : proseColumn;
   // image-split sets its title in a HALF-WIDTH column, so the same words take
   // roughly twice the lines. Measuring it against the full-width title band
@@ -5395,7 +5433,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
     // cards are there, and drawing both looked like a mistake.
     const toneL = toneAt(slide.tones, 0);
     const toneR = toneAt(slide.tones, 1);
-    const panelBottom = NOTE.bottom - noteHeight(slide.note) - (slide.note?.trim() ? NOTE.gap : 0);
+    const panelBottom = NOTE.bottom - noteHeight(slide.note, noteWidth) - (slide.note?.trim() ? NOTE.gap : 0);
     const TONE_PAD = 12;
     const tinted = !!(toneL || toneR);
     const hasHeads = !!(slide.columns?.left?.trim() || slide.columns?.right?.trim());
@@ -5589,7 +5627,7 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
   // The takeaway bar, on every layout. Drawn after the content so it sits on
   // top of nothing — the band above was already shortened to make room.
   if (!noteDrawn) requests.push(...noteRequests(page, id, slide.note, onDark,
-    contentBottom !== undefined ? contentBottom + NOTE.gap : undefined));
+    contentBottom !== undefined ? contentBottom + NOTE.gap : undefined, noteWidth));
 
   requests.push(...logoRequests(id("logo"), page, style, slide));
 
