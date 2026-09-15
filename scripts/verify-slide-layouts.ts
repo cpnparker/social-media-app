@@ -3873,6 +3873,10 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       { title: "A card", body: "Body text here.", icon: "calendar-clock" },
       { title: "Another card", body: "More body text.", icon: "layout-dashboard" } ] } as SlideInput, 0);
     if (iconDrop.some((d) => /calendar|dashboard/i.test(d))) fail(`an icon NAME is reported as dropped text: ${iconDrop.join(" | ")}`);
+    // The builder's own footer is not the author's text: a cover leaves it off
+    // on purpose, and reporting that sent the same false note in two replies.
+    const coverDrop = droppedContent({ layout: "cover", title: "AI tools at TCE", subtitle: "Team briefing", footer: "The Content Engine · AI tools at TCE" } as SlideInput, 0);
+    if (coverDrop.some((d) => /Content Engine/i.test(d))) fail(`the stamped footer is reported as dropped text on a cover: ${coverDrop.join(" | ")}`);
   }
   if (failures === before36) pass("wires start on their nodes and end in the hub, nodes clear the rings and each other, labels hold one line, overflow is declared, a split group is named once, icon names are not text");
 

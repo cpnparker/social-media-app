@@ -2619,6 +2619,10 @@ const NON_CONTENT_KEYS = new Set([
   // reported as text the slide dropped, and real icons were swapped out for
   // shorter ones on the strength of it.
   "url", "src", "query", "icon", "resolvedUrl", "resolvedIcon", "imageError",
+  // The footer is stamped by the builder on every slide, and the cover and the
+  // closing leave it off by design. Counted as content, every deck with a
+  // cover told its author that a field THEY never wrote was being dropped.
+  "footer",
   "presentationId", "fidelity", "align", "id", "font",
 ]);
 
