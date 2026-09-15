@@ -26,6 +26,7 @@ import {
   type ImageGenerator, type ImageSource, type ImageRequest, type TextBand,
 } from "@/lib/slides/images";
 import { resolveIcon } from "@/lib/slides/icons";
+import { normaliseSlide, hubHasConnections } from "@/lib/slides/edit";
 import { SLIDES_TEXT_INSET, BULLET_INDENT } from "@/lib/slides/preview-style";
 import { refreshSignedMediaUrl } from "@/lib/media/signed";
 
@@ -128,7 +129,8 @@ export interface SlideInput {
   }[];
   /** A hub and what it is wired to: `title` in a navy circle at the centre,
    *  one or two `groups` either side, a connector from every item to the hub.
-   *  One group is split across both sides. See hubRequests. */
+   *  One group is split across both sides and named once, over the hub. A
+   *  third group is not drawn; it is counted and reported. See hubRequests. */
   hub?: {
     title?: string;
     caption?: string;
@@ -191,6 +193,9 @@ export interface SlideInput {
   imageError?: string;
   /** How many grid thumbnails were asked for and not found. */
   imagesDropped?: number;
+  /** Icon names on a hub that resolved to nothing, recorded fresh at every
+   *  resolution so the model is told to use a plain noun instead. */
+  iconsMissing?: string[];
   /** The layout name the model asked for, when it was not one we have. */
   layoutAsked?: string;
   /** This slide is the tail of one the splitter cut in two. It takes the
@@ -1388,7 +1393,8 @@ export function isStatGrid(stats: { value: string }[] | undefined): boolean {
  *  is drawn on the other ground. */
 const STAT_GRID_STYLE: LayoutStyle = { background: COLOR.offWhite, logo: "navy", logoPlacement: "content", onDark: false };
 export function slideStyle(slide: Pick<SlideInput, "layout" | "stats">, index: number): LayoutStyle {
-  const layout = layoutOf(slide.layout, index);
+  // A layout-less hub is a hub here as it is in the builder (normaliseSlide).
+  const layout = layoutOf(normaliseSlide(slide as SlideInput).layout, index);
   return layout === "stat" && isStatGrid(slide.stats) ? STAT_GRID_STYLE : LAYOUT_STYLE[layout];
 }
 
@@ -1818,6 +1824,102 @@ const PER_CHAR = 0.55;              // unchanged, for a caller that names no fac
 export function faceAdvance(font?: string, caps = false): number {
   if (caps) return (font && FACE_CAPS_ADVANCE[font]) || PER_CHAR * CAPS_WIDEN;
   return (font && FACE_ADVANCE[font]) || PER_CHAR;
+}
+
+/** Roboto's advance for every printable ASCII glyph (32–126), in thousandths
+ *  of an em, at SEMIBOLD-TO-BOLD: for each glyph the wider of weight 600 and
+ *  weight 700.
+ *
+ *  WHY A TABLE, when faceAdvance is a mean. A mean is right for a paragraph and
+ *  wrong for a label, because a label is too short to average out. A hub node
+ *  was sized at 0.55em a character with no slack, so any label whose OWN
+ *  advance ran above that wrapped inside its node — "MS Teams" is 0.595em at
+ *  600, three capitals in eight characters, and a capitals-aware class model
+ *  (upper, lower, digit, space) still missed it by 14%. Summed glyph by glyph
+ *  the only error left is kerning: 0.0–1.2% on real labels, 2.8% on the worst
+ *  case found ("AVATAR TOWER"), all inside the 6% margin.
+ *
+ *  Measured, 2026-09-15: canvas measureText at 1000px in headless Chrome
+ *  against Google's own Roboto webfont (variable, so 600 and 700 are both real
+ *  weights), scratchpad glyphs/glyphs.html. 700 is the wider on 67 glyphs, 600
+ *  on 23 — by at most 2.4%, on "/" — and they tie on 5. The table takes the
+ *  wider per glyph rather than betting on which weight Slides draws for 600,
+ *  which is undocumented. Weight 600 row, for the record: 249 268 319 598 571
+ *  738 649 164 348 350 449 550 235 367 284 380, 571 for every digit, then
+ *  273 251 509 568 518 492 897 667 635 654 651 564 550 681 708 288 557 634 540
+ *  875 708 689 642 689 635 611 615 657 649 878 633 615 605 274 419 274 434 446
+ *  325 537 562 522 563 538 356 569 558 260 256 528 260 869 559 566 562 565 360
+ *  514 336 558 501 738 506 497 506 331 250 331 655.
+ *
+ *  NOT a replacement for faceAdvance: the splitter's thresholds are pinned to
+ *  that mean, and moving them moves every split point in every deck. */
+const ROBOTO_BOLD_ADVANCE = [
+  249, 270, 319, 598, 574, 739, 657, 164, 350, 351, 454, 550, 246, 394, 290, 380, 574, 574, 574,
+  574, 574, 574, 574, 574, 574, 574, 282, 263, 510, 574, 518, 498, 897, 672, 638, 655, 651, 564,
+  550, 681, 708, 292, 559, 636, 541, 875, 708, 690, 645, 690, 641, 616, 620, 659, 653, 878, 635,
+  619, 607, 277, 422, 277, 438, 446, 330, 537, 563, 522, 563, 540, 358, 571, 560, 265, 260, 534,
+  265, 869, 561, 566, 563, 565, 366, 514, 338, 560, 506, 738, 509, 504, 509, 331, 252, 331, 655,
+];
+/** A glyph outside the table — an accented letter, a curly quote — is taken as
+ *  the mean capital: wider than most lower case, so a label full of them
+ *  over-measures rather than wraps. */
+const ROBOTO_BOLD_UNKNOWN = 642;
+/** Playfair Display 400, the same measurement, for the one Playfair box that
+ *  must fit a shape rather than a column: the name in a hub's circle.
+ *
+ *  faceAdvance's 0.493 is a body-copy mean, and a name is not body copy — it is
+ *  Title Case and short. "Content Operations Hub" measures 0.502em a character
+ *  before the margin, so "Operations Hub" was judged to fit a 99pt line at
+ *  14pt, drew 106pt, and took a third line straight through the caption under
+ *  it. Kerning error summed per glyph: 0.0–0.7% on names, 5.2% on the worst
+ *  pair-heavy case found ("WAVE AVATAR"), inside the margin. Measured
+ *  2026-09-15, scratchpad glyphs/playfair.html. */
+const PLAYFAIR_ADVANCE = [
+  249, 262, 298, 637, 523, 742, 837, 189, 294, 294, 492, 587, 261, 499, 252, 372, 600, 370, 479,
+  451, 494, 415, 517, 406, 520, 509, 266, 285, 608, 647, 608, 459, 878, 630, 623, 688, 723, 609,
+  569, 703, 757, 339, 326, 655, 588, 871, 706, 741, 585, 741, 648, 540, 621, 682, 630, 905, 634,
+  591, 594, 296, 372, 296, 536, 591, 283, 498, 563, 486, 581, 506, 332, 528, 588, 293, 267, 550,
+  286, 888, 597, 548, 581, 563, 445, 447, 354, 581, 489, 770, 519, 504, 476, 304, 222, 304, 649,
+];
+const PLAYFAIR_UNKNOWN = 642;
+
+/** A code point drawn a full em wide whatever the face: CJK, kana, Hangul,
+ *  fullwidth forms, and emoji. Roboto and Playfair carry none of these, so the
+ *  fallback face draws them, at 1000 (東 1004, オ 1000, ✅ 1000, 🚀 1000 —
+ *  Chrome, 2026-09-15). Taken as the mean capital they were under-measured by
+ *  a third: "東京オフィス" predicted 4.08em and drew 6.01, wrapping inside its
+ *  node and running a centred group name onto the hub's rings with no note. */
+function drawsFullWidth(cp: number): boolean {
+  return (cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2600 && cp <= 0x27bf) || (cp >= 0x2b00 && cp <= 0x2bff) ||
+    (cp >= 0x2e80 && cp <= 0xa4cf) || (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0xf900 && cp <= 0xfaff) ||
+    (cp >= 0xfe30 && cp <= 0xfe4f) || (cp >= 0xff00 && cp <= 0xff60) || (cp >= 0xffe0 && cp <= 0xffe6) ||
+    (cp >= 0x1f000 && cp <= 0x1faff) || (cp >= 0x20000 && cp <= 0x3fffd);
+}
+
+/** How wide a single line is, in points, plus 6%: semibold or bold Roboto by
+ *  default, or Playfair Display 400 when `face` says so. Measures what Slides
+ *  will hold (markup stripped), in capitals when the box draws them. For a box
+ *  that must hold ONE line, or a line wrapped to a shape; a paragraph in a
+ *  column wants estimateLines.
+ *
+ *  Walked by CODE POINT, not UTF-16 unit: an astral emoji is one glyph and
+ *  was counted as two, and a variation selector or joiner draws nothing. */
+export function labelWidthPt(
+  text: string | undefined, size: number, opts: { caps?: boolean; face?: "Roboto" | "Playfair Display" } = {}
+): number {
+  let s = drawnText(String(text ?? "")).trim();
+  if (opts.caps) s = s.toUpperCase();
+  const playfair = opts.face === "Playfair Display";
+  const table = playfair ? PLAYFAIR_ADVANCE : ROBOTO_BOLD_ADVANCE;
+  const unknown = playfair ? PLAYFAIR_UNKNOWN : ROBOTO_BOLD_UNKNOWN;
+  let em = 0;
+  for (let i = 0; i < s.length;) {
+    const cp = s.codePointAt(i) as number;
+    i += cp > 0xffff ? 2 : 1;
+    if (cp === 0x200d || (cp >= 0xfe00 && cp <= 0xfe0f)) continue;
+    em += cp >= 32 && cp <= 126 ? table[cp - 32] : drawsFullWidth(cp) ? 1000 : unknown;
+  }
+  return (em / 1000) * size * 1.06;
 }
 const LINE_LEAD = 1.45;             // 115% paragraph spacing on a ~1.26em face
 /** How much wider an all-caps run runs than that mixed-case average. Measured
@@ -2591,6 +2693,10 @@ export function isVisualSlide(slide: SlideInput | undefined): boolean {
   if (!slide) return false;
   const cards = slide.cards || [];
   const logos = slide.logos || [];
+  // Asked of the slide AS IT WILL BE DRAWN: normalised, and only when that is a
+  // hub. A `hub` patched onto a content slide is stored and never drawn, and
+  // counting it called a prose slide a diagram.
+  const drawnAs = normaliseSlide(slide);
   return Boolean(
     slide.resolvedImage ||
     (slide.resolvedImages && slide.resolvedImages.length) ||
@@ -2601,8 +2707,11 @@ export function isVisualSlide(slide: SlideInput | undefined): boolean {
     // The process layout draws its chevrons from the stages alone, and a quote
     // is a designed slide on navy whether or not it carries a portrait.
     (slide.stages && slide.stages.length) ||
-    // A hub is a drawn diagram whether or not its nodes carry icons.
-    (slide.hub && (slide.hub.groups || []).some((g) => !!g && (g.items || []).length > 0)) ||
+    // A hub is a drawn diagram whether or not its nodes carry icons — but only
+    // if a node is drawn at all. Counting raw `items.length` called a hub of
+    // untitled or misplaced items visual while it drew nothing, so this asks
+    // the guard's own question of the same normalised view the builder draws.
+    (drawnAs.layout === "hub" && hubHasConnections(drawnAs.hub)) ||
     slide.quote ||
     cards.some((c) => (c.resolvedImage && c.resolvedImage.url) || c.resolvedIcon || c.marker) ||
     logos.some((l) => l.resolvedUrl || l.name)
@@ -2619,6 +2728,13 @@ const NON_CONTENT_KEYS = new Set([
   // reported as text the slide dropped, and real icons were swapped out for
   // shorter ones on the strength of it.
   "url", "src", "query", "icon", "resolvedUrl", "resolvedIcon", "imageError",
+  // The names that failed to resolve are the same instructions again, and
+  // "google-drive" is long enough to be reported as text the slide dropped.
+  "iconsMissing",
+  // Speaker notes are written to the deck's notes page at publish, not drawn
+  // on the slide, so "never draws — do NOT describe it as being in the deck"
+  // was false about every slide that carried a note of eleven characters.
+  "notes",
   // The footer is stamped by the builder on every slide, and the cover and the
   // closing leave it off by design. Counted as content, every deck with a
   // cover told its author that a field THEY never wrote was being dropped.
@@ -2653,10 +2769,12 @@ const contentKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").tr
  *  Compared on a five-word normalised prefix, so the transformations the
  *  builder legitimately makes — upper-casing, brace-stripping, `fitCell`'s
  *  ellipsis, a wrapped label — do not read as losses. */
-export function droppedContent(slide: SlideInput, index: number): string[] {
+export function droppedContent(slide: SlideInput, index: number, notes?: string[]): string[] {
   let drawn = "";
   try {
-    const reqs = buildSlideRequests(slide, index, "audit") as any[];
+    // The same build collects the layout's own notes when asked, so a deck is
+    // built once per slide for the audit rather than twice.
+    const reqs = buildSlideRequests(slide, index, "audit", notes) as any[];
     const parts: string[] = [];
     for (const r of reqs) if (r.insertText?.text) parts.push(String(r.insertText.text));
     drawn = contentKey(parts.join(" \u00b7 "));
@@ -2681,7 +2799,20 @@ export function droppedContent(slide: SlideInput, index: number): string[] {
   };
   const any = slide as any;
   for (const k of Object.keys(any)) walk(any[k], k);
+  // Text a layout NOTE already quotes — a hub caption too long for its circle —
+  // is left to that note, whose fix is the right one. The generic advice below
+  // it in deckWarnings, "put it in a field this layout uses", told the model to
+  // move a caption that was already in hub.caption and only needed shortening.
+  if (notes && notes.length) return missing.filter((m) => !notes.some((n) => n.indexOf(quoteClip(m)) >= 0));
   return missing;
+}
+
+/** A piece of slide text quoted in a note, clipped the one way everything that
+ *  quotes it clips it — so droppedContent can recognise text a layout note
+ *  has already named. */
+export function quoteClip(t: string): string {
+  const s = String(t || "").trim();
+  return `"${s.length > 48 ? s.slice(0, 45) + "..." : s}"`;
 }
 
 /** What the deck could not do, in a sentence the model can relay.
@@ -2704,13 +2835,29 @@ export function deckWarnings(slides: SlideInput[]): string {
     // Words that are in the slide and will not be on it. Named with the text
     // itself, because "slide 24 drops a field" is not actionable and
     // "slide 24 never draws 'We refine together'" is.
-    const lost = droppedContent(s, i);
+    const drawnNotes: string[] = [];
+    const lost = droppedContent(s, i, drawnNotes);
     if (lost.length) {
-      const shown = lost.slice(0, 3).map((t) => `"${t.length > 48 ? t.slice(0, 45) + "..." : t}"`).join(", ");
+      const shown = lost.slice(0, 3).map(quoteClip).join(", ");
       notes.push(
         `slide ${n} carries text its ${s.layout || "content"} layout never draws — ${shown}` +
         `${lost.length > 3 ? ` and ${lost.length - 3} more` : ""}. Put it in a field this layout uses, or change the layout` +
         ` — do NOT describe that content as being in the deck`
+      );
+    }
+    // What the layout itself could not do: a third hub group, a name too long
+    // for its circle or its label. A short group name left off is invisible to
+    // droppedContent, which ignores anything under eleven characters.
+    for (const d of drawnNotes) notes.push(`slide ${n}: ${d}`);
+    // A missing icon is drawn as a stand-in dot, which is tidy and still not
+    // what was asked for. Brand names are the usual cause, and a plain noun is
+    // the fix only the model can make.
+    const missingIcons = Array.isArray(s.iconsMissing) ? s.iconsMissing.filter((x) => typeof x === "string" && x.trim()) : [];
+    if (missingIcons.length) {
+      notes.push(
+        `slide ${n}: no icon could be found for ${missingIcons.slice(0, 4).map((x) => `"${x}"`).join(", ")}` +
+        `${missingIcons.length > 4 ? ` and ${missingIcons.length - 4} more` : ""} — Lucide has almost no brand icons;` +
+        ` use a plain noun (mail, folder, credit-card, database, message-square)`
       );
     }
   }
@@ -3423,11 +3570,12 @@ function layersRequests(
  *
  *  Up to two groups, one either side of the hub, each in its own tone so the
  *  sides read as KINDS — the company's data on one side, the team's own tools
- *  on the other. One group is split across both sides. Each side's nodes sit
- *  on a shallow arc, the middle node furthest out, so the connectors come out
- *  roughly one length and the picture reads as an orbit rather than two
- *  lists. Every node takes the width of the longest label: nodes of one width
- *  read as one set, and hugging each label made the arc look ragged. */
+ *  on the other. One group is split across both sides and named once, centred
+ *  over the hub. Each side's nodes sit on a shallow arc, the middle node
+ *  furthest out, so the connectors come out roughly one length and the picture
+ *  reads as an orbit rather than two lists. Every node takes the width of the
+ *  widest label, measured: nodes of one width read as one set, and hugging
+ *  each label made the arc look ragged. */
 export const HUB_MAX_PER_SIDE = 7;
 const HUB_DEFAULT_TONES = ["blue", "teal"];
 
@@ -3442,10 +3590,20 @@ export function hubTone(tone: string | undefined, groupIndex: number): { tint: s
 type HubNode = { title: string; resolvedIcon?: string; group: number };
 
 function hubSides(hub: NonNullable<SlideInput["hub"]>) {
-  const groups = (hub.groups || []).filter(Boolean).slice(0, 2);
-  const nodesOf = (gi: number): HubNode[] => ((groups[gi] && groups[gi].items) || [])
-    .map((it) => ({ title: String((it && it.title) || "").trim(), resolvedIcon: it && it.resolvedIcon, group: gi }))
+  const every = (hub.groups || []).filter(Boolean);
+  const groups = every.slice(0, 2);
+  const titledIn = (g: (typeof every)[number] | undefined) => ((g && g.items) || [])
+    .map((it) => ({ title: String((it && it.title) || "").trim(), resolvedIcon: it && it.resolvedIcon }))
     .filter((n) => n.title);
+  const nodesOf = (gi: number): HubNode[] => titledIn(groups[gi]).map((n) => ({ ...n, group: gi }));
+  // A THIRD GROUP is not drawn — two sides, two kinds — but it used to vanish
+  // without a word: the admission counted only what survived the slice, so a
+  // hub of three groups of two drew four nodes and claimed nothing was missing.
+  // Its connections are counted in, and the group is named to the model.
+  const beyond = every.slice(2)
+    .map((g) => ({ name: String((g && g.name) || "").trim(), count: titledIn(g).length }))
+    .filter((g) => g.count > 0);
+  const extra = beyond.reduce((m, g) => m + g.count, 0);
   const g0 = nodesOf(0);
   const g1 = groups.length > 1 ? nodesOf(1) : [];
   let left: HubNode[];
@@ -3457,40 +3615,84 @@ function hubSides(hub: NonNullable<SlideInput["hub"]>) {
     const half = Math.ceil(one.length / 2);
     left = one.slice(0, half); right = one.slice(half);
   }
-  const total = left.length + right.length;
+  const total = left.length + right.length + extra;
+  // What a FULL SIDE cuts is named too. The admission counted it, but nothing
+  // told the model which ones: "A8 Tickets" is under droppedContent's
+  // eleven-character floor, so a hub reading "Showing 14 of 16 connections"
+  // went out with an empty warning and a model describing sixteen.
+  const cut = left.slice(HUB_MAX_PER_SIDE).concat(right.slice(HUB_MAX_PER_SIDE)).map((n) => n.title);
   left = left.slice(0, HUB_MAX_PER_SIDE);
   right = right.slice(0, HUB_MAX_PER_SIDE);
-  return { groups, left, right, dropped: total - left.length - right.length };
+  return { groups, left, right, dropped: total - left.length - right.length, beyond, cut };
+}
+
+/** Greedy word wrap against a measure, for the few boxes that are sized from
+ *  the lines they will draw rather than from a count of characters. A word
+ *  wider than the measure is left on a line of its own, where it overflows —
+ *  the caller's fit test is what refuses that. */
+function wrapWords(text: string, width: number, measure: (line: string) => number): string[] {
+  const words = drawnText(text).split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let line = "";
+  for (const w of words) {
+    const next = line ? `${line} ${w}` : w;
+    if (line && measure(next) > width) { lines.push(line); line = w; } else line = next;
+  }
+  if (line) lines.push(line);
+  return lines;
 }
 
 function hubRequests(
   page: string, id: (s: string) => string,
-  hub: NonNullable<SlideInput["hub"]>, top: number, room: number
+  hub: NonNullable<SlideInput["hub"]>, top: number, room: number,
+  /** What the diagram could not do, one clause each, for deckWarnings to
+   *  relay. The slide itself says what it can (the admission line); a name
+   *  too long for its circle is only fixable by the author. */
+  notes?: string[]
 ): { requests: Req[]; bottom: number } {
-  const { groups, left, right, dropped } = hubSides(hub);
+  const { groups, left, right, dropped, beyond, cut } = hubSides(hub);
   const title = String(hub.title || "").replace(/[{}]/g, "").trim();
+  const caption = String(hub.caption || "").trim();
   const out: Req[] = [];
-  if (!left.length && !right.length && !title) return { requests: out, bottom: top };
+  const note = (s: string) => { if (notes) notes.push(s); };
+  for (const g of beyond) {
+    note(`a hub draws two groups — ${g.name ? `"${g.name}"` : "a third group"} and its ${g.count} connection${g.count === 1 ? "" : "s"}` +
+      ` were left off; merge them into one of the two groups, or give them a hub slide of their own`);
+  }
+  if (cut.length) {
+    note(`a hub side draws ${HUB_MAX_PER_SIDE} connections — ${cut.slice(0, 3).map(quoteClip).join(", ")}` +
+      `${cut.length > 3 ? ` and ${cut.length - 3} more` : ""} ${cut.length === 1 ? "was" : "were"} left off; merge the smallest, or split the hub across two slides`);
+  }
+  if (!left.length && !right.length && !title && !caption) return { requests: out, bottom: top };
   const HALO = 24;          // two lavender rings round the hub, 12pt apart
   const LABEL_H = 16;       // a group's caps label above its column
   const ICON = 13, PAD = 9, ICON_GAP = 7, CURVE = 22, DOT = 6, MIN_WIRE = 14;
   const ADMISSION_H = 18;
   const cx = GRID.margin + GRID.contentWidth / 2;
   const nameOf = (gi: number) => String((groups[gi] && groups[gi].name) || "").trim();
-  const leftLabel = left.length ? nameOf(left[0].group) : "";
-  // A split group is named once, over the left side.
-  const rightLabel = right.length && (!left.length || right[0].group !== left[0].group) ? nameOf(right[0].group) : "";
-  const labelH = leftLabel || rightLabel ? LABEL_H : 0;
+  // ONE GROUP SPLIT ACROSS BOTH SIDES is named once, centred over the hub. It
+  // used to be named over the left column only, and the identical column on
+  // the right then read as a second, unnamed KIND — which is exactly what the
+  // two sides are drawn to mean — with a lone odd node looking orphaned.
+  const split = left.length > 0 && right.length > 0 && right[0].group === left[0].group;
+  const leftLabel = left.length && !split ? nameOf(left[0].group) : "";
+  const rightLabel = right.length && !split ? nameOf(right[0].group) : "";
+  const centreLabel = split ? nameOf(left[0].group) : "";
+  const labelH = leftLabel || rightLabel || centreLabel ? LABEL_H : 0;
   const avail = Math.max(40, room - (dropped > 0 ? ADMISSION_H : 0) - labelH);
   const maxN = Math.max(left.length, right.length, 1);
 
   // Pitch: a 26pt node with up to 12pt between. The gap gives way first, to
-  // 4pt, then the node, to 20pt — one 9pt line and its inset.
+  // 4pt, then the node, to 20pt — one 9pt line and its inset. Only a COLUMN
+  // shrinks, and a node never grows: with one node a side there is no gap, so
+  // "the gap is under 4pt" was always true, and the node was handed the whole
+  // diagram's height — a 254pt slab from under the title to the footer, on a
+  // hub of one or two connections, which is an ordinary hub.
   let nodeH = 26;
   let gap = maxN > 1 ? Math.min(12, (avail - maxN * nodeH) / (maxN - 1)) : 0;
-  if (gap < 4) {
-    nodeH = Math.max(20, Math.floor((avail - 4 * (maxN - 1)) / maxN));
-    gap = maxN > 1 ? Math.max(0, Math.min(12, (avail - maxN * nodeH) / (maxN - 1))) : 0;
+  if (maxN > 1 && gap < 4) {
+    nodeH = Math.min(26, Math.max(20, Math.floor((avail - 4 * (maxN - 1)) / maxN)));
+    gap = Math.max(0, Math.min(12, (avail - maxN * nodeH) / (maxN - 1)));
   }
   const span = maxN * nodeH + (maxN - 1) * gap;
   // Centred in the room, like every self-contained block (GRID.bandHeight).
@@ -3500,12 +3702,22 @@ function hubRequests(
   const all = left.concat(right);
   const anyIcon = all.some((n) => !!n.resolvedIcon);
   const fixed = PAD * 2 + (anyIcon ? ICON + ICON_GAP : 0);
-  const longest = all.reduce((m, n) => Math.max(m, n.title.length), 1);
+  // THE WIDEST LABEL, MEASURED — not the longest one at a mean advance. Sized
+  // at 0.55em a character, the node gave its longest label exactly its own
+  // length in room and no slack, so any label with more capitals than average
+  // wrapped inside a 26pt node. "HubSpot CRM + MS Teams" needs 116pt and was
+  // given 109. Width is linear in size, so the widest at 9pt is the widest at
+  // every size, and the size it fits at is one division.
+  const widestTitle = all.reduce((m, n) => (labelWidthPt(n.title, 9) > labelWidthPt(m, 9) ? n.title : m), "");
+  const widest = Math.max(1, labelWidthPt(widestTitle, 9));
   // From the hub's outer ring to the margin: node, arc and the shortest wire.
   const sideRoom = cx - GRID.margin - (R + HALO);
   const nodeW = Math.max(Math.min(120, sideRoom - MIN_WIRE),
-    Math.min(196, sideRoom - MIN_WIRE, fixed + longest * 9 * PER_CHAR));
-  const labelSize = Math.max(7.5, Math.min(9, Math.floor(((nodeW - fixed) / (longest * PER_CHAR)) * 2) / 2));
+    Math.min(196, sideRoom - MIN_WIRE, fixed + widest));
+  const labelSize = Math.max(7.5, Math.min(9, Math.floor(((nodeW - fixed) / (widest / 9)) * 2 + 1e-9) / 2));
+  if (widestTitle && labelWidthPt(widestTitle, labelSize) > nodeW - fixed + 0.01) {
+    note(`"${widestTitle}" is too long to hold one line in its node even at ${labelSize}pt — name each connection in two or three words`);
+  }
   const curve = Math.max(0, Math.min(CURVE, sideRoom - nodeW - MIN_WIRE));
   const reach = sideRoom - nodeW - curve;    // hub ring to the nearest node edge
 
@@ -3538,25 +3750,104 @@ function hubRequests(
   }
   out.push(...filledShape(id("hbc"), page, "ELLIPSE", COLOR.navy, { x: cx - R, y: cy - R, width: 2 * R, height: 2 * R }));
 
-  if (title) {
+  if (title || caption) {
+    // THE CENTRE IS A CIRCLE, not a box. The title and caption were sized by
+    // clamping character counts to two and three lines, and nothing asked
+    // whether the lines fitted the disc: "Enterprise Knowledge Platform" over a
+    // long caption drew three title lines in a box sized for two, the caption
+    // printed across the third, and its last lines ran off the navy where white
+    // type is invisible. So the lines are wrapped at WORDS, each line is held
+    // to the circle's width at its own depth, and the title takes the largest
+    // size at which it holds two lines — it used to shrink to 11pt trying for
+    // one, and then wrap anyway, two points above the labels round it.
     const innerW = 2 * R * 0.8;
-    let size = 18;
-    while (size > 11 && estimateLines(title, innerW, size, false, false, "Playfair Display") > 1) size -= 1;
-    const tLines = Math.min(2, estimateLines(title, innerW, size, false, false, "Playfair Display"));
-    const tH = drawnTextHeight(tLines, size, 0, 1, 1.0);
-    const caption = String(hub.caption || "").trim();
-    const capLines = caption ? Math.min(3, estimateLines(caption, innerW, 7.5)) : 0;
-    const capH = caption ? drawnTextHeight(capLines, 7.5, 0, 1, 1.1) : 0;
+    const CAP_SIZE = 7.5, TITLE_LEAD = 1.26 * 1.0, CAP_LEAD = 1.26 * 1.1;
     const capGap = 2 - TEXT_INSET_Y / 2;     // the boxes share an inset, never ink
-    const y0 = cy - (tH + (caption ? capGap + capH : 0)) / 2;
-    out.push(...textBox(id("hbt"), page, title, { font: "Playfair Display", size, color: COLOR.white }, {
-      x: cx - innerW / 2 - TEXT_INSET_X / 2, y: y0, width: innerW + TEXT_INSET_X, height: tH,
-    }, { align: "CENTER", lineSpacing: 1.0, spaceBelow: 0 }));
-    if (caption) {
-      out.push(...textBox(id("hbs"), page, caption, { font: "Roboto", size: 7.5, weight: 300, color: COLOR.greyLight }, {
-        x: cx - innerW / 2 - TEXT_INSET_X / 2, y: y0 + tH + capGap, width: innerW + TEXT_INSET_X, height: capH,
+    const titleW = (line: string, size: number) => labelWidthPt(line, size, { face: "Playfair Display" });
+    const capW = (line: string) => labelWidthPt(line, CAP_SIZE);   // Light measured as bold: wider, never narrower
+    // Holds a line of this width and height, starting at `yTop`, inside the
+    // disc — 92% of the chord at the line's far edge, so ink never meets it.
+    const clears = (w: number, yTop: number, h: number) => {
+      const dy = Math.max(Math.abs(yTop - cy), Math.abs(yTop + h - cy));
+      return dy < R && w <= 2 * Math.sqrt(R * R - dy * dy) * 0.92;
+    };
+    const centre = (size: number, withCaption: boolean) => {
+      const tLines = title ? wrapWords(title, innerW, (l) => titleW(l, size)) : [];
+      const cLines = withCaption && caption ? wrapWords(caption, innerW, capW) : [];
+      const tH = drawnTextHeight(tLines.length, size, 0, 1, 1.0);
+      const capH = drawnTextHeight(cLines.length, CAP_SIZE, 0, 1, 1.1);
+      // The gap sits BETWEEN the two blocks: a caption with no name over it is
+      // centred on its own.
+      const gapH = tLines.length && cLines.length ? capGap : 0;
+      const y0 = cy - (tH + gapH + capH) / 2;
+      let fits = tLines.length <= 2 && cLines.length <= 3;
+      for (let i = 0; i < tLines.length; i++) {
+        if (!clears(titleW(tLines[i], size), y0 + TEXT_INSET_Y / 2 + i * size * TITLE_LEAD, size * TITLE_LEAD)) fits = false;
+      }
+      for (let i = 0; i < cLines.length; i++) {
+        if (!clears(capW(cLines[i]), y0 + tH + gapH + TEXT_INSET_Y / 2 + i * CAP_SIZE * CAP_LEAD, CAP_SIZE * CAP_LEAD)) fits = false;
+      }
+      return { size, tLines, cLines, tH, capH, gapH, y0, fits };
+    };
+    let plan = centre(18, false);
+    for (let size = 17; size >= 12 && !plan.fits; size--) plan = centre(size, false);
+    // TOO MANY WORDS AND ONE WORD TOO WIDE are different failures. A name
+    // that needs three lines at 12pt is the author's to shorten, and shrinking
+    // it further only makes a paragraph smaller. A name that holds two lines
+    // but still fails has a word wider than the disc — "Datenschutzbeauftragter"
+    // at 12pt ran 23pt past the navy onto the lavender ring, white on pale,
+    // under a note calling it "1 line" as if it were short — and that one can
+    // give up a few more points and stay inside.
+    const tooMany = !plan.fits && plan.tLines.length > 2;
+    for (let size = 11; size >= 9 && !plan.fits && !tooMany; size--) plan = centre(size, false);
+    if (title && !plan.fits) {
+      // Drawn at the floor with the height it really takes, never clamped to a
+      // box it overflows, and said: only the author can shorten a name.
+      const widestWord = title.split(/\s+/).reduce((m, w) => (titleW(w, plan.size) > titleW(m, plan.size) ? w : m), "");
+      note(tooMany
+        ? `the hub's name "${title}" is too long for the circle — ${plan.tLines.length} lines at 12pt;` +
+          ` hub.title is one to three short words, and the claim belongs in the slide title`
+        : `the hub's name "${title}" is too wide for the circle even at ${plan.size}pt — "${widestWord}" alone is wider than the circle;` +
+          ` name it in shorter words`);
+    } else if (title && plan.size < 12) {
+      note(`the hub's name "${title}" is drawn at ${plan.size}pt, smaller than the connections round it, because one of its words is wider than the circle at 12pt — a shorter name reads better`);
+    }
+    if (plan.fits && caption) {
+      // The caption may cost the title some size, down to the floor. A
+      // caption that fits at no size is NOT DRAWN — half a sentence on navy is
+      // worse than none — and the note below says so.
+      for (let size = plan.size; size >= Math.min(12, plan.size); size--) {
+        const withCaption = centre(size, true);
+        if (withCaption.fits) { plan = withCaption; break; }
+      }
+    }
+    if (plan.tLines.length) {
+      out.push(...textBox(id("hbt"), page, title, { font: "Playfair Display", size: plan.size, color: COLOR.white }, {
+        x: cx - innerW / 2 - TEXT_INSET_X / 2, y: plan.y0, width: innerW + TEXT_INSET_X, height: plan.tH,
+      }, { align: "CENTER", lineSpacing: 1.0, spaceBelow: 0 }));
+    }
+    if (plan.cLines.length) {
+      out.push(...textBox(id("hbs"), page, caption, { font: "Roboto", size: CAP_SIZE, weight: 300, color: COLOR.greyLight }, {
+        x: cx - innerW / 2 - TEXT_INSET_X / 2, y: plan.y0 + plan.tH + plan.gapH, width: innerW + TEXT_INSET_X, height: plan.capH,
       }, { align: "CENTER", lineSpacing: 1.1, spaceBelow: 0 }));
     }
+    // A caption left off is named with ITS OWN fix. droppedContent's generic
+    // advice — "put it in a field this layout uses" — was the only word about
+    // it, and it is already in the field the layout uses; what it needs is to
+    // be shorter. droppedContent leaves text a note quotes to that note.
+    if (caption && !plan.cLines.length) {
+      note(`the hub's caption ${quoteClip(caption)} was not drawn — it does not fit in the circle${title ? " under the name" : ""};` +
+        ` keep hub.caption under about 60 characters`);
+    }
+  }
+  // AN EMPTY CENTRE IS SAID. hub.title is only copied from the slide's title
+  // when that is a name (three words or fewer), so the incident's own call — a
+  // real headline, the caption and groups beside it — built with a navy circle
+  // holding nothing, and the one note the model got told it to move a caption
+  // that was already where it belonged. What is missing is the name.
+  if (!title && (left.length || right.length)) {
+    note(`the hub has no centre name, so its circle ${out.some((r: any) => r.createShape && r.createShape.objectId === id("hbs")) ? "carries only the caption" : "is empty"}` +
+      ` — give hub.title the short name of the thing in the middle, one to three words; the slide's own title stays the headline`);
   }
 
   for (const p of placed) {
@@ -3580,6 +3871,17 @@ function hubRequests(
           },
         },
       });
+    } else if (anyIcon) {
+      // A STAND-IN, NOT A GAP. The icon slot is reserved on every node once
+      // any node has an icon, so the labels line up; a name Lucide does not
+      // carry ("microsoft", "xero" — brand names are what a hub invites) left
+      // that slot empty and its label visibly indented beside its neighbours.
+      // A small dot in the group's ink holds the column. Same `hi` key, so one
+      // mark per node however the icons resolved.
+      const DOT_IN = 5;
+      out.push(...filledShape(id(`hi${p.key}`), page, "ELLIPSE", tone.ink, {
+        x: p.x + PAD + (ICON - DOT_IN) / 2, y: p.yc - DOT_IN / 2, width: DOT_IN, height: DOT_IN,
+      }));
     }
     const tx = p.x + PAD + (anyIcon ? ICON + ICON_GAP : 0);
     out.push(...textBox(id(`ht${p.key}`), page, p.n.title,
@@ -3588,17 +3890,75 @@ function hubRequests(
     }, { vCenter: true, lineSpacing: 1.0, spaceBelow: 0 }));
   }
 
+  // GROUP LABELS ARE MEASURED. They were drawn bold caps in a 14pt box the
+  // width of a node and never measured, and nothing caps a group name's
+  // length: "Engine company data sources and systems" is 197pt of capitals in
+  // 120pt, so it wrapped and its second line ran down into the first node. A
+  // label steps down to 7pt inside its natural width, then widens into the
+  // clear row beside it; if nothing fits, it is said.
+  const LABEL_SIZES = [8, 7.5, 7], LABEL_CLEAR = 4;
+  const fitLabel = (text: string, widths: number[]) => {
+    for (const w of widths) {
+      for (const s of LABEL_SIZES) if (labelWidthPt(text, s, { caps: true }) <= w + 0.01) return { size: s, width: w, fits: true };
+    }
+    return { size: LABEL_SIZES[LABEL_SIZES.length - 1], width: widths[widths.length - 1], fits: false };
+  };
+  // What a label row between y0 and y1 would run into, as x-spans: a node, a
+  // wire, the rings.
+  const blockedIn = (y0: number, y1: number): [number, number][] => {
+    const spans: [number, number][] = [];
+    for (const p of placed) {
+      if (p.yc + nodeH / 2 > y0 && p.yc - nodeH / 2 < y1) spans.push([p.x, p.x + nodeW]);
+      const a = Math.atan2(p.yc - cy, p.inner - cx);
+      const ex = cx + (R - 2) * Math.cos(a), ey = cy + (R - 2) * Math.sin(a);
+      const lo = Math.max(y0, Math.min(p.yc, ey)), hi = Math.min(y1, Math.max(p.yc, ey));
+      if (lo > hi) continue;
+      const xAt = (y: number) => (Math.abs(ey - p.yc) < 1e-6 ? p.inner : p.inner + ((y - p.yc) / (ey - p.yc)) * (ex - p.inner));
+      spans.push(Math.abs(ey - p.yc) < 1e-6 ? [Math.min(p.inner, ex), Math.max(p.inner, ex)] : [Math.min(xAt(lo), xAt(hi)), Math.max(xAt(lo), xAt(hi))]);
+    }
+    const ring = R + HALO;
+    const dy = y1 < cy ? cy - y1 : y0 > cy ? y0 - cy : 0;
+    if (dy < ring) { const half = Math.sqrt(ring * ring - dy * dy); spans.push([cx - half, cx + half]); }
+    return spans;
+  };
+  const tooLong = (text: string) =>
+    note(`the group name "${text}" is too long for its label even at 7pt — a group name is two or three words`);
   const firstOf = (side: string) => placed.find((p) => p.key === `${side}0`);
-  const labelFor = (side: string, text: string) => {
+  const labelFor = (side: "l" | "r", text: string) => {
     const p = firstOf(side);
     if (!p || !text) return;
     const tone = hubTone(groups[p.n.group] && groups[p.n.group].tone, p.n.group);
-    out.push(...textBox(id(`hg${side}`), page, text, { font: "Roboto", size: 8, bold: true, color: tone.ink, caps: true }, {
-      x: p.x - TEXT_INSET_X / 2, y: p.yc - nodeH / 2 - LABEL_H, width: nodeW + TEXT_INSET_X, height: LABEL_H - 2,
+    const y = p.yc - nodeH / 2 - LABEL_H;
+    const row = blockedIn(y, y + LABEL_H - 2);
+    // Widening runs toward the hub, from the column's outer edge to the first
+    // thing in the row.
+    const room = side === "l"
+      ? row.reduce((m, s) => (s[0] > p.x + 0.5 ? Math.min(m, s[0]) : m), GRID.margin + GRID.contentWidth) - LABEL_CLEAR - p.x
+      : p.x + nodeW - LABEL_CLEAR - row.reduce((m, s) => (s[1] < p.x + nodeW - 0.5 ? Math.max(m, s[1]) : m), GRID.margin);
+    const fit = fitLabel(text, [nodeW, Math.max(nodeW, room)]);
+    if (!fit.fits) tooLong(text);
+    out.push(...textBox(id(`hg${side}`), page, text, { font: "Roboto", size: fit.size, bold: true, color: tone.ink, caps: true }, {
+      x: (side === "l" ? p.x : p.x + nodeW - fit.width) - TEXT_INSET_X / 2, y, width: fit.width + TEXT_INSET_X, height: LABEL_H - 2,
     }, { align: side === "l" ? "START" : "END", lineSpacing: 1.0, spaceBelow: 0 }));
   };
   labelFor("l", leftLabel);
   labelFor("r", rightLabel);
+  if (centreLabel) {
+    const p = firstOf("l")!;
+    const tone = hubTone(groups[p.n.group] && groups[p.n.group].tone, p.n.group);
+    // Above the rings, in the row the label reservation already keeps: R is
+    // at most half the room less the halo, so the halo's top clears it.
+    const y = cy - R - HALO - LABEL_H;
+    const half = blockedIn(y, y + LABEL_H - 2)
+      .reduce((m, s) => Math.min(m, s[0] > cx ? s[0] - cx : s[1] < cx ? cx - s[1] : 0), GRID.contentWidth / 2) - LABEL_CLEAR;
+    const fit = fitLabel(centreLabel, [2 * Math.max(0, half)]);
+    if (!fit.fits) tooLong(centreLabel);
+    // Hugs its words, like every label, so it reads as a label and not a rule.
+    const w = Math.min(fit.width, labelWidthPt(centreLabel, fit.size, { caps: true }) + 4);
+    out.push(...textBox(id("hgc"), page, centreLabel, { font: "Roboto", size: fit.size, bold: true, color: tone.ink, caps: true }, {
+      x: cx - w / 2 - TEXT_INSET_X / 2, y, width: w + TEXT_INSET_X, height: LABEL_H - 2,
+    }, { align: "CENTER", lineSpacing: 1.0, spaceBelow: 0 }));
+  }
 
   let bottom = Math.max(cy + span / 2, cy + R + HALO);
   if (dropped > 0) {
@@ -5017,7 +5377,20 @@ function panelRequests(
 
 /** One slide → its full request list. Exported so the layout geometry can be
  *  exercised without a Google round-trip; nothing else should call it. */
-export function buildSlideRequests(slide: SlideInput, index: number, run = "r0"): Req[] {
+export function buildSlideRequests(
+  slide: SlideInput, index: number, run = "r0",
+  /** Collects what a layout could not do, for deckWarnings. Only the hub
+   *  writes to it today; every other caller leaves it out. */
+  notes?: string[]
+): Req[] {
+  // READ-TOLERANT, from the first line. The preview, PDF and publish routes
+  // build client-held slides with no guard in front of them, so a draft saved
+  // before the guard normalised — `groups` beside the title, bare-string items,
+  // a hub with no layout at all — is repaired here too. It has to be HERE and
+  // not in the hub branch: a layout-less hub never reaches the hub branch
+  // unless the layout it is drawn as is decided from the normalised view.
+  // Pure, and a no-op on every slide that is not hub-shaped.
+  slide = normaliseSlide(slide);
   const layout: SlideLayout = layoutOf(slide.layout, index);
   // The ground per INSTANCE, not per layout: four or more figures put a stat
   // slide on off-white. Everything below — onDark, the page fill, the ink and
@@ -5420,8 +5793,10 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
       }));
       hubTop = GRID.bodyY + standH + 8;
     }
-    // The diagram reports where it ends so the takeaway bar follows it.
-    const hubbed = hubRequests(page, id, slide.hub || {}, hubTop, Math.max(100, GRID.bodyY + band - hubTop));
+    // `slide` is already the normalised view (the first line of this
+    // function), the same one the generate_slides guard stores. The diagram
+    // reports where it ends so the takeaway bar follows it.
+    const hubbed = hubRequests(page, id, slide.hub || {}, hubTop, Math.max(100, GRID.bodyY + band - hubTop), notes);
     requests.push(...hubbed.requests);
     contentBottom = hubbed.bottom;
   } else if (layout === "stat" || layout === "bar-chart" || layout === "stacked-bar" || layout === "line-chart") {
@@ -6324,6 +6699,17 @@ export async function resolveDeckImages(
   // nearest real layout instead of throwing, and the substitution is recorded
   // on the slide so the deck can be described accurately afterwards.
   slides.forEach((slide, i) => {
+    // THE HUB THE BUILDER WILL DRAW, first and in place. The publish route
+    // hands client-held slides straight here, and a draft stored before the
+    // guard normalised keeps `groups` beside the title — or has no layout at
+    // all, which the line below would otherwise settle as "content" for good,
+    // before normaliseSlide could call it a hub. In place, because this
+    // function already writes its results onto the slide.
+    const drawnView = normaliseSlide(slide);
+    if (drawnView !== slide) {
+      for (const k of Object.keys(slide)) if (!(k in drawnView)) delete (slide as any)[k];
+      Object.assign(slide, drawnView);
+    }
     const asked = slide.layout as string | undefined;
     const used = layoutOf(asked, i);
     if (asked && asked !== used) {
@@ -6472,6 +6858,9 @@ export async function resolveDeckImages(
           if (r) card.resolvedImage = { url: r.url };
         }));
       }
+      // Resolved on the hub the builder will DRAW: the slide was normalised in
+      // place at the top of this function, so its icons are found on the same
+      // view buildSlideRequests draws.
       if (slide.hub?.groups?.length) {
         // Rasterised in the group's ink, so an icon matches its node's tone.
         const hubGroups = slide.hub.groups;
@@ -6484,6 +6873,19 @@ export async function resolveDeckImages(
             if (icon) it.resolvedIcon = icon;
           }));
         }));
+        // Recorded FRESH, from what is unresolved now, on the two groups that
+        // are drawn: resolution re-runs at publish, and appending would repeat
+        // a name per run and keep one the model has since replaced.
+        const missing: string[] = [];
+        for (const g of hubGroups.filter(Boolean).slice(0, 2)) {
+          for (const it of g.items || []) {
+            if (it && it.icon && !it.resolvedIcon && String(it.title || "").trim() && missing.indexOf(String(it.icon)) < 0) missing.push(String(it.icon));
+          }
+        }
+        if (missing.length) slide.iconsMissing = missing;
+        else delete slide.iconsMissing;
+      } else if (slide.iconsMissing) {
+        delete slide.iconsMissing;
       }
       if (slide.images?.length && !slide.resolvedImages) {
         const specs = slide.images.slice(0, 12);

@@ -135,6 +135,11 @@ export default function ChatPanel({
   // to the draft captured when the request started — so every word typed while
   // the picture was being made was thrown away when it arrived.
   const slidesDraftRef = useRef<SlideDraft | null>(null);
+  /** The deck-failure toast on screen, if any, so a later draft or published
+   *  deck in the same turn can take it down. Left up, it sat beside the deck it
+   *  claimed had failed — sonner pauses the timer while the tab is hidden, so a
+   *  user who looked away during a minute-long build came back to both. */
+  const slidesErrorToastRef = useRef<string | number | null>(null);
   slidesDraftRef.current = slidesDraft;
   const [slidesDraftMessageId, setSlidesDraftMessageId] = useState<string | null>(null);
   /** Decks the user has sent back into the conversation, by message id.
@@ -948,6 +953,11 @@ export default function ChatPanel({
               setIsGeneratingDocument(false);
               setSlidesProgress(null);
               setSlidesReauth(null);
+              // A deck arrived, so an earlier failure toast is no longer true.
+              if (slidesErrorToastRef.current != null) {
+                toast.dismiss(slidesErrorToastRef.current);
+                slidesErrorToastRef.current = null;
+              }
               // A new draft supersedes the last one; two previews of the same
               // deck on screen is the confusion this whole flow removes.
               setSlidesPreview(null);
@@ -956,6 +966,10 @@ export default function ChatPanel({
             } else if (parsed.slides_ready) {
               setIsGeneratingDocument(false);
               setSlidesProgress(null);
+              if (slidesErrorToastRef.current != null) {
+                toast.dismiss(slidesErrorToastRef.current);
+                slidesErrorToastRef.current = null;
+              }
               const deck = parsed.slides_ready;
               if (deck.url) {
                 setSlidesReauth(null);
@@ -983,13 +997,25 @@ export default function ChatPanel({
                 message: parsed.slides_reauth.message,
                 reason: parsed.slides_reauth.reason,
               });
-            } else if (parsed.slides_error) {
-              // Usually a fixable connection state ("reconnect Google"), not a
-              // crash — so the message is shown as-is rather than wrapped in
-              // "generation failed", which would bury the action.
+            } else if (parsed.slides_refused) {
+              // The model's call was refused for its shape and it is expected to
+              // resend. Nothing is shown: the refusal's words are for the model,
+              // and on 2026-09-15 showing them put "do NOT tell the user…" in a
+              // toast beside a deck that then built. Only the indicator for the
+              // call that ended is cleared. If the turn ENDS refused, the server
+              // appends a notice to the reply itself (unresolvedSlidesNotice).
               setIsGeneratingDocument(false);
               setSlidesProgress(null);
-              toast.error(parsed.slides_error);
+            } else if (parsed.slides_error) {
+              // Always worded for a person. Fixable connection failures go to the
+              // slides_reauth card instead (8913cc3), refusals are silent above,
+              // and any other thrown fault arrives as a fixed sentence from
+              // lib/slides/failure.ts, so the text is shown as it came. The id is
+              // kept so a deck arriving later in the turn can take it down.
+              setIsGeneratingDocument(false);
+              setSlidesProgress(null);
+              if (slidesErrorToastRef.current != null) toast.dismiss(slidesErrorToastRef.current);
+              slidesErrorToastRef.current = toast.error(parsed.slides_error);
             } else if (parsed.tool_running) {
               const t = parsed.tool_running;
               setRunningTools((prev) => (prev.some((x) => x.tool === t.tool) ? prev : [...prev, t]));

@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { applyEditSlide, unrenderableSlides } from "@/lib/slides/edit";
+import { applyEditSlide, unrenderableSlides, normaliseSlide, textReadySlides, PAYLOAD_FIELDS, SlideCallRefusal, blankSlideFaults, type RefusalScope } from "@/lib/slides/edit";
+import { slidesFailure, parseSlidesArguments, type SlidesTurnState } from "@/lib/slides/failure";
 import { splitVolatile } from "@/lib/ai/prompt-cache";
 import { logAiUsage } from "@/lib/ai/usage-logger";
 import OpenAI from "openai";
@@ -60,6 +61,10 @@ export interface AIProviderConfig {
    *  history-echoed image URLs (covering a failure with an old image); a
    *  clean turn keeps them so "show me that image again" still works. */
   imageGenFailedThisTurn?: boolean;
+  /** How this turn's LAST generate_slides call ended, written by every chain.
+   *  A refusal is kept off the screen while a later call can still fix it, so
+   *  a turn that ends refused needs this to say so (unresolvedSlidesNotice). */
+  slidesTurn?: SlidesTurnState;
   workspaceClientIds?: number[];
   workspaceId?: string;
   userId?: number;
@@ -1491,130 +1496,6 @@ const DOCUMENT_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
                 type: "string",
                 description: "Right column text (only for two-column layout). Each line becomes a bullet.",
               },
-              columns: {
-                type: "object",
-                description: "Headers for a two-column comparison — 'Before'/'After', 'Us'/'Them', 'Today'/'With us'. Each sits over an accent rule above its column. Use them whenever the two columns are being weighed against each other.",
-                properties: { left: { type: "string" }, right: { type: "string" } },
-              },
-              swot: {
-                type: "object",
-                description: "A SWOT analysis (swot layout): four arrays of short bullet lines, drawn as colour-coded quadrants. 2-4 items each reads best.",
-                properties: {
-                  strengths: { type: "array", items: { type: "string" } },
-                  weaknesses: { type: "array", items: { type: "string" } },
-                  opportunities: { type: "array", items: { type: "string" } },
-                  threats: { type: "array", items: { type: "string" } },
-                },
-              },
-              matrix: {
-                type: "object",
-                description: "A 2x2 priority matrix (matrix layout) — impact/effort, risk/reward. Place each item by `x` and `y` from 0 to 1 (x: 0 left to 1 right; y: 0 bottom to 1 top). Give axis end-labels, and quadrant names addressed by their axis position rather than by a corner. Everything on the slide reads against the two axes: if the subtitle says one item is the cheap high-value move, that item's dot belongs at low x and high y, in the quadrant your own label calls the one to do first.",
-                properties: {
-                  xAxis: { type: "array", items: { type: "string" }, description: "[low, high] labels for the horizontal axis." },
-                  yAxis: { type: "array", items: { type: "string" }, description: "[low, high] labels for the vertical axis." },
-                  quadrants: { type: "array", items: { type: "object", properties: {
-                    label: { type: "string" },
-                    x: { type: "string", enum: ["low", "high"] },
-                    y: { type: "string", enum: ["low", "high"] },
-                  }, required: ["label", "x", "y"] }, description: "Up to four quadrant names, each addressed by WHERE IT SITS ON THE AXES, not by a corner: { label, x: \"low\"|\"high\", y: \"low\"|\"high\" }, read against the same axes as the items. So on an impact (y) against effort (x) grid, the quadrant to act on first is { label: \"Do now\", x: \"low\", y: \"high\" } — low effort, high impact. Name the quadrant for what it tells the reader to do; a label that contradicts its own axes is the defect this shape exists to stop." },
-                  items: { type: "array", items: { type: "object", properties: {
-                    label: { type: "string" }, x: { type: "number" }, y: { type: "number" }, highlight: { type: "boolean" },
-                  }, required: ["label", "x", "y"] } },
-                },
-              },
-              note: {
-                type: "string",
-                description: "The takeaway bar: ONE sentence drawn as a tinted full-width bar along the foot of the slide, with a bold lead-in when it opens 'Why this matters:' or similar. Use it for the line that tells the reader what to DO with the slide — never repeat it in body.",
-              },
-              tones: {
-                type: "array", items: { type: "string", enum: ["coral", "teal", "blue", "amber", "grey"] },
-                description: "two-column only: tints each column as a card with its heading inked to match. ['coral','teal'] is the negative/positive pair — what does not work against what does.",
-              },
-              strip: {
-                type: "object",
-                description: "cards only: a full-width tinted band UNDER the card row holding a title and a row of small labelled cells that elaborate one of the cards above (e.g. a discipline's sub-disciplines).",
-                properties: {
-                  title: { type: "string" },
-                  items: { type: "array", items: { type: "object", properties: { title: { type: "string" }, text: { type: "string" } } } },
-                },
-              },
-              layers: {
-                type: "array",
-                description: "layers layout: the stacked bands, TOP first. Each { title, caption? (one sentence inside the band) OR cells (a row of up to 8 {title, text?}), style: 'blue'|'dashed'|'teal'|'lav'|'grey'|'coral'|'amber', arrow: false to suppress the connector below it }.",
-                items: {
-                  type: "object",
-                  properties: {
-                    title: { type: "string" }, caption: { type: "string" }, style: { type: "string" },
-                    arrow: { type: "boolean" },
-                    cells: { type: "array", items: { type: "object", properties: { title: { type: "string" }, text: { type: "string" } } } },
-                  },
-                },
-              },
-              hub: {
-                type: "object",
-                description: "hub layout: ONE thing in a navy circle at the centre, wired to what it connects to - a platform and the systems it reads, a team and its partners, a product and its integrations. `title` is the centre (a name, one to three words); `caption` a short line under it (under ~60 characters); `groups` one or two sets drawn either side of the hub, each { name (a caps label over its side), tone: 'blue'|'teal'|'coral'|'amber'|'grey'|'lav', items: up to 7 of { title (two or three words), icon (a Lucide name, kebab-case) } }. A single group is split across both sides.",
-                properties: {
-                  title: { type: "string" },
-                  caption: { type: "string" },
-                  groups: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        name: { type: "string" },
-                        tone: { type: "string" },
-                        items: { type: "array", items: { type: "object", properties: { title: { type: "string" }, icon: { type: "string" } } } },
-                      },
-                    },
-                  },
-                },
-              },
-              panel: {
-                type: "object",
-                description: "A rounded brand panel drawn BESIDE the prose on a content/case-study slide — the device the master template uses for a titled list of parts ('The Content Engine is a combination of: Process / People / Platform'). Give `title` and `items` (up to 4, each {title, text}); `style: \"soft\"` swaps the blue fill for lavender with navy ink, for slides where a blue panel would fight other blue elements. A slide with a panel gives up its photo rail: it is one or the other, never both.",
-                properties: {
-                  title: { type: "string" },
-                  items: { type: "array", items: { type: "object", properties: { title: { type: "string" }, text: { type: "string" } } } },
-                  style: { type: "string", enum: ["blue", "soft"] },
-                },
-              },
-              table: {
-                type: "object",
-                description: "A DATA table (table layout): `columns` is the header row, `rows` is an array of rows, each an array of cell strings IN COLUMN ORDER. A source slide that carries commentary BESIDE its table — analysis panels, renegotiation notes, a takeaway — keeps that commentary ON the slide: pass it as `bodyRight` (one line per panel) and the table narrows to make room. Moving it to speaker notes is losing it; the commentary is usually the point of such a slide. Columns whose cells are figures are right-aligned automatically, so a column of numbers can be read down. `highlight` takes the row indices that carry the argument. Up to 6 columns and 12 rows. A table under 12 rows is ONE slide: never split it across two slides and never write '(continued)' — the reference decks keep nine engines on one page and so does this engine; extra rows are dropped and the slide says so. Reach for this over `comparison` when the cells are measurements rather than judgements, and over a bar chart when the reader needs the actual figures.",
-                properties: {
-                  columns: { type: "array", items: { type: "string" } },
-                  rows: { type: "array", items: { type: "array", items: { type: "string" } } },
-                  highlight: { type: "array", items: { type: "number" } },
-                },
-              },
-              comparison: {
-                type: "object",
-                description: "A comparison table (comparison layout): `columns` are the options across the top (2-4), `rows` are the criteria. A cell of 'yes'/'no' draws a green tick or coral cross; any other text prints as-is. Highlight the row that makes your case.",
-                properties: {
-                  columns: { type: "array", items: { type: "string" } },
-                  rows: { type: "array", items: { type: "object", properties: {
-                    label: { type: "string" }, cells: { type: "array", items: { type: "string" } }, highlight: { type: "boolean" },
-                  }, required: ["label", "cells"] } },
-                },
-              },
-              scatter: {
-                type: "object",
-                description: "A scatter plot (scatter layout) — a correlation between two measures. Give `xAxis` and `yAxis` labels and `points`, each with numeric `x` and `y`. Group points with `group` (each group its own colour and a legend). Point labels are drawn only when there are eight or fewer.",
-                properties: {
-                  xAxis: { type: "string" }, yAxis: { type: "string" },
-                  points: { type: "array", items: { type: "object", properties: {
-                    x: { type: "number" }, y: { type: "number" }, label: { type: "string" }, group: { type: "string" },
-                  }, required: ["x", "y"] } },
-                },
-              },
-              venn: {
-                type: "object",
-                description: "A Venn diagram (venn layout) — two or three overlapping sets, for showing where things intersect. Give `sets` (2 or 3). Write each label as a short NAME, then a dash or colon, then a few-word gloss — 'Owned website - entity pages, schema, FAQs' — and it is drawn as a bold caps name over a small gloss INSIDE its own circle. `overlap` labels where the sets meet — the lens of two, the centre of three — in the same name-plus-gloss form ('Triangulation: one story AI can verify three ways'); keep the name to one or two words and the gloss under about 45 characters, because it has to fit where all the circles overlap, and it is dropped (and reported) when it cannot. On a venn slide the `note` is drawn as a callout BESIDE the diagram: open it with a short lead-in and a colon ('Sequence matters: fix the website first …') and the lead-in becomes the callout's heading. Do not put the overlap's sentence in `note`.",
-                properties: {
-                  sets: { type: "array", items: { type: "object", properties: { label: { type: "string" } }, required: ["label"] } },
-                  overlap: { type: "string" },
-                },
-              },
               notes: {
                 type: "string",
                 description: "Speaker notes for this slide",
@@ -1647,6 +1528,425 @@ const DOCUMENT_GEN_TOOL: Anthropic.Tool = {
 
 /* ─────────────── Google Slides Tool ─────────────── */
 
+/** One slide, as generate_slides takes it — defined ONCE and used everywhere a
+ *  slide is written: `slides[]`, `editSlide.insertSlides[]`, and the single
+ *  slide payload fields on `editSlide`.
+ *
+ *  WHY ONCE. Commit 38c9d10 added the hub's nested schema to generate_document —
+ *  the .pptx tool, whose own layout list cannot even select a hub — and 1453cee
+ *  (layers, strip, tones, note) and 7c5d24a (swot, matrix, comparison) had done
+ *  the same before it. Thirteen payloads the Slides builder draws were declared
+ *  only on a tool that ignores them, while `editSlide.hub` and `insertSlides.items` were
+ *  bare objects saying "same shape as in `slides`" about a shape `slides` did
+ *  not have. The model learned the hub from one sentence of prose, put `caption`
+ *  and `groups` beside the slide's title, and the call was refused in front of
+ *  the user (2026-09-15). Three hand-kept copies of a schema drift; one const
+ *  cannot. scripts/verify-slide-layouts.ts (20d) reads the TOOL OBJECT, not the
+ *  file text, and asserts every payload the edit path carries is declared on
+ *  both `slides.items` and `insertSlides.items`.
+ *
+ *  A reference is expanded wherever it is used, so expanding THIS on every
+ *  route sent its guidance three times and made the tool 85k characters. The
+ *  guidance is sent once, here on `slides.items`; `insertSlides.items` and the
+ *  editSlide payloads carry the same shape through leanSchema (below), and
+ *  20d holds the tool to a size ceiling. */
+const SLIDE_ITEM_PROPS: Record<string, any> = {
+  layout: {
+    type: "string",
+    enum: ["cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "line-chart", "swot", "matrix", "comparison", "scatter", "venn", "cards", "quote", "process", "logo-wall", "table", "statement", "layers", "hub", "closing"],
+    description:
+      "A LONG DOCUMENT IS BUILT IN BATCHES, AND THE FIRST CALL IS NOT THE WHOLE DECK. One call cannot write out thirty-eight slides before it is cut off — a 38-page conversion has now failed twice that way, with nothing created and a confident reply above it. When the source has more than about fifteen pages, send the FIRST ~12 slides in `slides` and say in your reply that you are continuing; the tool result then tells you exactly how to append the next batch with editSlide.insertAfter, about ten at a time, until every source page is covered. Do not try to be heroic about it: a deck that arrives in four calls exists, and one that arrives in a single call does not. ACCENT PHRASE: in any TITLE you may wrap ONE short phrase in braces — Great storytelling can {change the world} — and it is drawn as the brand's italic accent (lime on dark grounds). Use it on the cover, on section dividers, and on roughly one content headline in three; on every slide it stops meaning anything. layers = a stacked layer DIAGRAM: horizontal bands top to bottom with connector arrows between them (`layers`: up to 5 of { title, caption? OR cells: [{title, text?}] up to 8, style: 'blue'|'dashed'|'teal'|'lav'|'grey'|'coral'|'amber', arrow?: false }) — the only way to say 'everything below feeds the thing above'; use it for architecture, funnels and value chains rather than describing the picture in prose. hub = ONE thing in the centre wired to everything it connects to, a line to each. The slide's own `title` stays the headline; everything else goes INSIDE the `hub` object, never beside the title: `hub`: { title: the short name in the circle, caption?, groups: up to 2 of { name, tone, items: up to 7 of { title, icon } } } - reach for it whenever the point is CONNECTION: layers says what rests on what, hub says what is plugged into what. statement = one big Playfair sentence on the light ground, at most ~14 words, with an optional `subtitle` lead — the slide that makes the argument; reach for it when one sentence IS the point and bullets would dilute it. cover = opening slide, big centred title over a dark ground. section = a divider between parts of the deck — give it an `image.query` for a full-bleed photograph and a numeric `eyebrow` ('01', '02') for a big index numeral; without a photo it falls back to a flat blue field. content = title + body, the FALLBACK when nothing else fits — a bulleted slide is the flattest thing the deck can make, so reach for a layout above it first. Give it a `subtitle` (drawn as a standfirst) and an `image.query` (drawn as a rail down the right) and it stops looking like a document. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. timeline = a DRAWN horizontal timeline with milestone markers — use it whenever the content is dates, phases, a roadmap or a sequence, and supply `milestones`. timeline-parallel = TWO OR MORE workstreams drawn against one shared, date-proportional axis, with a 'today' rule — use it when separate streams run at the same time and the overlap matters, and supply `tracks`. image-split = photograph down one side, text down the other; the workhorse for making a deck visual. image-grid = a grid of example thumbnails, for portfolios and format galleries; supply `images`. feature = full-bleed photograph with one short statement over it, for a moment of emphasis. stat = up to three HEADLINE NUMBERS on navy — reach for this whenever the point is a figure, because one big number lands harder than a chart of one bar; supply `stats`. bar-chart = horizontal bars, sorted, values labelled, for comparing or ranking things; supply `chart` with ONE series. stacked-bar = one bar per category split into parts, for showing what something is MADE OF rather than which is biggest; supply `chart` with several series sharing the same point labels. line-chart = a trend over time — months, quarters, years — as a connected line; supply `chart` with each series' points IN TIME ORDER (they are plotted in the order given, evenly spaced). Reach for it whenever the point is that something CHANGED, where a bar chart would only show the endpoints. swot = a four-quadrant SWOT on colour-coded panels; supply `swot` with strengths/weaknesses/opportunities/threats. matrix = a 2x2 priority grid (impact/effort, risk/reward) with items plotted by position; supply `matrix`. comparison = a table weighing options against criteria, with ticks and crosses; supply `comparison`. table = a DATA table, a header row and rows of figures with numeric columns right-aligned under their headings; supply `table`. Reach for it over comparison when the cells are measurements rather than judgements, and over a bar chart when the reader needs the actual numbers. scatter = a scatter plot for a correlation between two measures; supply `scatter` with points that each have x and y. venn = two or three overlapping sets, for where things intersect; supply `venn`. cards = two to six repeated blocks across the slide — pillars, product types, numbered steps, a portfolio of formats. Reach for it whenever a slide would otherwise be a list of things that are the same KIND of thing; supply `cards`. quote = a pull quote on navy with the speaker named beneath — use it for a client testimonial or an executive line, never for your own copy; supply `quote`. process = numbered step cards carried left to right by arrows - a coloured numeral, the step's name, what happens there, and an 'Owner:' line at the foot of each card - for a way of working or a co-creation workflow; supply `stages`, with `owner` per step wherever ownership matters. logo-wall = client marks on a clean ground, the credibility slide; supply `logos`. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter — but defaulting through a whole deck produces exactly the flat deck this tool exists to avoid.",
+  },
+  title: { type: "string", description: "Slide heading." },
+  subtitle: {
+    type: "string",
+    description: "Cover/closing: the line under the title, rendered in caps. Section: a short standfirst.",
+  },
+  eyebrow: {
+    type: "string",
+    description: "Short label above the title, rendered in caps — e.g. 'CASE STUDY', 'STRATEGY'.",
+  },
+  body: {
+    type: "string",
+    description: "Main text. Put each bullet on its own line; a single line stays as a paragraph. Markdown links work here and in card bodies and captions — [the Holcim case study](https://…) — and are the ONLY way to make a portfolio or examples slide usable, so include them whenever you are pointing at real work.",
+  },
+  bodyRight: { type: "string", description: "Right-hand column text. two-column layout only." },
+  columns: {
+    type: "object",
+    description: "Headers for a two-column comparison — 'Before'/'After', 'Us'/'Them', 'Today'/'With us'. Each sits over an accent rule above its column. Use them whenever the two columns are being weighed against each other.",
+    properties: { left: { type: "string" }, right: { type: "string" } },
+  },
+  image: {
+    type: "object",
+    description:
+      "A picture for this slide. REQUIRED for image-split and feature, and strongly encouraged on cover, section and closing, which are photo-led and fall back to a plain colour without one. Three sources: `query` finds or generates a photograph; `attachment` uses an image the USER uploaded in this conversation; `url` takes a specific known image.",
+    properties: {
+      query: { type: "string", description: "What the picture should be OF — 'wind turbines at dusk', 'modern office atrium'. Prefer places, textures, architecture and abstracts over people: stock photography carries no model releases, so a recognisable face in a client deck can read as endorsement." },
+      url: { type: "string", description: "An exact image URL to use instead of searching." },
+      attachment: {
+        type: "number",
+        description:
+          "Use an image the USER ATTACHED to this conversation: 1 = the first image on their most recent message that had one, 2 = the second, and so on. ALWAYS use this rather than `query` when the slide is about something they showed you — their own product, a screenshot, a chart, a photo of their site. A generated approximation of their screenshot is worthless; the real file is the point.",
+      },
+      region: {
+        type: "object",
+        description:
+          "Show only PART of that attachment, as percentages of its width and height (x/y = the top-left corner, 0-100). This is how one screenshot becomes a whole sequence of slides: the full interface on one slide, then a slide per area — 'the scoring panel is the right third' would be roughly {x:70,y:0,width:30,height:100}. Estimate from what you can see in the image; the crop is clamped to the edges, so slight overshoot is fine.",
+        properties: {
+          x: { type: "number" }, y: { type: "number" },
+          width: { type: "number" }, height: { type: "number" },
+        },
+        required: ["x", "y", "width", "height"],
+      },
+    },
+  },
+  images: {
+    type: "array",
+    description: "Thumbnails for the image-grid layout, up to twelve. Ignored by other layouts.",
+    items: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "What this thumbnail should show." },
+        url: { type: "string", description: "An exact image URL." },
+        caption: { type: "string", description: "Short label under the thumbnail." },
+      },
+    },
+  },
+  quote: {
+    type: "object",
+    description: "A pull quote for the quote layout. Attribute it to a real named person — an unattributed quote reads as invented.",
+    properties: {
+      text: { type: "string", description: "The quote itself, without surrounding quotation marks — the layout draws those." },
+      name: { type: "string", description: "Who said it." },
+      role: { type: "string", description: "Their job title and company." },
+      image: { type: "object", description: "An optional portrait of the speaker — a `url` to an ACTUAL photograph of the named person only. A `query` will NOT be searched or generated: standing a stranger's stock face under a real person's name is a misattribution, so a portrait with no real url is simply omitted.", properties: { query: { type: "string" }, url: { type: "string" } } },
+    },
+    required: ["text"],
+  },
+  stages: {
+    type: "array",
+    description: "Steps for the process layout, in order - three to five reads best; each is drawn as a numbered card. Ignored by other layouts.",
+    items: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "The step's name, two to four words in mixed case - 'We draft', 'You prioritise'. It is the card's bold heading beside a numbered circle, so no numbers in it." },
+        caption: { type: "string", description: "What happens in this step, one to three sentences - the description IS the content of the slide, the name is only its handle. Put who does it in `owner`, not here." },
+        owner: { type: "string", description: "Who does this step - 'TCE', 'your team', 'TCE + your team'. Drawn as its own 'Owner: ...' line at the foot of the card, on one baseline across the row, so the room can scan who owns what. Keep it OUT of the caption; a caption whose LAST sentence is 'Owner: ...' is split into this line anyway." },
+      },
+      required: ["name"],
+    },
+  },
+  logos: {
+    type: "array",
+    description: "Client marks for logo-wall, up to twelve. Give a `url` for each — a logo must be the real mark, so do not describe one and expect it to be found or generated. Ignored by other layouts.",
+    items: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Direct URL to the logo image." },
+        name: { type: "string", description: "The client's name, for reference." },
+      },
+    },
+  },
+  cards: {
+    type: "array",
+    description:
+      "Two to six repeated blocks for the cards layout. Every part is optional, and which parts you give decides how it looks: markers alone read as numbered steps, thumbnails read as a product grid, a marker plus body reads as labelled pillars. Ignored by other layouts.",
+    items: {
+      type: "object",
+      properties: {
+        marker: { type: "string", description: "A short label or a number — 'STRATEGY', '01'. Drawn as a brand-blue chip. Keep it to one or two words." },
+        icon: { type: "string", description: "A Lucide icon name in kebab-case — 'target', 'line-chart', 'users', 'file-text', 'megaphone', 'search'. Drawn small above the heading in brand navy. Prefer an icon over a photograph when the card is about an IDEA rather than a thing; use the same kind of icon across all cards on a slide, and pick names you are confident exist rather than inventing one." },
+        tone: { type: "string", description: "Tints the card and draws a coloured rule across its top: 'blue', 'teal', 'coral', 'amber' or 'grey'. Toned cards are panelled; untoned cards float on the ground. Give different tones only when the cards are different KINDS of thing." },
+        title: { type: "string", description: "The card's heading." },
+        body: { type: "string", description: "A sentence or two. Keep cards balanced — wildly uneven bodies read as a mistake." },
+        image: {
+          type: "object",
+          description: "A thumbnail at the top of the card, cropped square.",
+          properties: { query: { type: "string" }, url: { type: "string" } },
+        },
+      },
+    },
+  },
+  stats: {
+    type: "array",
+    description: "Headline figures for the stat layout — three at most, or none of them lands. A SINGLE stat is drawn huge and centred: use one stat when the slide's whole job is one number — the fee, the headline result, the ask. Ignored by other layouts.",
+    items: {
+      type: "object",
+      properties: {
+        value: { type: "string", description: "The number as it should read: '64 GW', '70%', 'CHF 12,500'. Keep it short — it is set very large." },
+        label: { type: "string", description: "What the number is, in a few words. Shown in caps under it." },
+        detail: { type: "string", description: "One optional supporting sentence." },
+        primary: { type: "boolean", description: "Among several stats, the one that matters most — drawn in the accent so the eye lands on it. For a lone hero number, just send ONE stat instead." },
+        tone: { type: "string", description: "Four or more stats only (the card grid): 'grey', 'blue', 'teal', 'coral' or 'amber', so the grid GROUPS its figures - the landscape on grey, the upside on teal." },
+      },
+      required: ["value", "label"],
+    },
+  },
+  chart: {
+    type: "object",
+    description: "Data for bar-chart, stacked-bar or line-chart. Ignored by other layouts. Bars are labelled automatically; a line-chart plots each series' points in the order given (time order) and needs no `sequence` flag. Bars are sorted biggest-first by default (a ranking); set `sequence` for a bar time series so the order is kept. Set `highlight` to the index of the one bar that IS the point — it draws in the accent and the rest go muted, so the chart argues instead of just presenting.",
+    properties: {
+      series: {
+        type: "array",
+        description: "One entry for bar-chart. For stacked-bar, one entry per PART, each listing the same point labels so the parts line up into bars.",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string", description: "What is being measured." },
+            points: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  label: { type: "string", description: "Category name, shown beside its bar." },
+                  value: { type: "number", description: "The value. Numbers only — no units or commas." },
+                },
+                required: ["label", "value"],
+              },
+            },
+          },
+          required: ["name", "points"],
+        },
+      },
+      source: { type: "string", description: "Where the figures come from. Print one whenever you have it." },
+      sequence: { type: "boolean", description: "The points are a TIME SERIES (months, years, stages) — keep their order, do not sort by value. A growth line sorted by value is a scrambled line." },
+      highlight: { type: "number", description: "Zero-based index of the single bar that carries the argument — 'us, today'. Drawn in the accent, every other bar muted." },
+      benchmark: { type: "object", description: "A target or reference line across the plot — an industry average, a goal — so every bar reads as above or below it. Give `value` and a short `label`.", properties: { value: { type: "number" }, label: { type: "string" } } },
+      callout: { type: "object", description: "A short annotation on ONE bar — the reason behind its number, six words at most. Give the bar's `point` index and the `text`.", properties: { point: { type: "number" }, text: { type: "string" } } },
+      yAxisLabel: { type: "string", description: "What the y axis measures — \"Net profit (CHF)\", \"Users\". line-chart only; drawn above the axis values. A line chart already draws its own scale and a zero rule when the data crosses zero, so a chart of profit and loss shows the loss without being asked." },
+    },
+  },
+  tracks: {
+    type: "array",
+    description:
+      "Workstreams for the timeline-parallel layout, one entry per track (two or three reads best). Ignored by every other layout. Bars are positioned and sized by real dates, so overlapping phases genuinely overlap on the slide.",
+    items: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Track name, shown at the left. Keep it to two or three words." },
+        phases: {
+          type: "array",
+          description: "Phases within this track.",
+          items: {
+            type: "object",
+            properties: {
+              start: { type: "string", description: "ISO date, YYYY-MM-DD. REQUIRED — the layout positions by real dates and cannot interpret 'late August'." },
+              end: { type: "string", description: "ISO date, YYYY-MM-DD. Omit for a single-day milestone, which draws as a dot rather than a bar." },
+              label: { type: "string", description: "Short phase name. Long labels are placed beside the bar rather than inside it." },
+            },
+            required: ["start", "label"],
+          },
+        },
+      },
+      required: ["name", "phases"],
+    },
+  },
+  today: {
+    type: "string",
+    description: "ISO date for the 'today' rule on timeline-parallel. Defaults to the real today; drawn only when it falls inside the plotted range.",
+  },
+  milestones: {
+    type: "array",
+    description:
+      "Points on the timeline, in order. REQUIRED for the timeline layout and ignored by every other layout — a timeline described as bullet points in `body` is not a timeline, so use this instead. Three to five reads best.",
+    items: {
+      type: "object",
+      properties: {
+        date: { type: "string", description: "Shown above the axis, e.g. '3 July' or '18–24 August'." },
+        title: { type: "string", description: "Short name of the phase, shown under the marker." },
+        detail: { type: "string", description: "One supporting sentence under the title." },
+        highlight: { type: "boolean", description: "true for the phase that is current or next — draws a larger, brighter marker. Use on at most one." },
+      },
+      required: ["date", "title"],
+    },
+  },
+  swot: {
+    type: "object",
+    description: "A SWOT analysis (swot layout): four arrays of short bullet lines, drawn as colour-coded quadrants. 2-4 items each reads best.",
+    properties: {
+      strengths: { type: "array", items: { type: "string" } },
+      weaknesses: { type: "array", items: { type: "string" } },
+      opportunities: { type: "array", items: { type: "string" } },
+      threats: { type: "array", items: { type: "string" } },
+    },
+  },
+  matrix: {
+    type: "object",
+    description: "A 2x2 priority matrix (matrix layout) — impact/effort, risk/reward. Place each item by `x` and `y` from 0 to 1 (x: 0 left to 1 right; y: 0 bottom to 1 top). Give axis end-labels, and quadrant names addressed by their axis position rather than by a corner. Everything on the slide reads against the two axes: if the subtitle says one item is the cheap high-value move, that item's dot belongs at low x and high y, in the quadrant your own label calls the one to do first.",
+    properties: {
+      xAxis: { type: "array", items: { type: "string" }, description: "[low, high] labels for the horizontal axis." },
+      yAxis: { type: "array", items: { type: "string" }, description: "[low, high] labels for the vertical axis." },
+      quadrants: { type: "array", items: { type: "object", properties: {
+        label: { type: "string" },
+        x: { type: "string", enum: ["low", "high"] },
+        y: { type: "string", enum: ["low", "high"] },
+      }, required: ["label", "x", "y"] }, description: "Up to four quadrant names, each addressed by WHERE IT SITS ON THE AXES, not by a corner: { label, x: \"low\"|\"high\", y: \"low\"|\"high\" }, read against the same axes as the items. So on an impact (y) against effort (x) grid, the quadrant to act on first is { label: \"Do now\", x: \"low\", y: \"high\" } — low effort, high impact. Name the quadrant for what it tells the reader to do; a label that contradicts its own axes is the defect this shape exists to stop." },
+      items: { type: "array", items: { type: "object", properties: {
+        label: { type: "string" }, x: { type: "number" }, y: { type: "number" }, highlight: { type: "boolean" },
+      }, required: ["label", "x", "y"] } },
+    },
+  },
+  note: {
+    type: "string",
+    description: "The takeaway bar: ONE sentence drawn as a tinted full-width bar along the foot of the slide, with a bold lead-in when it opens 'Why this matters:' or similar. Use it for the line that tells the reader what to DO with the slide — never repeat it in body.",
+  },
+  tones: {
+    type: "array", items: { type: "string", enum: ["coral", "teal", "blue", "amber", "grey"] },
+    description: "two-column only: tints each column as a card with its heading inked to match. ['coral','teal'] is the negative/positive pair — what does not work against what does.",
+  },
+  strip: {
+    type: "object",
+    description: "cards only: a full-width tinted band UNDER the card row holding a title and a row of small labelled cells that elaborate one of the cards above (e.g. a discipline's sub-disciplines).",
+    properties: {
+      title: { type: "string" },
+      items: { type: "array", items: { type: "object", properties: { title: { type: "string" }, text: { type: "string" } } } },
+    },
+  },
+  layers: {
+    type: "array",
+    description: "layers layout: the stacked bands, TOP first. Each { title, caption? (one sentence inside the band) OR cells (a row of up to 8 {title, text?}), style: 'blue'|'dashed'|'teal'|'lav'|'grey'|'coral'|'amber', arrow: false to suppress the connector below it }.",
+    items: {
+      type: "object",
+      properties: {
+        title: { type: "string" }, caption: { type: "string" }, style: { type: "string" },
+        arrow: { type: "boolean" },
+        cells: { type: "array", items: { type: "object", properties: { title: { type: "string" }, text: { type: "string" } } } },
+      },
+    },
+  },
+  hub: {
+    type: "object",
+    description: "hub layout: ONE thing in a navy circle at the centre, wired to what it connects to - a platform and the systems it reads, a team and its partners, a product and its integrations. The slide's own `title` is the headline claim; `hub.title` is only the short name in the circle (one to three words, never the same words as the slide title). `caption` and `groups` go INSIDE `hub`, never beside the slide title. `caption` is a short line under the name (under ~60 characters); `groups` is one or two sets drawn either side of the hub, each { name (a caps label over its side), tone: 'blue'|'teal'|'coral'|'amber'|'grey'|'lav', items: up to 7 of { title (two or three words), icon } }. A single group is split across both sides. Lucide has almost no brand icons, so name what each thing IS with a plain noun - mail, folder, credit-card, database, message-square - never the product's name.",
+    properties: {
+      title: { type: "string", description: "The short name in the circle, one to three words ('EngineAI'). Not the slide's headline, and never the same words as it." },
+      caption: { type: "string", description: "A short line under the name, under ~60 characters. Inside `hub`, not beside the slide title." },
+      groups: {
+        type: "array",
+        description: "One or two sets of connections, drawn either side of the hub. Inside `hub`, not beside the slide title.",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string", description: "A caps label over this group's side." },
+            tone: { type: "string", enum: ["blue", "teal", "coral", "amber", "grey", "lav"] },
+            items: { type: "array", items: { type: "object", properties: {
+              title: { type: "string", description: "What it connects to, two or three words." },
+              icon: { type: "string", description: "A Lucide icon name in kebab-case, a plain noun for what the thing is: mail, folder, credit-card, database, message-square, calendar, users. Brand names are almost never Lucide icons." },
+            }, required: ["title"] } },
+          },
+          required: ["items"],
+        },
+      },
+    },
+  },
+  panel: {
+    type: "object",
+    description: "A rounded brand panel drawn BESIDE the prose on a content/case-study slide — the device the master template uses for a titled list of parts ('The Content Engine is a combination of: Process / People / Platform'). Give `title` and `items` (up to 4, each {title, text}); `style: \"soft\"` swaps the blue fill for lavender with navy ink, for slides where a blue panel would fight other blue elements. A slide with a panel gives up its photo rail: it is one or the other, never both.",
+    properties: {
+      title: { type: "string" },
+      items: { type: "array", items: { type: "object", properties: { title: { type: "string" }, text: { type: "string" } } } },
+      style: { type: "string", enum: ["blue", "soft"] },
+    },
+  },
+  table: {
+    type: "object",
+    description: "A DATA table (table layout): `columns` is the header row, `rows` is an array of rows, each an array of cell strings IN COLUMN ORDER. A source slide that carries commentary BESIDE its table — analysis panels, renegotiation notes, a takeaway — keeps that commentary ON the slide: pass it as `bodyRight` (one line per panel) and the table narrows to make room. Moving it to speaker notes is losing it; the commentary is usually the point of such a slide. Columns whose cells are figures are right-aligned automatically, so a column of numbers can be read down. `highlight` takes the row indices that carry the argument. Up to 6 columns and 12 rows. A table under 12 rows is ONE slide: never split it across two slides and never write '(continued)' — the reference decks keep nine engines on one page and so does this engine; extra rows are dropped and the slide says so. Reach for this over `comparison` when the cells are measurements rather than judgements, and over a bar chart when the reader needs the actual figures.",
+    properties: {
+      columns: { type: "array", items: { type: "string" } },
+      rows: { type: "array", items: { type: "array", items: { type: "string" } } },
+      highlight: { type: "array", items: { type: "number" } },
+    },
+  },
+  comparison: {
+    type: "object",
+    description: "A comparison table (comparison layout): `columns` are the options across the top (2-4), `rows` are the criteria. A cell of 'yes'/'no' draws a green tick or coral cross; any other text prints as-is. Highlight the row that makes your case.",
+    properties: {
+      columns: { type: "array", items: { type: "string" } },
+      rows: { type: "array", items: { type: "object", properties: {
+        label: { type: "string" }, cells: { type: "array", items: { type: "string" } }, highlight: { type: "boolean" },
+      }, required: ["label", "cells"] } },
+    },
+  },
+  scatter: {
+    type: "object",
+    description: "A scatter plot (scatter layout) — a correlation between two measures. Give `xAxis` and `yAxis` labels and `points`, each with numeric `x` and `y`. Group points with `group` (each group its own colour and a legend). Point labels are drawn only when there are eight or fewer.",
+    properties: {
+      xAxis: { type: "string" }, yAxis: { type: "string" },
+      points: { type: "array", items: { type: "object", properties: {
+        x: { type: "number" }, y: { type: "number" }, label: { type: "string" }, group: { type: "string" },
+      }, required: ["x", "y"] } },
+    },
+  },
+  venn: {
+    type: "object",
+    description: "A Venn diagram (venn layout) — two or three overlapping sets, for showing where things intersect. Give `sets` (2 or 3). Write each label as a short NAME, then a dash or colon, then a few-word gloss — 'Owned website - entity pages, schema, FAQs' — and it is drawn as a bold caps name over a small gloss INSIDE its own circle. `overlap` labels where the sets meet — the lens of two, the centre of three — in the same name-plus-gloss form ('Triangulation: one story AI can verify three ways'); keep the name to one or two words and the gloss under about 45 characters, because it has to fit where all the circles overlap, and it is dropped (and reported) when it cannot. On a venn slide the `note` is drawn as a callout BESIDE the diagram: open it with a short lead-in and a colon ('Sequence matters: fix the website first …') and the lead-in becomes the callout's heading. Do not put the overlap's sentence in `note`.",
+    properties: {
+      sets: { type: "array", items: { type: "object", properties: { label: { type: "string" } }, required: ["label"] } },
+      overlap: { type: "string" },
+    },
+  },
+  notes: { type: "string", description: "Speaker notes for this slide." },
+};
+
+const SLIDE_ITEM_SCHEMA = { type: "object", properties: SLIDE_ITEM_PROPS, required: ["title"] };
+
+/**
+ * A schema's SHAPE with its prose taken out: types, properties, items, enums
+ * and required lists, and no descriptions.
+ *
+ * WHY. Declaring the slide once and referencing it from `slides`,
+ * `insertSlides` and every editSlide payload made generate_slides 85k
+ * characters, from 31k — about eleven thousand input tokens more on every
+ * EngineAI request, since the tool is offered whenever image generation is on,
+ * which is the page's default. Almost none of it was new information: the
+ * 6k-character layout guidance went out twice and every payload's description
+ * three times. What the incident needed was the SHAPE on each route — a hub
+ * with its groups nested inside it — and the shape costs a fraction of the
+ * prose. So `slides.items` carries the guidance once, and the other routes
+ * carry the same structure with a one-line pointer back to it. check 20d pins
+ * both halves: every payload declared with a real shape on every route, and a
+ * ceiling on the tool's size so the next addition cannot quietly treble it.
+ */
+function leanSchema(schema: any, description?: string): any {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
+  const out: any = {};
+  const keys = Object.keys(schema);
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    if (k === "description") continue;
+    if (k === "properties") {
+      out.properties = {};
+      const props = Object.keys(schema.properties);
+      for (let j = 0; j < props.length; j++) out.properties[props[j]] = leanSchema(schema.properties[props[j]]);
+    } else if (k === "items") {
+      out.items = leanSchema(schema.items);
+    } else {
+      out[k] = schema[k];
+    }
+  }
+  if (description) out.description = description;
+  return out;
+}
+
+/** The one sentence every route keeps, because it is the one the incident
+ *  turned on: WHERE a hub's parts go. */
+const HUB_POINTER =
+  "Same shape as a hub in `slides`: { title (the short name in the circle), caption?, groups: [{ name, tone, items: [{ title, icon }] }] }. `caption` and `groups` go INSIDE `hub`, never beside the slide title.";
+
+/** Every slide field, shape only, for the routes that point back at `slides`. */
+const SLIDE_ITEM_LEAN_PROPS: Record<string, any> = (() => {
+  const out: Record<string, any> = {};
+  const keys = Object.keys(SLIDE_ITEM_PROPS);
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    out[k] = k === "hub" ? leanSchema(SLIDE_ITEM_PROPS.hub, HUB_POINTER)
+      : k === "layout" ? leanSchema(SLIDE_ITEM_PROPS.layout, "Same layouts, with the same guidance and the same payload per layout, as an entry in `slides`.")
+      : leanSchema(SLIDE_ITEM_PROPS[k]);
+  }
+  return out;
+})();
+
+const SLIDE_ITEM_LEAN_SCHEMA = { type: "object", properties: SLIDE_ITEM_LEAN_PROPS, required: ["title"] };
+
 /** OpenAI-compatible tool definition for generate_slides.
  *
  *  Sibling of generate_document, deliberately near-identical in shape so the
@@ -1656,8 +1956,13 @@ const DOCUMENT_GEN_TOOL: Anthropic.Tool = {
  *  than a .pptx to download. Nothing is written to Drive by default.
  *
  *  The layout enum is the archetypes extracted from TCE's own decks —
- *  see docs/tce-slide-brand.md. */
-const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
+ *  see docs/tce-slide-brand.md.
+ *
+ *  Exported for scripts/verify-slide-layouts.ts, which asserts against this
+ *  object that every payload the edit path carries is declared where the model
+ *  writes a slide. A regex over the file proved a line existed; it could not
+ *  prove the line was inside the schema the model is sent. */
+export const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
   type: "function",
   function: {
     name: "generate_slides",
@@ -1689,7 +1994,7 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         editSlide: {
           type: "object",
           description:
-            "Change ONE slide of the deck already in this conversation, ADD new slides, or REMOVE slides, WITHOUT resending the others. USE THIS TO BUILD A LONG DECK: `slides` replaces the deck entirely, and a deck of thirty-plus slides is more than one call can emit before it is cut off, so start it with `slides` and append the rest a few at a time here. The server holds the current deck and touches only the slide you name, keeping every other slide (text, layout, images) exactly as it is. Do NOT also pass `slides` (send an empty array for it). TO CHANGE a slide ('change slide 3's picture', 'reword the title on slide 1') pass `slideNumber` (1-based) and the fields to change. TO ADD a slide ('add a slide after slide 5', 'put a new slide at the start') pass `insertAfter` — the number of the slide it goes AFTER, so 0 places it first — plus the new slide's `title`/`body`/`layout`. Pass one or the other, never both. If the edit cannot be applied you will get an error back: report it to the user and do NOT describe the change as done.",
+            "Change ONE slide of the deck already in this conversation, ADD new slides, or REMOVE slides, WITHOUT resending the others. USE THIS TO BUILD A LONG DECK: `slides` replaces the deck entirely, and a deck of thirty-plus slides is more than one call can emit before it is cut off, so start it with `slides` and append the rest a few at a time here. The server holds the current deck and touches only the slide you name, keeping every other slide (text, layout, images) exactly as it is. Do NOT also pass `slides` (send an empty array for it). TO CHANGE a slide ('change slide 3's picture', 'reword the title on slide 1') pass `slideNumber` (1-based) and the fields to change. TO ADD a slide ('add a slide after slide 5', 'put a new slide at the start') pass `insertAfter` — the number of the slide it goes AFTER, so 0 places it first — plus the new slide's `title`/`body`/`layout`. Pass one or the other, never both. On a CHANGE to a hub slide, `hub` is merged: send only the hub fields that change (`hub: { caption }` keeps the name and connections; `groups` replaces all the groups). If the edit cannot be applied you will get an error back: report it to the user and do NOT describe the change as done.",
           properties: {
             slideNumber: { type: "number", description: "CHANGE an existing slide: which one, 1-based. Omit when inserting." },
             insertAfter: { type: "number", description: "ADD slides after this slide number; 0 places them before the first. Omit when changing an existing slide." },
@@ -1701,7 +2006,11 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
             insertSlides: {
               type: "array",
               description: "ADD SEVERAL slides at once, in order, at `insertAfter`. Each entry is a full slide — the same shape as an entry in `slides`, with its own layout, title, body and payload. THIS IS HOW A LONG DECK IS BUILT: this tool is capped at six calls a turn, so one slide per call would never finish; build the first dozen with `slides`, then append the rest in one or two batches of about a dozen here. A batch that is too large is cut off exactly as a full deck would be, so keep each one to roughly twelve slides.",
-              items: { type: "object" },
+              // The SAME shape as `slides.items`, not a bare object: this is
+              // the route every long deck is built on, and a bare object told
+              // the model nothing about a hub or a table here. Shape only —
+              // the guidance is in `slides.items`, sent once (leanSchema).
+              items: SLIDE_ITEM_LEAN_SCHEMA,
             },
             layout: {
               type: "string",
@@ -1709,39 +2018,37 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
               description:
                 "Layout for an INSERTED slide. Every layout is available, but one drawn from a structured payload needs that payload passed alongside — `table` needs `table`, `stat` needs `stats`, the chart layouts need `chart`, and so on — or the slide comes out BLANK and the insert is refused with a message saying which field is missing. Defaults to content, or to cards when you pass `cards`. THIS IS HOW A LONG DECK IS BUILT: `slides` replaces the whole deck and a deck of thirty-plus slides is too much to emit in one call, so build the first few with `slides` and append the rest one or two at a time with insertAfter.",
             },
-            table: { type: "object", description: "For a `table` slide. Same shape as `table` in `slides`: `columns`, `rows` (each an array of cells in column order), optional `highlight`." },
-            panel: { type: "object", description: "A rounded brand panel beside the prose on a content slide. Same shape as `panel` in `slides`: `title`, `items` (up to 4 of {title, text}), optional style \"soft\"." },
-            layers: { type: "array", description: "For a `layers` slide. Same shape as `layers` in `slides`: bands top first, each {title, caption? or cells, style, arrow?}.", items: { type: "object" } },
-            hub: { type: "object", description: "For a `hub` slide. Same shape as `hub` in `slides`: {title, caption?, groups: [{name, tone, items: [{title, icon}]}]}." },
-            strip: { type: "object", description: "cards only: the spanning band under the card row. Same shape as `strip` in `slides`." },
-            tones: { type: "array", description: "two-column only: column tints, e.g. ['coral','teal'].", items: { type: "string" } },
-            note: { type: "string", description: "The takeaway bar along the foot of the slide. One sentence." },
-            chart: { type: "object", description: "For bar-chart, stacked-bar or line-chart. Same shape as `chart` in `slides`." },
-            stats: { type: "array", description: "For a `stat` slide. Same shape as `stats` in `slides`.", items: { type: "object" } },
-            swot: { type: "object", description: "For a `swot` slide. Same shape as in `slides`." },
-            matrix: { type: "object", description: "For a `matrix` slide. Same shape as in `slides`." },
-            comparison: { type: "object", description: "For a `comparison` slide. Same shape as in `slides`." },
-            scatter: { type: "object", description: "For a `scatter` slide. Same shape as in `slides`." },
-            venn: { type: "object", description: "For a `venn` slide. Same shape as in `slides`." },
-            milestones: { type: "array", description: "For a `timeline` slide. Same shape as in `slides`.", items: { type: "object" } },
-            tracks: { type: "array", description: "For a `timeline-parallel` slide. Same shape as in `slides`.", items: { type: "object" } },
-            stages: { type: "array", description: "For a `process` slide. Same shape as in `slides`.", items: { type: "object" } },
-            logos: { type: "array", description: "For a `logo-wall` slide. Same shape as in `slides`.", items: { type: "object" } },
-            quote: { type: "object", description: "For a `quote` slide. Same shape as in `slides`." },
-            images: { type: "array", description: "For an `image-grid` slide. Same shape as in `slides`.", items: { type: "object" } },
+            // Each payload is the very shape `slides` declares, so "same shape
+            // as in `slides`" is true by construction rather than by a promise
+            // in a description that nothing checked. Shape only; the guidance
+            // is sent once, on `slides.items`.
+            table: SLIDE_ITEM_LEAN_PROPS.table,
+            panel: SLIDE_ITEM_LEAN_PROPS.panel,
+            layers: SLIDE_ITEM_LEAN_PROPS.layers,
+            hub: SLIDE_ITEM_LEAN_PROPS.hub,
+            strip: SLIDE_ITEM_LEAN_PROPS.strip,
+            tones: SLIDE_ITEM_LEAN_PROPS.tones,
+            note: SLIDE_ITEM_LEAN_PROPS.note,
+            chart: SLIDE_ITEM_LEAN_PROPS.chart,
+            stats: SLIDE_ITEM_LEAN_PROPS.stats,
+            swot: SLIDE_ITEM_LEAN_PROPS.swot,
+            matrix: SLIDE_ITEM_LEAN_PROPS.matrix,
+            comparison: SLIDE_ITEM_LEAN_PROPS.comparison,
+            scatter: SLIDE_ITEM_LEAN_PROPS.scatter,
+            venn: SLIDE_ITEM_LEAN_PROPS.venn,
+            milestones: SLIDE_ITEM_LEAN_PROPS.milestones,
+            tracks: SLIDE_ITEM_LEAN_PROPS.tracks,
+            stages: SLIDE_ITEM_LEAN_PROPS.stages,
+            logos: SLIDE_ITEM_LEAN_PROPS.logos,
+            quote: SLIDE_ITEM_LEAN_PROPS.quote,
+            images: SLIDE_ITEM_LEAN_PROPS.images,
+            columns: SLIDE_ITEM_LEAN_PROPS.columns,
+            today: SLIDE_ITEM_LEAN_PROPS.today,
+            notes: { type: "string", description: "Speaker notes for this slide." },
             cards: {
-              type: "array",
+              ...SLIDE_ITEM_LEAN_PROPS.cards,
               description:
                 "For an inserted `cards` slide: two to six blocks. This is the layout for 'add a slide explaining X' whenever X has several named parts — reach for it ahead of a bulleted `content` slide, which is the flattest thing the deck can make. A cards slide without this array is drawn EMPTY, so it is required whenever layout is cards.",
-              items: {
-                type: "object",
-                properties: {
-                  marker: { type: "string", description: "A short label or number — 'AUDIT', '01'. Drawn as a brand-blue chip. One or two words." },
-                  icon: { type: "string", description: "A Lucide icon name in kebab-case — 'search', 'line-chart', 'target', 'users'. Use the same kind of icon across all cards on the slide." },
-                  title: { type: "string", description: "The card's heading." },
-                  body: { type: "string", description: "A sentence or two. Keep the cards balanced — wildly uneven bodies read as a mistake." },
-                },
-              },
             },
             bodyRight: { type: "string", description: "Right-hand column text, for an inserted two-column slide." },
             eyebrow: { type: "string", description: "Small label above the title — 'CASE STUDY', or a numeral like '02' on a section divider." },
@@ -1764,217 +2071,7 @@ const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         slides: {
           type: "array",
           description: "The slides to build, in order. On an update this replaces the deck's entire contents, so always send every slide you want the deck to end up with.",
-          items: {
-            type: "object",
-            properties: {
-              layout: {
-                type: "string",
-                enum: ["cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "line-chart", "swot", "matrix", "comparison", "scatter", "venn", "cards", "quote", "process", "logo-wall", "table", "statement", "layers", "hub", "closing"],
-                description:
-                  "A LONG DOCUMENT IS BUILT IN BATCHES, AND THE FIRST CALL IS NOT THE WHOLE DECK. One call cannot write out thirty-eight slides before it is cut off — a 38-page conversion has now failed twice that way, with nothing created and a confident reply above it. When the source has more than about fifteen pages, send the FIRST ~12 slides in `slides` and say in your reply that you are continuing; the tool result then tells you exactly how to append the next batch with editSlide.insertAfter, about ten at a time, until every source page is covered. Do not try to be heroic about it: a deck that arrives in four calls exists, and one that arrives in a single call does not. ACCENT PHRASE: in any TITLE you may wrap ONE short phrase in braces — Great storytelling can {change the world} — and it is drawn as the brand's italic accent (lime on dark grounds). Use it on the cover, on section dividers, and on roughly one content headline in three; on every slide it stops meaning anything. layers = a stacked layer DIAGRAM: horizontal bands top to bottom with connector arrows between them (`layers`: up to 5 of { title, caption? OR cells: [{title, text?}] up to 8, style: 'blue'|'dashed'|'teal'|'lav'|'grey'|'coral'|'amber', arrow?: false }) — the only way to say 'everything below feeds the thing above'; use it for architecture, funnels and value chains rather than describing the picture in prose. hub = ONE thing in the centre wired to everything it connects to, a line to each (`hub`: { title, caption?, groups: up to 2 of { name, tone, items: up to 7 of { title, icon } } }) - reach for it whenever the point is CONNECTION: layers says what rests on what, hub says what is plugged into what. statement = one big Playfair sentence on the light ground, at most ~14 words, with an optional `subtitle` lead — the slide that makes the argument; reach for it when one sentence IS the point and bullets would dilute it. cover = opening slide, big centred title over a dark ground. section = a divider between parts of the deck — give it an `image.query` for a full-bleed photograph and a numeric `eyebrow` ('01', '02') for a big index numeral; without a photo it falls back to a flat blue field. content = title + body, the FALLBACK when nothing else fits — a bulleted slide is the flattest thing the deck can make, so reach for a layout above it first. Give it a `subtitle` (drawn as a standfirst) and an `image.query` (drawn as a rail down the right) and it stops looking like a document. two-column = title with body and bodyRight side by side. case-study = like content but with an eyebrow label such as 'CASE STUDY'. dark-index = navy background, for lists of examples or links. timeline = a DRAWN horizontal timeline with milestone markers — use it whenever the content is dates, phases, a roadmap or a sequence, and supply `milestones`. timeline-parallel = TWO OR MORE workstreams drawn against one shared, date-proportional axis, with a 'today' rule — use it when separate streams run at the same time and the overlap matters, and supply `tracks`. image-split = photograph down one side, text down the other; the workhorse for making a deck visual. image-grid = a grid of example thumbnails, for portfolios and format galleries; supply `images`. feature = full-bleed photograph with one short statement over it, for a moment of emphasis. stat = up to three HEADLINE NUMBERS on navy — reach for this whenever the point is a figure, because one big number lands harder than a chart of one bar; supply `stats`. bar-chart = horizontal bars, sorted, values labelled, for comparing or ranking things; supply `chart` with ONE series. stacked-bar = one bar per category split into parts, for showing what something is MADE OF rather than which is biggest; supply `chart` with several series sharing the same point labels. line-chart = a trend over time — months, quarters, years — as a connected line; supply `chart` with each series' points IN TIME ORDER (they are plotted in the order given, evenly spaced). Reach for it whenever the point is that something CHANGED, where a bar chart would only show the endpoints. swot = a four-quadrant SWOT on colour-coded panels; supply `swot` with strengths/weaknesses/opportunities/threats. matrix = a 2x2 priority grid (impact/effort, risk/reward) with items plotted by position; supply `matrix`. comparison = a table weighing options against criteria, with ticks and crosses; supply `comparison`. table = a DATA table, a header row and rows of figures with numeric columns right-aligned under their headings; supply `table`. Reach for it over comparison when the cells are measurements rather than judgements, and over a bar chart when the reader needs the actual numbers. scatter = a scatter plot for a correlation between two measures; supply `scatter` with points that each have x and y. venn = two or three overlapping sets, for where things intersect; supply `venn`. cards = two to six repeated blocks across the slide — pillars, product types, numbered steps, a portfolio of formats. Reach for it whenever a slide would otherwise be a list of things that are the same KIND of thing; supply `cards`. quote = a pull quote on navy with the speaker named beneath — use it for a client testimonial or an executive line, never for your own copy; supply `quote`. process = numbered step cards carried left to right by arrows - a coloured numeral, the step's name, what happens there, and an 'Owner:' line at the foot of each card - for a way of working or a co-creation workflow; supply `stages`, with `owner` per step wherever ownership matters. logo-wall = client marks on a clean ground, the credibility slide; supply `logos`. closing = 'Thank You' style sign-off. Defaults to cover for the first slide and content thereafter — but defaulting through a whole deck produces exactly the flat deck this tool exists to avoid.",
-              },
-              title: { type: "string", description: "Slide heading." },
-              subtitle: {
-                type: "string",
-                description: "Cover/closing: the line under the title, rendered in caps. Section: a short standfirst.",
-              },
-              eyebrow: {
-                type: "string",
-                description: "Short label above the title, rendered in caps — e.g. 'CASE STUDY', 'STRATEGY'.",
-              },
-              body: {
-                type: "string",
-                description: "Main text. Put each bullet on its own line; a single line stays as a paragraph. Markdown links work here and in card bodies and captions — [the Holcim case study](https://…) — and are the ONLY way to make a portfolio or examples slide usable, so include them whenever you are pointing at real work.",
-              },
-              bodyRight: { type: "string", description: "Right-hand column text. two-column layout only." },
-              image: {
-                type: "object",
-                description:
-                  "A picture for this slide. REQUIRED for image-split and feature, and strongly encouraged on cover, section and closing, which are photo-led and fall back to a plain colour without one. Three sources: `query` finds or generates a photograph; `attachment` uses an image the USER uploaded in this conversation; `url` takes a specific known image.",
-                properties: {
-                  query: { type: "string", description: "What the picture should be OF — 'wind turbines at dusk', 'modern office atrium'. Prefer places, textures, architecture and abstracts over people: stock photography carries no model releases, so a recognisable face in a client deck can read as endorsement." },
-                  url: { type: "string", description: "An exact image URL to use instead of searching." },
-                  attachment: {
-                    type: "number",
-                    description:
-                      "Use an image the USER ATTACHED to this conversation: 1 = the first image on their most recent message that had one, 2 = the second, and so on. ALWAYS use this rather than `query` when the slide is about something they showed you — their own product, a screenshot, a chart, a photo of their site. A generated approximation of their screenshot is worthless; the real file is the point.",
-                  },
-                  region: {
-                    type: "object",
-                    description:
-                      "Show only PART of that attachment, as percentages of its width and height (x/y = the top-left corner, 0-100). This is how one screenshot becomes a whole sequence of slides: the full interface on one slide, then a slide per area — 'the scoring panel is the right third' would be roughly {x:70,y:0,width:30,height:100}. Estimate from what you can see in the image; the crop is clamped to the edges, so slight overshoot is fine.",
-                    properties: {
-                      x: { type: "number" }, y: { type: "number" },
-                      width: { type: "number" }, height: { type: "number" },
-                    },
-                    required: ["x", "y", "width", "height"],
-                  },
-                },
-              },
-              images: {
-                type: "array",
-                description: "Thumbnails for the image-grid layout, up to twelve. Ignored by other layouts.",
-                items: {
-                  type: "object",
-                  properties: {
-                    query: { type: "string", description: "What this thumbnail should show." },
-                    url: { type: "string", description: "An exact image URL." },
-                    caption: { type: "string", description: "Short label under the thumbnail." },
-                  },
-                },
-              },
-              quote: {
-                type: "object",
-                description: "A pull quote for the quote layout. Attribute it to a real named person — an unattributed quote reads as invented.",
-                properties: {
-                  text: { type: "string", description: "The quote itself, without surrounding quotation marks — the layout draws those." },
-                  name: { type: "string", description: "Who said it." },
-                  role: { type: "string", description: "Their job title and company." },
-                  image: { type: "object", description: "An optional portrait of the speaker — a `url` to an ACTUAL photograph of the named person only. A `query` will NOT be searched or generated: standing a stranger's stock face under a real person's name is a misattribution, so a portrait with no real url is simply omitted.", properties: { query: { type: "string" }, url: { type: "string" } } },
-                },
-                required: ["text"],
-              },
-              stages: {
-                type: "array",
-                description: "Steps for the process layout, in order - three to five reads best; each is drawn as a numbered card. Ignored by other layouts.",
-                items: {
-                  type: "object",
-                  properties: {
-                    name: { type: "string", description: "The step's name, two to four words in mixed case - 'We draft', 'You prioritise'. It is the card's bold heading beside a numbered circle, so no numbers in it." },
-                    caption: { type: "string", description: "What happens in this step, one to three sentences - the description IS the content of the slide, the name is only its handle. Put who does it in `owner`, not here." },
-                    owner: { type: "string", description: "Who does this step - 'TCE', 'your team', 'TCE + your team'. Drawn as its own 'Owner: ...' line at the foot of the card, on one baseline across the row, so the room can scan who owns what. Keep it OUT of the caption; a caption whose LAST sentence is 'Owner: ...' is split into this line anyway." },
-                  },
-                  required: ["name"],
-                },
-              },
-              logos: {
-                type: "array",
-                description: "Client marks for logo-wall, up to twelve. Give a `url` for each — a logo must be the real mark, so do not describe one and expect it to be found or generated. Ignored by other layouts.",
-                items: {
-                  type: "object",
-                  properties: {
-                    url: { type: "string", description: "Direct URL to the logo image." },
-                    name: { type: "string", description: "The client's name, for reference." },
-                  },
-                },
-              },
-              cards: {
-                type: "array",
-                description:
-                  "Two to six repeated blocks for the cards layout. Every part is optional, and which parts you give decides how it looks: markers alone read as numbered steps, thumbnails read as a product grid, a marker plus body reads as labelled pillars. Ignored by other layouts.",
-                items: {
-                  type: "object",
-                  properties: {
-                    marker: { type: "string", description: "A short label or a number — 'STRATEGY', '01'. Drawn as a brand-blue chip. Keep it to one or two words." },
-                    icon: { type: "string", description: "A Lucide icon name in kebab-case — 'target', 'line-chart', 'users', 'file-text', 'megaphone', 'search'. Drawn small above the heading in brand navy. Prefer an icon over a photograph when the card is about an IDEA rather than a thing; use the same kind of icon across all cards on a slide, and pick names you are confident exist rather than inventing one." },
-                    tone: { type: "string", description: "Tints the card and draws a coloured rule across its top: 'blue', 'teal', 'coral', 'amber' or 'grey'. Toned cards are panelled; untoned cards float on the ground. Give different tones only when the cards are different KINDS of thing." },
-                    title: { type: "string", description: "The card's heading." },
-                    body: { type: "string", description: "A sentence or two. Keep cards balanced — wildly uneven bodies read as a mistake." },
-                    image: {
-                      type: "object",
-                      description: "A thumbnail at the top of the card, cropped square.",
-                      properties: { query: { type: "string" }, url: { type: "string" } },
-                    },
-                  },
-                },
-              },
-              stats: {
-                type: "array",
-                description: "Headline figures for the stat layout — three at most, or none of them lands. A SINGLE stat is drawn huge and centred: use one stat when the slide's whole job is one number — the fee, the headline result, the ask. Ignored by other layouts.",
-                items: {
-                  type: "object",
-                  properties: {
-                    value: { type: "string", description: "The number as it should read: '64 GW', '70%', 'CHF 12,500'. Keep it short — it is set very large." },
-                    label: { type: "string", description: "What the number is, in a few words. Shown in caps under it." },
-                    detail: { type: "string", description: "One optional supporting sentence." },
-                    primary: { type: "boolean", description: "Among several stats, the one that matters most — drawn in the accent so the eye lands on it. For a lone hero number, just send ONE stat instead." },
-                    tone: { type: "string", description: "Four or more stats only (the card grid): 'grey', 'blue', 'teal', 'coral' or 'amber', so the grid GROUPS its figures - the landscape on grey, the upside on teal." },
-                  },
-                  required: ["value", "label"],
-                },
-              },
-              chart: {
-                type: "object",
-                description: "Data for bar-chart, stacked-bar or line-chart. Ignored by other layouts. Bars are labelled automatically; a line-chart plots each series' points in the order given (time order) and needs no `sequence` flag. Bars are sorted biggest-first by default (a ranking); set `sequence` for a bar time series so the order is kept. Set `highlight` to the index of the one bar that IS the point — it draws in the accent and the rest go muted, so the chart argues instead of just presenting.",
-                properties: {
-                  series: {
-                    type: "array",
-                    description: "One entry for bar-chart. For stacked-bar, one entry per PART, each listing the same point labels so the parts line up into bars.",
-                    items: {
-                      type: "object",
-                      properties: {
-                        name: { type: "string", description: "What is being measured." },
-                        points: {
-                          type: "array",
-                          items: {
-                            type: "object",
-                            properties: {
-                              label: { type: "string", description: "Category name, shown beside its bar." },
-                              value: { type: "number", description: "The value. Numbers only — no units or commas." },
-                            },
-                            required: ["label", "value"],
-                          },
-                        },
-                      },
-                      required: ["name", "points"],
-                    },
-                  },
-                  source: { type: "string", description: "Where the figures come from. Print one whenever you have it." },
-                  sequence: { type: "boolean", description: "The points are a TIME SERIES (months, years, stages) — keep their order, do not sort by value. A growth line sorted by value is a scrambled line." },
-                  highlight: { type: "number", description: "Zero-based index of the single bar that carries the argument — 'us, today'. Drawn in the accent, every other bar muted." },
-                  benchmark: { type: "object", description: "A target or reference line across the plot — an industry average, a goal — so every bar reads as above or below it. Give `value` and a short `label`.", properties: { value: { type: "number" }, label: { type: "string" } } },
-                  callout: { type: "object", description: "A short annotation on ONE bar — the reason behind its number, six words at most. Give the bar's `point` index and the `text`.", properties: { point: { type: "number" }, text: { type: "string" } } },
-                  yAxisLabel: { type: "string", description: "What the y axis measures — \"Net profit (CHF)\", \"Users\". line-chart only; drawn above the axis values. A line chart already draws its own scale and a zero rule when the data crosses zero, so a chart of profit and loss shows the loss without being asked." },
-                },
-              },
-              tracks: {
-                type: "array",
-                description:
-                  "Workstreams for the timeline-parallel layout, one entry per track (two or three reads best). Ignored by every other layout. Bars are positioned and sized by real dates, so overlapping phases genuinely overlap on the slide.",
-                items: {
-                  type: "object",
-                  properties: {
-                    name: { type: "string", description: "Track name, shown at the left. Keep it to two or three words." },
-                    phases: {
-                      type: "array",
-                      description: "Phases within this track.",
-                      items: {
-                        type: "object",
-                        properties: {
-                          start: { type: "string", description: "ISO date, YYYY-MM-DD. REQUIRED — the layout positions by real dates and cannot interpret 'late August'." },
-                          end: { type: "string", description: "ISO date, YYYY-MM-DD. Omit for a single-day milestone, which draws as a dot rather than a bar." },
-                          label: { type: "string", description: "Short phase name. Long labels are placed beside the bar rather than inside it." },
-                        },
-                        required: ["start", "label"],
-                      },
-                    },
-                  },
-                  required: ["name", "phases"],
-                },
-              },
-              today: {
-                type: "string",
-                description: "ISO date for the 'today' rule on timeline-parallel. Defaults to the real today; drawn only when it falls inside the plotted range.",
-              },
-              milestones: {
-                type: "array",
-                description:
-                  "Points on the timeline, in order. REQUIRED for the timeline layout and ignored by every other layout — a timeline described as bullet points in `body` is not a timeline, so use this instead. Three to five reads best.",
-                items: {
-                  type: "object",
-                  properties: {
-                    date: { type: "string", description: "Shown above the axis, e.g. '3 July' or '18–24 August'." },
-                    title: { type: "string", description: "Short name of the phase, shown under the marker." },
-                    detail: { type: "string", description: "One supporting sentence under the title." },
-                    highlight: { type: "boolean", description: "true for the phase that is current or next — draws a larger, brighter marker. Use on at most one." },
-                  },
-                  required: ["date", "title"],
-                },
-              },
-              notes: { type: "string", description: "Speaker notes for this slide." },
-            },
-            required: ["title"],
-          },
+          items: SLIDE_ITEM_SCHEMA,
         },
       },
       required: ["title", "slides"],
@@ -4590,6 +4687,70 @@ export function unstartedConversionNotice(
   );
 }
 
+/** The turn's slides state, created on first use. */
+function slidesTurn(config: AIProviderConfig): SlidesTurnState {
+  if (!config.slidesTurn) config.slidesTurn = {};
+  return config.slidesTurn;
+}
+
+/**
+ * A turn that ENDED on a refused generate_slides call, said out loud.
+ *
+ * A refusal is not shown when it happens (lib/slides/failure.ts): its message
+ * is for the model, and the model usually fixes the call a moment later — the
+ * 2026-09-15 incident refused, retried and built, and the only thing wrong was
+ * that the user had been shown the model's instructions. But silence is only
+ * safe while a later call can still succeed. When nothing did, the reply above
+ * may well describe a deck that was never drawn, and ccf6fd5 is what happens
+ * when the only record of a failure is transient. So the fact is appended to
+ * the reply, deterministically, the way unstartedConversionNotice is.
+ *
+ * Keyed on the LAST outcome, not on whether any refusal happened: refused then
+ * built is the common case and must say nothing. Worded per scope, because a
+ * refused append is not "the deck was not changed" — the deck on screen is
+ * fine, and it is the new slides that are missing. Slides are named from the
+ * refusal's structured faults, never parsed out of the model's message.
+ */
+export function unresolvedSlidesNotice(turn: SlidesTurnState | undefined | null): string {
+  const last = turn && turn.lastOutcome;
+  if (!last || last.kind !== "refused") return "";
+  const faults = last.faults || [];
+  const named: string[] = [];
+  for (let i = 0; i < faults.length && i < 3; i++) {
+    const f = faults[i];
+    const title = String(f.title || "").replace(/[`"{}]/g, "").trim();
+    named.push(`slide ${f.slide}${title ? ` ("${title}")` : ""}: ${f.reason}`);
+  }
+  const extra = faults.length > named.length ? `; and ${faults.length - named.length} more` : "";
+  let head = "Nothing was built or changed.";
+  let after = "";
+  if (last.scope === "insert") {
+    head = "The new slides were not added.";
+    after = "None of the slides in that request were added, and the deck on screen is as it was before them.";
+  } else if (last.scope === "remove") {
+    head = "The deck was not changed.";
+    after = "No slides were removed.";
+  } else if (last.scope === "edit") {
+    head = "The deck was not changed.";
+    after = "The change was not made, and the deck on screen is as it was.";
+  } else if (last.scope === "build" && turn && turn.builtEarlier) {
+    // A deck from an earlier call in this turn is on screen, and saved. "Not
+    // built" beside it contradicts what the user is looking at.
+    head = "The deck was not changed.";
+    after = "The deck on screen is the one built before this request.";
+  } else if (last.scope === "build") {
+    head = "The deck was not built.";
+    after = "Nothing was drawn or saved, and any deck already in this conversation is unchanged.";
+  }
+  const why = named.length
+    ? `${faults.length === 1 ? "A slide" : "Some slides"} could not be drawn — ${named.join("; ")}${extra}.`
+    : `The request could not be used: ${last.userReason || "it did not describe slides that can be drawn"}.`;
+  const next = named.length
+    ? `Ask again, or ask for ${faults.length === 1 ? "that slide" : "those slides"} as plain bullet points instead.`
+    : "Ask again.";
+  return `\n\n---\n\n⚠ **${head}** ${why}${after ? ` ${after}` : ""} ${next}`;
+}
+
 /** What the model is told when a conversion has come out a different length
  *  from the document it is converting. */
 export function fidelityAudit(deckLength: number, sourceCount: number, preserve: boolean): string {
@@ -4804,29 +4965,57 @@ async function loadDeckForEdit(
 export async function prepareSlidesForBuild(
   input: any, conversationId?: string | null
 ): Promise<{ title: string; slides: any[]; presentationId?: string; edited: boolean; publishedBefore?: boolean }> {
+  // THE CALL'S ARGUMENTS ARE NEVER WRITTEN TO. The build writes onto the slides
+  // it is handed — the footer, the settled layout, resolved icons — and the
+  // Anthropic chain releases a failed call from the loop guard by serialising
+  // `tool.input` AGAIN. Written to, that is a different key from the one it was
+  // blocked under, so the release released nothing and the honest identical
+  // retry after a fault was refused as a repeat. Found by mutation (check 38h):
+  // it had only been working because an unrelated step happened to copy.
+  input = input == null ? input : JSON.parse(JSON.stringify(input));
   // Both routes are checked, not just the insert. The model does not only
   // insert — it resends the WHOLE deck through `slides`, and the deck it
   // resends is the stored one replayed into its context. So a blank slide, once
   // stored, is copied forward verbatim every turn and an insert-only guard
   // never runs again. That is how a "cards" slide with no cards survived three
   // regenerations unchanged on 2026-08-27 while the user kept re-asking.
-  const guard = (slides: any[]) => {
+  //
+  // Every refusal here is a SlideCallRefusal: the messages tell the MODEL what
+  // to send, and the class is what keeps them off the user's screen. `scope`
+  // and the structured faults are what the user is told if the turn ends here.
+  const guard = (given: any[], scope: RefusalScope) => {
+    // MISPLACED HUB FIELDS ARE REPAIRED BEFORE ANYTHING IS JUDGED. On
+    // 2026-09-15 the first call of a new deck put a hub's `caption` and
+    // `groups` beside the slide's title; the intent was unambiguous, the slide
+    // was refused as blank anyway, and fifteen slides were re-streamed to fix
+    // one. Normalising the WHOLE deck here — not just the slides this call
+    // touched — also repairs a misplaced hub already stored, so one such slide
+    // in a replayed draft cannot refuse every unrelated edit to the others.
+    // What is stored is the repaired spec, so the next turn replays it clean.
+    // Text where text belongs FIRST: a `null` slide or a title sent as an
+    // object used to throw a TypeError further in, which reached the user as
+    // an internal error for a call the model could simply have resent.
+    const slides = Array.isArray(given) ? textReadySlides(given, scope).map(normaliseSlide) : [];
     // AN EMPTY DECK IS NEVER BUILT. This is the hole that destroyed a deck in
     // production twice: whatever the model got wrong about the shape of its
     // call, `slides` arrived as [] and a 0-slide deck REPLACED the twelve
     // already drafted. No request means "delete the deck", so an empty array is
     // a malformed call and is refused with the shape it should have used.
     if (!slides.length) {
-      throw new Error(
+      throw new SlideCallRefusal(
         "A deck must have at least one slide, and this call had none — the deck already in this conversation has NOT been changed. " +
         "To ADD slides to it, call generate_slides again with editSlide: { insertAfter: <the slide number to add after>, insertSlides: [ ...the new slides...] } and leave `slides` out entirely. " +
-        "To replace the whole deck, send every slide in `slides`."
+        "To replace the whole deck, send every slide in `slides`.",
+        // An Anthropic call cut off mid-stream arrives here as `{}`, so the
+        // person's reason covers that as well as a genuinely empty request.
+        { scope, userReason: "it arrived with no slides in it, which usually means it was cut off before it finished" }
       );
     }
     const faults = unrenderableSlides(slides);
     if (faults.length) {
-      throw new Error(
-        `This deck contains ${faults.length} slide${faults.length > 1 ? "s" : ""} that would be drawn blank. ${faults.join(" ")} Fix and send again — do NOT tell the user the slide is done.`
+      throw new SlideCallRefusal(
+        `This deck contains ${faults.length} slide${faults.length > 1 ? "s" : ""} that would be drawn blank. ${faults.join(" ")} Fix and send again — do NOT tell the user the slide is done.`,
+        { scope, faults: blankSlideFaults(slides) }
       );
     }
     return slides;
@@ -4836,13 +5025,29 @@ export async function prepareSlidesForBuild(
   // editSlide, and a misplaced `insertSlides` used to mean `slides` was read
   // instead — which was empty, so the deck was replaced with nothing. Folded in
   // rather than refused: the intent is unambiguous.
+  //
+  // THE PAYLOAD IS FOLDED TOO. Only the addressing and the text fields used to
+  // travel, so a top-level `{ insertAfter, layout: "hub", hub }` reached
+  // applyEditSlide without its `hub` and was refused as blank, and a top-level
+  // `slideNumber` with a `table` beside it was told "No change was given".
+  // `groups`, `items` and `caption` ride along for the hub's misplaced shape,
+  // which applyEditSlide lifts into `hub`. `title` stays out: at the top level
+  // it is the DECK's title, and the slide's is `slideTitle`.
+  const foldTopLevelEdit = (src: any) => {
+    const e: any = {
+      slideNumber: src.slideNumber, insertAfter: src.insertAfter, insertSlides: src.insertSlides,
+      removeSlides: src.removeSlides,
+      layout: src.layout, title: src.slideTitle, body: src.slideBody, imageQuery: src.imageQuery,
+    };
+    const carried = PAYLOAD_FIELDS.concat(["groups", "items", "caption"]);
+    for (let i = 0; i < carried.length; i++) {
+      if (src[carried[i]] !== undefined) e[carried[i]] = src[carried[i]];
+    }
+    return e;
+  };
   const edit = input?.editSlide
     || (input && (input.insertSlides || input.removeSlides || input.insertAfter != null || input.slideNumber != null)
-      ? {
-          slideNumber: input.slideNumber, insertAfter: input.insertAfter, insertSlides: input.insertSlides,
-          removeSlides: input.removeSlides,
-          layout: input.layout, title: input.slideTitle, body: input.slideBody, imageQuery: input.imageQuery,
-        }
+      ? foldTopLevelEdit(input)
       : null);
 
   if (edit) {
@@ -4853,13 +5058,21 @@ export async function prepareSlidesForBuild(
     // to add to. An edit that cannot find its deck is an error, and the model
     // is told so rather than shown a deck that lost eleven slides.
     if (!deck?.slides?.length) {
-      throw new Error(
-        "There is no deck in this conversation to edit. editSlide patches an existing deck; build one first with `slides`, then append to it."
+      throw new SlideCallRefusal(
+        "There is no deck in this conversation to edit. editSlide patches an existing deck; build one first with `slides`, then append to it.",
+        { userReason: "there is no deck in this conversation to change yet" }
       );
     }
+    // What the edit was FOR, so a refused append is reported as slides not
+    // added rather than as a deck not changed. Read the way applyEditSlide
+    // reads it: a batch with no slide number to patch is an append.
+    const editScope: RefusalScope =
+      Array.isArray(edit.removeSlides) && edit.removeSlides.length ? "remove"
+        : edit.insertAfter != null || (edit.slideNumber == null && Array.isArray(edit.insertSlides) && edit.insertSlides.length) ? "insert"
+          : "edit";
     const out = {
       title: deck.title,
-      slides: guard(applyEditSlide(deck.slides, edit)),
+      slides: guard(applyEditSlide(deck.slides, edit), editScope),
       // NO presentationId, EVER. A published deck is the user's file — they
       // hand-edit it — and the in-place update replaced every slide of one
       // Chris had already edited. Edits continue on the DRAFT; publishing
@@ -4876,7 +5089,7 @@ export async function prepareSlidesForBuild(
     // is how a folder fills with files nobody can tell apart. The cover
     // slide's own title stands in before the generic word does.
     title: input?.title || String((input?.slides || [])[0]?.title || "").trim() || "Presentation",
-    slides: guard(input?.slides || []),
+    slides: guard(input?.slides || [], "build"),
     presentationId: undefined,
     edited: false,
   };
@@ -9304,6 +9517,7 @@ async function streamAnthropic(
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
             );
+            slidesTurn(config).lastOutcome = { kind: "ok" };
             toolResults.push({
               type: "tool_result",
               tool_use_id: tool.id,
@@ -9328,6 +9542,7 @@ async function streamAnthropic(
             // reach still gets a card, with Try again on it. The alternative is
             // the prose dead end that stranded a real user for a day.
             const fixable = isActionable(result.reason);
+            slidesTurn(config).lastOutcome = { kind: "failed" };
             controller.enqueue(
               encoder.encode(
                 `data: ${JSON.stringify(
@@ -9358,6 +9573,7 @@ async function streamAnthropic(
                 })}\n\n`
               )
             );
+            slidesTurn(config).lastOutcome = { kind: "ok" };
 
             fullText += `\n\n\ud83d\udcca [${result.updated ? "Updated" : "Open"} ${result.title} in Google Slides](${result.url})\n\n`;
 
@@ -9385,14 +9601,23 @@ async function streamAnthropic(
             });
           }
         } catch (err: any) {
-          console.error("[SlidesGen] Failed:", err.message);
-          controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ slides_error: err.message })}\n\n`)
-          );
+          // Refusal or fault, decided by the error's CLASS (lib/slides/failure.ts):
+          // a refusal shows the user nothing and tells the model to resend; a
+          // fault shows a fixed sentence and keeps the raw message for the log.
+          const failed = slidesFailure(err, slidesTurn(config));
+          console.error(`[SlidesGen] ${failed.refused ? "Refused" : "Failed"}:`, err?.message);
+          for (const ev of failed.events) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(ev)}\n\n`));
+          }
+          // A FAULT is released from the duplicate-signature guard, so an honest
+          // identical retry after a transient error is not refused as a repeat.
+          // A refusal keeps its signature: the same malformed call cannot work.
+          // Released with THIS chain's own key — another chain's releases nothing.
+          if (!failed.refused) toolLoopGuard.release(tool.name, tool.input);
           toolResults.push({
             type: "tool_result",
             tool_use_id: tool.id,
-            content: `Google Slides creation failed: ${err.message}`,
+            content: failed.toolText,
             is_error: true,
           });
         }
@@ -10126,6 +10351,18 @@ async function streamAnthropic(
       } catch { /* client gone; the text is still on the row */ }
     }
   }
+  // A turn that ENDS on a refused generate_slides call is said out loud. The
+  // refusal was kept off the screen because a later call could still fix it;
+  // nothing did, so the user is told what did not happen.
+  {
+    const unresolved = unresolvedSlidesNotice(config.slidesTurn);
+    if (unresolved) {
+      fullText += unresolved;
+      try {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: unresolved })}\n\n`));
+      } catch { /* client gone; the text is still on the row */ }
+    }
+  }
 
   return {
     fullText,
@@ -10623,7 +10860,9 @@ async function streamXAIChatCompletions(
         }
       } else if (tc.function.name === "generate_slides") {
         try {
-          const input = JSON.parse(tc.function.arguments);
+          // Parsed as a refusal, not a crash: a call cut off mid-stream is the
+          // model's to resend smaller, and its SyntaxError used to be the toast.
+          const input = parseSlidesArguments(tc.function.arguments);
           // A single-slide edit (editSlide) is patched onto the stored deck
           // server-side, so the model never resends every slide.
           // The execution phase used to be silent for minutes — image generation and
@@ -10642,6 +10881,7 @@ async function streamXAIChatCompletions(
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
             );
+            slidesTurn(config).lastOutcome = { kind: "ok" };
             openaiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
@@ -10664,6 +10904,7 @@ async function streamXAIChatCompletions(
             // reach still gets a card, with Try again on it. The alternative is
             // the prose dead end that stranded a real user for a day.
             const fixable = isActionable(result.reason);
+            slidesTurn(config).lastOutcome = { kind: "failed" };
             controller.enqueue(
               encoder.encode(
                 `data: ${JSON.stringify(
@@ -10694,6 +10935,7 @@ async function streamXAIChatCompletions(
                 })}\n\n`
               )
             );
+            slidesTurn(config).lastOutcome = { kind: "ok" };
 
             fullText += `\n\n\ud83d\udcca [${result.updated ? "Updated" : "Open"} ${result.title} in Google Slides](${result.url})\n\n`;
 
@@ -10721,14 +10963,23 @@ async function streamXAIChatCompletions(
             } as any);
           }
         } catch (err: any) {
-          console.error("[SlidesGen] Failed:", err.message);
-          controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ slides_error: err.message })}\n\n`)
-          );
+          // Refusal or fault, decided by the error's CLASS (lib/slides/failure.ts):
+          // a refusal shows the user nothing and tells the model to resend; a
+          // fault shows a fixed sentence and keeps the raw message for the log.
+          const failed = slidesFailure(err, slidesTurn(config));
+          console.error(`[SlidesGen] ${failed.refused ? "Refused" : "Failed"}:`, err?.message);
+          for (const ev of failed.events) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(ev)}\n\n`));
+          }
+          // A FAULT is released from the duplicate-signature guard, so an honest
+          // identical retry after a transient error is not refused as a repeat.
+          // A refusal keeps its signature: the same malformed call cannot work.
+          // Released with THIS chain's own key — another chain's releases nothing.
+          if (!failed.refused) toolLoopGuard.release(tc.function.name, toolArgSig);
           openaiMessages.push({
             role: "tool",
             tool_call_id: tc.id,
-            content: `Google Slides creation failed: ${err.message}`,
+            content: failed.toolText,
           } as any);
         }
       } else if (tc.function.name === "generate_document") {
@@ -11181,6 +11432,18 @@ async function streamXAIChatCompletions(
       fullText += unstarted;
       try {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: unstarted })}\n\n`));
+      } catch { /* client gone; the text is still on the row */ }
+    }
+  }
+  // A turn that ENDS on a refused generate_slides call is said out loud. The
+  // refusal was kept off the screen because a later call could still fix it;
+  // nothing did, so the user is told what did not happen.
+  {
+    const unresolved = unresolvedSlidesNotice(config.slidesTurn);
+    if (unresolved) {
+      fullText += unresolved;
+      try {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: unresolved })}\n\n`));
       } catch { /* client gone; the text is still on the row */ }
     }
   }
@@ -11718,7 +11981,9 @@ async function streamGemini(
         }
       } else if (tc.function.name === "generate_slides") {
         try {
-          const input = JSON.parse(tc.function.arguments);
+          // Parsed as a refusal, not a crash: a call cut off mid-stream is the
+          // model's to resend smaller, and its SyntaxError used to be the toast.
+          const input = parseSlidesArguments(tc.function.arguments);
           // A single-slide edit (editSlide) is patched onto the stored deck
           // server-side, so the model never resends every slide.
           // The execution phase used to be silent for minutes — image generation and
@@ -11737,6 +12002,7 @@ async function streamGemini(
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
             );
+            slidesTurn(config).lastOutcome = { kind: "ok" };
             geminiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
@@ -11759,6 +12025,7 @@ async function streamGemini(
             // reach still gets a card, with Try again on it. The alternative is
             // the prose dead end that stranded a real user for a day.
             const fixable = isActionable(result.reason);
+            slidesTurn(config).lastOutcome = { kind: "failed" };
             controller.enqueue(
               encoder.encode(
                 `data: ${JSON.stringify(
@@ -11789,6 +12056,7 @@ async function streamGemini(
                 })}\n\n`
               )
             );
+            slidesTurn(config).lastOutcome = { kind: "ok" };
 
             fullText += `\n\n\ud83d\udcca [${result.updated ? "Updated" : "Open"} ${result.title} in Google Slides](${result.url})\n\n`;
 
@@ -11816,14 +12084,23 @@ async function streamGemini(
             } as any);
           }
         } catch (err: any) {
-          console.error("[SlidesGen] Failed:", err.message);
-          controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ slides_error: err.message })}\n\n`)
-          );
+          // Refusal or fault, decided by the error's CLASS (lib/slides/failure.ts):
+          // a refusal shows the user nothing and tells the model to resend; a
+          // fault shows a fixed sentence and keeps the raw message for the log.
+          const failed = slidesFailure(err, slidesTurn(config));
+          console.error(`[SlidesGen] ${failed.refused ? "Refused" : "Failed"}:`, err?.message);
+          for (const ev of failed.events) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(ev)}\n\n`));
+          }
+          // A FAULT is released from the duplicate-signature guard, so an honest
+          // identical retry after a transient error is not refused as a repeat.
+          // A refusal keeps its signature: the same malformed call cannot work.
+          // Released with THIS chain's own key — another chain's releases nothing.
+          if (!failed.refused) toolLoopGuard.release(tc.function.name, tc.function.arguments);
           geminiMessages.push({
             role: "tool",
             tool_call_id: tc.id,
-            content: `Google Slides creation failed: ${err.message}`,
+            content: failed.toolText,
           } as any);
         }
       } else if (tc.function.name === "generate_document") {
@@ -12254,6 +12531,18 @@ async function streamGemini(
       fullText += unstarted;
       try {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: unstarted })}\n\n`));
+      } catch { /* client gone; the text is still on the row */ }
+    }
+  }
+  // A turn that ENDS on a refused generate_slides call is said out loud. The
+  // refusal was kept off the screen because a later call could still fix it;
+  // nothing did, so the user is told what did not happen.
+  {
+    const unresolved = unresolvedSlidesNotice(config.slidesTurn);
+    if (unresolved) {
+      fullText += unresolved;
+      try {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: unresolved })}\n\n`));
       } catch { /* client gone; the text is still on the row */ }
     }
   }
@@ -12701,7 +12990,9 @@ async function streamOpenAI(
         }
       } else if (tc.function.name === "generate_slides") {
         try {
-          const input = JSON.parse(tc.function.arguments);
+          // Parsed as a refusal, not a crash: a call cut off mid-stream is the
+          // model's to resend smaller, and its SyntaxError used to be the toast.
+          const input = parseSlidesArguments(tc.function.arguments);
           // A single-slide edit (editSlide) is patched onto the stored deck
           // server-side, so the model never resends every slide.
           // The execution phase used to be silent for minutes — image generation and
@@ -12720,6 +13011,7 @@ async function streamOpenAI(
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ slides_draft: draft })}\n\n`)
             );
+            slidesTurn(config).lastOutcome = { kind: "ok" };
             openaiMessages.push({
               role: "tool",
               tool_call_id: tc.id,
@@ -12742,6 +13034,7 @@ async function streamOpenAI(
             // reach still gets a card, with Try again on it. The alternative is
             // the prose dead end that stranded a real user for a day.
             const fixable = isActionable(result.reason);
+            slidesTurn(config).lastOutcome = { kind: "failed" };
             controller.enqueue(
               encoder.encode(
                 `data: ${JSON.stringify(
@@ -12772,6 +13065,7 @@ async function streamOpenAI(
                 })}\n\n`
               )
             );
+            slidesTurn(config).lastOutcome = { kind: "ok" };
 
             fullText += `\n\n\ud83d\udcca [${result.updated ? "Updated" : "Open"} ${result.title} in Google Slides](${result.url})\n\n`;
 
@@ -12799,14 +13093,23 @@ async function streamOpenAI(
             } as any);
           }
         } catch (err: any) {
-          console.error("[SlidesGen] Failed:", err.message);
-          controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ slides_error: err.message })}\n\n`)
-          );
+          // Refusal or fault, decided by the error's CLASS (lib/slides/failure.ts):
+          // a refusal shows the user nothing and tells the model to resend; a
+          // fault shows a fixed sentence and keeps the raw message for the log.
+          const failed = slidesFailure(err, slidesTurn(config));
+          console.error(`[SlidesGen] ${failed.refused ? "Refused" : "Failed"}:`, err?.message);
+          for (const ev of failed.events) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(ev)}\n\n`));
+          }
+          // A FAULT is released from the duplicate-signature guard, so an honest
+          // identical retry after a transient error is not refused as a repeat.
+          // A refusal keeps its signature: the same malformed call cannot work.
+          // Released with THIS chain's own key — another chain's releases nothing.
+          if (!failed.refused) toolLoopGuard.release(tc.function.name, tc.function.arguments);
           openaiMessages.push({
             role: "tool",
             tool_call_id: tc.id,
-            content: `Google Slides creation failed: ${err.message}`,
+            content: failed.toolText,
           } as any);
         }
       } else if (tc.function.name === "generate_document") {
@@ -13237,6 +13540,18 @@ async function streamOpenAI(
       fullText += unstarted;
       try {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: unstarted })}\n\n`));
+      } catch { /* client gone; the text is still on the row */ }
+    }
+  }
+  // A turn that ENDS on a refused generate_slides call is said out loud. The
+  // refusal was kept off the screen because a later call could still fix it;
+  // nothing did, so the user is told what did not happen.
+  {
+    const unresolved = unresolvedSlidesNotice(config.slidesTurn);
+    if (unresolved) {
+      fullText += unresolved;
+      try {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: unresolved })}\n\n`));
       } catch { /* client gone; the text is still on the row */ }
     }
   }

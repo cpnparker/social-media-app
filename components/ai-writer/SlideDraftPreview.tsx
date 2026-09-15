@@ -33,6 +33,7 @@ const THUMB_W = 330;
 export type { PreviewElement, PreviewSlide } from "@/lib/slides/preview-model";
 import type { PreviewSlide } from "@/lib/slides/preview-model";
 import { SLIDES_TEXT_INSET, BULLET_INDENT, NATURAL_LINE, runsOf } from "@/lib/slides/preview-style";
+import { SLIDE_FONT_CLASS } from "./slide-fonts";
 
 export interface SlideDraft {
   title: string;
@@ -40,13 +41,21 @@ export interface SlideDraft {
   preview: { width: number; height: number; slides: PreviewSlide[] };
 }
 
-/** Playfair and Roboto may not be loaded in the app shell; the fallbacks are
- *  chosen to hold the same serif/sans distinction so the preview still reads
- *  the way the deck will. */
-function fontStack(font?: string): string {
-  if (font === "Playfair Display") return "'Playfair Display', Georgia, 'Times New Roman', serif";
-  if (font === "Poppins") return "'Poppins', 'Helvetica Neue', Arial, sans-serif";
-  return "'Roboto', 'Helvetica Neue', Arial, sans-serif";
+/** The deck's own faces first, from the variables slide-fonts.ts declares on
+ *  every slide frame. The stack used to name a bare 'Roboto' that nothing
+ *  loaded, so the preview drew Helvetica Neue and wrapped labels the deck does
+ *  not wrap.
+ *
+ *  Each variable carries its family name as a fallback INSIDE the var(). A
+ *  var() with no fallback whose variable is missing makes the whole declaration
+ *  invalid at computed-value time, and font-family then INHERITS — the chat's
+ *  Geist, not the Helvetica Neue and Arial named after it. The fallbacks after
+ *  the var() are the same ones as before, chosen to hold the serif/sans
+ *  distinction and to draw wider than the deck rather than narrower. */
+export function fontStack(font?: string): string {
+  if (font === "Playfair Display") return "var(--font-slide-playfair, 'Playfair Display'), Georgia, 'Times New Roman', serif";
+  if (font === "Poppins") return "var(--font-slide-poppins, 'Poppins'), 'Helvetica Neue', Arial, sans-serif";
+  return "var(--font-slide-roboto, 'Roboto'), 'Helvetica Neue', Arial, sans-serif";
 }
 
 /** Where this line starts in the box's whole text, which is what link ranges
@@ -95,7 +104,10 @@ function SlideThumb({
     return () => clearTimeout(t);
   }, [confirming]);
   return (
-    <div className="relative shrink-0 group" style={{ width }}>
+    // The deck's faces are declared HERE, on the slide's own frame, not on the
+    // page or the grid: the lightbox draws this same component outside the
+    // grid, and a slide anywhere must carry the variables fontStack reads.
+    <div className={`relative shrink-0 group ${SLIDE_FONT_CLASS}`} style={{ width }}>
     <div
       className={`rounded border overflow-hidden bg-white ${onClick ? "cursor-zoom-in hover:ring-2 hover:ring-primary/40 transition-shadow" : ""}`}
       style={{ width, height: BASE_H * scale }}

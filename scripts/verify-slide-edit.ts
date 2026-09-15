@@ -27,7 +27,7 @@
  *   is why 2 pins the POSITION and 3 pins the neighbours. "The deck grew" is
  *   not the same claim as "the slide went where it was asked for".
  */
-import { applyEditSlide, unrenderableSlides } from "../lib/slides/edit";
+import { applyEditSlide, unrenderableSlides, normaliseSlide, insertableLayout, hubHasConnections, SlideCallRefusal, isSlideCallRefusal, blankSlideFaults } from "../lib/slides/edit";
 import { deleteSlide } from "../lib/slides/draft-edit";
 
 let failures = 0;
@@ -308,6 +308,387 @@ console.log("\n12. Delete removes from the spec and the preview together");
   deleteSlide(src, 1);
   if (src.slides.length !== 4) fail("deleteSlide mutated its input — the preview would not re-render");
   else pass("the input draft is left alone");
+}
+
+// ── 13. A hub is read wherever its fields landed ───────────────────────────
+//
+// The fourth production fault, 2026-09-15. A new chat asked for a deck and the
+// model's first call put the hub's `caption` and `groups` BESIDE the slide's
+// title instead of inside `hub` — the tool schema had never declared `hub` at
+// all, so it was guessing from a sentence of prose. The guard refused the slide
+// as blank, the refusal reached the user, and fifteen slides were re-streamed
+// to fix one. The fields were misplaced, not missing, so normaliseSlide moves
+// them; and the guard now asks whether a hub DRAWS a connection, because
+// `hub.items`, a hub array, bare-string items, `nodes` and a title-only hub all
+// passed "is `hub` present" and built a slide with nothing wired to anything.
+//
+// The key assertions are STRUCTURAL. A lifted caption is drawn byte-identical
+// whether or not its old copy was deleted, so nothing that reads the drawn text
+// can tell a clean spec from one that will replay the mistake next turn.
+//
+// MUTATION LOG (detached worktree, 2026-09-15). Run against this block AND
+// check 37 of verify-slide-layouts.ts, which drives the same code through the
+// routes. Where one survived here, the other is named.
+//   killed   `delete out.groups` removed (top-level groups left behind)
+//   killed   the lifted caption's delete removed (also breaks idempotence)
+//   killed   the identical-caption delete removed. SURVIVED check 37: the
+//            caption is drawn identically either way, which is exactly why
+//            the assertion here is on the key and not on the drawing
+//   killed   the guard back to presence-only for a hub
+//   killed   batch entries not normalised (SURVIVED 37, whose batch case is
+//            reached only through prepareSlidesForBuild's own normalisation)
+//   killed   a single insert not normalised
+//   killed   a patch that does not lift — first as an uncaught throw, which is
+//            why (g) is now wrapped: a crash and a pass look alike in a log
+//   killed   a patch that REPLACES the stored hub instead of merging (SURVIVED
+//            37, whose patched slide had no hub to lose)
+//   killed   a headline copied into the circle (<= 99 words) (SURVIVED 37)
+//   killed   `nodes` lifted as if it were `items`
+//   killed   bare-string items not mapped to { title }
+//   killed   a hub array not lifted
+//   killed   the refusal no longer saying caption and groups go INSIDE hub
+//   killed   the non-hub early return removed (SURVIVED 37)
+//   killed   `delete work.items` removed (SURVIVED 37)
+//   killed   `delete out.items` removed (SURVIVED 37)
+//   killed   the predicate counting untitled items
+//   Not reachable from here, so SURVIVED this block by construction and killed
+//   by 37: the guard not normalising, buildSlideRequests not read-tolerant,
+//   the fold dropping payloads, the visual audit on raw length, and all four
+//   schema mutations.
+//
+// SECOND MUTATION LOG (detached worktree, 2026-09-15), for (h) and (i), added
+// after a verifier showed a patch INSIDE `hub` punished and a layout-less hub
+// drawn as prose on every route but the insert:
+//   killed   N1 normaliseSlide not setting layout "hub" on a layout-less hub
+//            that draws (i: "not a hub (layout undefined)"; also 37h, 12 FAILs)
+//   killed   P1 an explicit `hub` replacing the stored hub again (h: the name
+//            or connections lost, and the guard refuses what is left; also
+//            37i, where the route threw "would be drawn blank")
+//   killed   P2 the merge order reversed, stored fields winning over the edit
+//            (h and g). SURVIVED 37, whose patch changed only a caption it
+//            then read back through a route that also reads the stored name.
+console.log("\n13. A hub is read wherever its fields landed, and one that draws nothing is refused");
+{
+  const CAP = "One workspace that reads the systems the team already uses";
+  const ITEMS = [
+    { title: "Slack", icon: "message-square" }, { title: "Gmail & Calendar", icon: "mail" },
+    { title: "Google Drive", icon: "folder" }, { title: "Xero Finance", icon: "credit-card" },
+    { title: "HubSpot CRM", icon: "users" }, { title: "MeetingBrain", icon: "mic" },
+    { title: "HR Absence Calendar", icon: "calendar" }, { title: "AuthorityOn AI Data", icon: "database" },
+  ];
+  const GROUP = () => ({ name: "CONNECTED SYSTEMS", tone: "blue", items: ITEMS.slice() });
+  const flat = (): any => ({ layout: "hub", title: "EngineAI", caption: CAP, groups: [GROUP()] });
+  const own = (o: any, k: string) => !!o && Object.prototype.hasOwnProperty.call(o, k);
+  const titled = (s: any) => {
+    let n = 0;
+    const groups = (s && s.hub && Array.isArray(s.hub.groups)) ? s.hub.groups : [];
+    for (let g = 0; g < groups.length; g++) {
+      const items = (groups[g] && groups[g].items) || [];
+      for (let i = 0; i < items.length; i++) if (items[i] && typeof items[i].title === "string" && items[i].title) n++;
+    }
+    return n;
+  };
+  const before13 = failures;
+
+  // a) The incident's shape: lifted, and the old keys GONE.
+  {
+    const input = flat();
+    const snapshot = JSON.stringify(input);
+    const n: any = normaliseSlide(input);
+    if (JSON.stringify(input) !== snapshot) fail("normaliseSlide mutated its input");
+    if (own(n, "groups") || own(n, "caption")) fail(`the incident slide keeps its misplaced keys (${Object.keys(n).join(", ")}) — the stored spec would replay the mistake next turn`);
+    if (titled(n) !== 8) fail(`the incident slide carries ${titled(n)} titled connections, expected 8`);
+    if (!n.hub || n.hub.title !== "EngineAI" || n.hub.caption !== CAP) fail(`the centre name and caption did not land in the hub (${JSON.stringify(n.hub && { title: n.hub.title, caption: n.hub.caption })})`);
+    if (unrenderableSlides([{ layout: "cover", title: "Deck" }, input]).length) fail("the guard still refuses the incident's slide");
+  }
+
+  // b) Every other misplaced shape comes out drawing its nodes, with nothing
+  //    left where it was.
+  const shapes: [string, any, number, string[]][] = [
+    ["hub.items with no groups", { layout: "hub", title: "EngineAI", hub: { title: "EngineAI", items: ITEMS } }, 8, ["hub.items"]],
+    ["hub sent as an array of groups", { layout: "hub", title: "EngineAI", hub: [GROUP()] }, 8, []],
+    ["items as bare strings", { layout: "hub", title: "EngineAI", hub: { groups: [{ name: "X", items: ["Slack", "Xero", "Email"] }] } }, 3, []],
+    ["items at the top level", { layout: "hub", title: "EngineAI", items: ITEMS }, 8, ["items"]],
+    ["groups at the top level with no layout", { title: "EngineAI", groups: [GROUP()] }, 8, ["groups"]],
+  ];
+  for (let i = 0; i < shapes.length; i++) {
+    const [name, shape, want, gone] = shapes[i];
+    const out: any = normaliseSlide(shape);
+    if (titled(out) !== want) fail(`${name}: ${titled(out)} titled connections, expected ${want}`);
+    for (let g = 0; g < gone.length; g++) {
+      const path = gone[g].split(".");
+      const holder = path.length > 1 ? out[path[0]] : out;
+      if (own(holder, path[path.length - 1])) fail(`${name}: \`${gone[g]}\` is still there after being lifted`);
+    }
+    if (!hubHasConnections(out.hub)) fail(`${name}: normalised, but the guard's predicate still sees no connection`);
+  }
+
+  // c) A caption: moved when the hub has none, dropped when identical, LEFT
+  //    when different so droppedContent reports it instead of this choosing.
+  {
+    const diff: any = normaliseSlide({ layout: "hub", title: "EngineAI", caption: "Something else", hub: { caption: CAP, groups: [GROUP()] } });
+    if (!own(diff, "caption") || diff.hub.caption !== CAP) fail("a DIFFERENT top-level caption was moved or merged rather than left to be reported");
+    const same: any = normaliseSlide({ layout: "hub", title: "EngineAI", caption: CAP, hub: { caption: CAP, groups: [GROUP()] } });
+    if (own(same, "caption")) fail("a top-level caption identical to hub.caption was left behind");
+  }
+
+  // d) The centre name: a short title is copied, a headline is not.
+  {
+    const long: any = normaliseSlide({ layout: "hub", title: "Everything TCE runs on, in {one place}", groups: [GROUP()] });
+    if (long.hub && long.hub.title) fail(`a headline was copied into the circle: "${long.hub.title}"`);
+    const short: any = normaliseSlide({ layout: "hub", title: "The {EngineAI}", groups: [GROUP()] });
+    if (!short.hub || short.hub.title !== "The EngineAI") fail(`a three-word title was not copied, braces stripped (${short.hub && short.hub.title})`);
+    const kept: any = normaliseSlide({ layout: "hub", title: "Hub", hub: { title: "EngineAI", groups: [GROUP()] } });
+    if (kept.hub.title !== "EngineAI") fail("an existing centre name was overwritten by the slide title");
+  }
+
+  // e) A no-op on everything that is not a hub, and idempotent on everything.
+  {
+    const others: any[] = [
+      { layout: "content", title: "x", body: "y", items: ["a"], caption: "c" },
+      { layout: "table", title: "t", table: { columns: ["A"], rows: [["1"]] }, groups: [] },
+      { layout: "cards", title: "c", cards: [{ title: "a" }, { title: "b" }] },
+    ];
+    for (let i = 0; i < others.length; i++) {
+      if (JSON.stringify(normaliseSlide(others[i])) !== JSON.stringify(others[i])) fail(`a non-hub slide was changed: ${JSON.stringify(others[i]).slice(0, 60)}`);
+    }
+    const all = shapes.map((s) => s[1]).concat([flat(), { layout: "hub", title: "EngineAI", caption: "Other", hub: { caption: CAP, groups: [GROUP()] } }], others);
+    for (let i = 0; i < all.length; i++) {
+      const once = normaliseSlide(all[i]);
+      if (JSON.stringify(normaliseSlide(once)) !== JSON.stringify(once)) fail(`normaliseSlide is not idempotent on ${JSON.stringify(all[i]).slice(0, 60)}`);
+    }
+  }
+
+  // f) What is NOT repaired is refused, and the refusal names the shape.
+  {
+    const refused: [string, any][] = [
+      ["`nodes` in place of groups", { layout: "hub", title: "EngineAI", hub: { title: "EngineAI", nodes: ITEMS } }],
+      ["`connections` in place of groups", { layout: "hub", title: "EngineAI", hub: { title: "EngineAI", connections: [GROUP()] } }],
+      ["a hub with only a title", { layout: "hub", title: "EngineAI", hub: { title: "EngineAI" } }],
+      ["items with no titles", { layout: "hub", title: "EngineAI", hub: { groups: [{ items: [{ name: "Slack" }, { name: "Xero" }] }] } }],
+    ];
+    for (let i = 0; i < refused.length; i++) {
+      const [name, slide] = refused[i];
+      const lifted: any = normaliseSlide(slide);
+      if (lifted.hub && Array.isArray(lifted.hub.groups) && titled(lifted) > 0) fail(`${name}: normaliseSlide lifted a guess into groups`);
+      const faults = unrenderableSlides([slide]);
+      if (faults.length !== 1) fail(`${name}: the guard accepted a hub that draws no connection (${faults.length} faults)`);
+      else if (!/groups/.test(faults[0]) || !/INSIDE hub/.test(faults[0])) fail(`${name}: refused, but the message does not name the shape: ${faults[0].slice(0, 120)}`);
+      if (insertableLayout("hub", slide).ok) fail(`${name}: insertableLayout lets it be inserted`);
+    }
+  }
+
+  // g) The edit routes carry misplaced hub fields onto the slide. Wrapped: a
+  //    route that regresses THROWS, and an escaped throw ends the script with
+  //    no FAIL line — indistinguishable in a log from a crash in the harness.
+  try {
+    const batch = applyEditSlide(deck(), { insertAfter: 8, insertSlides: [flat(), { title: "Hub", groups: [GROUP()] }] });
+    const b = batch[8], nb = batch[9];
+    if (!b || own(b, "groups") || own(b, "caption") || titled(b) !== 8) fail(`an insertSlides entry in the incident's shape was not repaired (keys ${b && Object.keys(b).join(",")}, ${titled(b)} connections)`);
+    if (!nb || nb.layout !== "hub") fail(`an insertSlides entry carrying only groups was not made a hub (layout ${nb && nb.layout})`);
+
+    const single = applyEditSlide(deck(), { insertAfter: 2, layout: "hub", title: "EngineAI", caption: CAP, groups: [GROUP()] });
+    if (titled(single[2]) !== 8 || single[2].hub.caption !== CAP) fail(`a single insert with top-level groups lost them (${titled(single[2])} connections)`);
+    if (unrenderableSlides(single).length) fail("the deck after a single hub insert is refused");
+
+    const stored: any[] = deck();
+    stored[1] = { layout: "hub", title: "Our integrations today", hub: { title: "EngineAI", caption: CAP, groups: [{ name: "OLD", items: ITEMS.slice(0, 2) }] } };
+    const regrouped = applyEditSlide(stored, { slideNumber: 2, groups: [GROUP()] });
+    const r = regrouped[1];
+    if (titled(r) !== 8) fail(`a patch sending groups beside the slide number did not replace the connections (${titled(r)})`);
+    if (r.hub.title !== "EngineAI" || r.hub.caption !== CAP) fail("a patch of groups alone threw away the stored centre name or caption");
+    const recaptioned = applyEditSlide(stored, { slideNumber: 2, caption: "A new line under the name" });
+    if (recaptioned[1].hub.caption !== "A new line under the name" || titled(recaptioned[1]) !== 2) fail("a caption patch on a hub slide did not reach hub.caption, or lost the groups");
+    const onContent = thrown(() => applyEditSlide(deck(), { slideNumber: 3, groups: [GROUP()] }));
+    if (!onContent) fail("groups sent to a CONTENT slide were accepted — stored and never drawn, the silent no-op");
+
+    // A stored deck with a misplaced hub no longer blocks an unrelated edit.
+    const lockout: any[] = deck();
+    lockout[1] = flat();
+    const renamed = applyEditSlide(lockout, { slideNumber: 1, title: "Renamed" });
+    if (unrenderableSlides(renamed).length) fail(`an unrelated edit over a stored misplaced hub is refused: ${unrenderableSlides(renamed)[0].slice(0, 80)}`);
+  } catch (e: any) {
+    fail(`an edit route refused a misplaced hub it should carry: ${String((e && e.message) || e).slice(0, 140)}`);
+  }
+
+  // h) THE SHAPE THE SCHEMA ASKS FOR is merged too. A patch sending its fields
+  //    INSIDE `hub` used to replace the whole hub: `hub: { caption }` was
+  //    refused as a hub with no connections, and `hub: { groups }` was accepted
+  //    with the centre name and caption silently gone — while the misplaced
+  //    top-level form of the same edit kept both. Each route is wrapped on its
+  //    own, so one that throws does not hide what the others do.
+  {
+    const stored = (): any[] => {
+      const d = deck();
+      d[1] = { layout: "hub", title: "Everything TCE runs on", hub: { title: "EngineAI", caption: CAP, groups: [{ name: "OLD", tone: "teal", items: ITEMS.slice(0, 2) }] } };
+      return d;
+    };
+    const patches: [string, any, (h: any) => string][] = [
+      ["hub: { caption }", { slideNumber: 2, hub: { caption: "A new line under the name" } },
+        (h) => (h.caption === "A new line under the name" && h.title === "EngineAI" && titled({ hub: h }) === 2 ? "" : "the name or the connections were lost, or the caption did not change")],
+      ["hub: { title }", { slideNumber: 2, hub: { title: "Engine Platform" } },
+        (h) => (h.title === "Engine Platform" && h.caption === CAP && titled({ hub: h }) === 2 ? "" : "the caption or the connections were lost, or the name did not change")],
+      ["hub: { groups }", { slideNumber: 2, hub: { groups: [GROUP()] } },
+        (h) => (h.title === "EngineAI" && h.caption === CAP && titled({ hub: h }) === 8 && h.groups.length === 1 ? "" : "the name or caption were lost, or the groups were not replaced")],
+      ["hub sent as an array of groups", { slideNumber: 2, hub: [GROUP()] },
+        (h) => (h.title === "EngineAI" && h.caption === CAP && titled({ hub: h }) === 8 ? "" : "the name or caption were lost")],
+    ];
+    for (let i = 0; i < patches.length; i++) {
+      const [name, edit, judge] = patches[i];
+      try {
+        const out = applyEditSlide(stored(), edit);
+        const why = judge(out[1].hub || {});
+        if (why) fail(`a patch of ${name} on a hub slide: ${why} (${JSON.stringify(out[1].hub).slice(0, 120)})`);
+        if (unrenderableSlides(out).length) fail(`a patch of ${name} leaves a hub the guard refuses`);
+      } catch (e: any) {
+        fail(`a patch of ${name} on a hub slide was refused: ${String((e && e.message) || e).slice(0, 120)}`);
+      }
+    }
+    // A hub patched onto a CONTENT slide is still a payload replacement, not a
+    // merge into something that is not drawn.
+    const onContent = applyEditSlide(deck(), { slideNumber: 3, hub: { title: "EngineAI", groups: [GROUP()] } });
+    if (onContent[2].layout !== "content") fail("a hub patched onto a content slide changed its layout without being asked");
+  }
+
+  // i) NO LAYOUT, BUT A HUB THAT DRAWS: a hub, decided in normaliseSlide, the
+  //    one place every reader goes through. The insert paths used to decide it
+  //    themselves while the full route and the builder called it "content".
+  {
+    const bare: any = normaliseSlide({ title: "Everything we connect", hub: { title: "EngineAI", groups: [GROUP()] } });
+    if (bare.layout !== "hub") fail(`a layout-less slide whose hub draws connections is not a hub (layout ${bare.layout})`);
+    const flatBare: any = normaliseSlide({ title: "EngineAI", caption: CAP, groups: [GROUP()] });
+    if (flatBare.layout !== "hub" || titled(flatBare) !== 8) fail(`a layout-less slide with groups at the top is not a hub drawing 8 (layout ${flatBare.layout}, ${titled(flatBare)})`);
+    const hollow = { title: "Prose", body: "A line", hub: { title: "EngineAI" } };
+    if (JSON.stringify(normaliseSlide(hollow)) !== JSON.stringify(hollow)) fail("a layout-less slide whose hub draws nothing was changed — a stray hub would turn prose into a lone circle");
+    const chosen = { layout: "content", title: "Prose", body: "A line", hub: { title: "EngineAI", groups: [GROUP()] } };
+    if ((normaliseSlide(chosen) as any).layout !== "content") fail("an explicit content layout was overridden by a hub");
+    // The scan the guard runs reads the same default.
+    if (unrenderableSlides([{ layout: "cover", title: "Deck" }, { title: "No layout", hub: { title: "EngineAI", nodes: ITEMS } }]).length) fail("the scan judged a layout-less slide as a hub without the builder agreeing");
+    if (JSON.stringify(normaliseSlide(bare)) !== JSON.stringify(bare)) fail("normaliseSlide is not idempotent on a layout-less hub");
+  }
+
+  if (failures === before13) pass("misplaced hub fields are lifted (old keys deleted), guesses and empty hubs are refused naming the shape, and every edit route carries the repair");
+}
+
+// ── 14. Every refusal says who it is for ───────────────────────────────────
+//
+// The same incident, the other half. Every throw in applyEditSlide is written
+// for the MODEL — it names fields and says what to send next — and every one
+// was a plain Error, so the four provider chains could not tell it from a real
+// fault and forwarded it to the user's toast. On 2026-09-15 that put "Fix and
+// send again — do NOT tell the user the slide is done" on screen while the
+// model quietly retried and the deck built. The class is the audience;
+// lib/slides/failure.ts reads nothing else. Check 38 of verify-slide-layouts.ts
+// drives the helper, the notice and the wiring.
+//
+// The structured faults are asserted as well as the class, because they are
+// what a person is told if the turn ENDS refused, and a fault numbered by the
+// batch ("slide 2") rather than by the deck ("slide 10") would name the wrong
+// slide in a notice nobody would think to doubt.
+//
+// MUTATION LOG (detached worktree, 2026-09-15). Run against this block AND
+// check 38 of verify-slide-layouts.ts; where one survived, the other is named.
+//   killed   the batch insert refusal thrown as a plain Error (also 38)
+//   killed   the remove-all refusal thrown as a plain Error. SURVIVED 38, which
+//            drives no removal — this block is the only thing pinning it
+//   killed   isSlideCallRefusal answering true for everything, by the negative
+//            control (also 38, which sees every real fault go silent)
+//   killed   a batch fault numbered within the batch (2), not the deck (10)
+//   killed   the batch refusal losing its "insert" scope
+//   killed   blankSlideFaults returning nothing
+//   SURVIVED the whole-deck scan's person reason rewritten with the model's
+//            field name in backticks: this block reads applyEditSlide's faults
+//            and only COUNTS the scan's; killed by 38, which reads the notice
+//            where that reason reaches a person
+//   SURVIVED (and survives 38) removing Object.setPrototypeOf from the class:
+//            tsx and the server bundle both emit native classes, so instanceof
+//            holds without it. It guards an ES5 downlevel nothing here compiles
+//            to — kept as insurance, recorded rather than claimed as tested.
+//   SURVIVED here, killed by 38a (the route cases live there): T2 the edit's
+//            own text check disabled, so `imageQuery: 5` threw a TypeError
+//            again; T3 a batch entry's bad text field no longer reported by
+//            the batch — first a survivor of 38a too, because the guard's scan
+//            refuses the same slide by its deck number; 38a now asserts the
+//            model is told "slide 1 of the batch", and kills it.
+console.log("\n14. Every refusal is a SlideCallRefusal, and names its slide for a person");
+{
+  const before14 = failures;
+  const MARKERS = /do NOT|generate_slides|editSlide|insertSlides|Fix and send|`/;
+  // `nodes` is a guess normaliseSlide deliberately does not lift, so this hub
+  // is refused after normalisation — unlike the incident's own flat shape,
+  // which now builds.
+  const NODES_HUB = (): any => ({ layout: "hub", title: "The {EngineAI}", hub: { title: "EngineAI", nodes: [{ title: "Slack" }] } });
+  const cases: [string, () => any][] = [
+    ["slideNumber past the end", () => applyEditSlide(deck(), { slideNumber: 9, title: "x" })],
+    ["no slideNumber at all", () => applyEditSlide(deck(), { title: "x" })],
+    ["insertAfter past the end", () => applyEditSlide(deck(), { insertAfter: 99, title: "x" })],
+    ["a patch with no change", () => applyEditSlide(deck(), { slideNumber: 3 })],
+    ["an empty insert", () => applyEditSlide(deck(), { insertAfter: 2 })],
+    ["a payload layout with no payload", () => applyEditSlide(deck(), { insertAfter: 5, layout: "swot", title: "T" })],
+    ["an unknown layout", () => applyEditSlide(deck(), { insertAfter: 5, layout: "nonsense", title: "T" })],
+    ["a one-card cards slide", () => applyEditSlide(deck(), { insertAfter: 5, layout: "cards", title: "T", cards: [{ title: "only" }] })],
+    ["an empty insertSlides", () => applyEditSlide(deck(), { insertAfter: 2, insertSlides: [] })],
+    ["a batch carrying a hub of `nodes`", () => applyEditSlide(deck(), { insertAfter: 8, insertSlides: [{ layout: "content", title: "Fine", body: "b" }, NODES_HUB()] })],
+    ["removing a slide that is not there", () => applyEditSlide(deck(), { removeSlides: [12] })],
+    ["removing every slide", () => applyEditSlide(deck(), { removeSlides: [1, 2, 3, 4, 5, 6, 7, 8] })],
+    ["removing and inserting in one call", () => applyEditSlide(deck(), { removeSlides: [2], insertAfter: 1, title: "x" })],
+  ];
+  const errs: { [name: string]: any } = {};
+  for (let i = 0; i < cases.length; i++) {
+    const err: any = thrown(cases[i][1]);
+    errs[cases[i][0]] = err;
+    if (!err) fail(`${cases[i][0]}: did not throw`);
+    else if (!(err instanceof SlideCallRefusal) || !isSlideCallRefusal(err)) fail(`${cases[i][0]}: threw a plain ${err && err.name} — the chains would send its model-directed message to the user's toast`);
+    else if (err.faults.length === 0 && !err.userReason) fail(`${cases[i][0]}: a refusal with neither faults nor a reason, so an unresolved turn could only tell the user "something" failed`);
+  }
+
+  // The faults, numbered in the deck the user would have seen.
+  const batch: any = errs["a batch carrying a hub of `nodes`"];
+  if (batch && batch.faults) {
+    const f = batch.faults;
+    if (f.length !== 1) fail(`the batch refusal carries ${f.length} faults, expected 1 (only the hub is at fault)`);
+    else {
+      if (f[0].slide !== 10) fail(`the refused batch slide is numbered ${f[0].slide}; inserted after 8 as the batch's second slide it would have been slide 10`);
+      if (f[0].title !== "The EngineAI" || f[0].layout !== "hub") fail(`the batch fault names ${JSON.stringify(f[0].title)} / ${f[0].layout}`);
+      if (MARKERS.test(f[0].reason) || /hub\.|groups|nodes/.test(f[0].reason)) fail(`the batch fault's reason is written for the model: "${f[0].reason}"`);
+    }
+    if (batch.scope !== "insert") fail(`the batch refusal's scope is ${batch.scope}, so a notice would say the deck was not changed rather than that slides were not added`);
+  }
+  const single: any = errs["a payload layout with no payload"];
+  if (single && single.faults && (single.faults.length !== 1 || single.faults[0].slide !== 6 || single.faults[0].layout !== "swot")) {
+    fail(`a single insert after slide 5 does not name slide 6 as a swot (${JSON.stringify(single.faults)})`);
+  }
+  const patch: any = errs["a patch with no change"];
+  // Nothing about slide 3 fails to draw, so it is a reason naming the slide,
+  // not a fault — a notice would otherwise say slide 3 "could not be drawn".
+  if (patch && patch.faults && (patch.scope !== "edit" || patch.faults.length || !/slide 3 \("Slide 3"\)/.test(String(patch.userReason)))) {
+    fail(`a change-less patch of slide 3 is not reported as an edit naming "Slide 3" in plain words (${patch.scope}, ${JSON.stringify(patch.faults)}, ${patch.userReason})`);
+  }
+  const gone: any = errs["removing a slide that is not there"];
+  if (gone && gone.scope !== undefined && (gone.scope !== "remove" || String(gone.userReason).indexOf("12") < 0)) {
+    fail(`removing slide 12 is not reported as a removal naming 12 (${gone.scope}: ${gone.userReason})`);
+  }
+  for (let i = 0; i < cases.length; i++) {
+    const e: any = errs[cases[i][0]];
+    if (!e || !e.faults) continue;
+    for (let j = 0; j < e.faults.length; j++) {
+      if (MARKERS.test(e.faults[j].reason) || MARKERS.test(e.faults[j].title)) fail(`${cases[i][0]}: a person-facing fault carries model text: ${JSON.stringify(e.faults[j])}`);
+    }
+    if (e.userReason && MARKERS.test(e.userReason)) fail(`${cases[i][0]}: userReason is written for the model: ${e.userReason}`);
+  }
+
+  // The whole-deck scan gives the same answer in both registers.
+  const scanned = [{ layout: "cover", title: "Deck" }, NODES_HUB(), { layout: "cards", title: "No cards" }];
+  const people = blankSlideFaults(scanned);
+  if (people.length !== unrenderableSlides(scanned).length) fail(`blankSlideFaults finds ${people.length} slides and unrenderableSlides ${unrenderableSlides(scanned).length}: the notice and the model would disagree`);
+  else if (people.length !== 2 || people[0].slide !== 2 || people[1].slide !== 3 || people[1].layout !== "cards") fail(`blankSlideFaults names ${JSON.stringify(people)}`);
+
+  // NEGATIVE CONTROL. A real fault is NOT a refusal, or every crash would be
+  // silenced along with the refusals.
+  if (isSlideCallRefusal(new Error("boom")) || isSlideCallRefusal(new SyntaxError("Unexpected end of JSON input"))) fail("a plain Error is classed as a refusal — real faults would be hidden from the user");
+  if (isSlideCallRefusal({ audience: "model", message: "not an error" })) fail("a non-Error object is classed as a refusal");
+
+  if (failures === before14) pass(`all ${cases.length} refusals are SlideCallRefusals, faults are numbered in the deck and worded for a person, and a plain Error is not one`);
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);

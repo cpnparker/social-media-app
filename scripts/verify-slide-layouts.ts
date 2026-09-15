@@ -15,14 +15,19 @@ import {
   estimateLines, drawnTextHeight, inheritContinuationImages, resolveDeckImages,
   niceTicks, isNumericColumn, fitCell, fitColumnWidths, parseAccents, parseBold, deckWarnings, cardGeometry, bandHeightFor,
   CAPS_WIDEN, faceAdvance, stripImageMarkdown, drawnText, TEXT_INSET_X, TEXT_INSET_Y, pillWidth, droppedContent, fitHeading, FOOTER_Y, captionParagraphs, splitStageOwner, slideStyle,
+  labelWidthPt,
   type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel } from "../lib/slides/preview-model";
-import { applyEditSlide, unrenderableSlides, PAYLOAD_FIELDS, insertableLayout } from "../lib/slides/edit";
+import { applyEditSlide, unrenderableSlides, PAYLOAD_FIELDS, insertableLayout, normaliseSlide, SlideCallRefusal } from "../lib/slides/edit";
+import { slidesFailure, parseSlidesArguments, SLIDES_FAILED_FOR_USER, type SlidesTurnState } from "../lib/slides/failure";
+import { createToolLoopGuard } from "../lib/ai/tool-loop-guard";
 import { deckToHtml, safeSrc } from "../lib/slides/pdf-html";
 import { SLIDES_TEXT_INSET, NATURAL_LINE } from "../lib/slides/preview-style";
-import { prepareSlidesForBuild, sourceSlideCount, fidelityAudit } from "../lib/ai/providers";
+import { prepareSlidesForBuild, sourceSlideCount, fidelityAudit, SLIDES_GEN_OPENAI_TOOL, unresolvedSlidesNotice, createStreamingResponse } from "../lib/ai/providers";
+import { draftPreview } from "../lib/slides/preview-model";
 import { readFileSync } from "fs";
+import { createServer } from "http";
 import { join } from "path";
 import { gradientProfileFor, CONTRAST } from "../lib/slides/images";
 import { CANVAS, LAYOUT_STYLE, COLOR, GRID, LAYOUTS, NOTE, SECTION, TYPE, PROCESS } from "../lib/slides/brand";
@@ -565,7 +570,14 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
    *  overlap, the ink did. Slides never shrinks or clips: it draws the text and
    *  lets it run. So the thing to assert is not that every box holds its text
    *  (plenty of boxes are deliberately tight around display type, with empty
-   *  space beneath) but that where text DOES run over, it runs into nothing. */
+   *  space beneath) but that where text DOES run over, it runs into nothing.
+   *
+   *  Semibold and bold Roboto are measured per glyph (labelWidthPt, margin
+   *  divided out) since 2026-09-15, when hub nodes began to be sized that way.
+   *  MUTATION LOG (detached worktree): killed — a process stage name drawn
+   *  14pt narrower than it was measured ("Commissioning" runs onto its
+   *  caption); killed — the sizing margin left in, which reports that same
+   *  name, 73.9pt in 76.2, as overrunning while it draws on one line. */
   const before11 = failures;
   console.log(`\n11. Text that overflows its box lands on nothing`);
   const LONG_TITLE = "AI platforms aren't a new channel. They're a new layer above every channel you already have";
@@ -581,10 +593,25 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     { layout: "feature", title: LONG_TITLE, body: "A line under it", resolvedImage: PHOTO_DARK },
     { layout: "closing", title: LONG_TITLE, subtitle: "www.thecontentengine.com", resolvedImage: PHOTO_DARK },
   ]);
-  const inkOf = (el: { text?: string; w: number; size?: number; bullets?: boolean }) => {
+  const inkOf = (el: { text?: string; w: number; size?: number; bullets?: boolean; font?: string; weight?: number }) => {
     const paras = String(el.text || "").split("\n");
     let lines = 0;
-    for (const para of paras) lines += Math.max(1, estimateLines(para, el.w, el.size || 10, el.bullets));
+    // A semibold or bold Roboto box is measured glyph by glyph, with the same
+    // primitive the layouts size those boxes with. Counted at the unnamed
+    // 0.55em mean instead, a hub label sized to its measured width — it holds
+    // one line, in Roboto, with 6% to spare — was reported as two lines
+    // running onto the node below, and a mean that cries wolf here is one
+    // nobody believes when it is right. (Its text is already in capitals when
+    // the style draws them, so it is measured as drawn.) The sizing margin is
+    // divided back out: this is the real ink, like the line box below, and
+    // with the 6% left in, "Commissioning" — 73.9pt in 76.2pt, which draws on
+    // one line — was reported as running onto its own caption.
+    const bold = el.font === "Roboto" && (el.weight || 400) >= 600 && !el.bullets;
+    for (const para of paras) {
+      lines += bold
+        ? Math.max(1, Math.ceil(labelWidthPt(para, el.size || 10) / 1.06 / Math.max(1, el.w - TEXT_INSET_X) - 1e-9))
+        : Math.max(1, estimateLines(para, el.w, el.size || 10, el.bullets));
+    }
     // One inset (the top), and the real line box rather than the splitter's
     // deliberately generous one — this is measuring collision, not deciding it.
     return 3.6 + lines * (el.size || 10) * 1.38 + Math.max(0, paras.length - 1) * (el.bullets ? 6 : 0);
@@ -1227,16 +1254,106 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     // The tool SCHEMA has to offer them, or the model cannot send what the
     // server now accepts — the two lists drifting is the failure this repo
     // keeps paying for.
-    const prov = readFileSync(join(__dirname, "..", "lib/ai/providers.ts"), "utf8");
-    const schemaAt = prov.indexOf("editSlide: {");
-    const schemaEnd = prov.indexOf("generate_slides", schemaAt);
-    assertEdit(schemaAt > 0 && schemaEnd > schemaAt, "precondition: the editSlide schema block was located");
-    const schema = prov.slice(schemaAt, schemaEnd);
-    const missing = PAYLOAD_FIELDS.filter((f) => !new RegExp(`\\n\\s+${f}: \\{`).test(schema));
-    assertEdit(/insertSlides: \{/.test(schema), "the schema offers insertSlides, or a long deck still takes a dozen turns");
-    assertEdit(missing.length === 0, `editSlide accepts these server-side but does not offer them: ${missing.join(", ")}`);
-    for (const l of ["table", "stat", "bar-chart", "timeline"]) {
-      assertEdit(schema.indexOf(`"${l}"`) >= 0, `the layout enum offers "${l}"`);
+    //
+    // READ FROM THE TOOL OBJECT, NOT THE FILE. This was a regex over
+    // providers.ts for `hub: {` inside the editSlide block, and it stayed green
+    // while generate_slides' own slide items declared no `hub` at all: 38c9d10
+    // put the hub's schema on generate_document, and editSlide's bare-object
+    // `hub` line matched the pattern. The model was sent a slide without the
+    // field, guessed where its parts went, and was refused in front of the user
+    // (2026-09-15). So the assertion is on what the model RECEIVES: every
+    // payload is a declared property of `slides.items`, of
+    // `editSlide.insertSlides.items` (the route long decks are built on), and
+    // of `editSlide` itself, with a real shape rather than a bare object.
+    //
+    // MUTATION LOG for the size and single-route half (detached worktree,
+    // 2026-09-15):
+    //   killed  S1 insertSlides.items back to the full item schema: 72,546
+    //           characters over the 55,000 ceiling, and the layout guidance and
+    //           the table's guidance each counted twice
+    //   killed  S2 one editSlide payload back to its full schema: the table's
+    //           guidance counted twice — the ceiling alone would not see a
+    //           single payload, which is why the count exists
+    //   killed  S3 the hub pointer losing "INSIDE `hub`", on both routes
+    //   killed  S4 leanSchema dropping nested properties: the hub declares no
+    //           groups of titled items on either route. (A properties object
+    //           left EMPTY passes the shapeless test, which checks presence.)
+    //   killed  M1 `columns` out of PAYLOAD_FIELDS (a two-column insert and a
+    //           columns-only patch both lose it); M2 `columns` off the editSlide
+    //           schema; M3 notes no longer copied by a single insert
+    const params: any = (SLIDES_GEN_OPENAI_TOOL as any).function.parameters;
+    const itemProps = params?.properties?.slides?.items?.properties;
+    const editProps = params?.properties?.editSlide?.properties;
+    const insertProps = editProps?.insertSlides?.items?.properties;
+    assertEdit(!!itemProps && !!editProps && !!insertProps, "precondition: slides.items, editSlide and editSlide.insertSlides.items all declare properties");
+    if (itemProps && editProps && insertProps) {
+      const notInItems = PAYLOAD_FIELDS.filter((f) => !itemProps[f]);
+      const notInInsert = PAYLOAD_FIELDS.filter((f) => !insertProps[f]);
+      const notInEdit = PAYLOAD_FIELDS.filter((f) => !editProps[f]);
+      assertEdit(notInItems.length === 0, `slides[] does not declare payloads the builder draws: ${notInItems.join(", ")}`);
+      assertEdit(notInInsert.length === 0, `editSlide.insertSlides[] does not declare: ${notInInsert.join(", ")}`);
+      assertEdit(notInEdit.length === 0, `editSlide accepts these server-side but does not offer them: ${notInEdit.join(", ")}`);
+      // "Same shape as in `slides`" on a bare object is a promise nothing kept.
+      const shapeless = PAYLOAD_FIELDS.filter((f) => {
+        const s = editProps[f];
+        if (!s) return false;
+        if (s.type === "object") return !s.properties;
+        if (s.type === "array") return !s.items || (s.items.type === "object" && !s.items.properties);
+        return false;
+      });
+      assertEdit(shapeless.length === 0, `editSlide declares these payloads as shapeless objects: ${shapeless.join(", ")}`);
+      const hubSchema = itemProps.hub;
+      assertEdit(!!(hubSchema && hubSchema.properties && hubSchema.properties.groups && hubSchema.properties.groups.items &&
+        hubSchema.properties.groups.items.properties && hubSchema.properties.groups.items.properties.items),
+        "a slide's hub declares its groups and their items INSIDE `hub`");
+      assertEdit(/INSIDE `hub`/.test(String(hubSchema && hubSchema.description || "")),
+        "and the hub's description says caption and groups go inside it, not beside the slide title");
+      // The routes that point back at `slides` keep the SHAPE and the one
+      // sentence the incident turned on, even with the rest of the prose gone.
+      const routes: [string, any][] = [["editSlide.insertSlides[]", insertProps], ["editSlide", editProps]];
+      for (let r = 0; r < routes.length; r++) {
+        const route = routes[r][0];
+        const h = routes[r][1].hub;
+        assertEdit(!!(h && h.properties && h.properties.groups && h.properties.groups.items && h.properties.groups.items.properties &&
+          h.properties.groups.items.properties.items && h.properties.groups.items.properties.items.items &&
+          h.properties.groups.items.properties.items.items.properties && h.properties.groups.items.properties.items.items.properties.title),
+          `${route}: the hub declares groups of titled items inside it`);
+        assertEdit(/INSIDE `hub`/.test(String(h && h.description || "")), `${route}: the hub's description still says caption and groups go INSIDE it`);
+      }
+      // EVERY SLIDE FIELD reaches the single-slide route, or is named here as
+      // deliberately not. `columns` was declared on slides[] and insertSlides[]
+      // and on neither editSlide nor the copy applyEditSlide makes, so a
+      // two-column insert lost its headers with no report.
+      const SINGLE_ROUTE_EXCLUDED = ["image"];   // imageQuery stands in for it
+      const missingOnEdit = Object.keys(itemProps).filter((k) => !editProps[k] && SINGLE_ROUTE_EXCLUDED.indexOf(k) < 0);
+      assertEdit(missingOnEdit.length === 0, `editSlide does not offer these slide fields, and nothing says why: ${missingOnEdit.join(", ")}`);
+    }
+    // SIZE. Declaring the slide once and expanding it on every route made this
+    // tool 85,364 characters, from 30,863 — about eleven thousand input tokens
+    // on every EngineAI request, for the same schema sent three times. The
+    // guidance now goes out once (on slides[]) and the other routes carry the
+    // shape. The ceiling is the measured 50,618 plus room for a layout or two;
+    // passing it is a decision to take, not a thing to discover on an invoice.
+    const toolJson = JSON.stringify(SLIDES_GEN_OPENAI_TOOL);
+    const TOOL_CEILING = 55000;
+    assertEdit(toolJson.length <= TOOL_CEILING, `generate_slides is ${toolJson.length} characters, over its ${TOOL_CEILING} ceiling — is some guidance being sent more than once?`);
+    const guidance = "A LONG DOCUMENT IS BUILT IN BATCHES, AND THE FIRST CALL IS NOT THE WHOLE DECK";
+    const guidanceCopies = toolJson.split(guidance).length - 1;
+    assertEdit(guidanceCopies === 1, `the layout guidance is sent ${guidanceCopies} times in generate_slides; once is the design`);
+    const tableGuidance = "A source slide that carries commentary BESIDE its table";
+    assertEdit(toolJson.split(tableGuidance).length - 1 === 1, `a payload's guidance is sent ${toolJson.split(tableGuidance).length - 1} times; the other routes should carry its shape only`);
+    // And the single-slide route KEEPS what it now declares.
+    const twoCol = applyEditSlide(deck, { insertAfter: 2, layout: "two-column", title: "Us and them", body: "Slow", bodyRight: "Fast",
+      columns: { left: "Us", right: "Them" }, notes: "Say the second column louder" } as any);
+    assertEdit(!!twoCol[2].columns && twoCol[2].columns.left === "Us" && twoCol[2].notes === "Say the second column louder",
+      `a two-column insert through the single-slide fields keeps its column headers and notes (${JSON.stringify({ columns: twoCol[2].columns, notes: twoCol[2].notes })})`);
+    let recolumned: any[] = [];
+    try { recolumned = applyEditSlide(twoCol, { slideNumber: 3, columns: { left: "Before", right: "After" } } as any); } catch (e: any) { assertEdit(false, `a columns-only patch is refused: ${String(e && e.message).slice(0, 80)}`); }
+    assertEdit(!!recolumned[2] && recolumned[2].columns && recolumned[2].columns.left === "Before", "a columns-only patch changes the headers");
+    assertEdit(!!(editProps && editProps.insertSlides), "the schema offers insertSlides, or a long deck still takes a dozen turns");
+    const layoutEnum: string[] = (editProps && editProps.layout && editProps.layout.enum) || [];
+    for (const l of ["table", "stat", "bar-chart", "timeline", "hub"]) {
+      assertEdit(layoutEnum.indexOf(l) >= 0, `the layout enum offers "${l}"`);
     }
 
     // SEVERAL AT ONCE. One slide per call is arithmetically hopeless: the tool
@@ -3739,10 +3856,24 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
    * left out. The icon half: a Lucide name is an instruction, and a long one
    * was being reported as text the slide dropped.
    *
+   * THE WRAP, 2026-09-15. "HR Absence Calendar" wrapped inside its node on a
+   * production slide while this check said "labels hold one line". The
+   * assertion could not fail: it handed box.w - TEXT_INSET_X to estimateLines,
+   * which subtracts the inset AGAIN, and counted characters at Roboto Light's
+   * mean for a semibold label. Every fixture was Title Case with few capitals.
+   * Labels are now measured with labelWidthPt (per-glyph, from Chrome against
+   * Google's webfonts) against the room the box has, inset paid once; the
+   * group names, the text in the circle, a third group, missing icons and the
+   * widths themselves are asserted too, and the fixtures that went red are the
+   * ones real models send: a capital-heavy label, a long group name, a long
+   * name over a long caption, three groups, brand-name icons.
+   *
    * MUTATION LOG (detached worktree, 2026-09-15), eight mutations:
    *   killed  `icon` removed from NON_CONTENT_KEYS
    *   killed  wire ends 30pt outside the hub
-   *   killed  a split group named on both sides
+   *   SUPERSEDED  a split group named on both sides (killed then; the rule
+   *           it pinned — named once, over the LEFT side — is replaced by
+   *           "named once, centred over the hub", see M12 below)
    *   killed  overflow not admitted
    *   killed  label box 30pt wide (caught by check 2 as well)
    *   killed  hub measured against the full band, ignoring the takeaway bar
@@ -3751,7 +3882,75 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
    *           geometry: the outermost node lands on the margin by construction,
    *           and with short labels there was room to spare, so the wires only
    *           got shorter. It only goes wrong when nodes are at their widest,
-   *           which no fixture reached — hence "long labels" below. */
+   *           which no fixture reached — hence "long labels" below.
+   *
+   * MUTATION LOG, hub rendering (detached worktree, 2026-09-15), 21 mutations,
+   * all killed on the final run, check 11 run alongside:
+   *   M1  the pre-change hubRequests, whole — 16 failures: the capital-heavy
+   *       label (116.4pt in 108.9), both long group names, the split group
+   *       named over the left only, the centre title in a box two lines tall
+   *   M2  node width from the longest label at 0.55em, and nothing else —
+   *       "HubSpot CRM + MS Teams" alone. The old predicate passed it.
+   *   M3  a group label never widens; M4 widening ignores rings and wires
+   *   M5  the chord test removed; M6 a caption that fits nowhere drawn anyway
+   *   M7  a third group not counted; M8 its note removed
+   *   M9  no stand-in for a missing icon; M10 its note removed; M11
+   *       `iconsMissing` read as slide text; M15 recorded by appending, not
+   *       fresh; M17 resolution reading the hub without normalising
+   *   M12 a split group named per side again
+   *   M13 labelWidthPt without its margin (only the MEASURED ratios catch it:
+   *       everything else measures with the same function)
+   *   M14 the name-too-long note removed; M18 the name measured at Playfair's
+   *       body mean; M20 the name sized to one line, as before
+   *   M19 group labels fitted in the case they are written in, not caps
+   *   M16 a process stage name drawn narrower than measured, and M21 check 11
+   *       keeping the sizing margin — both check 11's, see there
+   * SURVIVORS on the first run, each a finding about the check, each closed:
+   *   M5  the chord test removed survived: no fixture's lines reached the
+   *       edge. "Name over a full caption" puts one there (1.02 of the chord
+   *       under the mutation, 0.87 without).
+   *   M6  a five-line caption survived: it FITS the disc (0.99 of the chord
+   *       at its worst). Now asserted at the layout's 92% clearance, and a
+   *       caption is at most three lines.
+   *   M13 the margin removed survived: layout and check moved together. The
+   *       MEASURED block pins the widths to Chrome's own numbers.
+   *   M19 caps ignored survived: the only long group name sat on a wide node.
+   *       "Your own work tools and data" is 142pt in caps, 113 as written, on
+   *       a 120pt node.
+   *   M16 as first written narrowed the measure itself, and the layout re-
+   *       measured the height at the narrower width: no overrun existed. The
+   *       mutation was wrong, not the check; replaced by the box drawn
+   *       narrower than it was measured.
+   *
+   * THIRD MUTATION LOG (detached worktree, 2026-09-15), after verifiers found a
+   * 254pt node, an empty centre, silent cuts and CJK labels measured a third
+   * short — every one invisible to the fixtures above:
+   *   killed  H12 the pitch code as it was at HEAD (no one-row guard, no 26pt
+   *           cap): "one group of one: node l0 is 222pt tall", and three more
+   *   SURVIVED H1 the `maxN > 1` guard removed alone, and H2 the 26pt cap
+   *           removed alone: each half stops the slab without the other (with
+   *           one row the cap holds 26pt; with the guard the cap is never
+   *           reached). Belt and braces, recorded rather than claimed twice.
+   *   killed  C1 the no-centre-name note removed; C2 the centre drawn only when
+   *           there is a name (caption left off, circle empty); C3 the caption-
+   *           dropped note removed; C4 droppedContent no longer leaving a
+   *           note's quoted text to the note — by the fixture built from the
+   *           incident's own headline, or by the long caption
+   *   killed  O1 the note naming what a full side cut ("A8 Phone", under the
+   *           audit's eleven-character floor)
+   *   killed  W5 no step-down below 12pt for one word wider than the circle:
+   *           "Datenschutzbeauftragter" (143pt) runs to an edge of 113pt
+   *   killed  L1 full-width glyphs back to the mean capital (CJK at 0.680 of
+   *           Chrome's width); L2 walking UTF-16 units, not code points (an
+   *           astral emoji counted twice: 1.166)
+   *   killed  L3 a variation selector counted as a glyph — a SURVIVOR on the
+   *           first run, because no fixture carried U+FE0F. Chrome measures it
+   *           at zero; "Support ✅️" now pins it (1.196).
+   *   killed  N7 `notes` out of NON_CONTENT_KEYS: a speaker note reported as
+   *           text the slide never draws
+   *   killed  N2 buildSlideRequests not normalising first (also 37): the
+   *           no-centre-name fixture, its groups beside the title, draws no
+   *           hub at all */
   const before36 = failures;
   console.log(`\n36. A hub slide wires every node to its hub and keeps clear of everything else`);
   {
@@ -3782,6 +3981,54 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       return { shapes, sizes, texts };
     };
     const keysWith = (s: Record<string, Geo>, prefix: string) => Object.keys(s).filter((k) => k.indexOf(prefix) === 0);
+    // The check's OWN word wrap, so a defect in the layout's cannot vouch for
+    // itself; only the width primitive is shared, as with every other check.
+    const wrapBy = (text: string, width: number, measure: (s: string) => number) => {
+      const words = String(text || "").split(/\s+/).filter(Boolean);
+      const lines: string[] = [];
+      let line = "";
+      for (let i = 0; i < words.length; i++) {
+        const next = line ? `${line} ${words[i]}` : words[i];
+        if (line && measure(next) > width) { lines.push(line); line = words[i]; } else line = next;
+      }
+      if (line) lines.push(line);
+      return lines;
+    };
+    // Every line in the circle lies inside the disc at its own depth, each box
+    // is as tall as the lines it draws, and the caption starts below the title.
+    const centreHolds = (label: string, g: { shapes: Record<string, Geo>; sizes: Record<string, number>; texts: Record<string, string> }) => {
+      const hub = g.shapes["hbc"];
+      if (!hub) return;
+      const R = hub.w / 2, hx = hub.x + R, hy = hub.y + R;
+      const boxes: [string, "Playfair Display" | "Roboto", number][] = [["hbt", "Playfair Display", 1.0], ["hbs", "Roboto", 1.1]];
+      for (let b = 0; b < boxes.length; b++) {
+        const [key, face, spacing] = boxes[b];
+        const box = g.shapes[key], text = g.texts[key], size = g.sizes[key];
+        if (!box || !text || !size) continue;
+        const measure = (s: string) => labelWidthPt(s, size, { face });
+        const lines = wrapBy(text, box.w - TEXT_INSET_X, measure);
+        const pitch = size * 1.26 * spacing;
+        if (box.h + 0.01 < TEXT_INSET_Y + lines.length * pitch) {
+          fail(`${label}: ${key} is ${box.h.toFixed(1)}pt tall for ${lines.length} lines at ${size}pt — its text runs out of the box`);
+        }
+        // Three lines of 7.5pt Light is a caption; five is a paragraph set
+        // round the rim of a circle, and it FITS the disc — so the count is
+        // asserted, not left to the geometry.
+        if (key === "hbs" && lines.length > 3) fail(`${label}: the caption is drawn in ${lines.length} lines — more than three is not a caption`);
+        for (let i = 0; i < lines.length; i++) {
+          const top = box.y + TEXT_INSET_Y / 2 + i * pitch;
+          const dy = Math.max(Math.abs(top - hy), Math.abs(top + pitch - hy));
+          // 92% of the chord, the clearance the layout promises: at 100% a
+          // line's ink would touch the navy's edge, where white type vanishes.
+          const chord = dy < R ? 2 * Math.sqrt(R * R - dy * dy) * 0.92 : 0;
+          if (measure(lines[i]) > chord + 0.01) {
+            fail(`${label}: "${lines[i]}" (${key}, ${measure(lines[i]).toFixed(0)}pt) runs to the circle's edge, which leaves ${chord.toFixed(0)}pt there`);
+          }
+        }
+      }
+      const t = g.shapes["hbt"], c = g.shapes["hbs"];
+      if (t && c && c.y < t.y + t.h - TEXT_INSET_Y / 2 - 0.01) fail(`${label}: the caption starts inside the title's lines`);
+    };
     const inspect = (label: string, slide: SlideInput, expectNodes: number) => {
       const g = geoOf(slide);
       const { shapes, sizes, texts } = g;
@@ -3814,8 +4061,14 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
         if (n.x < GRID.margin - 0.5 || n.x + n.w > GRID.margin + GRID.contentWidth + 0.5) fail(`${label}: node ${key} leaves the content width`);
         const title = texts[`ht${key}`], box = shapes[`ht${key}`], size = sizes[`ht${key}`];
         if (!title || !box || !size) { fail(`${label}: node ${key} has no label`); continue; }
-        if (estimateLines(title, box.w - TEXT_INSET_X, size, false, false, "Roboto") > 1) {
-          fail(`${label}: "${title}" wraps inside its ${n.w.toFixed(0)}pt node at ${size}pt`);
+        // Measured glyph by glyph against the room the box really has, the
+        // inset paid ONCE. The old predicate passed box.w - TEXT_INSET_X into
+        // estimateLines, which subtracts the inset again, and counted
+        // characters at Light's mean: it could not fail for a label of 1 to 43
+        // characters, which is how a wrapping label shipped green.
+        const need = labelWidthPt(title, size);
+        if (need > box.w - TEXT_INSET_X + 0.01) {
+          fail(`${label}: "${title}" needs ${need.toFixed(1)}pt at ${size}pt and its ${n.w.toFixed(0)}pt node gives it ${(box.w - TEXT_INSET_X).toFixed(1)} — it wraps`);
         }
         for (let j = i + 1; j < nodes.length; j++) {
           const m = shapes[nodes[j]];
@@ -3824,6 +4077,39 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
           }
         }
       }
+      // Group names: measured in the capitals they are drawn in, and clear of
+      // the rings and of every node. Never inspected before; one ran 197pt of
+      // caps into 120pt and down into its first node.
+      const nameKeys = ["hgl", "hgr", "hgc"];
+      for (let i = 0; i < nameKeys.length; i++) {
+        const k = nameKeys[i], box = shapes[k], text = texts[k], size = sizes[k];
+        if (!box) continue;
+        const need = labelWidthPt(text, size, { caps: true });
+        if (need > box.w - TEXT_INSET_X + 0.01) {
+          fail(`${label}: group name "${text}" needs ${need.toFixed(0)}pt at ${size}pt and has ${(box.w - TEXT_INSET_X).toFixed(0)} — it wraps into the node below`);
+        }
+        const ix0 = box.x + TEXT_INSET_X / 2, ix1 = box.x + box.w - TEXT_INSET_X / 2;
+        const qx = Math.max(ix0, Math.min(hx, ix1)), qy = Math.max(box.y, Math.min(hy, box.y + box.h));
+        if (Math.hypot(qx - hx, qy - hy) < haloR) fail(`${label}: group name "${text}" runs into the hub's rings`);
+        for (let j = 0; j < nodes.length; j++) {
+          const m = shapes[nodes[j]];
+          if (ix0 < m.x + m.w - 0.5 && m.x < ix1 - 0.5 && box.y < m.y + m.h - 0.5 && m.y < box.y + box.h - 0.5) {
+            fail(`${label}: group name "${text}" overlaps node ${nodes[j].slice(2)}`);
+          }
+        }
+      }
+      // An icon slot is all or nothing: once one node has a mark, every node
+      // does, and every label sits the same distance into its node. (The
+      // nodes ride an arc, so it is the offset that must agree, not the x.)
+      const marks = keysWith(shapes, "hi");
+      if (marks.length && marks.length !== nodes.length) {
+        fail(`${label}: ${marks.length} of ${nodes.length} nodes carry an icon mark — the others leave an empty slot`);
+      }
+      const insets = nodes.filter((k) => shapes[`ht${k.slice(2)}`]).map((k) => shapes[`ht${k.slice(2)}`].x - shapes[k].x);
+      if (insets.length > 1 && Math.max.apply(null, insets) - Math.min.apply(null, insets) > 0.5) {
+        fail(`${label}: labels sit at different depths into their nodes — ${insets.map((x) => x.toFixed(1)).join(", ")}pt`);
+      }
+      centreHolds(label, g);
       const stand = shapes["sub"];
       if (stand && halo.y < stand.y + stand.h - TEXT_INSET_Y / 2) fail(`${label}: the hub's rings rise into the standfirst`);
       return g;
@@ -3862,12 +4148,214 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       { name: "Your own work tools", items: itemsOf(["Microsoft 365 documents library", "Google Drive shared folders", "MeetingBrain transcripts"]) } ] } } as SlideInput;
     inspect("long labels", longLabels, 6);
 
+    // A group split across both sides is named ONCE, centred over the hub —
+    // over the left column alone, the identical right column read as a
+    // second, unnamed kind.
+    const namedOnce = (label: string, G: { shapes: Record<string, Geo> }) => {
+      const c = G.shapes["hgc"], rings = G.shapes["hbo"];
+      if (!c || G.shapes["hgl"] || G.shapes["hgr"]) {
+        fail(`${label}: a group split across both sides should be named once, centred over the hub (centre=${!!c} left=${!!G.shapes["hgl"]} right=${!!G.shapes["hgr"]})`);
+        return;
+      }
+      if (Math.abs(c.x + c.w / 2 - (GRID.margin + GRID.contentWidth / 2)) > 1) fail(`${label}: the group name is not centred over the hub`);
+      if (rings && c.y + c.h > rings.y + 0.5) fail(`${label}: the group name runs down into the hub's rings`);
+    };
     const single = { ...HUB_SLIDE, hub: { title: "EngineAI", groups: [{ name: "Connected", items: itemsOf(["One", "Two", "Three", "Four", "Five"]) }] } } as SlideInput;
     const S = inspect("one group", single, 5);
-    if (!S.shapes["hgl"] || S.shapes["hgr"]) fail(`a single group should be named once, over the left side (left=${!!S.shapes["hgl"]} right=${!!S.shapes["hgr"]})`);
+    namedOnce("one group", S);
     if (keysWith(S.shapes, "hnl").length !== 3 || keysWith(S.shapes, "hnr").length !== 2) fail("a single group of five should split three and two");
 
+    // The production slide the wrap was reported on: one group of eight.
+    const PROD = { layout: "hub", title: "EngineAI", hub: { title: "EngineAI",
+      caption: "One workspace, wired into every system we already run the business on", groups: [
+        { name: "CONNECTED SYSTEMS", tone: "blue", items: itemsOf(["Email & Calendar", "Slack", "Microsoft 365", "Google Drive",
+          "Xero Finance", "HR Absence Calendar", "Engine Content DB", "AuthorityOn AI Data"]) } ] } } as SlideInput;
+    namedOnce("production slide 4", inspect("production slide 4", PROD, 8));
+    if (droppedContent(PROD, 0).length) fail(`production slide 4 reports dropped text: ${droppedContent(PROD, 0).join(" | ")}`);
+
+    // THE BOUNDARY: 22 characters, eight of them capitals. Sized at 0.55em a
+    // character it was given 108.9pt and needs 116.4; every earlier fixture
+    // was Title Case with few capitals, which is why nothing here went red.
+    // (Not "SAP S/4HANA ERP": its node sits on the 120pt floor, so it fitted
+    // under the old sizing too and would prove nothing.) Its group name is
+    // wider in the capitals it is drawn in than in the case it is written in.
+    const boundary = { ...HUB_SLIDE, hub: { title: "EngineAI", groups: [
+      { name: "Sales and marketing systems", tone: "blue", items: itemsOf(["HubSpot CRM + MS Teams", "Pipeline", "Quotes"]) },
+      { name: "Delivery", tone: "teal", items: itemsOf(["Tasks", "Finance", "Reports"]) } ] } } as SlideInput;
+    inspect("capital-heavy label", boundary, 6);
+
+    // A long group name widens into the clear row beside it; one that fits
+    // nowhere is said, not wrapped into the node under it.
+    const longName = { ...HUB_SLIDE, hub: { title: "EngineAI", groups: [
+      { name: "Engine company data sources and systems", tone: "blue", items: itemsOf(["Engine app", "Finance", "HR leave"]) },
+      // 142pt in the capitals it is drawn in, 113pt as written, on a node at
+      // the 120pt floor: fitted in the wrong case it would be drawn at 8pt in
+      // a box it wraps in.
+      { name: "Your own work tools and data", tone: "teal", items: itemsOf(["Email", "Slack", "Drive"]) } ] } } as SlideInput;
+    const LN = inspect("long group name", longName, 6);
+    if (!LN.shapes["hgl"]) fail("long group name: no group label drawn — the check measures nothing");
+    if (/too long for its label/.test(deckWarnings([longName]))) fail("a group name that fits once widened is reported as too long");
+    const hopeless = { ...longName, hub: { ...longName.hub, groups: [
+      { name: "Every one of the systems that the company already runs its business on today", items: itemsOf(["Engine app", "Finance", "HR leave"]) },
+      { name: "Your tools", items: itemsOf(["Email", "Slack", "Drive"]) } ] } } as SlideInput;
+    if (!/too long for its label/.test(deckWarnings([hopeless]))) fail("a group name that fits nowhere is drawn without a word to the model");
+
+    // The centre: a three-word name over a 120-character caption, and a name
+    // whose second line only fits when measured in Playfair's own glyphs.
+    const LONG_CAPTION = "A caption that the model wrote far too long, running on past the sixty characters the tool asks for, and well beyond them";
+    const longCentre = { ...HUB_SLIDE, hub: { title: "Enterprise Knowledge Platform", caption: LONG_CAPTION, groups: [
+      { name: "Left", items: itemsOf(["One", "Two"]) }, { name: "Right", items: itemsOf(["Three", "Four"]) } ] } } as SlideInput;
+    const LC = inspect("centre overflow", longCentre, 4);
+    const lcWarn = deckWarnings([longCentre]);
+    if (!/too long for the circle/.test(lcWarn)) fail("centre overflow: a hub name too long for its circle is not reported");
+    if (!LC.shapes["hbs"] && lcWarn.indexOf(LONG_CAPTION.slice(0, 30)) < 0) fail("centre overflow: the caption was left off and nobody was told");
+    const opsHub = { ...HUB_SLIDE, hub: { title: "Content Operations Hub", caption: "Briefs in, approved and measured assets out, on one calendar", groups: [
+      { name: "Inputs", items: itemsOf(["Briefs", "Research", "Brand guide", "Assets"]) },
+      { name: "Outputs", items: itemsOf(["Articles", "Social posts", "Video", "Reports"]) } ] } } as SlideInput;
+    const OH = inspect("three-word name", opsHub, 8);
+    if (!OH.shapes["hbs"]) fail("three-word name: a 60-character caption that fits under a two-line name was dropped");
+    // A two-line name over a three-line caption: the block is tall enough that
+    // the name's first line, drawn at 18pt, would reach the circle's edge. The
+    // name has to give up a size for the caption.
+    inspect("name over a full caption", { ...HUB_SLIDE, hub: { title: "Knowledge Platform",
+      caption: "Every system the company already runs, read in one place", groups: [
+      { name: "Left", items: itemsOf(["One", "Two"]) }, { name: "Right", items: itemsOf(["Three", "Four"]) } ] } } as SlideInput, 4);
+
+    // THE WIDTHS THEMSELVES, against Chrome's whole-string measurement of
+    // Google's own webfonts (2026-09-15; kerning included, margin not). Every
+    // assertion above measures with labelWidthPt, so a table or margin that
+    // drifted would move the layout and the check together and stay green.
+    // The ratio must carry the 6% margin, less the kerning a glyph sum
+    // cannot see.
+    const MEASURED: [string, number, "Roboto" | "Playfair Display", boolean][] = [
+      ["HR Absence Calendar", 9.774, "Roboto", false], ["MS Teams", 4.7702, "Roboto", false],
+      ["HubSpot CRM + MS Teams", 12.1418, "Roboto", false], ["CONNECTED SYSTEMS", 10.555, "Roboto", true],
+      ["Operations Hub", 7.149, "Playfair Display", false], ["Enterprise Knowledge Platform", 14.116, "Playfair Display", false],
+      // Glyphs the faces do not carry, drawn by the fallback at a full em. As
+      // the mean capital, "東京オフィス" was 0.68 of its real width and wrapped
+      // inside its node; an astral emoji, walked as two UTF-16 units, was
+      // counted twice.
+      ["東京オフィス", 6.008, "Roboto", false], ["Support ✅", 4.843, "Roboto", false],
+      ["Support ✅", 4.879, "Playfair Display", false], ["🚀 Launch Pad", 6.513, "Roboto", false],
+      // U+FE0F, the emoji-presentation selector, draws nothing (Chrome: the
+      // same 4.843em as without it) and was counted as a mean capital.
+      ["Support ✅️", 4.843, "Roboto", false],
+    ];
+    for (let i = 0; i < MEASURED.length; i++) {
+      const [text, ems, face, caps] = MEASURED[i];
+      const ratio = labelWidthPt(text, 10, { face, caps }) / (ems * 10);
+      if (ratio < 1.04 || ratio > 1.1) fail(`labelWidthPt("${text}", ${face}) is ${ratio.toFixed(3)} x Chrome's measured width — the table or its margin has drifted`);
+    }
+
+    // A third group: counted in the admission and named to the model. The
+    // audit alone never would — "Partners" is under its eleven-character floor.
+    const three = { ...HUB_SLIDE, hub: { title: "EngineAI", groups: [
+      { name: "Data", items: itemsOf(["Engine app", "Finance"]) }, { name: "Tools", items: itemsOf(["Email", "Slack"]) },
+      { name: "Partners", items: itemsOf(["AuthorityOn", "MeetingBrain"]) } ] } } as SlideInput;
+    const T3 = inspect("three groups", three, 4);
+    if (T3.texts["hdrop"] !== "Showing 4 of 6 connections") fail(`three groups: the admission reads ${JSON.stringify(T3.texts["hdrop"] || "nothing")}, not "Showing 4 of 6 connections"`);
+    if (deckWarnings([three]).indexOf(`"Partners"`) < 0) fail("three groups: the group left off is not named to the model");
+
+    // Icons that did not resolve: a stand-in in the slot (inspect asserts one
+    // mark per node and aligned labels), and the names relayed with the fix.
+    const RESOLVED = "https://example.com/icon.png";
+    const holes = { ...HUB_SLIDE, iconsMissing: ["microsoft", "google-drive"], hub: { title: "EngineAI", groups: [
+      { name: "Microsoft", items: [{ title: "Outlook", icon: "mail", resolvedIcon: RESOLVED }, { title: "Teams", icon: "microsoft" }, { title: "SharePoint", icon: "folder", resolvedIcon: RESOLVED }] },
+      { name: "Google", items: [{ title: "Gmail", icon: "mail", resolvedIcon: RESOLVED }, { title: "Drive", icon: "google-drive" }, { title: "Calendar", icon: "calendar", resolvedIcon: RESOLVED }] } ] } } as SlideInput;
+    inspect("missing icons", holes, 6);
+    const standIns = (buildSlideRequests(holes, 0, "h") as any[]).filter((r) => r.createShape && r.createShape.shapeType === "ELLIPSE" && /_hi[lr]\d+$/.test(r.createShape.objectId)).length;
+    if (standIns !== 2) fail(`missing icons: ${standIns} stand-in marks for 2 unresolved icons`);
+    const holesWarn = deckWarnings([holes]);
+    if (holesWarn.indexOf(`"microsoft"`) < 0 || !/plain noun/.test(holesWarn)) fail("missing icons: the unresolved names are not relayed with the fix");
+    if (droppedContent(holes, 0).some((d) => /google|microsoft/i.test(d))) fail(`missing icons: a failed icon NAME is reported as dropped text: ${droppedContent(holes, 0).join(" | ")}`);
+    // Recorded by resolution itself, fresh on every run, from the hub that is
+    // DRAWN. With no blob token resolveIcon answers null without a request,
+    // which makes every icon a miss — offline, and deterministic.
+    const savedToken = process.env.BLOB_READ_WRITE_TOKEN;
+    delete process.env.BLOB_READ_WRITE_TOKEN;
+    try {
+      const live: any = { layout: "hub", title: "Integrations", groups: [{ name: "Microsoft", items: [
+        { title: "Teams", icon: "microsoft" }, { title: "Outlook", icon: "mail" }, { title: "Outlook again", icon: "mail" } ] }] };
+      await resolveDeckImages([live]);
+      await resolveDeckImages([live]);
+      if (JSON.stringify(live.iconsMissing) !== JSON.stringify(["microsoft", "mail"])) {
+        fail(`resolution recorded ${JSON.stringify(live.iconsMissing)} for a misplaced hub resolved twice, not ["microsoft","mail"] once each`);
+      }
+      if (live.hub && live.hub.groups) live.hub.groups[0].items = [{ title: "Teams", icon: "microsoft" }];
+      await resolveDeckImages([live]);
+      if (JSON.stringify(live.iconsMissing) !== JSON.stringify(["microsoft"])) fail(`a replaced icon is still reported missing after resolving again: ${JSON.stringify(live.iconsMissing)}`);
+    } catch (e: any) {
+      fail(`resolving a hub's icons threw: ${String((e && e.message) || e).slice(0, 120)}`);
+    } finally {
+      if (savedToken !== undefined) process.env.BLOB_READ_WRITE_TOKEN = savedToken;
+    }
+
     if (!isVisualSlide(HUB_SLIDE)) fail("the visual audit counts a hub as a text slide");
+
+    // ONE NODE A SIDE. With a single node there is no gap to give way, so the
+    // pitch code's "gap under 4pt" was always true and handed the node the
+    // whole diagram's height: a 254pt slab from under the title to the footer.
+    // Every fixture above had at least two nodes a side, so nothing measured it.
+    const lonely: [string, any[], number][] = [
+      ["one group of one", [{ name: "Partner", items: itemsOf(["The Content Engine"]) }], 1],
+      ["one group of two", [{ name: "Partners", items: itemsOf(["The Content Engine", "AuthorityOn"]) }], 2],
+      ["two groups of one", [{ name: "Reads", items: itemsOf(["Engine Content DB"]) }, { name: "Writes", items: itemsOf(["Google Docs"]) }], 2],
+    ];
+    for (let i = 0; i < lonely.length; i++) {
+      const [name, groups, count] = lonely[i];
+      const G = inspect(name, { ...HUB_SLIDE, hub: { title: "EngineAI", groups } } as SlideInput, count);
+      const nodeKeys = keysWith(G.shapes, "hn");
+      for (let j = 0; j < nodeKeys.length; j++) {
+        if (G.shapes[nodeKeys[j]].h > 26.01) fail(`${name}: node ${nodeKeys[j].slice(2)} is ${G.shapes[nodeKeys[j]].h.toFixed(0)}pt tall — a node is 26pt at most, whatever room it is given`);
+      }
+    }
+
+    // NO CENTRE NAME. The incident's own call with a real headline: hub.title
+    // is not copied from a headline, so the circle had nothing in it, the
+    // caption — already lifted into hub.caption — was not drawn either, and
+    // the only note told the model to move that caption to "a field this
+    // layout uses". The caption is drawn alone, and the missing NAME is said.
+    const HEADLINE: any = { layout: "hub", title: "Everything TCE runs on, in {one place}", caption: "One workspace that reads the systems the team already uses",
+      groups: [{ name: "CONNECTED SYSTEMS", tone: "blue", items: itemsOf(["Slack", "Gmail & Calendar", "Google Drive", "Xero Finance"]) }] };
+    const HL = inspect("no centre name", HEADLINE as SlideInput, 4);
+    if (!HL.shapes["hbs"]) fail("no centre name: a caption that fits the circle was not drawn, so the circle is empty");
+    const hlWarn = deckWarnings([HEADLINE]);
+    if (!/no centre name/.test(hlWarn) || hlWarn.indexOf("hub.title") < 0) fail(`no centre name: the model is not told the circle lacks hub.title (${hlWarn.slice(-200)})`);
+    if (/field this layout uses/.test(hlWarn)) fail("no centre name: the model is told to move text that is already where the layout reads it");
+
+    // A CAPTION TOO LONG FOR ITS CIRCLE is named with its own fix, and not with
+    // droppedContent's "put it in a field this layout uses" — it is in that
+    // field already, and only needs to be shorter.
+    const longCap = { ...HUB_SLIDE, hub: { title: "EngineAI", caption: LONG_CAPTION, groups: [
+      { name: "Left", items: itemsOf(["One", "Two"]) }, { name: "Right", items: itemsOf(["Three", "Four"]) } ] } } as SlideInput;
+    const LCp = inspect("caption too long", longCap, 4);
+    const lcpWarn = deckWarnings([longCap]);
+    if (LCp.shapes["hbs"]) fail("caption too long: a 120-character caption was drawn in a circle that cannot hold it — the fixture no longer measures the drop");
+    else {
+      if (!/caption .* was not drawn/.test(lcpWarn) || !/under about 60 characters/.test(lcpWarn)) fail(`caption too long: the model is not told the caption was left off and how to fix it (${lcpWarn.slice(-240)})`);
+      if (/field this layout uses/.test(lcpWarn)) fail("caption too long: the model is told to move a caption that is already in hub.caption");
+    }
+
+    // ONE WORD WIDER THAN THE CIRCLE is not "too many words". At 12pt this
+    // name ran 23pt past the navy onto the lavender ring, where white type is
+    // nearly invisible, under a note calling it "1 line at 12pt". centreHolds
+    // (inside inspect) asserts every line inside the disc.
+    const german = { ...HUB_SLIDE, hub: { title: "Datenschutzbeauftragter", caption: "Answers to the board", groups: [
+      { name: "Left", items: itemsOf(["One", "Two"]) }, { name: "Right", items: itemsOf(["Three", "Four"]) } ] } } as SlideInput;
+    const GW = inspect("one word wider than the circle", german, 4);
+    if (!GW.shapes["hbt"]) fail("one word wider than the circle: no name drawn — the check measures nothing");
+    if (/1 line at 12pt/.test(deckWarnings([german]))) fail("one word wider than the circle: reported as a line count, which reads as if the name were short");
+
+    // A FULL SIDE names what it cut. Labels of ten characters or fewer are
+    // invisible to droppedContent, so "Showing 14 of 16" went out with an
+    // empty warning.
+    const fullSide = (p: string) => itemsOf(["Mail", "Chat", "Docs", "Files", "Sheets", "Tasks", "Wiki", `${p}8 Phone`]);
+    const full = { ...HUB_SLIDE, hub: { title: "EngineAI", groups: [
+      { name: "Left", items: fullSide("A") }, { name: "Right", items: fullSide("B") } ] } } as SlideInput;
+    const FS = inspect("two full sides", full, 14);
+    if (FS.texts["hdrop"] !== "Showing 14 of 16 connections") fail(`two full sides: the admission reads ${JSON.stringify(FS.texts["hdrop"] || "nothing")}`);
+    const fsWarn = deckWarnings([full]);
+    if (fsWarn.indexOf(`"A8 Phone"`) < 0 || fsWarn.indexOf(`"B8 Phone"`) < 0) fail(`two full sides: the connections cut from a full side are not named to the model (${fsWarn.slice(-200)})`);
 
     const iconDrop = droppedContent({ layout: "cards", title: "Icons", cards: [
       { title: "A card", body: "Body text here.", icon: "calendar-clock" },
@@ -3877,8 +4365,1067 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     // on purpose, and reporting that sent the same false note in two replies.
     const coverDrop = droppedContent({ layout: "cover", title: "AI tools at TCE", subtitle: "Team briefing", footer: "The Content Engine · AI tools at TCE" } as SlideInput, 0);
     if (coverDrop.some((d) => /Content Engine/i.test(d))) fail(`the stamped footer is reported as dropped text on a cover: ${coverDrop.join(" | ")}`);
+    // Speaker notes go to the deck's notes page, not the slide. Reported as
+    // "never draws — do NOT describe it as being in the deck", every slide
+    // with a note was misreported, and the single-slide route now carries them.
+    const notesDrop = droppedContent({ layout: "content", title: "Pricing", body: "Two tiers", notes: "Say the second tier is where most clients land" } as SlideInput, 1);
+    if (notesDrop.some((d) => /second tier/.test(d))) fail(`speaker notes are reported as text the slide drops: ${notesDrop.join(" | ")}`);
   }
-  if (failures === before36) pass("wires start on their nodes and end in the hub, nodes clear the rings and each other, labels hold one line, overflow is declared, a split group is named once, icon names are not text");
+  if (failures === before36) pass("wires start on their nodes and end in the hub, nodes clear the rings and each other, labels and group names hold one line by measured width, the centre fits its circle, a third group and missing icons are declared, a split group is named once over the hub, icon names are not text");
+
+  /* 37. A hub is drawn from wherever its fields landed, on every route.
+   *
+   * THE INCIDENT, 2026-09-15. The first generate_slides call of a new chat sent
+   * a hub slide with its `caption` and `groups` BESIDE the slide's title rather
+   * than inside `hub` (the tool schema had never declared `hub`; 20d now pins
+   * that). The guard refused it as blank, the refusal reached the user, and the
+   * model re-streamed the whole deck to fix one slide. Check 13 of
+   * verify-slide-edit.ts pins normaliseSlide itself; this one drives the ROUTES
+   * a slide reaches the builder by: the full `slides` call, editSlide's insert,
+   * patch and batch, the top-level fold, a stored draft replayed under an
+   * unrelated edit, and buildSlideRequests with NO guard in front of it — which
+   * is what the preview, PDF and publish routes call on client-held slides.
+   *
+   * Nodes are counted from the drawn requests. The no-leftover-key assertions
+   * are structural, because a lifted caption draws identically whether or not
+   * its old copy was deleted: droppedContent cannot tell a clean stored spec
+   * from one that will replay the mistake next turn.
+   *
+   * MUTATION LOG (detached worktree, 2026-09-15), with 20d's schema half and
+   * check 13 of verify-slide-edit.ts run alongside:
+   *   killed  the guard not normalising (leftover keys; stored hub unrepaired)
+   *   killed  buildSlideRequests not read-tolerant (0 of 8 nodes unguarded)
+   *   killed  the fold dropping payload fields (top-level insertAfter + hub)
+   *   killed  a single insert not normalised; a patch that does not lift
+   *   killed  the guard back to presence-only; untitled items counted
+   *   killed  `nodes` lifted as a guess; bare strings not mapped; a hub array
+   *           not lifted; the refusal not saying INSIDE hub
+   *   killed  the visual audit back to raw `items.length`
+   *   killed  `delete out.groups` removed; the lifted caption's delete removed
+   *   20d killed  editSlide.hub back to a bare object; insertSlides.items back
+   *           to a bare object; `hub` renamed out of the slide item schema
+   *           (the original misplacement); the hub description losing INSIDE
+   *   SURVIVED here, killed by check 13 (verify-slide-edit.ts): the identical-
+   *           caption delete removed, `delete work.items` / `delete out.items`
+   *           removed, a patch replacing rather than merging the stored hub, a
+   *           headline copied into the circle, the non-hub early return
+   *           removed, batch entries not normalised in applyEditSlide. Each
+   *           is either invisible in the drawing or repaired downstream by the
+   *           guard, which is why the pure check exists beside this one.
+   *   Before the change, 20d's old regex PASSED against the misplaced schema:
+   *   the whole suite was green at c5759aa with no `hub` on slides[].
+   *
+   * SECOND MUTATION LOG (detached worktree, 2026-09-15), for (h) and (i), after
+   * a verifier drove a layout-less hub through every route and found only the
+   * insert paths drew it:
+   *   killed  N1 normaliseSlide not setting layout "hub": through slides[]
+   *           stored as undefined and drawing 0 of 8, and the same on the
+   *           preview, the visual audit and publish resolution (12 FAILs)
+   *   killed  N2 buildSlideRequests not normalising on its FIRST line (the
+   *           read-tolerance used to sit in the hub branch, which a layout-
+   *           less hub never reaches): 0 of 8 nodes unguarded
+   *   killed  N3 resolveDeckImages normalising after it settles the layout:
+   *           "settled as content, drawing 0 of 8" (and 36's icon record)
+   *   killed  N4 the visual audit counting a hub stored on a content slide
+   *   killed  N6 slideStyle reading the raw layout: a layout-less hub as slide
+   *           1 styled as the dark cover. Otherwise unobservable — the hub and
+   *           content styles are identical — which is why the case is slide 1.
+   *   killed  P1 an explicit `hub` patch replacing the stored hub: (i) threw
+   *           "would be drawn blank" through the real route */
+  const before37 = failures;
+  console.log(`\n37. A hub is drawn from wherever its fields landed, and one that draws nothing is refused`);
+  {
+    const CAP = "One workspace that reads the systems the team already uses";
+    const ITEMS = [
+      { title: "Slack", icon: "message-square" }, { title: "Gmail & Calendar", icon: "mail" },
+      { title: "Google Drive", icon: "folder" }, { title: "Xero Finance", icon: "credit-card" },
+      { title: "HubSpot CRM", icon: "users" }, { title: "MeetingBrain", icon: "mic" },
+      { title: "HR Absence Calendar", icon: "calendar" }, { title: "AuthorityOn AI Data", icon: "database" },
+    ];
+    const GROUP = () => ({ name: "CONNECTED SYSTEMS", tone: "blue", items: ITEMS.map((it) => ({ ...it })) });
+    const flatHub = (): any => ({ layout: "hub", title: "EngineAI", caption: CAP, groups: [GROUP()] });
+    const own = (o: any, k: string) => !!o && Object.prototype.hasOwnProperty.call(o, k);
+    const drawnOf = (slide: any, index: number) => buildSlideRequests(slide, index, "h37") as any[];
+    const nodesDrawn = (slide: any, index: number) =>
+      drawnOf(slide, index).filter((r) => r.createShape && /_hn[lr]\d+$/.test(r.createShape.objectId)).length;
+    const circleDrawn = (slide: any, index: number) =>
+      drawnOf(slide, index).some((r) => r.createShape && /_hbc$/.test(r.createShape.objectId));
+    const refusal = async (fn: () => Promise<any>) => {
+      try { await fn(); return ""; } catch (e: any) { return String((e && e.message) || e || "threw"); }
+    };
+    const cover = { layout: "cover", title: "Deck" };
+    const convId = (tag: string) => `verify37-${tag}-${process.pid}-${Date.now()}`;
+    // Wrapped, as 20e is: the defect THROWS, and an escaped exception kills the
+    // script before it prints anything.
+    try {
+      // a) The incident's call, through the full `slides` route.
+      const built = await prepareSlidesForBuild({ title: "T", slides: [cover, flatHub()] }, null);
+      const s = built.slides[1];
+      if (own(s, "groups") || own(s, "caption")) fail(`the stored hub keeps its misplaced keys (${Object.keys(s).join(", ")}) — the next turn replays the mistake`);
+      if (!circleDrawn(s, 1) || nodesDrawn(s, 1) !== 8) fail(`the incident's hub draws circle=${circleDrawn(s, 1)} and ${nodesDrawn(s, 1)} of 8 nodes`);
+      const lost = droppedContent(s, 1);
+      if (lost.length) fail(`the repaired incident slide reports dropped text: ${lost.join(" | ").slice(0, 160)}`);
+
+      // b) The other misplaced shapes: each draws every node it carries.
+      const shapes: [string, any, number][] = [
+        ["hub.items with no groups", { layout: "hub", title: "Our integrations today", hub: { title: "EngineAI", caption: CAP, items: ITEMS } }, 8],
+        ["hub sent as an array of groups", { layout: "hub", title: "EngineAI", hub: [GROUP()] }, 8],
+        ["items as bare strings", { layout: "hub", title: "EngineAI", hub: { title: "EngineAI", groups: [{ name: "X", items: ["Slack", "Xero Finance", "Email", "HubSpot CRM"] }] } }, 4],
+        ["items at the top level", { layout: "hub", title: "EngineAI", items: ITEMS }, 8],
+      ];
+      for (let i = 0; i < shapes.length; i++) {
+        const [name, shape, want] = shapes[i];
+        const why = await refusal(() => prepareSlidesForBuild({ title: "T", slides: [cover, shape] }, null));
+        if (why) { fail(`${name}: refused — ${why.slice(0, 100)}`); continue; }
+        const b = await prepareSlidesForBuild({ title: "T", slides: [cover, shape] }, null);
+        if (nodesDrawn(b.slides[1], 1) !== want) fail(`${name}: draws ${nodesDrawn(b.slides[1], 1)} of ${want} nodes`);
+      }
+
+      // c) What is not repaired is refused, and the refusal names the shape.
+      const guesses: [string, any][] = [
+        ["`nodes` in place of groups", { layout: "hub", title: "EngineAI", hub: { title: "EngineAI", nodes: ITEMS } }],
+        ["`connections` in place of groups", { layout: "hub", title: "EngineAI", hub: { title: "EngineAI", connections: [GROUP()] } }],
+        ["a hub with only a title", { layout: "hub", title: "EngineAI", hub: { title: "EngineAI" } }],
+      ];
+      for (let i = 0; i < guesses.length; i++) {
+        const [name, shape] = guesses[i];
+        const why = await refusal(() => prepareSlidesForBuild({ title: "T", slides: [cover, shape] }, null));
+        if (!why) fail(`${name}: accepted, and drawn as a hub with nothing wired to it`);
+        else if (!/groups/.test(why) || !/INSIDE hub/.test(why)) fail(`${name}: refused without naming the shape: ${why.slice(0, 140)}`);
+      }
+
+      // d) The edit routes, against a deck held for this conversation.
+      const conv = convId("edit");
+      await prepareSlidesForBuild({ title: "T", slides: [cover, { layout: "content", title: "Two", body: "x" }] }, conv);
+      const inserted = await prepareSlidesForBuild({ slides: [], editSlide: { insertAfter: 2, layout: "hub", title: "EngineAI", caption: CAP, groups: [GROUP()] } }, conv);
+      if (nodesDrawn(inserted.slides[2], 2) !== 8) fail(`editSlide insert with groups beside the title draws ${nodesDrawn(inserted.slides[2], 2)} of 8 nodes`);
+      const patched = await prepareSlidesForBuild({ slides: [], editSlide: { slideNumber: 2, layout: "hub", groups: [GROUP()] } }, conv);
+      if (patched.slides[1].layout !== "hub" || nodesDrawn(patched.slides[1], 1) !== 8) fail(`editSlide patch with groups beside the slide number draws ${nodesDrawn(patched.slides[1], 1)} of 8 nodes`);
+      const folded = await prepareSlidesForBuild({ slides: [], insertAfter: 3, layout: "hub", slideTitle: "EngineAI", hub: { title: "EngineAI", groups: [GROUP()] } } as any, conv);
+      if (nodesDrawn(folded.slides[3], 3) !== 8) fail(`a top-level insertAfter with its hub beside it draws ${nodesDrawn(folded.slides[3], 3)} of 8 nodes — the fold left the payload behind`);
+      const foldedFlat = await prepareSlidesForBuild({ slides: [], insertAfter: 4, layout: "hub", slideTitle: "EngineAI", caption: CAP, groups: [GROUP()] } as any, conv);
+      if (nodesDrawn(foldedFlat.slides[4], 4) !== 8 || foldedFlat.slides[4].hub.caption !== CAP) fail("a top-level insertAfter with groups and caption at the top level was not carried into the hub");
+      const batch = await prepareSlidesForBuild({ slides: [], editSlide: { insertAfter: 5, insertSlides: [flatHub()] } }, conv);
+      const bs = batch.slides[5];
+      if (own(bs, "groups") || own(bs, "caption") || nodesDrawn(bs, 5) !== 8) fail(`an insertSlides entry in the incident's shape: keys ${Object.keys(bs).join(",")}, ${nodesDrawn(bs, 5)} of 8 nodes`);
+
+      // e) A stored draft with the misplaced shape does not lock out an
+      //    unrelated edit. The turn cache holds the very array a build returns,
+      //    so writing the old shape into it stands in for a draft stored before
+      //    the guard normalised, which is what loadDeckForEdit reads back.
+      const stored = convId("stored");
+      const seeded = await prepareSlidesForBuild({ title: "T", slides: [cover, { layout: "content", title: "Two", body: "x" }] }, stored);
+      seeded.slides[1] = flatHub();
+      const why = await refusal(() => prepareSlidesForBuild({ slides: [], editSlide: { slideNumber: 1, title: "Renamed" } }, stored));
+      if (why) fail(`an unrelated edit over a stored misplaced hub is refused: ${why.slice(0, 120)}`);
+      else {
+        const renamed = await prepareSlidesForBuild({ slides: [], editSlide: { slideNumber: 1, title: "Renamed again" } }, stored);
+        const r = renamed.slides[1];
+        if (renamed.slides[0].title !== "Renamed again") fail("the unrelated edit was not applied");
+        if (own(r, "groups") || own(r, "caption") || nodesDrawn(r, 1) !== 8) fail(`the stored hub was not repaired on the way through (keys ${Object.keys(r).join(",")}, ${nodesDrawn(r, 1)} of 8 nodes — if 0, the stored shape was never seeded)`);
+      }
+
+      // f) No guard at all: the preview, PDF and publish routes.
+      const raw = flatHub();
+      const rawBefore = JSON.stringify(raw);
+      if (!circleDrawn(raw, 1) || nodesDrawn(raw, 1) !== 8) fail(`buildSlideRequests on an unguarded misplaced hub draws circle=${circleDrawn(raw, 1)} and ${nodesDrawn(raw, 1)} of 8 nodes — the preview would disagree with the chat`);
+      if (!drawnOf(raw, 1).some((r) => r.insertText && /_hbt$/.test(r.insertText.objectId) && r.insertText.text === "EngineAI")) fail("the unguarded hub draws no centre name");
+      if (JSON.stringify(raw) !== rawBefore) fail("buildSlideRequests mutated the client-held slide while reading it");
+      if (droppedContent(raw, 1).length) fail(`an unguarded misplaced hub reports its own caption or labels as dropped: ${droppedContent(raw, 1).join(" | ").slice(0, 120)}`);
+      const pv: any = draftPreview([cover as SlideInput, raw]);
+      const pvTexts = ((pv.preview.slides[1] && pv.preview.slides[1].elements) || []).map((e: any) => e.text || "");
+      if (pvTexts.indexOf("HR Absence Calendar") < 0) fail("the preview route draws no node label for an unguarded misplaced hub");
+
+      // g) The visual audit asks the same question the guard does.
+      if (isVisualSlide({ layout: "hub", title: "EngineAI", hub: { groups: [{ items: [{ name: "Slack" } as any] }] } } as SlideInput)) {
+        fail("the visual audit counts a hub whose items have no titles, which draws no node");
+      }
+      if (!isVisualSlide(raw)) fail("the visual audit does not count a misplaced-field hub the builder does draw");
+
+      // h) NO LAYOUT AT ALL. The insert paths defaulted a layout-less slide
+      //    with connections to a hub, while the full `slides` route, the
+      //    guard's scan, the builder and publish resolution all called it
+      //    "content": the same slide drew eight nodes appended through
+      //    insertSlides and a title with no diagram sent in `slides` or rebuilt
+      //    by the preview, PDF or publish route — while the visual audit
+      //    counted it as visual. Every route is driven, because each decided
+      //    the layout in its own place.
+      const bareShapes: [string, any][] = [
+        ["groups at the top and no layout", { title: "EngineAI", caption: CAP, groups: [GROUP()] }],
+        ["a nested hub and no layout", { title: "Everything we connect", hub: { title: "EngineAI", caption: CAP, groups: [GROUP()] } }],
+      ];
+      const copy = (x: any) => JSON.parse(JSON.stringify(x));
+      for (let i = 0; i < bareShapes.length; i++) {
+        const [name, shape] = bareShapes[i];
+        const viaSlides = await prepareSlidesForBuild({ title: "T", slides: [copy(cover), copy(shape)] }, null);
+        if (viaSlides.slides[1].layout !== "hub" || nodesDrawn(viaSlides.slides[1], 1) !== 8) fail(`${name}, through slides[]: stored as "${viaSlides.slides[1].layout}", drawing ${nodesDrawn(viaSlides.slides[1], 1)} of 8 nodes`);
+        const unguarded = copy(shape);
+        if (nodesDrawn(unguarded, 1) !== 8) fail(`${name}, with no guard (preview, PDF, publish): ${nodesDrawn(unguarded, 1)} of 8 nodes`);
+        const pvBare: any = draftPreview([copy(cover) as SlideInput, unguarded]);
+        const bareTexts = ((pvBare.preview.slides[1] && pvBare.preview.slides[1].elements) || []).map((e: any) => e.text || "");
+        if (bareTexts.indexOf("HR Absence Calendar") < 0) fail(`${name}: the preview route draws no node label`);
+        if (!isVisualSlide(unguarded)) fail(`${name}: the visual audit does not count a hub the builder draws`);
+        // As the FIRST slide, where the default is the dark cover: the ground
+        // is read through slideStyle, which must see the same hub.
+        if (slideStyle(copy(shape), 0).onDark) fail(`${name}, as slide 1: styled as a dark cover while it is drawn as a hub on the light ground`);
+        // Publish resolution writes the layout onto the slide for good, so it
+        // must reach "hub" before it settles anything.
+        const savedBlob = process.env.BLOB_READ_WRITE_TOKEN;
+        delete process.env.BLOB_READ_WRITE_TOKEN;
+        try {
+          const pub: any[] = [copy(cover), copy(shape)];
+          await resolveDeckImages(pub);
+          if (pub[1].layout !== "hub" || nodesDrawn(pub[1], 1) !== 8) fail(`${name}, publish resolution: settled as "${pub[1].layout}", drawing ${nodesDrawn(pub[1], 1)} of 8 nodes`);
+        } finally {
+          if (savedBlob !== undefined) process.env.BLOB_READ_WRITE_TOKEN = savedBlob;
+        }
+      }
+      // The other direction: a hub stored on a slide that says "content" is
+      // not drawn, and is not a diagram to the audit; and a layout-less hub
+      // that draws nothing is not turned into a lone circle.
+      if (isVisualSlide({ layout: "content", title: "Prose", body: "A line", hub: { title: "EngineAI", groups: [GROUP()] } } as SlideInput)) fail("the visual audit counts a hub stored on a content slide, which draws no diagram");
+      const hollowBare = { title: "Prose", body: "A line", hub: { title: "EngineAI" } };
+      if (circleDrawn(hollowBare, 1)) fail("a layout-less slide whose hub draws nothing was drawn as a lone circle");
+
+      // i) A patch in the shape the schema asks for, through the real route:
+      //    `hub: { caption }` keeps the stored name and connections.
+      const nameBefore = patched.slides[1].hub && patched.slides[1].hub.title;
+      const recap = await prepareSlidesForBuild({ slides: [], editSlide: { slideNumber: 2, hub: { caption: "Reads what the team already uses" } } }, conv);
+      if (recap.slides[1].hub.caption !== "Reads what the team already uses" || nodesDrawn(recap.slides[1], 1) !== 8 || !nameBefore || recap.slides[1].hub.title !== nameBefore) {
+        fail(`a hub: { caption } patch lost the stored hub (${JSON.stringify(recap.slides[1].hub).slice(0, 100)}, ${nodesDrawn(recap.slides[1], 1)} nodes)`);
+      }
+    } catch (e: any) {
+      fail(`a hub route threw: ${String((e && e.message) || e).slice(0, 160)}`);
+    }
+  }
+  if (failures === before37) pass("the incident's hub builds with 8 nodes and no leftover keys on every route, guesses are refused naming the shape, a stored misplaced hub no longer blocks other edits, and the unguarded preview draws the same hub");
+
+  /* 38. A refusal is for the model, and a turn that ends refused says so.
+   *
+   * THE INCIDENT, 2026-09-15. The first call of a new deck was refused for its
+   * shape. All four chains forwarded the thrown message to the browser as
+   * `slides_error`, and ChatPanel toasted it, so the user read "Fix and send
+   * again — do NOT tell the user the slide is done" while the model retried and
+   * the deck built. The toast was built for Google connection failures; the
+   * model-directed refusals arrived later and fell into it by accident.
+   *
+   * What is asserted, behaviour first and then wiring, because a regex that a
+   * line EXISTS has reported a live hole here as closed:
+   *   a) the guard's refusals are SlideCallRefusals carrying the slide for a
+   *      person — with a shape normaliseSlide deliberately refuses, because the
+   *      incident's own flat hub now BUILDS;
+   *   b) slidesFailure sends a refusal to the model only, and any other fault
+   *      to the user as a fixed sentence — including a SyntaxError and an Error
+   *      carrying the incident's exact model text, which is what a refusal
+   *      thrown as the wrong class would look like;
+   *   c) a cut-off OpenAI-style call is a refusal, not a raw parse error;
+   *   d) unresolvedSlidesNotice speaks only when the LAST outcome was a
+   *      refusal, names the slide, and says "not added" for an append;
+   *   e) the release key: the loop guard releases nothing under another
+   *      chain's key shape, which is why each chain releases with its own;
+   *   f) providers.ts USES all of it in all four chains;
+   *   g) ChatPanel handles the event the helper actually emits, and takes a
+   *      failure toast down when a deck arrives;
+   *   h) and all of it BEHAVES: the real createStreamingResponse, per chain,
+   *      against a fake provider on localhost, asserting the events sent and
+   *      the reply saved for seven turns — refused then text, refused then
+   *      built, built then a refused append, a cut-off call, built then a
+   *      refused rebuild, refused then a failed publish, and a fault retried.
+   *      (f) and (g) read comment-stripped source; (h) is what a source read
+   *      cannot fake.
+   *
+   * MUTATION LOG (detached worktree, 2026-09-15), 38 mutations, check 14 of
+   * verify-slide-edit.ts run alongside for those in lib/slides/edit.ts:
+   *   killed  the guard's blank-slide refusal as a plain Error (the incident's
+   *          own throw); the empty-deck and no-deck refusals likewise
+   *   killed  the guard's refusal carrying no faults; the edit-path guard
+   *          always scoped "edit" (killed only by the stored-deck lockout case,
+   *          added because nothing else reaches that scope)
+   *   killed  one chain's catch back to `slides_error: err.message` (xAI); the
+   *          Anthropic tool result back to the raw message
+   *   killed  xAI releasing with another chain's key; Gemini releasing a
+   *          refusal (ungated); Anthropic never releasing a fault
+   *   killed  the OpenAI chain not marking a draft ok; Anthropic marking ok
+   *          BEFORE the call could be refused (caught by the count of two)
+   *   killed  Gemini parsing arguments with JSON.parse again
+   *   killed  the Gemini end-of-turn notice not called; the Anthropic notice
+   *          appended to the reply but never streamed
+   *   killed  the notice speaking on any last outcome; the append wording
+   *          lost; the notice naming no slide
+   *   killed  a refusal sent to the toast again (also by g: the refusal branch
+   *          then has no event of its own); a fault showing its raw message;
+   *          a refusal, or a fault, not recorded on the turn; `null` arguments
+   *          accepted; the refusal text losing "do not narrate"
+   *   killed  ChatPanel: slides_ready or slides_draft not dismissing the toast;
+   *          no slides_refused branch; that branch toasting, or leaving the
+   *          progress indicator up; the toast id not kept
+   *   killed  from edit.ts: the batch refusal as a plain Error, its scope lost,
+   *          its fault numbered in the batch, blankSlideFaults empty, and the
+   *          scan's person reason written with a backticked field name
+   *          (SURVIVED check 14, which only counts those faults)
+   *   SURVIVED the remove-all refusal as a plain Error — no removal is driven
+   *          here; check 14 kills it
+   *   SURVIVED Object.setPrototypeOf removed (both checks): native classes
+   *          under tsx keep instanceof without it
+   *   A FINDING, not a kill: isSlideCallRefusal answering true for everything
+   *          first "killed" this block only through its try/catch, because
+   *          slidesFailure threw reading `err.faults.slice()` — a throw inside a
+   *          chain's catch block, which escapes the turn. slidesFailure now
+   *          reads faults defensively; re-run, it is killed by assertion (every
+   *          real fault goes silent).
+   *
+   * SECOND MUTATION LOG (detached worktree, 2026-09-15). A verifier showed six
+   * plausible mutations SURVIVING this check, all of which the log above could
+   * not have seen because it read source: MA an ok mark commented out, MB and
+   * MJ ChatPanel calls commented out, MC the events loop sent only on faults,
+   * MD a publish failure never recorded, MK the turn state reset after it was
+   * written. Two of them broke what the user sees. Now:
+   *   killed  MA by (f) once comments are stripped, and by (h): Gemini, refused
+   *           then built, still says it was not built
+   *   killed  MB, MJ by (g) once comments are stripped
+   *   killed  MC by (f) — the loop must be a statement of its own — and by (h):
+   *           Gemini sends no slides_refused on any refused turn
+   *   killed  MD by (h) only: the xAI chain appends a notice about a refusal
+   *           after the publish failure the user was already shown
+   *   killed  MK by (f), which counts `.slidesTurn =`, and by (h): the OpenAI
+   *           chain's refused turns end with no notice
+   *   killed  W1 the xAI release under the raw arguments string, by (f) and by
+   *           (h) — but only once the retried call is PRETTY-PRINTED: the xAI
+   *           key strips whitespace, and with compact JSON it equalled the raw
+   *           string, so the wrong key released and (h) passed
+   *   killed  W4 an ok mark followed by a "failed" one (OpenAI draft), by (h)
+   *           only — the source read counts marks and places, and both held
+   *   killed  W2 builtEarlier not carried forward; W3 the notice ignoring it —
+   *           by (d) and by (h) on three chains
+   *   killed  T1 the guard's text step removed; T4 bullet lists not joined; T5
+   *           a batch entry not repaired; T3 a batch entry's bad field not
+   *           named by the batch (a survivor until (a) asserted the words, the
+   *           guard's scan refusing the same slide by deck number)
+   * A FINDING. T1 also turned the ANTHROPIC chain's "fault, then the identical
+   *   call" red: the retry was refused as a repeat. The loop guard keys a call
+   *   by serialising its input when asked, the Anthropic chain releases with
+   *   `tool.input`, and the build writes onto the slides it is handed (the
+   *   footer, the settled layout) — so without the text step's copy the release
+   *   key had moved. It had been working by accident. prepareSlidesForBuild
+   *   now deep-copies its argument: D2 (copy and text step both removed) is
+   *   killed the same way; D1 (the copy alone removed) SURVIVES offline,
+   *   because nothing nested is written without the network — it is there for
+   *   icons resolved online, onto items shared with the call. */
+  const before38 = failures;
+  console.log(`\n38. A refusal reaches only the model, and a turn that ends refused says so`);
+  {
+    const MARKERS = /do NOT|generate_slides|editSlide|insertSlides|Fix and send|`/;
+    const INCIDENT_TEXT = 'This deck contains 1 slide that would be drawn blank. slide 4 ("EngineAI") is a "hub" slide with no connections to draw. Fix and send again — do NOT tell the user the slide is done.';
+    const NODES_HUB = (): any => ({ layout: "hub", title: "EngineAI", hub: { title: "EngineAI", nodes: [{ title: "Slack" }, { title: "Xero" }] } });
+    const cover = { layout: "cover", title: "Deck" };
+    const caught = async (fn: () => Promise<any>): Promise<any> => {
+      try { await fn(); return null; } catch (e: any) { return e; }
+    };
+    const isRefusal = (e: any) => e instanceof SlideCallRefusal;
+    try {
+      // a) The guard.
+      const hubErr = await caught(() => prepareSlidesForBuild({ title: "T", slides: [cover, NODES_HUB()] }, null));
+      if (!isRefusal(hubErr)) fail(`a hub of \`nodes\` is refused as a plain ${hubErr ? hubErr.name : "nothing (it built)"} — its model text would reach the toast`);
+      else {
+        if (hubErr.scope !== "build") fail(`the full-deck refusal's scope is ${hubErr.scope}`);
+        const f = hubErr.faults || [];
+        if (f.length !== 1 || f[0].slide !== 2 || f[0].title !== "EngineAI" || f[0].layout !== "hub") fail(`the guard's refusal does not name slide 2 ("EngineAI", hub) for a person: ${JSON.stringify(f)}`);
+        if (!/blank/.test(hubErr.message)) fail("the guard's model message lost the word the model acts on");
+      }
+      const cardsErr = await caught(() => prepareSlidesForBuild({ title: "T", slides: [cover, { layout: "cards", title: "What strategy-lite actually covers" }] }, null));
+      if (!isRefusal(cardsErr) || !cardsErr.faults.length || cardsErr.faults[0].layout !== "cards") fail(`a cards slide with no cards is not a structured refusal (${cardsErr && cardsErr.name}: ${JSON.stringify(cardsErr && cardsErr.faults)})`);
+      // What the Anthropic chain makes of a call it could not parse.
+      const emptyErr = await caught(() => prepareSlidesForBuild({}, null));
+      if (!isRefusal(emptyErr) || !/cut off/.test(String(emptyErr.userReason))) fail(`an unparseable Anthropic call (input {}) is not a refusal that says it was probably cut off (${emptyErr && emptyErr.name}: ${emptyErr && emptyErr.userReason})`);
+      const noDeckErr = await caught(() => prepareSlidesForBuild({ slides: [], editSlide: { insertAfter: 0, title: "Orphan", body: "b" } }, null));
+      if (!isRefusal(noDeckErr) || String(noDeckErr.message).indexOf("no deck") < 0) fail(`an edit with no deck is not a refusal (${noDeckErr && noDeckErr.name})`);
+      const conv = `verify38-${process.pid}-${Date.now()}`;
+      await prepareSlidesForBuild({ title: "T", slides: [cover, { layout: "content", title: "Two", body: "x" }] }, conv);
+      const appendErr = await caught(() => prepareSlidesForBuild({ slides: [], editSlide: { insertAfter: 2, insertSlides: [{ layout: "content", title: "Three", body: "y" }, NODES_HUB()] } }, conv));
+      if (!isRefusal(appendErr) || appendErr.scope !== "insert") fail(`a refused append is not a refusal scoped as an insert (${appendErr && appendErr.name}, ${appendErr && appendErr.scope})`);
+      const patchErr = await caught(() => prepareSlidesForBuild({ slides: [], editSlide: { slideNumber: 2, layout: "hub", title: "Two" } }, conv));
+      if (!isRefusal(patchErr) || patchErr.scope !== "edit") fail(`a patch refused by the guard is not scoped as an edit (${patchErr && patchErr.name}, ${patchErr && patchErr.scope})`);
+      // An append the GUARD refuses, because a slide already stored draws
+      // nothing. applyEditSlide scopes its own refusals; this one is scoped by
+      // prepareSlidesForBuild, and it is the stored-deck lockout case: the new
+      // slides are fine and it is they that are not added.
+      const lockConv = `verify38-lock-${process.pid}-${Date.now()}`;
+      const seeded = await prepareSlidesForBuild({ title: "T", slides: [cover, { layout: "content", title: "Two", body: "x" }] }, lockConv);
+      seeded.slides[1] = NODES_HUB();
+      const lockErr = await caught(() => prepareSlidesForBuild({ slides: [], editSlide: { insertAfter: 2, insertSlides: [{ layout: "content", title: "Three", body: "y" }] } }, lockConv));
+      if (!isRefusal(lockErr) || lockErr.scope !== "insert" || !lockErr.faults.length || lockErr.faults[0].slide !== 2) fail(`an append refused by the guard over a stored blank hub is not scoped as an insert naming slide 2 (${lockErr && lockErr.name}, ${lockErr && lockErr.scope}, ${JSON.stringify(lockErr && lockErr.faults)})`);
+      else if (!/not added/.test(unresolvedSlidesNotice((() => { const t: SlidesTurnState = {}; slidesFailure(lockErr, t); return t; })()))) fail("the stored-deck lockout is not reported as slides not added");
+
+      // TEXT WHERE TEXT BELONGS. A `null` slide, a title sent as an object and
+      // `imageQuery: 5` each threw a TypeError deeper in, which is a FAULT: the
+      // user was toasted "an internal error" for a call the model could resend,
+      // and the released signature let the identical retry toast again. They
+      // are refusals naming the slide; a list of bullets and a number are
+      // simply repaired, because their intent is plain.
+      const nullSlideErr = await caught(() => prepareSlidesForBuild({ title: "T", slides: [cover, null] }, null));
+      if (!isRefusal(nullSlideErr) || !nullSlideErr.faults.length || nullSlideErr.faults[0].slide !== 2) fail(`a null slide is not a refusal naming slide 2 (${nullSlideErr && nullSlideErr.name}: ${String(nullSlideErr && nullSlideErr.message).slice(0, 80)})`);
+      const objTitleErr = await caught(() => prepareSlidesForBuild({ title: "T", slides: [cover, { layout: "content", title: { text: "Q3" }, body: "y" }] }, null));
+      if (!isRefusal(objTitleErr) || String(objTitleErr.message).indexOf("`title`") < 0) fail(`a title sent as an object is not a refusal naming \`title\` (${objTitleErr && objTitleErr.name}: ${String(objTitleErr && objTitleErr.message).slice(0, 80)})`);
+      const repairedErr = await caught(() => prepareSlidesForBuild({ title: "T", slides: [cover, { layout: "content", title: 42, body: ["First point", "Second point"] }] }, null));
+      if (repairedErr) fail(`a numeric title and a list of bullets were refused rather than repaired: ${String(repairedErr.message).slice(0, 80)}`);
+      else {
+        const repaired = await prepareSlidesForBuild({ title: "T", slides: [cover, { layout: "content", title: 42, body: ["First point", "Second point"] }] }, null);
+        if (repaired.slides[1].title !== "42" || repaired.slides[1].body !== "First point\nSecond point") fail(`a numeric title and a list of bullets were not repaired to text (${JSON.stringify(repaired.slides[1]).slice(0, 100)})`);
+      }
+      const queryErr = await caught(() => prepareSlidesForBuild({ slides: [], editSlide: { slideNumber: 2, imageQuery: 5 } }, conv));
+      if (!isRefusal(queryErr) || queryErr.scope !== "edit") fail(`an imageQuery sent as a number is not a refusal scoped as an edit (${queryErr && queryErr.name}: ${String(queryErr && queryErr.message).slice(0, 80)})`);
+      const batchTextErr = await caught(() => prepareSlidesForBuild({ slides: [], editSlide: { insertAfter: 2, insertSlides: [{ layout: "content", title: ["not", { a: 1 }], body: "b" }] } }, conv));
+      if (!isRefusal(batchTextErr) || batchTextErr.scope !== "insert" || !batchTextErr.faults.length || batchTextErr.faults[0].slide !== 3) fail(`an appended slide whose title is not text is not a refusal naming slide 3 (${batchTextErr && batchTextErr.name}: ${JSON.stringify(batchTextErr && batchTextErr.faults)})`);
+      // ...and told to the model by its place in the BATCH it sent, which is
+      // the list the model can find it in. (The guard's scan behind this would
+      // refuse the same slide by its deck number, so only the words differ.)
+      else if (String(batchTextErr.message).indexOf("slide 1 of the batch") < 0) fail(`the batch refusal does not name the entry the model sent: ${String(batchTextErr.message).slice(0, 120)}`);
+      // A batch entry is REPAIRED like a slide in `slides`, before it is
+      // judged: a numeric title and a list of bullets were otherwise read as
+      // "no title or body" and refused.
+      const batchRepairErr = await caught(() => prepareSlidesForBuild({ slides: [], editSlide: { insertAfter: 2, insertSlides: [{ layout: "content", title: 2027, body: ["First", "Second"] }] } }, conv));
+      if (batchRepairErr) fail(`an appended slide with a numeric title and a list of bullets was refused rather than repaired: ${String(batchRepairErr.message).slice(0, 100)}`);
+
+      // b) slidesFailure, for a refusal.
+      if (isRefusal(hubErr)) {
+        const turn: SlidesTurnState = {};
+        const r = slidesFailure(hubErr, turn);
+        const toUser = r.events.filter((ev) => ev.slides_error !== undefined || ev.token !== undefined || ev.error !== undefined);
+        if (!r.refused || toUser.length) fail(`a refusal sends the user ${JSON.stringify(toUser)}`);
+        if (r.events.length !== 1 || Object.keys(r.events[0]).length !== 1) fail(`a refusal should send exactly one non-text event to clear the indicator, sent ${JSON.stringify(r.events)}`);
+        if (!/^REFUSED — nothing was built or changed, and the user has not been shown this\./.test(r.toolText) || r.toolText.indexOf(hubErr.message) < 0) fail(`the model is not told the call was refused with the reason: ${r.toolText.slice(0, 120)}`);
+        if (!/do not narrate the fix to the user/.test(r.toolText)) fail("the model is not told to keep the fix to itself");
+        if (!turn.lastOutcome || turn.lastOutcome.kind !== "refused") fail(`a refusal is not recorded on the turn (${JSON.stringify(turn.lastOutcome)})`);
+      }
+      // ...and for everything else.
+      const faults: any[] = [
+        new Error("boom"),
+        new TypeError("Cannot read properties of undefined (reading 'slides')"),
+        new SyntaxError("Unexpected end of JSON input"),
+        new Error(INCIDENT_TEXT),
+        new Error("Pass `hub` with editSlide: { insertSlides } and call generate_slides again"),
+        "a thrown string",
+      ];
+      for (let i = 0; i < faults.length; i++) {
+        const turn: SlidesTurnState = { lastOutcome: { kind: "refused", faults: [] } };
+        const r = slidesFailure(faults[i], turn);
+        const shown = r.events.map((ev) => String(ev.slides_error == null ? "" : ev.slides_error));
+        const label = String((faults[i] && faults[i].name) || typeof faults[i]);
+        if (r.refused || shown.length !== 1 || !shown[0]) { fail(`${label}: a real fault does not show the user one failure message (${JSON.stringify(r.events)})`); continue; }
+        if (MARKERS.test(shown[0])) fail(`${label}: the user is shown model-directed text: ${shown[0]}`);
+        const raw = String((faults[i] && faults[i].message) || faults[i]);
+        if (shown[0].indexOf(raw) >= 0) fail(`${label}: the user is shown the raw message`);
+        if (r.toolText.indexOf(raw) < 0 || !/do NOT tell them the deck is done/i.test(r.toolText)) fail(`${label}: the model is not given the raw fault and told not to claim success`);
+        if (!turn.lastOutcome || turn.lastOutcome.kind !== "failed") fail(`${label}: a fault after a refusal leaves the turn at ${JSON.stringify(turn.lastOutcome)}`);
+      }
+      if (MARKERS.test(SLIDES_FAILED_FOR_USER)) fail("the fixed failure sentence itself is written for the model");
+
+      // c) A cut-off OpenAI-style call.
+      const cut = '{"title":"Q3 review","slides":[{"layout":"cover","title":"Q3';
+      let parseErr: any = null;
+      try { parseSlidesArguments(cut); } catch (e: any) { parseErr = e; }
+      if (!isRefusal(parseErr)) fail(`truncated arguments throw a plain ${parseErr ? parseErr.name : "nothing"} — a raw SyntaxError reaches the toast`);
+      else {
+        if (!/smaller batch/.test(parseErr.message)) fail("the parse refusal does not tell the model to resend in a smaller batch");
+        if (slidesFailure(parseErr, {}).events.some((ev) => ev.slides_error !== undefined)) fail("a cut-off call still produces a user toast");
+      }
+      let nullErr: any = null;
+      try { parseSlidesArguments("null"); } catch (e: any) { nullErr = e; }
+      if (!isRefusal(nullErr)) fail("arguments of `null` are accepted, and the chain would then read `.publish` off null");
+      const good = parseSlidesArguments('{"slides":[{"layout":"cover","title":"A"}]}');
+      if (!good || !Array.isArray(good.slides) || good.slides.length !== 1) fail("valid arguments do not parse");
+
+      // d) The end-of-turn notice.
+      if (isRefusal(hubErr)) {
+        const refused: SlidesTurnState = {};
+        slidesFailure(hubErr, refused);
+        const n = unresolvedSlidesNotice(refused);
+        if (!n) fail("a turn that ends refused says nothing");
+        else {
+          if (n.indexOf("slide 2") < 0 || n.indexOf("EngineAI") < 0) fail(`the notice does not name the refused slide: ${n}`);
+          if (MARKERS.test(n)) fail(`the notice carries model-directed text: ${n}`);
+          if (!/not built/.test(n)) fail(`a refused full build is not reported as not built: ${n}`);
+        }
+        // THE INCIDENT'S SEQUENCE: refused, then built. Nothing to say.
+        refused.lastOutcome = { kind: "ok" };
+        if (unresolvedSlidesNotice(refused) !== "") fail("a refusal followed by a successful build still appends a notice");
+        const thenFailed: SlidesTurnState = {};
+        slidesFailure(hubErr, thenFailed);
+        slidesFailure(new Error("HTTP 500"), thenFailed);
+        if (unresolvedSlidesNotice(thenFailed) !== "") fail("a refusal followed by a shown failure appends a second, contradicting notice");
+        // BUILT, THEN A REFUSED REBUILD. A draft from earlier in the turn is on
+        // screen and saved, so "the deck was not built" contradicts what the
+        // user is looking at. It is the deck that was not CHANGED.
+        const rebuilt: SlidesTurnState = { lastOutcome: { kind: "ok" } };
+        slidesFailure(hubErr, rebuilt);
+        const rn = unresolvedSlidesNotice(rebuilt);
+        if (!/was not changed/.test(rn) || /not built/.test(rn)) fail(`a refused rebuild after a deck was drawn in the same turn is not reported as the deck not changed: ${rn}`);
+      }
+      if (unresolvedSlidesNotice({}) !== "" || unresolvedSlidesNotice(undefined) !== "" || unresolvedSlidesNotice({ lastOutcome: { kind: "ok" } }) !== "") fail("the notice speaks on a turn with no refusal");
+      if (isRefusal(appendErr)) {
+        const t: SlidesTurnState = {};
+        slidesFailure(appendErr, t);
+        const n = unresolvedSlidesNotice(t);
+        if (!/not added/.test(n) || /deck was not changed|not built/.test(n)) fail(`a refused append is not reported as slides not added: ${n}`);
+        if (n.indexOf("slide 4") < 0) fail(`the refused append does not name slide 4, where the hub would have landed: ${n}`);
+      }
+      if (isRefusal(parseErr)) {
+        const t: SlidesTurnState = {};
+        slidesFailure(parseErr, t);
+        const n = unresolvedSlidesNotice(t);
+        if (!/cut off/.test(n) || MARKERS.test(n)) fail(`a turn that ends on a cut-off call does not say so in plain words: ${n}`);
+      }
+
+      // e) The release key. The chains key the loop guard differently, so a
+      //    release written once for all of them would release nothing on some.
+      const lg = createToolLoopGuard();
+      const argString = '{"slides": [{"layout": "cover"}]}';
+      lg.blockFor("generate_slides", argString);
+      lg.release("generate_slides", JSON.parse(argString));
+      if (!lg.blockFor("generate_slides", argString)) fail("the loop guard released a string-keyed call under an object key — the premise of per-chain release is wrong, re-read this check");
+      lg.release("generate_slides", argString);
+      if (lg.blockFor("generate_slides", argString)) fail("the loop guard did not release a call under its own key");
+
+      // f) providers.ts uses all of it, in all four chains.
+      //
+      // COMMENTS OUT FIRST. A wiring line commented out still matches a
+      // substring search: `// slidesTurn(config).lastOutcome = { kind: "ok" };`
+      // counted as the ok mark it had stopped being, and ChatPanel's
+      // `// setIsGeneratingDocument(false);` as the call it no longer made. Six
+      // plausible mutations survived this block (MA–MK in the log); (h) below
+      // drives the chains for real, and this reads code, not prose.
+      const uncommented = (src: string) => src.replace(/^[ \t]*\/\*[\s\S]*?\*\//gm, "").replace(/(^|[ \t])\/\/[^\n]*/gm, "$1");
+      const prov = uncommented(readFileSync(join(__dirname, "..", "lib/ai/providers.ts"), "utf8"));
+      const count = (s: string, needle: string) => s.split(needle).length - 1;
+      // The turn's state is created in ONE place. A reset anywhere else — even
+      // on the line after slidesFailure recorded a refusal — forgets it, and a
+      // turn that ends refused then says nothing.
+      const turnWrites = (prov.match(/\.slidesTurn\s*=(?!=)/g) || []).length;
+      if (turnWrites !== 1) fail(`config.slidesTurn is assigned ${turnWrites} times in providers.ts; only slidesTurn() may create it, and a reset loses the turn's outcome`);
+      const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      if (count(prov, "slides_error: err.message") !== 0) fail(`${count(prov, "slides_error: err.message")} chain(s) still send the raw thrown message to the toast`);
+      if (count(prov, "slidesFailure(") !== 4) fail(`slidesFailure is called ${count(prov, "slidesFailure(")} times, expected once in each of 4 chains`);
+      const branchRe = /(tool\.name|tc\.function\.name) === "generate_slides"\) \{/g;
+      const branches: { at: number; name: string }[] = [];
+      let bm: RegExpExecArray | null;
+      while ((bm = branchRe.exec(prov))) branches.push({ at: bm.index, name: bm[1] });
+      if (branches.length !== 4) fail(`found ${branches.length} generate_slides branches, expected 4 — this wiring check is reading the wrong file or pattern`);
+      const OK = 'slidesTurn(config).lastOutcome = { kind: "ok" }';
+      for (let b = 0; b < branches.length; b++) {
+        const { at, name } = branches[b];
+        const end = prov.indexOf(`} else if (${name} === "generate_document")`, at);
+        const region = prov.slice(at, end < 0 ? at + 20000 : end);
+        const tag = `branch ${b + 1} (${name === "tool.name" ? "Anthropic" : "OpenAI-compatible"})`;
+        const bf = prov.lastIndexOf("toolLoopGuard.blockFor(", at);
+        const key = /^toolLoopGuard\.blockFor\(([^,]+), ([^)]+)\)/.exec(prov.slice(bf));
+        if (!key) { fail(`${tag}: no loop-guard key before it`); continue; }
+        if (count(region, "slidesFailure(") !== 1) fail(`${tag}: ${count(region, "slidesFailure(")} slidesFailure calls`);
+        const v = /const (\w+) = slidesFailure\(err, slidesTurn\(config\)\)/.exec(region);
+        if (!v) { fail(`${tag}: the catch does not hand the error and the turn to slidesFailure`); continue; }
+        // A STATEMENT of its own, not the tail of a condition: `if
+        // (!failed.refused) for (const ev of failed.events)` matches the loop
+        // and sends a refusal nothing, so the client's indicator never clears.
+        if (!new RegExp(`(?:^|[;{}])\\s*for \\(const (\\w+) of ${v[1]}\\.events\\) \\{\\s*controller\\.enqueue\\(encoder\\.encode\\(\`data: \\$\\{JSON\\.stringify\\(\\1\\)\\}`).test(region)) fail(`${tag}: the helper's events are not what is sent, on every outcome`);
+        if (!new RegExp(`content: ${v[1]}\\.toolText`).test(region)) fail(`${tag}: the tool result is not the helper's text`);
+        if (!new RegExp(`if \\(!${v[1]}\\.refused\\) toolLoopGuard\\.release\\(${esc(key[1])}, ${esc(key[2])}\\)`).test(region)) {
+          fail(`${tag}: a fault is not released with this chain's own key (blockFor(${key[1]}, ${key[2]}))`);
+        }
+        const draftAt = region.indexOf("slides_draft: draft");
+        const readyAt = region.indexOf("slides_ready: {");
+        const catchAt = region.lastIndexOf("} catch (err: any) {");
+        const ok1 = region.indexOf(OK, draftAt);
+        const ok2 = region.indexOf(OK, readyAt);
+        if (count(region, OK) !== 2 || !(draftAt >= 0 && ok1 > draftAt && ok1 < readyAt) || !(ok2 > readyAt && ok2 < catchAt)) {
+          fail(`${tag}: the turn is not marked ok exactly after the draft is sent and after the deck is published`);
+        }
+        if (name !== "tool.name") {
+          if (region.indexOf("parseSlidesArguments(tc.function.arguments)") < 0 || region.indexOf("JSON.parse(") >= 0) fail(`${tag}: arguments are not parsed as a refusal`);
+        }
+      }
+      const unstarted: number[] = [];
+      const noticeRe = /unstartedConversionNotice\(sourceSlideCount\(messages\)/g;
+      let nm: RegExpExecArray | null;
+      while ((nm = noticeRe.exec(prov))) unstarted.push(nm.index);
+      if (unstarted.length !== 4) fail(`found ${unstarted.length} end-of-turn notice sites, expected 4`);
+      const calls = count(prov, "unresolvedSlidesNotice(") - count(prov, "function unresolvedSlidesNotice(");
+      if (calls !== 4) fail(`unresolvedSlidesNotice is called ${calls} times, expected 4`);
+      for (let i = 0; i < unstarted.length; i++) {
+        const ret = prov.indexOf("return {", unstarted[i]);
+        const site = prov.slice(unstarted[i], ret);
+        if (!/const (\w+) = unresolvedSlidesNotice\(config\.slidesTurn\);\s*if \(\1\) \{\s*fullText \+= \1;[\s\S]{0,40}?controller\.enqueue\(encoder\.encode\(`data: \$\{JSON\.stringify\(\{ token: \1 \}\)\}/.test(site)) {
+          fail(`end-of-turn site ${i + 1}: the unresolved-slides notice is not appended to the reply and streamed beside the unstarted one`);
+        }
+      }
+
+      // g) ChatPanel.
+      const panel = uncommented(readFileSync(join(__dirname, "..", "components/ai-writer/ChatPanel.tsx"), "utf8"));
+      const branchOf = (k: string) => {
+        const s = panel.indexOf(`} else if (parsed.${k}) {`);
+        if (s < 0) return "";
+        const e = panel.indexOf("} else if (parsed.", s + 10);
+        return panel.slice(s, e < 0 ? s + 1500 : e);
+      };
+      const refusedKey = isRefusal(hubErr) ? Object.keys(slidesFailure(hubErr, {}).events[0] || {})[0] : "slides_refused";
+      const refusedBranch = branchOf(refusedKey);
+      if (!refusedBranch) fail(`ChatPanel has no branch for "${refusedKey}", the event a refusal sends — "Writing the deck… slide 14" would stay up for a call that ended`);
+      else {
+        if (refusedBranch.indexOf("setSlidesProgress(null)") < 0 || refusedBranch.indexOf("setIsGeneratingDocument(false)") < 0) fail("ChatPanel's refusal branch does not clear the progress indicator");
+        if (/toast\./.test(refusedBranch)) fail("ChatPanel's refusal branch shows a toast");
+      }
+      const dismiss = "toast.dismiss(slidesErrorToastRef.current)";
+      if (branchOf("slides_draft").indexOf(dismiss) < 0) fail("a draft arriving does not take down an earlier failure toast");
+      if (branchOf("slides_ready").indexOf(dismiss) < 0) fail("a published deck arriving does not take down an earlier failure toast");
+      if (!/slidesErrorToastRef\.current = toast\.error\(parsed\.slides_error\)/.test(branchOf("slides_error"))) fail("the failure toast's id is not kept, so nothing can take it down");
+      if (/Usually a fixable connection state/.test(panel)) fail("ChatPanel still says slides_error is usually a connection state");
+
+      // h) BEHAVIOUR, ALL FOUR CHAINS. (f) reads source, and source-reading
+      //    let a commented-out ok mark, a refusal event sent only on faults, a
+      //    publish failure never recorded and a turn state reset after being
+      //    written all stay green — two of them breaking what the user sees.
+      //    So the real createStreamingResponse runs each chain against a fake
+      //    provider on localhost: fetch is redirected there (the SDKs use it),
+      //    every other host is refused, and each turn's SSE events and the
+      //    text it PERSISTS are what is asserted. Offline, a few milliseconds a
+      //    turn. The Google publish runs with no signed-in user, which is the
+      //    deterministic {ok:false} branch.
+      type Step = { text: string } | { tool: string; args: string };
+      let script: Step[] = [];
+      let reqNo = 0;
+      const seenResults: string[] = [];
+      const server = createServer((req, res) => {
+        let body = "";
+        req.on("data", (c) => { body += c; });
+        req.on("end", () => {
+          let p: any = {};
+          try { p = JSON.parse(body); } catch { /* not JSON: answered anyway */ }
+          const msgs: any[] = p.messages || [];
+          const last = msgs[msgs.length - 1];
+          if (last && last.role === "tool") seenResults.push(String(last.content));
+          if (last && last.role === "user" && Array.isArray(last.content)) {
+            for (let i = 0; i < last.content.length; i++) {
+              const b = last.content[i];
+              if (b && b.type === "tool_result") seenResults.push(typeof b.content === "string" ? b.content : JSON.stringify(b.content));
+            }
+          }
+          const forced = p.tool_choice === "none" || (p.tool_choice && p.tool_choice.type === "none");
+          const step: Step = forced ? { text: "Forced final." } : (script[reqNo++] || { text: "Nothing more." });
+          res.writeHead(200, { "content-type": "text/event-stream" });
+          const w = (s: string) => res.write(s);
+          if ((req.url || "").indexOf("/messages") >= 0) {
+            const ev = (type: string, o: any) => w(`event: ${type}\ndata: ${JSON.stringify({ type, ...o })}\n\n`);
+            ev("message_start", { message: { id: `msg_${reqNo}`, type: "message", role: "assistant", model: "m", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } } });
+            if ("text" in step) {
+              ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
+              ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: step.text } });
+              ev("content_block_stop", { index: 0 });
+              ev("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } });
+            } else {
+              ev("content_block_start", { index: 0, content_block: { type: "tool_use", id: `toolu_${reqNo}`, name: step.tool, input: {} } });
+              ev("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: step.args } });
+              ev("content_block_stop", { index: 0 });
+              ev("message_delta", { delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 1 } });
+            }
+            ev("message_stop", {});
+          } else {
+            const base = { id: "c1", object: "chat.completion.chunk", created: 1, model: "m" };
+            const ev = (o: any) => w(`data: ${JSON.stringify({ ...base, ...o })}\n\n`);
+            if ("text" in step) {
+              ev({ choices: [{ index: 0, delta: { role: "assistant", content: step.text } }] });
+              ev({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] });
+            } else {
+              ev({ choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: `call_${reqNo}`, type: "function", function: { name: step.tool, arguments: "" } }] } }] });
+              ev({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: step.args } }] } }] });
+              ev({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] });
+            }
+            ev({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } });
+            w("data: [DONE]\n\n");
+          }
+          res.end();
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+      const port = (server.address() as any).port;
+      const realFetch = globalThis.fetch;
+      const ENV_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY", "GEMINI_API_KEY", "BLOB_READ_WRITE_TOKEN"];
+      const savedEnv: { [k: string]: string | undefined } = {};
+      const saidBefore = { log: console.log, warn: console.warn, error: console.error, info: console.info };
+      const slidesCall = (input: any): Step => ({ tool: "generate_slides", args: JSON.stringify(input) });
+      const GOOD = () => [{ layout: "content", title: "One", body: "A line" }, { layout: "content", title: "Two", body: "Another line" }];
+      type Turn = { events: any[]; persisted: string; streamed: string; results: string[] };
+      const runs: { chain: string; name: string; turn?: Turn; threw?: string }[] = [];
+      const CHAINS = [["Anthropic", "claude-sonnet-5"], ["xAI", "grok-4-1-fast"], ["Gemini", "gemini-3-flash"], ["OpenAI", "gpt-5-6-terra"]];
+      const SCENARIOS: [string, Step[], boolean][] = [
+        ["refused, then text", [slidesCall({ title: "T", slides: [cover, NODES_HUB()] }), { text: "Here is your deck, all done." }], false],
+        ["refused, then built", [slidesCall({ title: "T", slides: [cover, NODES_HUB()] }), slidesCall({ title: "T", slides: GOOD() }), { text: "Built." }], false],
+        ["built, then a refused append", [slidesCall({ title: "T", slides: GOOD() }), slidesCall({ editSlide: { insertAfter: 2, insertSlides: [{ layout: "content", title: "Three", body: "x" }, NODES_HUB()] } }), { text: "Added them." }], true],
+        ["cut off", [{ tool: "generate_slides", args: '{"title":"T","slides":[{"layout":"content","title":"Q' }, { text: "Done!" }], false],
+        ["built, then a refused rebuild", [slidesCall({ title: "T", slides: GOOD() }), slidesCall({ title: "T", slides: [cover, NODES_HUB()] }), { text: "Rebuilt with the diagram." }], false],
+        ["refused, then the publish fails", [slidesCall({ title: "T", slides: [cover, NODES_HUB()] }), slidesCall({ title: "T", slides: GOOD(), publish: true }), { text: "Published." }], false],
+        // A FAULT the model did not cause by its shape as the guard sees it: a
+        // stats payload as a string throws inside the builder. The identical
+        // call again must RUN again (the signature released with this chain's
+        // own key), not be refused as a repeat. Sent PRETTY-PRINTED: the xAI
+        // chain keys the guard on the arguments with whitespace stripped, and
+        // with compact JSON that equals the raw string — so a release under
+        // the wrong key would release and nothing here could see it.
+        ["a fault, then the identical call", [
+          { tool: "generate_slides", args: JSON.stringify({ title: "T", slides: [cover, { layout: "stat", title: "Numbers", stats: "12%" }] }, null, 2) },
+          { tool: "generate_slides", args: JSON.stringify({ title: "T", slides: [cover, { layout: "stat", title: "Numbers", stats: "12%" }] }, null, 2) },
+          { text: "Tried twice." }], false],
+      ];
+      try {
+        (globalThis as any).fetch = (input: any, init?: any) => {
+          let url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+          const u = new URL(url);
+          if (u.host === "api.x.ai" || u.host === "api.anthropic.com" || u.host === "api.openai.com") url = `http://127.0.0.1:${port}${u.pathname}${u.search}`;
+          else if (u.host === "generativelanguage.googleapis.com") url = `http://127.0.0.1:${port}/v1/chat/completions`;
+          else if (u.host !== `127.0.0.1:${port}`) return Promise.reject(new Error(`check 38h allows no network: ${u.host}`));
+          if (typeof input !== "string" && !(input instanceof URL)) return realFetch(new Request(url, input), init);
+          return realFetch(url, init);
+        };
+        for (let k = 0; k < ENV_KEYS.length; k++) {
+          savedEnv[ENV_KEYS[k]] = process.env[ENV_KEYS[k]];
+          // Never a real key, even to localhost; and no blob token, so nothing
+          // is uploaded and no icon is fetched.
+          if (ENV_KEYS[k] === "BLOB_READ_WRITE_TOKEN") delete process.env[ENV_KEYS[k]];
+          else process.env[ENV_KEYS[k]] = "verify-offline";
+        }
+        console.log = console.warn = console.error = console.info = () => {};
+        for (let c = 0; c < CHAINS.length; c++) {
+          for (let s = 0; s < SCENARIOS.length; s++) {
+            const [name, steps, needsConv] = SCENARIOS[s];
+            script = steps; reqNo = 0; seenResults.length = 0;
+            try {
+              let completed: any = null;
+              const config: any = { model: CHAINS[c][1], imageGeneration: true, systemPrompt: "sys", source: "enginegpt", userEmail: "",
+                conversationId: needsConv ? `verify38h-${CHAINS[c][0]}-${s}-${process.pid}-${Date.now()}` : null };
+              const stream = createStreamingResponse([{ role: "user", content: "make me a deck" } as any], config, async (r: any) => { completed = r; });
+              const reader = stream.getReader();
+              const dec = new TextDecoder();
+              let raw = "";
+              for (;;) { const chunk = await reader.read(); if (chunk.done) break; raw += dec.decode(chunk.value); }
+              const events: any[] = [];
+              const lines = raw.split("\n");
+              for (let i = 0; i < lines.length; i++) {
+                if (lines[i].indexOf("data: ") === 0) { try { events.push(JSON.parse(lines[i].slice(6))); } catch { /* [DONE] */ } }
+              }
+              const streamed = events.filter((e) => typeof e.token === "string").map((e) => e.token).join("");
+              runs.push({ chain: CHAINS[c][0], name, turn: { events, streamed, persisted: String((completed && completed.fullText) || ""), results: seenResults.slice() } });
+            } catch (e: any) {
+              runs.push({ chain: CHAINS[c][0], name, threw: String((e && e.message) || e).slice(0, 120) });
+            }
+          }
+        }
+      } finally {
+        console.log = saidBefore.log; console.warn = saidBefore.warn; console.error = saidBefore.error; console.info = saidBefore.info;
+        (globalThis as any).fetch = realFetch;
+        for (let k = 0; k < ENV_KEYS.length; k++) {
+          if (savedEnv[ENV_KEYS[k]] === undefined) delete process.env[ENV_KEYS[k]];
+          else process.env[ENV_KEYS[k]] = savedEnv[ENV_KEYS[k]];
+        }
+        server.close();
+      }
+      if (runs.length !== CHAINS.length * SCENARIOS.length) fail(`38h ran ${runs.length} turns, expected ${CHAINS.length * SCENARIOS.length} — the harness measured nothing`);
+      for (let r = 0; r < runs.length; r++) {
+        const { chain, name, turn, threw } = runs[r];
+        const tag = `${chain} chain, ${name}`;
+        if (!turn) { fail(`${tag}: the turn threw: ${threw}`); continue; }
+        const has = (k: string) => turn.events.filter((e) => e[k] !== undefined).length;
+        // PRECONDITION: the chain under test is the one that ran. A fallback
+        // means it threw and Grok answered, and every assertion below would be
+        // about the wrong chain.
+        if (has("fallback") || has("error")) { fail(`${tag}: the chain did not run (${JSON.stringify(turn.events.filter((e) => e.fallback || e.error)).slice(0, 120)}) — the harness is not testing it`); continue; }
+        const NOTICE = "⚠ **";
+        const noticeIn = (s: string) => s.indexOf(NOTICE) >= 0;
+        const persistedAndStreamed = (re: RegExp) => re.test(turn.persisted) && re.test(turn.streamed);
+        if (name === "refused, then text") {
+          if (!has("slides_refused") || has("slides_error")) fail(`${tag}: events ${JSON.stringify(turn.events.map((e) => Object.keys(e)[0]))} — a refusal should clear the indicator and toast nothing`);
+          if (!persistedAndStreamed(/The deck was not built\./) || turn.persisted.indexOf("slide 2") < 0) fail(`${tag}: the reply does not carry the notice naming slide 2, both saved and streamed (${turn.persisted.slice(0, 160)})`);
+          if (!turn.results.length || turn.results[0].indexOf("REFUSED —") !== 0) fail(`${tag}: the model was not told the call was refused (${String(turn.results[0]).slice(0, 80)})`);
+        } else if (name === "refused, then built") {
+          if (!has("slides_refused") || !has("slides_draft")) fail(`${tag}: expected a refusal and then a draft`);
+          if (noticeIn(turn.persisted)) fail(`${tag}: the deck built, and the reply still says it was not (${turn.persisted.slice(0, 160)})`);
+        } else if (name === "built, then a refused append") {
+          if (!has("slides_draft") || !has("slides_refused")) fail(`${tag}: expected a draft and then a refusal`);
+          if (!persistedAndStreamed(/The new slides were not added\./) || turn.persisted.indexOf("slide 4") < 0) fail(`${tag}: the reply does not say the new slides were not added, naming slide 4 (${turn.persisted.slice(0, 200)})`);
+        } else if (name === "cut off") {
+          if (!has("slides_refused") || has("slides_error")) fail(`${tag}: a cut-off call is not a silent refusal (${JSON.stringify(turn.events.map((e) => Object.keys(e)[0]))})`);
+          if (!persistedAndStreamed(/cut off/)) fail(`${tag}: the reply does not say the request was cut off (${turn.persisted.slice(0, 200)})`);
+        } else if (name === "built, then a refused rebuild") {
+          if (!persistedAndStreamed(/The deck was not changed\./) || /not built/.test(turn.persisted)) fail(`${tag}: a refused rebuild beside a drawn deck is not reported as the deck not changed (${turn.persisted.slice(0, 200)})`);
+        } else if (name === "refused, then the publish fails") {
+          if (!has("slides_refused") || has("slides_error") + has("slides_reauth") !== 1) fail(`${tag}: expected a refusal and then one shown publish failure (${JSON.stringify(turn.events.map((e) => Object.keys(e)[0]))})`);
+          if (noticeIn(turn.persisted)) fail(`${tag}: the publish failure was shown, and the reply adds a notice about the refusal before it (${turn.persisted.slice(0, 160)})`);
+        } else if (name === "a fault, then the identical call") {
+          const faults = turn.results.filter((t) => t.indexOf("Google Slides creation failed") === 0).length;
+          if (has("slides_refused")) fail(`${tag}: PRECONDITION — a stats payload sent as a string is now a refusal, so this scenario no longer drives a fault; give it another`);
+          else if (faults !== 2 || has("slides_error") !== 2) fail(`${tag}: the identical call after a fault did not run again (${faults} faults run, ${has("slides_error")} shown; results ${JSON.stringify(turn.results.map((t) => t.slice(0, 40)))}) — its signature was not released with this chain's key`);
+          const shown = turn.events.filter((e) => e.slides_error !== undefined).map((e) => String(e.slides_error));
+          if (shown.some((t) => t !== SLIDES_FAILED_FOR_USER)) fail(`${tag}: a fault showed the user something other than the fixed sentence: ${shown[0]}`);
+        }
+      }
+    } catch (e: any) {
+      fail(`check 38 threw: ${String((e && e.message) || e).slice(0, 160)}`);
+    }
+  }
+  if (failures === before38) pass("refusals are silent to the user and structured for the notice, faults show a fixed sentence, the notice speaks only when the turn ends refused, and all four chains and ChatPanel are wired to it");
+
+  /* 39. The chat preview draws in the deck's faces.
+   *
+   * SlideDraftPreview's stack named 'Roboto' first and nothing in the app
+   * loaded it, so on a Mac the preview drew Helvetica Neue — about 7% wider at
+   * semibold — and "HR Absence Calendar" wrapped in a hub node that holds it on
+   * one line in the deck. Every geometric check above measures the DECK; none
+   * of them can see the face the preview is painted in.
+   *
+   * A grep that the stack contains a variable, or that some file imports
+   * next/font, would pass with the class applied nowhere, applied to the grid
+   * but not the lightbox, or naming a variable no loader declares. So this
+   * RENDERS the real component, with next/font/google stubbed to record the
+   * arguments each face is loaded with and hand back a class that names it,
+   * and asserts on the markup:
+   *   - every text box's font-family var() is declared by a loaded face, on an
+   *     ancestor that frames exactly ONE slide — so wherever a slide is drawn
+   *     (the grid, the full-size lightbox) the variable comes with it;
+   *   - each var() carries its family as a fallback, because a var() whose
+   *     variable is missing invalidates the whole declaration and the text
+   *     inherits the chat's Geist instead of the fallbacks named after it;
+   *   - the loader arguments pass NEXT'S OWN validator — the function
+   *     `next build` calls — so a weight Next refuses (Roboto 600) is caught
+   *     here rather than by a failed deploy;
+   *   - every weight and italic the preview model actually draws in a face
+   *     resolves, by CSS font matching, to a loaded face within 100;
+   *   - adjustFontFallback is off, or next/font's metric-adjusted Arial sits in
+   *     front of the stack's own fallbacks.
+   * The render's text-box count must equal the model's, and each of the three
+   * faces and an italic run must actually be drawn, or the assertions above
+   * could pass having tested nothing.
+   *
+   * What this cannot see is whether next/font's compile step honours the same
+   * arguments. That was confirmed once by a real `next build` in a detached
+   * worktree (2026-09-15), serving a throwaway page that renders this component:
+   * the built CSS declares `.__variable_6c56d9{--font-slide-roboto:
+   * "__Roboto_6c56d9"}` (the webfont alone, no adjusted Arial), headless Chrome
+   * resolved a hub label to `__Roboto_6c56d9, "Helvetica Neue", Arial,
+   * sans-serif` at 600 from the slide frame's class and not from <body>, fetched
+   * only the faces drawn (Roboto 300 and 700, Playfair 400 and italic) from
+   * /_next/static/media with nothing from Google, and measured "HR Absence
+   * Calendar" at 9.774em — Roboto 700's own width, against 10.481 in Helvetica
+   * Neue — on one line. The build manifest puts that chunk and CSS on
+   * /engineai, /ai-writer and /content/[id], and on no other page.
+   *
+   * MUTATION LOG (detached worktree, 2026-09-15), 18 mutations. Each killed
+   * with 39's own FAIL lines and no failure in checks 1-38:
+   *   M1  the class removed from the slide frame (the import is then elided,
+   *       so no face loads at all — as in a real build)
+   *   M2  the class moved to the thumbnail grid — "an element framing 46
+   *       slides"; the lightbox draws its slide outside the grid
+   *   M3  the Roboto stack back to a bare 'Roboto' (also: 83 boxes of 675)
+   *   M4  var() without its fallback
+   *   M5  the loader declaring a variable the stack does not read
+   *   M6  Roboto weight 600 added — Next's validator: "Unknown weight `600`"
+   *   M7  Roboto 700 not loaded — 600 and 700 would draw from 500
+   *   M8  next/font's adjusted fallback left on
+   *   M9  the Playfair class left out of SLIDE_FONT_CLASS — 75 boxes undeclared
+   *   M10 a hand-written class in place of the loader's
+   *   M11 Playfair italic not loaded (first run crashed the transform — a perl
+   *       `$1[...]` read as an array — so it was re-run with `${1}` and killed
+   *       by name)
+   *   M12 the Playfair and Poppins variables swapped between loaders
+   *   M13 the Roboto stack losing 'Helvetica Neue' and Arial
+   *   M14 the class on the whole preview — the grid and lightbox both inside,
+   *       still "framing 46 slides", so still refused
+   *   M15 Playfair loaded at 700 only
+   *   M16 Roboto preloaded with no subsets — Next's validator refuses it
+   *   M18 the Poppins stack removed, so Poppins boxes draw in Roboto's
+   * SURVIVED, deliberately:
+   *   M17 display "block" changed to "swap". A swap paints the fallback's line
+   *       breaks for a moment and then reflows; nothing here can tell a moment
+   *       from a state, and the rule is a taste call written down in
+   *       slide-fonts.ts, not an invariant.
+   * Re-run after moving italic detection ahead of the loader lookup: M1 and
+   * M10 had also reported "no italic run", a symptom of the missing loader
+   * rather than a second finding. Both still killed, now without it.
+   */
+  const before39 = failures;
+  console.log(`\n39. The chat preview loads and applies the deck's faces`);
+  {
+    try {
+      const fontData: Record<string, { weights: string[]; styles: string[]; axes?: { tag: string; min: number; max: number }[] }> =
+        require("next/dist/compiled/@next/font/dist/google/font-data.json");
+      const { validateGoogleFontFunctionCall } = require("next/dist/compiled/@next/font/dist/google/validate-google-font-function-call");
+      // next/font/google has no runtime: its exports are replaced at compile
+      // time. The stub stands in for that step, one function per family the
+      // real module would export.
+      const calls: { name: string; opts: any }[] = [];
+      const stub: Record<string, any> = { __esModule: true };
+      const families = Object.keys(fontData);
+      for (let i = 0; i < families.length; i++) {
+        const name = families[i].replace(/ /g, "_");
+        stub[name] = (opts: any) => {
+          calls.push({ name, opts });
+          return { className: `__className_${name}`, variable: `__variable_${name}`, style: { fontFamily: families[i] } };
+        };
+      }
+      const NodeModule: any = require("module");
+      const realLoad = NodeModule._load;
+      let previewModule: any;
+      NodeModule._load = function (this: any, request: string) {
+        if (request === "next/font/google") return stub;
+        return realLoad.apply(this, arguments as any);
+      };
+      try {
+        previewModule = require(join(__dirname, "..", "components/ai-writer/SlideDraftPreview.tsx"));
+      } finally {
+        NodeModule._load = realLoad;
+      }
+      const React = require("react");
+      const { renderToStaticMarkup } = require("react-dom/server");
+
+      // a) The loaders, through Next's validator.
+      const loaders: Record<string, { name: string; family: string; weights: string[]; styles: string[]; opts: any }> = {};
+      if (calls.length === 0) fail("rendering the preview loads no face through next/font/google — the stack names faces nothing loads");
+      for (let i = 0; i < calls.length; i++) {
+        const c = calls[i];
+        try {
+          const v = validateGoogleFontFunctionCall(c.name, c.opts);
+          if (!c.opts || typeof c.opts.variable !== "string") fail(`${v.fontFamily} is loaded without a CSS variable, so the preview's stack cannot name it`);
+          else loaders[c.opts.variable] = { name: c.name, family: v.fontFamily, weights: v.weights, styles: v.styles, opts: c.opts };
+        } catch (e: any) {
+          fail(`next build would refuse the ${c.name} loader: ${String((e && e.message) || e).split("\n")[0]}`);
+        }
+      }
+
+      // b) The stacks.
+      const FACES = ["Roboto", "Playfair Display", "Poppins"];
+      const TAILS: Record<string, string> = {
+        "Roboto": ", 'Helvetica Neue', Arial, sans-serif",
+        "Playfair Display": ", Georgia, 'Times New Roman', serif",
+        "Poppins": ", 'Helvetica Neue', Arial, sans-serif",
+      };
+      const varOf: Record<string, string> = {};
+      if (typeof previewModule.fontStack !== "function") fail("SlideDraftPreview does not export fontStack");
+      else {
+        if (previewModule.fontStack(undefined) !== previewModule.fontStack("Roboto")) fail("a box that names no face does not draw in Roboto's stack");
+        for (let i = 0; i < FACES.length; i++) {
+          const face = FACES[i];
+          const stack: string = previewModule.fontStack(face);
+          const m = /^var\((--[\w-]+), '([^']+)'\)/.exec(stack);
+          if (/var\(--[\w-]+\)/.test(stack)) { fail(`the ${face} stack has a var() with no fallback — a missing variable would draw the chat's own font`); continue; }
+          if (!m || m[2] !== face) { fail(`the ${face} stack does not start with the loaded face's variable, falling back to '${face}': ${stack}`); continue; }
+          if (stack.slice(m[0].length) !== TAILS[face]) fail(`the ${face} stack lost its fallbacks: ${stack}`);
+          const loader = loaders[m[1]];
+          if (!loader) { fail(`the ${face} stack reads ${m[1]}, which no loaded face declares`); continue; }
+          if (loader.family !== face) fail(`the ${face} stack reads ${m[1]}, which declares ${loader.family}`);
+          if (loader.opts.adjustFontFallback !== false) fail(`${face} is loaded with next/font's adjusted fallback, which sits in front of the stack's own`);
+          varOf[face] = m[1];
+        }
+      }
+
+      // c) The render. The deck above, plus a slide that draws an accent
+      //    phrase and a bold lead-in, so italic and bold runs are exercised.
+      const faceSlides: SlideInput[] = ALL.concat([
+        { layout: "content", title: "A headline with {one accent phrase}", body: "**Bold lead-in.** A body line under it." },
+      ]);
+      const faceDeck = toPreviewModel(faceSlides);
+      const markup: string = renderToStaticMarkup(React.createElement(previewModule.default, {
+        draft: { title: "Faces", slides: faceSlides, preview: faceDeck }, onPublish: () => {}, publishing: false,
+      }));
+      type HNode = { attrs: string; parent: HNode | null; frames: number };
+      const VOID: Record<string, 1> = { area: 1, base: 1, br: 1, col: 1, embed: 1, hr: 1, img: 1, input: 1, link: 1, meta: 1, source: 1, track: 1, wbr: 1 };
+      const nodes: HNode[] = [];
+      const stack: HNode[] = [];
+      const tagRe = /<(\/?)([a-zA-Z][\w-]*)((?:[^>"]|"[^"]*")*)>/g;
+      let t: RegExpExecArray | null;
+      while ((t = tagRe.exec(markup))) {
+        if (t[1]) { stack.pop(); continue; }
+        const node: HNode = { attrs: t[3], parent: stack.length ? stack[stack.length - 1] : null, frames: 0 };
+        nodes.push(node);
+        if (!VOID[t[2].toLowerCase()] && !/\/\s*$/.test(t[3])) stack.push(node);
+      }
+      for (let i = 0; i < nodes.length; i++) {
+        if (!/\baria-label="Slide \d+"/.test(nodes[i].attrs)) continue;
+        for (let p: HNode | null = nodes[i]; p; p = p.parent) p.frames++;
+      }
+      const wantBoxes = faceDeck.slides.reduce((n, s) => n + s.elements.filter((e) => e.kind !== "image" && e.kind !== "rect" && e.kind !== "ellipse").length, 0);
+      let boxes = 0, undeclared = 0, wideScope = 0, firstUndeclared = "", firstWide = "";
+      const facesDrawn: Record<string, number> = {};
+      for (let i = 0; i < nodes.length; i++) {
+        const fm = /\bstyle="[^"]*font-family:var\((--[\w-]+)/.exec(nodes[i].attrs);
+        if (!fm) continue;
+        boxes++;
+        let face = "";
+        for (let f = 0; f < FACES.length; f++) if (varOf[FACES[f]] === fm[1]) face = FACES[f];
+        if (!face) continue;   // reported by (b)
+        facesDrawn[face] = (facesDrawn[face] || 0) + 1;
+        const cls = `__variable_${loaders[fm[1]].name}`;
+        let holder: HNode | null = null;
+        for (let p = nodes[i].parent; p && !holder; p = p.parent) {
+          const cm = /\bclass="([^"]*)"/.exec(p.attrs);
+          if (cm && cm[1].split(/\s+/).indexOf(cls) >= 0) holder = p;
+        }
+        if (!holder) { undeclared++; if (!firstUndeclared) firstUndeclared = face; }
+        else if (holder.frames !== 1) { wideScope++; if (!firstWide) firstWide = `${face} on an element framing ${holder.frames} slides`; }
+      }
+      if (boxes !== wantBoxes) fail(`the render drew ${boxes} text boxes in a deck of ${wantBoxes}, so the faces were checked on part of it`);
+      if (undeclared) fail(`${undeclared} text box(es) read a font variable no ancestor declares (first: ${firstUndeclared}) — they draw in the fallback face`);
+      if (wideScope) fail(`${wideScope} text box(es) take the font variable from an element wider than their slide (${firstWide}) — a slide drawn outside it, as the lightbox does, loses the face`);
+      for (let f = 0; f < FACES.length; f++) if (!facesDrawn[FACES[f]] && varOf[FACES[f]]) fail(`the fixture draws no ${FACES[f]} text, so that face was never checked`);
+
+      // d) What the model draws, against what is loaded.
+      const cssMatch = (w: number, avail: number[]): number => {
+        if (avail.indexOf(w) >= 0) return w;
+        const up = avail.filter((a) => a > w).sort((a, b) => a - b);
+        const down = avail.filter((a) => a < w).sort((a, b) => b - a);
+        if (w >= 400 && w <= 500) {
+          const mid = up.filter((a) => a <= 500);
+          return mid.length ? mid[0] : down.length ? down[0] : up[0];
+        }
+        if (w < 400) return down.length ? down[0] : up[0];
+        return up.length ? up[0] : down[0];
+      };
+      const drawn: Record<string, Record<string, 1>> = {};
+      let italicSeen = false;
+      for (let s = 0; s < faceDeck.slides.length; s++) {
+        const els = faceDeck.slides[s].elements;
+        for (let e = 0; e < els.length; e++) {
+          const el = els[e];
+          if (el.kind !== "text") continue;
+          const face = el.font === "Playfair Display" || el.font === "Poppins" ? el.font : "Roboto";
+          const weights = [el.weight || 400];
+          const accents = el.accents || [];
+          let italic = false;
+          for (let a = 0; a < accents.length; a++) {
+            if (accents[a].bold) weights.push(700);
+            if (accents[a].italic) italic = true;
+          }
+          // Seen before the loader lookup, so a missing loader is reported as
+          // itself and not also as a fixture with no italic in it.
+          if (italic) italicSeen = true;
+          const loader = loaders[varOf[face] || ""];
+          if (!loader) continue;
+          if (italic && loader.styles.indexOf("italic") < 0) fail(`${face} draws an italic run but only ${loader.styles.join("/")} is loaded`);
+          for (let k = 0; k < weights.length; k++) {
+            const w = weights[k];
+            let got = w;
+            if (loader.weights[0] === "variable") {
+              const axis = (fontData[face].axes || []).filter((x) => x.tag === "wght")[0];
+              if (axis) got = Math.min(axis.max, Math.max(axis.min, w));
+            } else got = cssMatch(w, loader.weights.map(Number));
+            (drawn[face] ||= {})[`${w}→${got}`] = 1;
+            if (Math.abs(got - w) > 100) fail(`${face} ${w} is drawn but the nearest loaded weight is ${got}`);
+          }
+        }
+      }
+      if (!italicSeen) fail("the fixture draws no italic run, so the italic faces were never checked");
+      if (failures === before39) {
+        const summary = FACES.map((f) => `${f} ${Object.keys(drawn[f] || {}).sort().join(" ")}`).join("; ");
+        pass(`${boxes} text boxes, each under a slide frame that declares its face; drawn → loaded: ${summary}`);
+      }
+    } catch (e: any) {
+      fail(`check 39 threw: ${String((e && e.message) || e).slice(0, 200)}`);
+    }
+  }
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);
