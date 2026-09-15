@@ -126,6 +126,20 @@ export interface SlideInput {
      *  and still works. */
     arrow?: boolean | "up" | "down" | "none";
   }[];
+  /** A hub and what it is wired to: `title` in a navy circle at the centre,
+   *  one or two `groups` either side, a connector from every item to the hub.
+   *  One group is split across both sides. See hubRequests. */
+  hub?: {
+    title?: string;
+    caption?: string;
+    groups?: {
+      /** A caps label over this group's side. */
+      name?: string;
+      /** "blue" | "teal" | "coral" | "amber" | "grey" | "lav"; defaults to blue, then teal. */
+      tone?: string;
+      items?: { title?: string; icon?: string; resolvedIcon?: string }[];
+    }[];
+  };
   /** A full-width band under a cards row — the source deck's "SXO in detail"
    *  device: a spanning tinted panel holding a title and a row of small
    *  labelled cells that elaborate ONE of the cards above. */
@@ -2587,6 +2601,8 @@ export function isVisualSlide(slide: SlideInput | undefined): boolean {
     // The process layout draws its chevrons from the stages alone, and a quote
     // is a designed slide on navy whether or not it carries a portrait.
     (slide.stages && slide.stages.length) ||
+    // A hub is a drawn diagram whether or not its nodes carry icons.
+    (slide.hub && (slide.hub.groups || []).some((g) => !!g && (g.items || []).length > 0)) ||
     slide.quote ||
     cards.some((c) => (c.resolvedImage && c.resolvedImage.url) || c.resolvedIcon || c.marker) ||
     logos.some((l) => l.resolvedUrl || l.name)
@@ -2598,7 +2614,11 @@ export function isVisualSlide(slide: SlideInput | undefined): boolean {
  *  would report a finding on every slide that has a picture. */
 const NON_CONTENT_KEYS = new Set([
   "layout", "layoutAsked", "tone", "tones", "style", "color", "colour",
-  "url", "src", "query", "resolvedUrl", "resolvedIcon", "imageError",
+  // `icon` is a Lucide NAME, an instruction like `query`. Left out, every
+  // name over ten characters ("layout-dashboard", "calendar-clock") was
+  // reported as text the slide dropped, and real icons were swapped out for
+  // shorter ones on the strength of it.
+  "url", "src", "query", "icon", "resolvedUrl", "resolvedIcon", "imageError",
   "presentationId", "fidelity", "align", "id", "font",
 ]);
 
@@ -3387,6 +3407,207 @@ function layersRequests(
   const slack = room - (chosen.bottom - top);
   if (slack > 0 && chosen.gaps > 0) chosen = plan(chosen.metrics, Math.min(12, slack / chosen.gaps));
   return { requests: chosen.out, bottom: chosen.bottom };
+}
+
+/** A HUB AND ITS CONNECTIONS: one thing in the middle, what it is wired to
+ *  around it, a line from each.
+ *
+ *  Exists because the layer diagram cannot say "connected to". A stack says
+ *  everything below feeds the thing above; a platform wired into a dozen
+ *  systems drawn that way came out as four rows of pale pills that read as a
+ *  table, on the one slide of the deck whose whole point was the wiring.
+ *
+ *  Up to two groups, one either side of the hub, each in its own tone so the
+ *  sides read as KINDS — the company's data on one side, the team's own tools
+ *  on the other. One group is split across both sides. Each side's nodes sit
+ *  on a shallow arc, the middle node furthest out, so the connectors come out
+ *  roughly one length and the picture reads as an orbit rather than two
+ *  lists. Every node takes the width of the longest label: nodes of one width
+ *  read as one set, and hugging each label made the arc look ragged. */
+export const HUB_MAX_PER_SIDE = 7;
+const HUB_DEFAULT_TONES = ["blue", "teal"];
+
+/** A group's tint and ink. Exported because the icons are rasterised in the
+ *  ink at resolution time, and the two must agree. */
+export function hubTone(tone: string | undefined, groupIndex: number): { tint: string; ink: string } {
+  const key = String(tone || "").toLowerCase();
+  if (key === "lav") return { tint: COLOR.lav, ink: COLOR.navy };
+  return TONES[key] || TONES[HUB_DEFAULT_TONES[groupIndex % HUB_DEFAULT_TONES.length]];
+}
+
+type HubNode = { title: string; resolvedIcon?: string; group: number };
+
+function hubSides(hub: NonNullable<SlideInput["hub"]>) {
+  const groups = (hub.groups || []).filter(Boolean).slice(0, 2);
+  const nodesOf = (gi: number): HubNode[] => ((groups[gi] && groups[gi].items) || [])
+    .map((it) => ({ title: String((it && it.title) || "").trim(), resolvedIcon: it && it.resolvedIcon, group: gi }))
+    .filter((n) => n.title);
+  const g0 = nodesOf(0);
+  const g1 = groups.length > 1 ? nodesOf(1) : [];
+  let left: HubNode[];
+  let right: HubNode[];
+  if (g0.length && g1.length) {
+    left = g0; right = g1;
+  } else {
+    const one = g0.length ? g0 : g1;
+    const half = Math.ceil(one.length / 2);
+    left = one.slice(0, half); right = one.slice(half);
+  }
+  const total = left.length + right.length;
+  left = left.slice(0, HUB_MAX_PER_SIDE);
+  right = right.slice(0, HUB_MAX_PER_SIDE);
+  return { groups, left, right, dropped: total - left.length - right.length };
+}
+
+function hubRequests(
+  page: string, id: (s: string) => string,
+  hub: NonNullable<SlideInput["hub"]>, top: number, room: number
+): { requests: Req[]; bottom: number } {
+  const { groups, left, right, dropped } = hubSides(hub);
+  const title = String(hub.title || "").replace(/[{}]/g, "").trim();
+  const out: Req[] = [];
+  if (!left.length && !right.length && !title) return { requests: out, bottom: top };
+  const HALO = 24;          // two lavender rings round the hub, 12pt apart
+  const LABEL_H = 16;       // a group's caps label above its column
+  const ICON = 13, PAD = 9, ICON_GAP = 7, CURVE = 22, DOT = 6, MIN_WIRE = 14;
+  const ADMISSION_H = 18;
+  const cx = GRID.margin + GRID.contentWidth / 2;
+  const nameOf = (gi: number) => String((groups[gi] && groups[gi].name) || "").trim();
+  const leftLabel = left.length ? nameOf(left[0].group) : "";
+  // A split group is named once, over the left side.
+  const rightLabel = right.length && (!left.length || right[0].group !== left[0].group) ? nameOf(right[0].group) : "";
+  const labelH = leftLabel || rightLabel ? LABEL_H : 0;
+  const avail = Math.max(40, room - (dropped > 0 ? ADMISSION_H : 0) - labelH);
+  const maxN = Math.max(left.length, right.length, 1);
+
+  // Pitch: a 26pt node with up to 12pt between. The gap gives way first, to
+  // 4pt, then the node, to 20pt — one 9pt line and its inset.
+  let nodeH = 26;
+  let gap = maxN > 1 ? Math.min(12, (avail - maxN * nodeH) / (maxN - 1)) : 0;
+  if (gap < 4) {
+    nodeH = Math.max(20, Math.floor((avail - 4 * (maxN - 1)) / maxN));
+    gap = maxN > 1 ? Math.max(0, Math.min(12, (avail - maxN * nodeH) / (maxN - 1))) : 0;
+  }
+  const span = maxN * nodeH + (maxN - 1) * gap;
+  // Centred in the room, like every self-contained block (GRID.bandHeight).
+  const cy = top + labelH + avail / 2;
+  const R = Math.max(28, Math.min(62, avail / 2 - HALO));
+
+  const all = left.concat(right);
+  const anyIcon = all.some((n) => !!n.resolvedIcon);
+  const fixed = PAD * 2 + (anyIcon ? ICON + ICON_GAP : 0);
+  const longest = all.reduce((m, n) => Math.max(m, n.title.length), 1);
+  // From the hub's outer ring to the margin: node, arc and the shortest wire.
+  const sideRoom = cx - GRID.margin - (R + HALO);
+  const nodeW = Math.max(Math.min(120, sideRoom - MIN_WIRE),
+    Math.min(196, sideRoom - MIN_WIRE, fixed + longest * 9 * PER_CHAR));
+  const labelSize = Math.max(7.5, Math.min(9, Math.floor(((nodeW - fixed) / (longest * PER_CHAR)) * 2) / 2));
+  const curve = Math.max(0, Math.min(CURVE, sideRoom - nodeW - MIN_WIRE));
+  const reach = sideRoom - nodeW - curve;    // hub ring to the nearest node edge
+
+  type Placed = { n: HubNode; yc: number; inner: number; x: number; key: string };
+  const place = (nodes: HubNode[], dir: number, side: string): Placed[] => nodes.map((n, i) => {
+    // A shorter column is centred on the taller one's pitch.
+    const yc = cy - span / 2 + ((maxN - nodes.length) * (nodeH + gap)) / 2 + i * (nodeH + gap) + nodeH / 2;
+    const half = span / 2 - nodeH / 2;
+    const t = half > 0 ? Math.max(-1, Math.min(1, (yc - cy) / half)) : 0;
+    const inner = cx + dir * (R + HALO + reach + curve * (1 - t * t));
+    return { n, yc, inner, x: dir < 0 ? inner - nodeW : inner, key: `${side}${i}` };
+  });
+  const placed = place(left, -1, "l").concat(place(right, 1, "r"));
+
+  // Rings, then wires, then the hub on top, so every wire runs in under the
+  // hub's edge instead of stopping short of it.
+  out.push(
+    ...filledShape(id("hbo"), page, "ELLIPSE", COLOR.lav, {
+      x: cx - R - HALO, y: cy - R - HALO, width: 2 * (R + HALO), height: 2 * (R + HALO),
+    }, 0.45),
+    ...filledShape(id("hbi"), page, "ELLIPSE", COLOR.lav, {
+      x: cx - R - HALO / 2, y: cy - R - HALO / 2, width: 2 * R + HALO, height: 2 * R + HALO,
+    }),
+  );
+  for (const p of placed) {
+    const tone = hubTone(groups[p.n.group] && groups[p.n.group].tone, p.n.group);
+    const a = Math.atan2(p.yc - cy, p.inner - cx);
+    out.push(...segment(id(`hw${p.key}`), page, tone.ink, p.inner, p.yc,
+      cx + (R - 2) * Math.cos(a), cy + (R - 2) * Math.sin(a), 1.25, 0.6));
+  }
+  out.push(...filledShape(id("hbc"), page, "ELLIPSE", COLOR.navy, { x: cx - R, y: cy - R, width: 2 * R, height: 2 * R }));
+
+  if (title) {
+    const innerW = 2 * R * 0.8;
+    let size = 18;
+    while (size > 11 && estimateLines(title, innerW, size, false, false, "Playfair Display") > 1) size -= 1;
+    const tLines = Math.min(2, estimateLines(title, innerW, size, false, false, "Playfair Display"));
+    const tH = drawnTextHeight(tLines, size, 0, 1, 1.0);
+    const caption = String(hub.caption || "").trim();
+    const capLines = caption ? Math.min(3, estimateLines(caption, innerW, 7.5)) : 0;
+    const capH = caption ? drawnTextHeight(capLines, 7.5, 0, 1, 1.1) : 0;
+    const capGap = 2 - TEXT_INSET_Y / 2;     // the boxes share an inset, never ink
+    const y0 = cy - (tH + (caption ? capGap + capH : 0)) / 2;
+    out.push(...textBox(id("hbt"), page, title, { font: "Playfair Display", size, color: COLOR.white }, {
+      x: cx - innerW / 2 - TEXT_INSET_X / 2, y: y0, width: innerW + TEXT_INSET_X, height: tH,
+    }, { align: "CENTER", lineSpacing: 1.0, spaceBelow: 0 }));
+    if (caption) {
+      out.push(...textBox(id("hbs"), page, caption, { font: "Roboto", size: 7.5, weight: 300, color: COLOR.greyLight }, {
+        x: cx - innerW / 2 - TEXT_INSET_X / 2, y: y0 + tH + capGap, width: innerW + TEXT_INSET_X, height: capH,
+      }, { align: "CENTER", lineSpacing: 1.1, spaceBelow: 0 }));
+    }
+  }
+
+  for (const p of placed) {
+    const tone = hubTone(groups[p.n.group] && groups[p.n.group].tone, p.n.group);
+    const y = p.yc - nodeH / 2;
+    out.push(
+      ...filledShape(id(`hn${p.key}`), page, "ROUND_RECTANGLE", tone.tint, { x: p.x, y, width: nodeW, height: nodeH }),
+      // The port: where the wire meets the node.
+      ...filledShape(id(`hd${p.key}`), page, "ELLIPSE", tone.ink, {
+        x: p.inner - DOT / 2, y: p.yc - DOT / 2, width: DOT, height: DOT,
+      }),
+    );
+    if (p.n.resolvedIcon) {
+      out.push({
+        createImage: {
+          objectId: id(`hi${p.key}`), url: p.n.resolvedIcon,
+          elementProperties: {
+            pageObjectId: page,
+            size: { width: pt(ICON), height: pt(ICON) },
+            transform: { scaleX: 1, scaleY: 1, translateX: p.x + PAD, translateY: p.yc - ICON / 2, unit: "PT" },
+          },
+        },
+      });
+    }
+    const tx = p.x + PAD + (anyIcon ? ICON + ICON_GAP : 0);
+    out.push(...textBox(id(`ht${p.key}`), page, p.n.title,
+      { font: "Roboto", size: labelSize, weight: 600, color: COLOR.navy }, {
+      x: tx - TEXT_INSET_X / 2, y, width: p.x + nodeW - PAD - tx + TEXT_INSET_X, height: nodeH,
+    }, { vCenter: true, lineSpacing: 1.0, spaceBelow: 0 }));
+  }
+
+  const firstOf = (side: string) => placed.find((p) => p.key === `${side}0`);
+  const labelFor = (side: string, text: string) => {
+    const p = firstOf(side);
+    if (!p || !text) return;
+    const tone = hubTone(groups[p.n.group] && groups[p.n.group].tone, p.n.group);
+    out.push(...textBox(id(`hg${side}`), page, text, { font: "Roboto", size: 8, bold: true, color: tone.ink, caps: true }, {
+      x: p.x - TEXT_INSET_X / 2, y: p.yc - nodeH / 2 - LABEL_H, width: nodeW + TEXT_INSET_X, height: LABEL_H - 2,
+    }, { align: side === "l" ? "START" : "END", lineSpacing: 1.0, spaceBelow: 0 }));
+  };
+  labelFor("l", leftLabel);
+  labelFor("r", rightLabel);
+
+  let bottom = Math.max(cy + span / 2, cy + R + HALO);
+  if (dropped > 0) {
+    // Said on the slide, in the slot the other diagrams use.
+    const shown = left.length + right.length;
+    const text = `Showing ${shown} of ${shown + dropped} connections`;
+    const w = Math.min(GRID.contentWidth, text.length * 7.5 * PER_CHAR + TEXT_INSET_X + 4);
+    out.push(...textBox(id("hdrop"), page, text, { font: "Roboto", size: 7.5, weight: 300, color: COLOR.ink }, {
+      x: GRID.margin + GRID.contentWidth - w, y: bottom + 2, width: w, height: ADMISSION_H - 2,
+    }, { align: "END", lineSpacing: 1.0 }));
+    bottom += ADMISSION_H;
+  }
+  return { requests: out, bottom };
 }
 
 /** A pull quote, set large on navy with the speaker beneath.
@@ -5175,6 +5396,30 @@ export function buildSlideRequests(slide: SlideInput, index: number, run = "r0")
     const lay = layersRequests(page, id, slide.layers || [], diagTop, Math.max(100, GRID.bodyY + band - diagTop));
     requests.push(...lay.requests);
     contentBottom = lay.bottom;
+  } else if (layout === "hub") {
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY,
+        width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
+      }),
+    );
+    let hubTop = GRID.bodyY;
+    if (slide.subtitle?.trim()) {
+      const standStyle = onDark ? TYPE.standfirstDark : TYPE.standfirst;
+      const standH = drawnTextHeight(
+        estimateLines(slide.subtitle, GRID.contentWidth, standStyle.size), standStyle.size);
+      requests.push(...textBox(id("sub"), page, slide.subtitle, standStyle, {
+        x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: standH,
+      }));
+      hubTop = GRID.bodyY + standH + 8;
+    }
+    // The diagram reports where it ends so the takeaway bar follows it.
+    const hubbed = hubRequests(page, id, slide.hub || {}, hubTop, Math.max(100, GRID.bodyY + band - hubTop));
+    requests.push(...hubbed.requests);
+    contentBottom = hubbed.bottom;
   } else if (layout === "stat" || layout === "bar-chart" || layout === "stacked-bar" || layout === "line-chart") {
     requests.push(
       ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
@@ -5885,7 +6130,7 @@ function splitOnce(slide: SlideInput, index: number): SlideInput[] {
   const splittable = !slide.chart && !slide.stats && !slide.milestones && !slide.tracks &&
     !slide.cards && !slide.quote && !slide.stages && !slide.logos &&
     !slide.table && !slide.comparison && !slide.swot && !slide.matrix &&
-    !slide.venn && !slide.scatter && !slide.layers && !slide.images && !slide.panel;
+    !slide.venn && !slide.scatter && !slide.layers && !slide.hub && !slide.images && !slide.panel;
   if (!body || !splittable) return [slide];
 
   // The cover and the closing size their body box TO THE CONTENT, so the
@@ -6044,6 +6289,11 @@ export function refreshDeckImageUrls(slides: SlideInput[]): void {
     for (const c of s.cards || []) {
       if (c?.resolvedImage?.url) c.resolvedImage.url = refreshSignedMediaUrl(c.resolvedImage.url);
       if (c?.resolvedIcon) c.resolvedIcon = refreshSignedMediaUrl(c.resolvedIcon);
+    }
+    for (const g of s.hub?.groups || []) {
+      for (const it of g?.items || []) {
+        if (it?.resolvedIcon) it.resolvedIcon = refreshSignedMediaUrl(it.resolvedIcon);
+      }
     }
   }
 }
@@ -6216,6 +6466,19 @@ export async function resolveDeckImages(
           if (!card.image || card.resolvedImage) return;
           const r = await resolveImage(styled(card.image), generate, { aspect: cardAspect, gradient: false });
           if (r) card.resolvedImage = { url: r.url };
+        }));
+      }
+      if (slide.hub?.groups?.length) {
+        // Rasterised in the group's ink, so an icon matches its node's tone.
+        const hubGroups = slide.hub.groups;
+        await Promise.all(hubGroups.map(async (g, gi) => {
+          if (!g) return;
+          const ink = hubTone(g.tone, gi).ink;
+          await Promise.all((g.items || []).map(async (it) => {
+            if (!it || !it.icon || it.resolvedIcon) return;
+            const icon = await resolveIcon(it.icon, ink);
+            if (icon) it.resolvedIcon = icon;
+          }));
         }));
       }
       if (slide.images?.length && !slide.resolvedImages) {

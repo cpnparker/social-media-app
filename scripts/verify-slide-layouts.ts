@@ -178,6 +178,20 @@ const DECK: SlideInput[] = [
  *  The tool schema puts no maxItems on any of these, so "the model would not
  *  send that" was never true. */
 const STRESS: SlideInput[] = [
+  // The hub, as a deck uses it and overloaded: nine and eight connections with
+  // long labels, a standfirst and a takeaway bar, so the pitch compresses and
+  // three nodes are declared rather than drawn.
+  { layout: "hub", title: "Everything TCE runs on, in {one place}", subtitle: "It reads only what you can already see.",
+    hub: { title: "EngineAI", caption: "Picks the model, fetches the data, builds the answer", groups: [
+      { name: "Engine company data", tone: "blue", items: ["Engine app", "Clients & contracts", "Tasks", "Resourcing", "Finance", "HR leave"]
+        .map((title) => ({ title, icon: "briefcase", resolvedIcon: "icon.png" })) },
+      { name: "Your own work tools", tone: "teal", items: ["Email", "Calendar", "Slack", "Microsoft 365", "Google Drive", "MeetingBrain"]
+        .map((title) => ({ title, icon: "mail", resolvedIcon: "icon.png" })) } ] } },
+  { layout: "hub", title: LONG, subtitle: "A standfirst that also runs long enough to wrap onto a second line under the title here.",
+    note: "Why this matters: every answer starts from the company's own records rather than from the open web, and says which it used.",
+    hub: { title: "A platform with a long name", caption: "A caption long enough to need more than one line inside the hub", groups: [
+      { name: "Company data", tone: "blue", items: Array.from({ length: 9 }, (_, i) => ({ title: `Internal source number ${i + 1}`, resolvedIcon: "icon.png" })) },
+      { name: "Work tools", tone: "teal", items: Array.from({ length: 8 }, (_, i) => ({ title: `External tool number ${i + 1}`, resolvedIcon: "icon.png" })) } ] } },
   // The layer diagram, overloaded: five bands, one with eight cells carrying
   // text, two captions, a suppressed arrow — every feature at its ceiling.
   { layout: "layers", title: "AI Is Not a New Channel - It's a New Layer",
@@ -3714,6 +3728,153 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     }
   }
   if (failures === before35) pass("a note clears the rail on content and case-study, fits its narrowed bar, and stays full width without a picture");
+
+  /* 36. A hub wires every node to its hub, and nothing it draws collides.
+   *
+   * The layout exists because a platform's connections drawn as a layer stack
+   * read as a table. What makes it a picture of WIRING is geometric, so that is
+   * what is asserted: each wire starts on its own node's edge and ends inside
+   * the hub; no node touches the rings or another node; every label stays on
+   * one line; an overloaded hub keeps above its takeaway bar and says what it
+   * left out. The icon half: a Lucide name is an instruction, and a long one
+   * was being reported as text the slide dropped.
+   *
+   * MUTATION LOG (detached worktree, 2026-09-15), eight mutations:
+   *   killed  `icon` removed from NON_CONTENT_KEYS
+   *   killed  wire ends 30pt outside the hub
+   *   killed  a split group named on both sides
+   *   killed  overflow not admitted
+   *   killed  label box 30pt wide (caught by check 2 as well)
+   *   killed  hub measured against the full band, ignoring the takeaway bar
+   *   killed  hub dropped from the visual audit
+   *   SURVIVED the arc's clamp removed (curve + 60). Not a blind spot in the
+   *           geometry: the outermost node lands on the margin by construction,
+   *           and with short labels there was room to spare, so the wires only
+   *           got shorter. It only goes wrong when nodes are at their widest,
+   *           which no fixture reached — hence "long labels" below. */
+  const before36 = failures;
+  console.log(`\n36. A hub slide wires every node to its hub and keeps clear of everything else`);
+  {
+    const itemsOf = (names: string[]) => names.map((title) => ({ title, icon: "layout-dashboard", resolvedIcon: "https://example.com/icon.png" }));
+    const HUB_SLIDE = {
+      layout: "hub", title: "Everything TCE runs on, in {one place}", subtitle: "It reads only what you can already see.",
+      hub: { title: "EngineAI", caption: "Picks the model, fetches the data, builds the answer", groups: [
+        { name: "Engine company data", tone: "blue", items: itemsOf(["Engine app", "Clients & contracts", "Tasks", "Resourcing", "Finance", "HR leave"]) },
+        { name: "Your own work tools", tone: "teal", items: itemsOf(["Email", "Calendar", "Slack", "Microsoft 365", "Google Drive", "MeetingBrain"]) },
+      ] },
+    } as SlideInput;
+    type Geo = { x: number; y: number; w: number; h: number; t: any };
+    const geoOf = (slide: SlideInput) => {
+      const shapes: Record<string, Geo> = {};
+      const sizes: Record<string, number> = {};
+      const texts: Record<string, string> = {};
+      const short = (objectId: string) => objectId.replace(/^h_s0_/, "");
+      for (const r of buildSlideRequests(slide, 0, "h") as any[]) {
+        const b = r.createShape || r.createImage;
+        if (b) {
+          const t = b.elementProperties.transform;
+          shapes[short(b.objectId)] = { x: t.translateX, y: t.translateY, w: b.elementProperties.size.width.magnitude, h: b.elementProperties.size.height.magnitude, t };
+        }
+        if (r.insertText) texts[short(r.insertText.objectId)] = r.insertText.text;
+        const fs = r.updateTextStyle?.style?.fontSize;
+        if (fs && sizes[short(r.updateTextStyle.objectId)] === undefined) sizes[short(r.updateTextStyle.objectId)] = fs.magnitude;
+      }
+      return { shapes, sizes, texts };
+    };
+    const keysWith = (s: Record<string, Geo>, prefix: string) => Object.keys(s).filter((k) => k.indexOf(prefix) === 0);
+    const inspect = (label: string, slide: SlideInput, expectNodes: number) => {
+      const g = geoOf(slide);
+      const { shapes, sizes, texts } = g;
+      const hub = shapes["hbc"], halo = shapes["hbo"];
+      const nodes = keysWith(shapes, "hn");
+      if (!hub || !halo || nodes.length !== expectNodes) {
+        fail(`${label}: expected a hub, its rings and ${expectNodes} nodes; got hub=${!!hub} rings=${!!halo} nodes=${nodes.length} — the check is not measuring anything`);
+        return g;
+      }
+      const hx = hub.x + hub.w / 2, hy = hub.y + hub.h / 2, R = hub.w / 2, haloR = halo.w / 2;
+      for (let i = 0; i < nodes.length; i++) {
+        const k = nodes[i];
+        const n = shapes[k];
+        const key = k.slice(2);
+        const wire = shapes[`hw${key}`];
+        if (!wire) { fail(`${label}: node ${key} has no wire`); continue; }
+        // The segment's local mid-left and mid-right, through its affine.
+        const T = wire.h, t = wire.t;
+        const at = (u: number) => ({
+          x: t.scaleX * u + (t.shearX || 0) * (T / 2) + t.translateX,
+          y: (t.shearY || 0) * u + t.scaleY * (T / 2) + t.translateY,
+        });
+        const a = at(0), b = at(wire.w);
+        const onEdge = (Math.abs(a.x - n.x) < 0.6 || Math.abs(a.x - (n.x + n.w)) < 0.6) && a.y >= n.y - 0.5 && a.y <= n.y + n.h + 0.5;
+        if (!onEdge) fail(`${label}: wire ${key} does not start on its node's edge`);
+        const reach = Math.hypot(b.x - hx, b.y - hy);
+        if (reach > R) fail(`${label}: wire ${key} stops ${(reach - R).toFixed(1)}pt short of the hub`);
+        const nx = Math.max(n.x, Math.min(hx, n.x + n.w)), ny = Math.max(n.y, Math.min(hy, n.y + n.h));
+        if (Math.hypot(nx - hx, ny - hy) < haloR + 4) fail(`${label}: node ${key} runs into the hub's rings`);
+        if (n.x < GRID.margin - 0.5 || n.x + n.w > GRID.margin + GRID.contentWidth + 0.5) fail(`${label}: node ${key} leaves the content width`);
+        const title = texts[`ht${key}`], box = shapes[`ht${key}`], size = sizes[`ht${key}`];
+        if (!title || !box || !size) { fail(`${label}: node ${key} has no label`); continue; }
+        if (estimateLines(title, box.w - TEXT_INSET_X, size, false, false, "Roboto") > 1) {
+          fail(`${label}: "${title}" wraps inside its ${n.w.toFixed(0)}pt node at ${size}pt`);
+        }
+        for (let j = i + 1; j < nodes.length; j++) {
+          const m = shapes[nodes[j]];
+          if (n.x < m.x + m.w - 0.5 && m.x < n.x + n.w - 0.5 && n.y < m.y + m.h - 0.5 && m.y < n.y + n.h - 0.5) {
+            fail(`${label}: nodes ${key} and ${nodes[j].slice(2)} overlap`);
+          }
+        }
+      }
+      const stand = shapes["sub"];
+      if (stand && halo.y < stand.y + stand.h - TEXT_INSET_Y / 2) fail(`${label}: the hub's rings rise into the standfirst`);
+      return g;
+    };
+
+    inspect("two groups", HUB_SLIDE, 12);
+    const fitsDrop = droppedContent(HUB_SLIDE, 0);
+    if (fitsDrop.length) fail(`a hub that fits reports dropped text: ${fitsDrop.join(" | ").slice(0, 200)}`);
+
+    const many = (count: number, stem: string) => itemsOf(Array.from({ length: count }, (_, i) => `${stem} source ${i + 1}`));
+    const loaded = {
+      ...HUB_SLIDE,
+      note: "Why this matters: every answer starts from the company's own records, not the open web.",
+      hub: { title: "A platform with a long name", caption: "A caption long enough to need more than one line inside the hub", groups: [
+        { name: "Company data", tone: "blue", items: many(9, "Internal") },
+        { name: "Work tools", tone: "teal", items: many(8, "External") } ] },
+    } as SlideInput;
+    const L = inspect("overloaded", loaded, 14);
+    if (L.texts["hdrop"] !== "Showing 14 of 17 connections") {
+      fail(`an overloaded hub does not say what it left out (${L.texts["hdrop"] || "nothing drawn"})`);
+    }
+    const bar = L.shapes["noteBar"];
+    if (!bar) {
+      fail("the overloaded hub drew no takeaway bar — the band assertion measures nothing");
+    } else {
+      const drawn = keysWith(L.shapes, "hn").concat(["hbo"]);
+      for (let i = 0; i < drawn.length; i++) {
+        const s = L.shapes[drawn[i]];
+        if (s && s.y + s.h > bar.y + 0.5) fail(`overloaded: ${drawn[i]} runs ${(s.y + s.h - bar.y).toFixed(0)}pt into the takeaway bar`);
+      }
+    }
+
+    // Nodes at their widest, where the arc has the least room to spend.
+    const longLabels = { ...HUB_SLIDE, hub: { title: "EngineAI", groups: [
+      { name: "Engine company data", items: itemsOf(["Client contracts and renewals", "Resourcing and utilisation plan", "Finance and invoicing records"]) },
+      { name: "Your own work tools", items: itemsOf(["Microsoft 365 documents library", "Google Drive shared folders", "MeetingBrain transcripts"]) } ] } } as SlideInput;
+    inspect("long labels", longLabels, 6);
+
+    const single = { ...HUB_SLIDE, hub: { title: "EngineAI", groups: [{ name: "Connected", items: itemsOf(["One", "Two", "Three", "Four", "Five"]) }] } } as SlideInput;
+    const S = inspect("one group", single, 5);
+    if (!S.shapes["hgl"] || S.shapes["hgr"]) fail(`a single group should be named once, over the left side (left=${!!S.shapes["hgl"]} right=${!!S.shapes["hgr"]})`);
+    if (keysWith(S.shapes, "hnl").length !== 3 || keysWith(S.shapes, "hnr").length !== 2) fail("a single group of five should split three and two");
+
+    if (!isVisualSlide(HUB_SLIDE)) fail("the visual audit counts a hub as a text slide");
+
+    const iconDrop = droppedContent({ layout: "cards", title: "Icons", cards: [
+      { title: "A card", body: "Body text here.", icon: "calendar-clock" },
+      { title: "Another card", body: "More body text.", icon: "layout-dashboard" } ] } as SlideInput, 0);
+    if (iconDrop.some((d) => /calendar|dashboard/i.test(d))) fail(`an icon NAME is reported as dropped text: ${iconDrop.join(" | ")}`);
+  }
+  if (failures === before36) pass("wires start on their nodes and end in the hub, nodes clear the rings and each other, labels hold one line, overflow is declared, a split group is named once, icon names are not text");
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   process.exit(failures ? 1 : 0);

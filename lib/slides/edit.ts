@@ -32,6 +32,7 @@ const REQUIRED_PAYLOAD: { [layout: string]: string } = {
   quote: "quote",
   "image-grid": "images",
   layers: "layers",
+  hub: "hub",
 };
 
 function isEmptyPayload(v: any): boolean {
