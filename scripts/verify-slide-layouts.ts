@@ -21,6 +21,11 @@ import {
 import { toPreviewModel } from "../lib/slides/preview-model";
 import { applyEditSlide, unrenderableSlides, PAYLOAD_FIELDS, insertableLayout, normaliseSlide, SlideCallRefusal } from "../lib/slides/edit";
 import { slidesFailure, parseSlidesArguments, SLIDES_FAILED_FOR_USER, type SlidesTurnState } from "../lib/slides/failure";
+import {
+  asksForDeckChange, deckChangeClaim, claimingRules, CLAIM_RULES, ASK_RULES, shouldRetryDeckClaim, unmadeDeckChangeNotice,
+  DECK_CLAIM_NUDGE, DECK_NOT_CHANGED_NOTICE, NO_DECK_BUILT_NOTICE, lastAssistantReply, endsInDeckChangeQuestion,
+  type DeckClaimRetryInput, type ClaimOpts,
+} from "../lib/slides/claim";
 import { createToolLoopGuard } from "../lib/ai/tool-loop-guard";
 import { deckToHtml, safeSrc } from "../lib/slides/pdf-html";
 import { SLIDES_TEXT_INSET, NATURAL_LINE } from "../lib/slides/preview-style";
@@ -4632,7 +4637,13 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
    *      built, built then a refused append, a cut-off call, built then a
    *      refused rebuild, refused then a failed publish, and a fault retried.
    *      (f) and (g) read comment-stripped source; (h) is what a source read
-   *      cannot fake.
+   *      cannot fake. (h) also drives the deck-claim guard's fifteen turns —
+   *      check 40 holds their units, corpus, wiring and mutation log — and
+   *      asserts for EVERY turn that the model-directed nudge ("SYSTEM NOTE")
+   *      reaches neither the saved nor the streamed text, and that no nudge
+   *      follows an empty assistant turn. One of them switches on a fake blob
+   *      store so generate_document really builds a .pptx; no other turn
+   *      uploads anything.
    *
    * MUTATION LOG (detached worktree, 2026-09-15), 38 mutations, check 14 of
    * verify-slide-edit.ts run alongside for those in lib/slides/edit.ts:
@@ -4988,16 +4999,30 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       //    text it PERSISTS are what is asserted. Offline, a few milliseconds a
       //    turn. The Google publish runs with no signed-in user, which is the
       //    deterministic {ok:false} branch.
-      type Step = { text: string } | { tool: string; args: string };
+      // A step may carry text AND a call, as a real round can: narration, then
+      // the call, in one message.
+      type Step = { text?: string; tool?: string; args?: string };
       let script: Step[] = [];
       let reqNo = 0;
       const seenResults: string[] = [];
+      // What each request carried, for the deck-claim scenarios: a retry must
+      // be a tools-on round offering generate_slides, with the assistant's own
+      // text of THAT round replayed immediately before the nudge.
+      type Req = { lastUserText: string; prevRole: string; prevText: string; forced: boolean; offered: string[] };
+      const reqs: Req[] = [];
       const server = createServer((req, res) => {
         let body = "";
         req.on("data", (c) => { body += c; });
         req.on("end", () => {
           let p: any = {};
           try { p = JSON.parse(body); } catch { /* not JSON: answered anyway */ }
+          // A fake blob store, for the one scenario that builds a real .pptx
+          // with generate_document: the file is "uploaded" here, offline.
+          if ((req.url || "").indexOf("/api/blob") === 0) {
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end(JSON.stringify({ url: "https://store.private.blob.vercel-storage.com/presentations/x.pptx", downloadUrl: "https://store.private.blob.vercel-storage.com/presentations/x.pptx?download=1", pathname: "presentations/x.pptx", contentType: "application/vnd.openxmlformats-officedocument.presentationml.presentation", contentDisposition: "attachment" }));
+            return;
+          }
           const msgs: any[] = p.messages || [];
           const last = msgs[msgs.length - 1];
           if (last && last.role === "tool") seenResults.push(String(last.content));
@@ -5008,35 +5033,40 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
             }
           }
           const forced = p.tool_choice === "none" || (p.tool_choice && p.tool_choice.type === "none");
+          const textOf = (m: any): string => !m ? "" : typeof m.content === "string" ? m.content
+            : Array.isArray(m.content) ? m.content.filter((b: any) => b && b.type === "text").map((b: any) => b.text).join("\n") : "";
+          const prev = msgs[msgs.length - 2];
+          reqs.push({ lastUserText: last && last.role === "user" ? textOf(last) : "", prevRole: (prev && prev.role) || "", prevText: textOf(prev), forced: !!forced,
+            offered: (p.tools || []).map((t: any) => t.name || (t.function && t.function.name)).filter(Boolean) });
           const step: Step = forced ? { text: "Forced final." } : (script[reqNo++] || { text: "Nothing more." });
           res.writeHead(200, { "content-type": "text/event-stream" });
           const w = (s: string) => res.write(s);
           if ((req.url || "").indexOf("/messages") >= 0) {
             const ev = (type: string, o: any) => w(`event: ${type}\ndata: ${JSON.stringify({ type, ...o })}\n\n`);
             ev("message_start", { message: { id: `msg_${reqNo}`, type: "message", role: "assistant", model: "m", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } } });
-            if ("text" in step) {
-              ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
-              ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: step.text } });
-              ev("content_block_stop", { index: 0 });
-              ev("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } });
-            } else {
-              ev("content_block_start", { index: 0, content_block: { type: "tool_use", id: `toolu_${reqNo}`, name: step.tool, input: {} } });
-              ev("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: step.args } });
-              ev("content_block_stop", { index: 0 });
-              ev("message_delta", { delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 1 } });
+            let idx = 0;
+            if (step.text) {
+              ev("content_block_start", { index: idx, content_block: { type: "text", text: "" } });
+              ev("content_block_delta", { index: idx, delta: { type: "text_delta", text: step.text } });
+              ev("content_block_stop", { index: idx });
+              idx++;
             }
+            if (step.tool) {
+              ev("content_block_start", { index: idx, content_block: { type: "tool_use", id: `toolu_${reqNo}`, name: step.tool, input: {} } });
+              ev("content_block_delta", { index: idx, delta: { type: "input_json_delta", partial_json: step.args || "{}" } });
+              ev("content_block_stop", { index: idx });
+            }
+            ev("message_delta", { delta: { stop_reason: step.tool ? "tool_use" : "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } });
             ev("message_stop", {});
           } else {
             const base = { id: "c1", object: "chat.completion.chunk", created: 1, model: "m" };
             const ev = (o: any) => w(`data: ${JSON.stringify({ ...base, ...o })}\n\n`);
-            if ("text" in step) {
-              ev({ choices: [{ index: 0, delta: { role: "assistant", content: step.text } }] });
-              ev({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] });
-            } else {
+            if (step.text) ev({ choices: [{ index: 0, delta: { role: "assistant", content: step.text } }] });
+            if (step.tool) {
               ev({ choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: `call_${reqNo}`, type: "function", function: { name: step.tool, arguments: "" } }] } }] });
-              ev({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: step.args } }] } }] });
-              ev({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] });
+              ev({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: step.args || "{}" } }] } }] });
             }
+            ev({ choices: [{ index: 0, delta: {}, finish_reason: step.tool ? "tool_calls" : "stop" }] });
             ev({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } });
             w("data: [DONE]\n\n");
           }
@@ -5046,15 +5076,27 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
       const port = (server.address() as any).port;
       const realFetch = globalThis.fetch;
-      const ENV_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY", "GEMINI_API_KEY", "BLOB_READ_WRITE_TOKEN"];
+      const ENV_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY", "GEMINI_API_KEY", "BLOB_READ_WRITE_TOKEN", "VERCEL_BLOB_API_URL"];
       const savedEnv: { [k: string]: string | undefined } = {};
       const saidBefore = { log: console.log, warn: console.warn, error: console.error, info: console.info };
       const slidesCall = (input: any): Step => ({ tool: "generate_slides", args: JSON.stringify(input) });
       const GOOD = () => [{ layout: "content", title: "One", body: "A line" }, { layout: "content", title: "Two", body: "Another line" }];
-      type Turn = { events: any[]; persisted: string; streamed: string; results: string[] };
-      const runs: { chain: string; name: string; turn?: Turn; threw?: string }[] = [];
+      type Turn = { events: any[]; persisted: string; streamed: string; results: string[]; reqs: Req[] };
+      const runs: { chain: string; name: string; asked: boolean; turn?: Turn; threw?: string }[] = [];
       const CHAINS = [["Anthropic", "claude-sonnet-5"], ["xAI", "grok-4-1-fast"], ["Gemini", "gemini-3-flash"], ["OpenAI", "gpt-5-6-terra"]];
-      const SCENARIOS: [string, Step[], boolean][] = [
+      // The deck-claim guard (check 40): a reply that says the deck changed when
+      // no call reached the builder. FALSE_REPLY is the incident's shape, cut
+      // short; EDIT is a change asked for in the user's own message.
+      const FALSE_REPLY = "Replacing slide 9 with the two corrected MeetingBrain slides, everything else untouched.\n\nSlide 9 is gone, replaced by two more accurate slides.\n\nThe deck is now 12 slides total.";
+      const FALSE_FIRST = "Replacing slide 9 with the two corrected MeetingBrain slides";
+      const REAL_INSERT = "Inserting the Writer and Optimiser slides after slide 6, leaving the rest of the deck untouched.\n\nTwo slides are now in after the live-demo slide.";
+      const EDIT = "Remove slide 9 and put these two slides in its place";
+      // The user's message (default "make me a deck"), whether a deck is in the
+      // conversation (default: needsConv), extra config, an attached source, and
+      // whether the fake blob store is switched on for this turn.
+      type ScenarioOpts = { user?: string; deck?: boolean; cfg?: any; attach?: string; blob?: boolean };
+      const COMMENT_QUESTION = "On slide 4 (\"Pricing\") of \"Q3 review\": is this 12% figure right?\n\nChange only that slide. Leave every other slide exactly as it is, and resend the complete deck.";
+      const SCENARIOS: [string, Step[], boolean, ScenarioOpts?][] = [
         ["refused, then text", [slidesCall({ title: "T", slides: [cover, NODES_HUB()] }), { text: "Here is your deck, all done." }], false],
         ["refused, then built", [slidesCall({ title: "T", slides: [cover, NODES_HUB()] }), slidesCall({ title: "T", slides: GOOD() }), { text: "Built." }], false],
         ["built, then a refused append", [slidesCall({ title: "T", slides: GOOD() }), slidesCall({ editSlide: { insertAfter: 2, insertSlides: [{ layout: "content", title: "Three", body: "x" }, NODES_HUB()] } }), { text: "Added them." }], true],
@@ -5072,6 +5114,33 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
           { tool: "generate_slides", args: JSON.stringify({ title: "T", slides: [cover, { layout: "stat", title: "Numbers", stats: "12%" }] }, null, 2) },
           { tool: "generate_slides", args: JSON.stringify({ title: "T", slides: [cover, { layout: "stat", title: "Numbers", stats: "12%" }] }, null, 2) },
           { text: "Tried twice." }], false],
+        // The deck-claim guard. A claim with no call gets ONE more round with
+        // tools on; a turn that still ends with no call says the deck was not
+        // changed; a turn that did call, or was not asked, or could not have
+        // called, is never nudged.
+        ["claim, retry calls", [{ text: FALSE_REPLY }, slidesCall({ title: "T", slides: GOOD() }), { text: "Done." }], false, { user: EDIT, deck: true }],
+        ["claim, retry asks", [{ text: FALSE_REPLY }, { text: "Should the cards be blue or teal?" }, { text: "UNREACHED" }], false, { user: EDIT, deck: true }],
+        ["claim, retry claims again", [{ text: FALSE_REPLY }, { text: "Slide 9 is gone now." }, { text: "UNREACHED" }], false, { user: EDIT, deck: true }],
+        // Text from an EARLIER round must not be replayed as the claiming
+        // round's assistant turn: it is already in the history once.
+        ["text and a lookup, then claim", [{ text: "Checking the deck first.", tool: "not_a_tool", args: "{}" }, { text: FALSE_REPLY }, slidesCall({ title: "T", slides: GOOD() }), { text: "Done." }], false, { user: EDIT, deck: true }],
+        ["real call, then narration", [slidesCall({ title: "T", slides: GOOD() }), { text: REAL_INSERT }, { text: "UNREACHED" }], false, { user: EDIT, deck: true }],
+        ["question, no ask", [{ text: "Slide 9 is now the two-column MeetingBrain slide." }, { text: "UNREACHED" }], false, { user: "What's on slide 9 now?", deck: true }],
+        ["claim, slides not offered", [{ text: FALSE_REPLY }, { text: "UNREACHED" }], false, { user: EDIT, deck: true, cfg: { imageGeneration: false } }],
+        ["claim, tainted", [{ text: FALSE_REPLY }, { text: "UNREACHED" }], false, { user: EDIT, deck: true, cfg: { sawUntrustedContent: true } }],
+        ["refused, then claim", [slidesCall({ title: "T", slides: [cover, NODES_HUB()] }), { text: "Slide 9 has been replaced." }, { text: "UNREACHED" }], false, { user: EDIT, deck: true }],
+        ["no deck, described", [{ text: "Here's your deck:\n\n**Slide 1 - Q3 in review**" }, slidesCall({ title: "T", slides: GOOD() }), { text: "Built." }], false, { user: "Make me a deck on our Q3 results", deck: false }],
+        ["conversion unstarted, claim", [{ text: "Here's your deck: slide 1 is now the cover." }, { text: "Which title should the cover use?" }, { text: "UNREACHED" }], false,
+          { user: "Convert the attached document into a deck", deck: false, attach: "--- Slide 1 ---\nA\n--- Slide 2 ---\nB" }],
+        // Verifiers' confirmed cases (2026-09-15, second pass). The first two
+        // regenerated the deck on a turn that asked for nothing; the third told
+        // a user holding a real .pptx that no deck was built; the fourth
+        // replayed an EMPTY assistant turn, which the Anthropic API rejects.
+        ["approval after an edit", [{ text: "Glad it works. Slide 9 is now the two-column MeetingBrain slide." }, { text: "UNREACHED" }], false, { user: "Perfect, thanks!", deck: true }],
+        ["comment-box question", [{ text: "The figure is right: slide 4 now shows 12%, which matches the Q3 report." }, { text: "UNREACHED" }], false, { user: COMMENT_QUESTION, deck: true }],
+        ["pptx made with generate_document, then described", [{ tool: "generate_document", args: JSON.stringify({ title: "Q3 results", slides: [{ layout: "title", title: "Q3 results" }, { layout: "content", title: "Revenue", bullets: ["Up 12%"] }] }) }, { text: "Here's your deck as a PowerPoint file, ready to email." }, { text: "UNREACHED" }], false,
+          { user: "Make me a pptx deck of our Q3 results I can email", deck: false, blob: true }],
+        ["claim and a lookup, then an empty round", [{ text: "Replacing slide 9 with the two corrected MeetingBrain slides.", tool: "not_a_tool", args: "{}" }, {}, { text: "UNREACHED" }], false, { user: EDIT, deck: true }],
       ];
       try {
         (globalThis as any).fetch = (input: any, init?: any) => {
@@ -5087,19 +5156,31 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
           savedEnv[ENV_KEYS[k]] = process.env[ENV_KEYS[k]];
           // Never a real key, even to localhost; and no blob token, so nothing
           // is uploaded and no icon is fetched.
-          if (ENV_KEYS[k] === "BLOB_READ_WRITE_TOKEN") delete process.env[ENV_KEYS[k]];
+          if (ENV_KEYS[k] === "BLOB_READ_WRITE_TOKEN" || ENV_KEYS[k] === "VERCEL_BLOB_API_URL") delete process.env[ENV_KEYS[k]];
           else process.env[ENV_KEYS[k]] = "verify-offline";
         }
         console.log = console.warn = console.error = console.info = () => {};
         for (let c = 0; c < CHAINS.length; c++) {
           for (let s = 0; s < SCENARIOS.length; s++) {
-            const [name, steps, needsConv] = SCENARIOS[s];
-            script = steps; reqNo = 0; seenResults.length = 0;
+            const [name, steps, needsConv, opts] = SCENARIOS[s];
+            const o: ScenarioOpts = opts || {};
+            const user = o.user || "make me a deck";
+            const deck = o.deck !== undefined ? o.deck : needsConv;
+            // As the route computes it, so the chain sees what production would.
+            const asked = asksForDeckChange(user, { deckInConversation: deck });
+            script = steps; reqNo = 0; seenResults.length = 0; reqs.length = 0;
+            if (o.blob) {
+              process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_storefake_secretfake";
+              process.env.VERCEL_BLOB_API_URL = `http://127.0.0.1:${port}/api/blob`;
+            }
             try {
               let completed: any = null;
               const config: any = { model: CHAINS[c][1], imageGeneration: true, systemPrompt: "sys", source: "enginegpt", userEmail: "",
-                conversationId: needsConv ? `verify38h-${CHAINS[c][0]}-${s}-${process.pid}-${Date.now()}` : null };
-              const stream = createStreamingResponse([{ role: "user", content: "make me a deck" } as any], config, async (r: any) => { completed = r; });
+                conversationId: needsConv ? `verify38h-${CHAINS[c][0]}-${s}-${process.pid}-${Date.now()}` : null,
+                deckEditAsked: asked, deckInConversation: deck, ...(o.cfg || {}) };
+              const msg: any = { role: "user", content: user };
+              if (o.attach) msg.attachments = [{ name: "source.pptx", type: "application/vnd.openxmlformats-officedocument.presentationml.presentation", extractedText: o.attach }];
+              const stream = createStreamingResponse([msg], config, async (r: any) => { completed = r; });
               const reader = stream.getReader();
               const dec = new TextDecoder();
               let raw = "";
@@ -5110,10 +5191,13 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
                 if (lines[i].indexOf("data: ") === 0) { try { events.push(JSON.parse(lines[i].slice(6))); } catch { /* [DONE] */ } }
               }
               const streamed = events.filter((e) => typeof e.token === "string").map((e) => e.token).join("");
-              runs.push({ chain: CHAINS[c][0], name, turn: { events, streamed, persisted: String((completed && completed.fullText) || ""), results: seenResults.slice() } });
+              runs.push({ chain: CHAINS[c][0], name, asked, turn: { events, streamed, persisted: String((completed && completed.fullText) || ""), results: seenResults.slice(), reqs: reqs.slice() } });
             } catch (e: any) {
-              runs.push({ chain: CHAINS[c][0], name, threw: String((e && e.message) || e).slice(0, 120) });
+              runs.push({ chain: CHAINS[c][0], name, asked, threw: String((e && e.message) || e).slice(0, 120) });
             }
+            // The blob store is for that one turn only: nothing else uploads.
+            delete process.env.BLOB_READ_WRITE_TOKEN;
+            delete process.env.VERCEL_BLOB_API_URL;
           }
         }
       } finally {
@@ -5127,7 +5211,7 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       }
       if (runs.length !== CHAINS.length * SCENARIOS.length) fail(`38h ran ${runs.length} turns, expected ${CHAINS.length * SCENARIOS.length} — the harness measured nothing`);
       for (let r = 0; r < runs.length; r++) {
-        const { chain, name, turn, threw } = runs[r];
+        const { chain, name, asked, turn, threw } = runs[r];
         const tag = `${chain} chain, ${name}`;
         if (!turn) { fail(`${tag}: the turn threw: ${threw}`); continue; }
         const has = (k: string) => turn.events.filter((e) => e[k] !== undefined).length;
@@ -5135,6 +5219,16 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
         // means it threw and Grok answered, and every assertion below would be
         // about the wrong chain.
         if (has("fallback") || has("error")) { fail(`${tag}: the chain did not run (${JSON.stringify(turn.events.filter((e) => e.fallback || e.error)).slice(0, 120)}) — the harness is not testing it`); continue; }
+        // EVERY turn: the deck-claim nudge is for the model and must never
+        // reach the user, saved or streamed; and no turn runs a round past the
+        // end of its script.
+        if (/SYSTEM NOTE|never acknowledge or mention it/.test(turn.persisted + turn.streamed)) fail(`${tag}: the deck-claim nudge reached the user's text`);
+        if (turn.persisted.indexOf("UNREACHED") >= 0 || turn.streamed.indexOf("UNREACHED") >= 0) fail(`${tag}: a model round ran past the end of the script`);
+        // And no nudge ever follows an EMPTY assistant turn: the Anthropic API
+        // rejects one, and the fake provider here would not.
+        for (let q = 0; q < turn.reqs.length; q++) {
+          if (turn.reqs[q].lastUserText.indexOf(DECK_CLAIM_NUDGE) >= 0 && !turn.reqs[q].prevText.trim()) fail(`${tag}: the deck-claim nudge follows an empty assistant turn (request ${q + 1})`);
+        }
         const NOTICE = "⚠ **";
         const noticeIn = (s: string) => s.indexOf(NOTICE) >= 0;
         const persistedAndStreamed = (re: RegExp) => re.test(turn.persisted) && re.test(turn.streamed);
@@ -5162,6 +5256,59 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
           else if (faults !== 2 || has("slides_error") !== 2) fail(`${tag}: the identical call after a fault did not run again (${faults} faults run, ${has("slides_error")} shown; results ${JSON.stringify(turn.results.map((t) => t.slice(0, 40)))}) — its signature was not released with this chain's key`);
           const shown = turn.events.filter((e) => e.slides_error !== undefined).map((e) => String(e.slides_error));
           if (shown.some((t) => t !== SLIDES_FAILED_FOR_USER)) fail(`${tag}: a fault showed the user something other than the fixed sentence: ${shown[0]}`);
+        } else {
+          // The deck-claim guard. Check 40 holds its units, corpus and wiring.
+          const notices = turn.persisted.split(NOTICE).length - 1;
+          const nudged = turn.reqs.filter((q) => q.lastUserText.indexOf(DECK_CLAIM_NUDGE) >= 0).length;
+          const summary = `requests=${turn.reqs.length} nudged=${nudged} drafts=${has("slides_draft")} notices=${notices}`;
+          const onceIn = (s: string, needle: string) => s.split(needle).length - 1 === 1;
+          const retryShape = (i: number, first: string) => {
+            const q = turn.reqs[i];
+            if (!q) { fail(`${tag}: there is no request ${i + 1} (${summary})`); return; }
+            if (q.forced || q.offered.indexOf("generate_slides") < 0 || q.prevRole !== "assistant") fail(`${tag}: the retry is not a tools-on round offering generate_slides after the assistant's own text (forced=${q.forced}, previous message ${q.prevRole || "none"})`);
+            if (q.prevText.indexOf(first) !== 0) fail(`${tag}: the assistant text replayed before the nudge is not the claiming round's own (${JSON.stringify(q.prevText.slice(0, 50))})`);
+          };
+          if (name === "claim, retry calls" || name === "no deck, described") {
+            if (!asked) fail(`${tag}: PRECONDITION — the ask gate does not read the user's message as a request, so this scenario tests nothing`);
+            if (turn.reqs.length !== 3 || nudged !== 1 || has("slides_draft") !== 1 || notices !== 0) fail(`${tag}: expected 3 requests, 1 nudge, 1 draft and no notice (${summary})`);
+            const first = name === "claim, retry calls" ? FALSE_FIRST : "Here's your deck";
+            retryShape(1, first);
+            if (!onceIn(turn.persisted, first) || !onceIn(turn.streamed, first)) fail(`${tag}: the claim is not on screen exactly once, saved and streamed`);
+          } else if (name === "text and a lookup, then claim") {
+            if (turn.reqs.length !== 4 || nudged !== 1 || has("slides_draft") !== 1 || notices !== 0) fail(`${tag}: expected 4 requests, 1 nudge, 1 draft and no notice (${summary})`);
+            retryShape(2, FALSE_FIRST);
+          } else if (name === "claim, retry asks") {
+            if (turn.reqs.length !== 2 || nudged !== 1) fail(`${tag}: expected 2 requests and 1 nudge (${summary})`);
+            if (notices !== 1 || !onceIn(turn.persisted, "The deck was not changed.") || !onceIn(turn.streamed, "The deck was not changed.")) fail(`${tag}: "The deck was not changed." is not saved and streamed exactly once (${summary})`);
+            const joined = "12 slides total.\n\nShould the cards be blue or teal?";
+            if (turn.persisted.indexOf(joined) < 0 || turn.streamed.indexOf(joined) < 0) fail(`${tag}: the retry's text is not set apart from the claim by a blank line, saved and streamed`);
+          } else if (name === "claim, retry claims again") {
+            if (turn.reqs.length !== 2 || nudged !== 1 || notices !== 1) fail(`${tag}: the retry is not bounded to one, with one notice after it (${summary})`);
+          } else if (name === "real call, then narration") {
+            if (turn.reqs.length !== 2 || nudged || notices) fail(`${tag}: a turn whose deck was drawn is nudged or given a notice (${summary})`);
+          } else if (name === "question, no ask") {
+            if (asked) fail(`${tag}: PRECONDITION — the ask gate reads a question about the deck as a request`);
+            if (turn.reqs.length !== 1 || nudged || notices) fail(`${tag}: an honest answer to a question is nudged or given a notice (${summary})`);
+          } else if (name === "claim, slides not offered" || name === "claim, tainted") {
+            if (turn.reqs.length !== 1 || nudged || notices !== 1 || !/The deck was not changed\./.test(turn.streamed)) fail(`${tag}: expected no retry and one streamed notice (${summary})`);
+          } else if (name === "refused, then claim") {
+            if (nudged || notices !== 1 || !/could not be drawn/.test(turn.persisted)) fail(`${tag}: expected the refusal notice alone (${summary})`);
+          } else if (name === "conversion unstarted, claim") {
+            if (!asked) fail(`${tag}: PRECONDITION — the ask gate does not read a conversion request as a request`);
+            if (notices !== 1 || turn.persisted.indexOf("No deck was built in this turn.") < 0 || turn.persisted.indexOf("No deck was built or changed.") >= 0) fail(`${tag}: expected the conversion notice alone (${summary})`);
+          } else if (name === "approval after an edit" || name === "comment-box question") {
+            if (asked) fail(`${tag}: PRECONDITION — the ask gate reads this message as a request, so this scenario tests the retry and not the gate`);
+            if (turn.reqs.length !== 1 || nudged || notices) fail(`${tag}: a message that asked for no change is nudged or given a notice (${summary})`);
+          } else if (name === "pptx made with generate_document, then described") {
+            if (!asked) fail(`${tag}: PRECONDITION — the ask gate does not read a pptx request as a request, so the tool gate is untested`);
+            if (has("document_ready") !== 1) fail(`${tag}: PRECONDITION — no .pptx was built (${JSON.stringify(turn.events.map((e) => Object.keys(e)[0]))}), so this is not the turn it names`);
+            if (turn.reqs.length !== 2 || nudged || notices) fail(`${tag}: a turn that built a .pptx is nudged toward generate_slides or told no deck was built (${summary})`);
+          } else if (name === "claim and a lookup, then an empty round") {
+            if (nudged) fail(`${tag}: a round with no text was retried (${summary})`);
+            if (notices !== 1 || !onceIn(turn.persisted, "The deck was not changed.") || !onceIn(turn.streamed, "The deck was not changed.")) fail(`${tag}: "The deck was not changed." is not saved and streamed exactly once (${summary})`);
+          } else {
+            fail(`${tag}: no assertions for this scenario — a turn run and never judged proves nothing`);
+          }
         }
       }
     } catch (e: any) {
@@ -5427,6 +5574,506 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     }
   }
 
+  /* 40. A deck change the user asked for is made, or the reply says it was not.
+   *
+   * THE INCIDENT, 2026-09-15 (thread 04c5d402). A deck edit ran on
+   * claude-sonnet-5, ended round 0 with stop_reason=end_turn and no tool call,
+   * and replied "Slide 9 ... is gone, replaced by two more accurate slides" and
+   * "The deck is now 12 slides total". Nothing had changed, and nothing in any
+   * chain could notice: a round with no call and a normal stop is a finished
+   * answer. lib/slides/claim.ts now gives such a turn ONE more round with tools
+   * on and, if it still ends with no call, appends "The deck was not changed."
+   * — but only when the user's own message asked for a change, because the
+   * reply rules alone fired on 11 of 13 honest replies about REAL earlier edits,
+   * and a notice saying a change did not happen is false on every one of them.
+   *
+   * What is asserted:
+   *   a) the corpus — 115 [user, reply] pairs scored as the guard fires (ask AND
+   *      claim), the verbatim incident the last of them: zero false positives
+   *      and zero false negatives, over at least 40 positives and 25 negatives
+   *      (72 and 43 today). 45 of them are the verifiers' confirmed cases from
+   *      the second pass: approvals, the deck as the source of a Word document,
+   *      a post or a summary, a question in the comment box, options, and the
+   *      false claims and asks the first rules missed;
+   *   b) ABLATION: every claim rule, TEMPORAL, NEGATORS, LEADS, HYPOTHETICAL and
+   *      the question skip carries at least one case alone; reverting each
+   *      widening (the follow-up split, clause-scoped negation, the
+   *      user-message strip) loses a positive; every ask switch changes a case;
+   *      and with no ask gate at least 28 honest no-ask replies fire. A detector
+   *      that carries nothing exits 2 — it is untested, which is not the same as
+   *      passing;
+   *   c) the retry gate and the notice, unit by unit, including the tool gate
+   *      (a Word document, .pptx, chart, image or video made this turn), the
+   *      empty-round gate, lastAssistantReply and endsInDeckChangeQuestion;
+   *   f) USE, read from comment-stripped source as 38 (f) is: in all four
+   *      chains the retry is the else of the cut-off test, with the gate's
+   *      arguments (the loop's own `round`, whether this round has text to
+   *      replay, the tools used this turn), this round's text replayed, and
+   *      `continue`; at all four end sites the notice reads spokenText and the
+   *      tools used, comes after the unresolved notice, and is appended and
+   *      streamed; and the route computes the ask from the user's message, read
+   *      against lastAssistantReply(messages), and passes it.
+   * Check 38 (h) drives it: fifteen turns in all four chains through the real
+   * createStreamingResponse, with no "SYSTEM NOTE" in any turn's saved or
+   * streamed text and no nudge after an empty assistant turn.
+   *
+   * KNOWN LIMITATIONS, the owner's decisions (2026-09-15). The corpus is
+   * written, not calibrated: the calibration over stored ai_messages reads
+   * other users' chats and has not been run. English only. The gate is per
+   * turn. No slide-count line after a successful retry, so the kept narration
+   * can disagree with the deck. A provider fallback leg inherits the failed
+   * leg's slidesTurn. Slide edits are NOT exempt from the web-search override,
+   * so plain deck edits still reach Claude, and this guard is what covers them.
+   * Also accepted after the second pass: the retry round's own text streams as
+   * it arrives, so a model that answers the nudge ("You're right, nothing
+   * changed") shows that answer, and the nudge's "never acknowledge" is the
+   * only guard; a request that uses the deck's numbers for a chart or an image
+   * reads as an ask, and only the tool gate holds it; and an honest
+   * confirmation of an earlier edit, on a turn that asks for a new one, gets
+   * the notice, which stays true (the "accepted" pair in the corpus).
+   *
+   * MUTATION LOG (detached worktree on the real edit, 2026-09-15), 16 planned
+   * mutations and three extras, each run through this whole script. "harness"
+   * is check 38 (h); the letters are this check's parts. The baseline passed.
+   *   killed  R0 providers.ts back at HEAD 856d73c, claim.ts present: 44
+   *           harness failures (every claim scenario, all four chains) and 13
+   *           in (f). Without the fix this goes red
+   *   killed  K1 xAI retry `break` instead of `continue`, and K13 the same on
+   *           Anthropic: by the harness and (f)
+   *   killed  K2 Anthropic's offered reading tools, not roundTools: by the
+   *           harness (a tainted turn retried) and (f)
+   *   killed  K3 Gemini replaying the whole turn's text: by the harness (text
+   *           and a lookup, then claim) and (f)
+   *   killed  K4 OpenAI notice appended but not streamed; K5 Gemini notice with
+   *           alreadySaid:false (two notices on the conversion turn); K6 OpenAI
+   *           retry never recorded; K7 xAI retry ignoring the ask; K12 OpenAI
+   *           nudge pushed with no assistant text before it: each by the
+   *           harness and (f)
+   *   killed  K8 the notice ignoring the ask; K9 the retry ignoring a call that
+   *           reached the builder; K16 the retry ignoring offered: by (c) and by
+   *           the harness
+   *   killed  K10 a retry allowed on the last round; K11 the time budget
+   *           ignored: by (c) ONLY. No scenario runs eight rounds or 165 seconds
+   *   killed  K14 the claim predicate never firing: by (a) on every positive,
+   *           by (b) (exit 2), by (c) and by the harness
+   *   SURVIVED the harness, killed by (f) only: K15, the xAI notice reading
+   *           fullText instead of spokenText. It behaves the same, because
+   *           alreadySaid already holds the notice back once fullText has grown,
+   *           so only a source read can see the change. Recorded as a finding about
+   *           the harness, not tidied away
+   *   killed  X1 aiConfigRef no longer passing deckEditAsked: by (f) ONLY. The
+   *           harness builds its own config, so no behavioural check here can
+   *           see the route drop the ask
+   *   killed  X2 the ask gate reading quoted copy as the ask: by (a), the
+   *           quoted "Please update the deck" email firing, and by (b)
+   *   killed  X3 the xAI retry leaking the nudge into the reply: by the
+   *           harness's every-turn assertion, "the deck-claim nudge reached the
+   *           user's text". So that assertion is not vacuous
+   * A FINDING about this check itself, not a kill. (b) first asserted that EVERY
+   *   no-ask decoy fires without the ask gate, and went red on its first run:
+   *   "Update the document's MeetingBrain section" neither asks for a deck
+   *   change nor claims one. (b) now holds the count that fires.
+   *
+   * SECOND MUTATION LOG (detached worktree on the real edit, after the
+   * verifiers' second pass, 2026-09-15), 51 mutations, each run through this
+   * whole script. The baseline passed. All 51 were killed; none survived.
+   *   killed  R0 providers.ts back at HEAD: 52 harness failures and 13 in (f)
+   *   killed  K1-K16 and X1-X3, re-anchored on the current text, by the same
+   *           parts as above. K15 still passes the harness and is killed by
+   *           (f) alone; K10 and K11 are killed by (c) alone
+   *   killed  N1 and N2, the retry gate told it is always round 0 (xAI,
+   *           Anthropic), and N4, the route never reading the previous reply:
+   *           by (f) ONLY. All three SURVIVED the first log, because (f)
+   *           pinned neither `round` nor the reply
+   *   killed  N6, the OpenAI retry's blank line removed: by the harness ONLY,
+   *           since "claim, retry asks" now asserts it. It SURVIVED the first log
+   *   killed  C1 an approval read as an ask whenever a deck is in the
+   *           conversation; C4 the comment template not recognised; C25 every
+   *           comment an ask: by (a), (b) and the harness
+   *   killed  C2 the retry ignoring replayable: by (c) and the harness ("claim
+   *           and a lookup, then an empty round"); C15 and C16 replayable
+   *           always true on Anthropic and xAI: by the harness and (f)
+   *   killed  C3 the source blocker, C5 the options skip, C12 the offer check,
+   *           C26 the cover-page and deck-link guard removed: by (a) and (b)
+   *   killed  C6 the follow-up split, C7 the user-message strip, C8 negation
+   *           back to the sentence prefix, C9 the slide-field exemption, C10
+   *           polite requests skipped, C11 the short-answer path, C19 LEADS,
+   *           C20 HYPOTHETICAL, C21 the bare-participle rule, C22 the how-about
+   *           rule, C27 the new count and passive alternatives: by (a)
+   *   killed  C13 and C14 the retry and the notice ignoring another
+   *           deliverable: by (c) and the harness (".pptx made with
+   *           generate_document"); C17 Gemini's notice and C18 OpenAI's retry
+   *           passed no tools: by the harness and (f)
+   *   killed  C23 lastAssistantReply finding nothing and C24 the no-deck notice
+   *           back to "there is no deck yet": by (c) ONLY
+   * A FINDING about this check itself. Once negation was scoped to the clause,
+   *   LEADS and HYPOTHETICAL held every asked decoy NEGATORS used to carry, so
+   *   (b) went red on "without NEGATORS no asked decoy fires". "None of the
+   *   slides have been replaced" is the decoy it carries alone.
+   */
+  const before40 = failures;
+  // Detectors that carry no case (b). Counted apart from failures so the
+  // script exits 2 for them: the check did not fail, it stopped measuring.
+  let deadDetectors = 0;
+  const dead = (m: string) => { deadDetectors++; fail(m); };
+  console.log(`\n40. A deck change the user asked for is made, or the reply says it was not`);
+  {
+    try {
+      const INCIDENT_USER = "Update the MeetingBrain part of this deck. Remove slide 9 (\"MeetingBrain writes up your meetings\") and put these two slides in its place, as new slides 9 and 10. Keep every other slide exactly as it is. The old slide 9 overstated two things (no bot joins calls, and prep briefs are on request, not automatic), so it goes rather than being kept. Use hyphens, never em or en dashes.\n\nNew slide 9. two-column - title \"MeetingBrain: meetings in, {actions} out\", subtitle \"Your calendar is checked every 15 minutes. No bot joins your calls.\", columns left \"What goes in\" and right \"What comes out\", tones [\"blue\", \"teal\"]. body, four lines: \"Gemini or Google Docs notes on the invite, read automatically\" / \"A recording made in Chrome or Edge\" / \"An uploaded audio or video file, up to 500 MB\" / \"A pasted transcript\". bodyRight, four lines: \"A summary, key topics and next steps\" / \"A client-ready summary you edit and copy\" / \"Action items pulled from meetings, email and Slack\" / \"The transcript, shared with colleagues who were there\".\n\nNew slide 10. cards - title \"MeetingBrain and EngineAI, {together}\", subtitle \"Your meetings feed straight into EngineAI\". cards: \"Prepare me\" body \"One click before a meeting: where things stand, who is coming, open actions.\" icon sparkles tone blue; \"Ask about your meetings\" body \"In a private chat, EngineAI reads your meetings, transcripts and open tasks.\" icon message-square tone teal; \"The secure bridge\" body \"Your Google, Microsoft and Slack connections live in MeetingBrain. EngineAI borrows them.\" icon lock tone amber. note \"Invite-only: an admin adds you at meetingbrain.ai/admin. Your own meetings and tasks only show in private chats.\"";
+      const INCIDENT_REPLY = "Replacing slide 9 with the two corrected MeetingBrain slides, everything else untouched.\n\nSlide 9 (the old \"MeetingBrain writes up your meetings\") is gone, replaced by two more accurate slides:\n\n**New slide 9 — MeetingBrain: meetings in, actions out.** Two-column layout making clear no bot joins calls and capture works via calendar check every 15 minutes: notes docs, screen recordings, uploaded files or pasted transcripts go in; summaries, action items and shareable transcripts come out.\n\n**New slide 10 — MeetingBrain and EngineAI, together.** Three cards: \"Prepare me\" (on-demand, not automatic), \"Ask about your meetings,\" and \"The secure bridge\" (where the connections actually live), with the note on invite-only access and privacy scope.\n\nThe deck is now 12 slides total, with AuthorityOn and the closing slide shifted to 11 and 12. Nothing's published — still a preview for you to review or send to Drive when ready.";
+      // The incident's request cut after new slide 9's subtitle: the first
+      // fixture the guard was designed on, kept so the numbers below are stable.
+      const INCIDENT_USER_CUT = "Update the MeetingBrain part of this deck. Remove slide 9 (\"MeetingBrain writes up your meetings\") and put these two slides in its place, as new slides 9 and 10. Keep every other slide exactly as it is. The old slide 9 overstated two things (no bot joins calls, and prep briefs are on request, not automatic), so it goes rather than being kept. Use hyphens, never em or en dashes.\n\nNew slide 9. two-column - title \"MeetingBrain: meetings in, {actions} out\", subtitle \"Your calendar is checked every 15 minutes. No bot joins your calls.\"";
+      const EDIT = "Replace slide 9 with these two slides";
+      // The reply a bare "yes go ahead" answers.
+      const OFFER = "Want me to replace slide 9 with those two slides?";
+      // A question typed into ChatPanel's slide comment box, wrapped as the
+      // client wraps every comment.
+      const COMMENT_Q = "On slide 4 (\"Pricing\") of \"Q3 review\": is this 12% figure right?\n\nChange only that slide. Leave every other slide exactly as it is, and resend the complete deck.";
+      // [user, reply, deck in the conversation, the guard should fire, why,
+      //  the reply the user's message answers (default OFFER)]
+      type Pair = [string, string, boolean, boolean, string, string?];
+      const PAIRS: Pair[] = [
+        // --- must fire: change asked, change claimed, no call
+        [INCIDENT_USER_CUT, INCIDENT_REPLY, true, true, "the incident, its request cut after new slide 9's subtitle"],
+        [EDIT, "Inserting the Writer and Optimiser slides after slide 6, leaving the rest of the deck untouched.\n\nTwo slides are now in after the live-demo slide. The rest of the deck is unchanged.", true, true, "the real insert narration copied with no call"],
+        [EDIT, "Done — slide 9 is now two slides: a two-column on what goes in and out, and cards on how MeetingBrain feeds EngineAI.", true, true, "slide N is now"],
+        [EDIT, "I've removed slide 9 and added the two new MeetingBrain slides in its place.", true, true, "first person"],
+        [EDIT, "The deck has been updated: slide 9 is replaced by the two corrected slides, and everything else is untouched.", true, true, "passive"],
+        [EDIT, "Here's the updated deck with the MeetingBrain slides swapped in.", true, true, "updated artefact"],
+        [EDIT, "Swapped the old slide 9 for two new ones. The deck now has 13 slides.", true, true, "past opener + count"],
+        ["Change slide 3's title to Q3 in review", "Updated. The title on slide 3 now reads \"Q3 in review\".", true, true, "patch claim"],
+        [EDIT, "Replacing slide 9 with the two corrected MeetingBrain slides, everything else untouched.", true, true, "gerund narration alone"],
+        ["Swap the picture on slide 1 for the Zurich skyline", "The picture on slide 1 has been swapped for a photo of the Zurich skyline.", true, true, "picture"],
+        ["Rebuild the deck with hyphens instead of dashes", "I rebuilt the deck with hyphens instead of dashes throughout.", true, true, "rebuild"],
+        ["Make slide 4 a hub diagram", "Slide 4 is now a hub diagram with 8 connections.", true, true, "layout change"],
+        [EDIT, "Slide 9 is out; the new MeetingBrain slides sit at 9 and 10.", true, true, "colloquial removal"],
+        [EDIT, "Made the swap: two MeetingBrain slides where slide 9 used to be.", true, true, "colloquial replacement"],
+        [EDIT, "All set. Two new slides are in place of the old slide 9, and the other slides are unchanged.", true, true, "rest unchanged"],
+        ["Add a pricing slide at the end", "That brings the deck to 13 slides.", true, true, "count only"],
+        ["Move AuthorityOn to the front of the presentation", "The presentation has been reordered so AuthorityOn comes first.", true, true, "passive only"],
+        [EDIT, "The old MeetingBrain slide is swapped out for two more accurate slides.", true, true, "replaced-by only"],
+        [EDIT, "Removed the old MeetingBrain slide and moved AuthorityOn up one.", true, true, "past opener only"],
+        // judge's adversarial false claims
+        [EDIT, "✅ Old slide 9 removed\n✅ New slides 9 and 10 added\n✅ Everything else unchanged", true, true, "checklist"],
+        [EDIT, "Done! The MeetingBrain section now has two slides in place of the old one.", true, true, "in place of"],
+        [EDIT, "Your deck is ready with the two new MeetingBrain slides.", true, true, "deck is ready"],
+        [EDIT, "The two new slides are in, and the old one is out.", true, true, "no numbers"],
+        [EDIT, "All sorted - slides 9 and 10 are the new MeetingBrain slides, and the old slide 9 has gone.", true, true, "has gone"],
+        [EDIT, "The update is done: two new MeetingBrain slides now sit at 9 and 10.", true, true, "slides now sit"],
+        [EDIT, "Changes applied. The deck now runs 13 slides.", true, true, "now runs N"],
+        [EDIT, "I went ahead and replaced slide 9 with the two new slides.", true, true, "went ahead and"],
+        [EDIT, "Slide 9 → gone. Slides 9-10 → the new MeetingBrain pair.", true, true, "arrows"],
+        ["Make the cover title shorter", "Shortened the cover title to \"Q3 review\".", true, true, "cover + shortened"],
+        ["Swap the cover photo for the Zurich skyline", "The cover now shows the Zurich skyline.", true, true, "cover now shows"],
+        [EDIT, "Here you go - the two new MeetingBrain slides replace the old slide 9.", true, true, "present replace"],
+        [EDIT, "Sure! Replaced slide 9 with the two new MeetingBrain slides and kept everything else as is.", true, true, "Sure! opener"],
+        ["yes go ahead", "Done - slide 9 has been replaced with the two new slides.", true, true, "affirmative after an offer"],
+        ["Make me a 6-slide deck on our Q3 results", "Here's your deck:\n\n**Slide 1 - Q3 in review**\n**Slide 2 - Revenue up 12%**", false, true, "a new deck described, never built"],
+        // sole-rule positives for the three rules that carried nothing alone
+        [EDIT, "Old slide 9 removed; the MeetingBrain pair follows.", true, true, "ref-participle only"],
+        [EDIT, "Replacing slide 9 with the two corrected MeetingBrain slides.", true, true, "gerund-opener only (the incident's first sentence without its tail)"],
+        [EDIT, "Only the MeetingBrain part was touched, and every other slide is exactly as it was.", true, true, "rest-unchanged only"],
+        // sole ask-rule positives
+        ["The fee on slide 12 should read CHF 12,500", "Slide 12 now reads CHF 12,500.", true, true, "ask: ref-should only"],
+        ["New slide 7. cards - title \"Writer\", three cards on briefs, drafts and edits", "Slide 7 is now the Writer cards slide.", true, true, "ask: new-slide-spec only"],
+        ["Turn this report into a deck", "Here's your deck:\n\n**Slide 1 - The findings**", false, true, "ask: into-deck only (the artefact blocker sees report)"],
+        ["On slide 4 (\"EngineAI\") of \"Deck\": make the title shorter\n\nChange only that slide. Leave every other slide exactly as it is, and resend the complete deck.", "Slide 4's title now reads EngineAI.", true, true, "ChatPanel sendSlideComment template"],
+        ["Add ONE new slide to \"Deck\", after slide 6. It should show: pricing tiers\n\nUse generate_slides with editSlide and insertAfter: 6. Do not resend the other slides.", "Slide 7 is now a pricing slide with three tiers.", true, true, "ChatPanel sendSlideInsert template"],
+        // Verifiers' false claims the first rules missed (2026-09-15, second
+        // pass). Each was silent end to end: no retry and no notice.
+        [EDIT, "Deck updated.", true, true, "bare participle"],
+        [EDIT, "The deck's been updated with the two MeetingBrain slides.", true, true, "'s been updated"],
+        [EDIT, "The two MeetingBrain slides have replaced slide 9.", true, true, "slides have replaced"],
+        [EDIT, "The MeetingBrain slide is now two slides.", true, true, "is now two slides"],
+        [EDIT, "I've replaced slide 9 with the two new slides - want me to publish it to Drive?", true, true, "a claim joined to a follow-up question"],
+        [EDIT, "Slide 9 is now the two MeetingBrain slides, anything else?", true, true, "a claim joined to anything else?"],
+        [EDIT, "I've replaced slide 9 with the two slides you sent earlier.", true, true, "earlier names the user's message, not the edit"],
+        [EDIT, "Slide 9 has been replaced with the version in your last message.", true, true, "last message names the user's message"],
+        [EDIT, "Replacing slide 9 with the two corrected MeetingBrain slides, not touching anything else.", true, true, "a negation in another clause"],
+        [EDIT, "Nothing else was touched: slide 9 has been replaced by the two new slides.", true, true, "a negator in the clause before"],
+        [EDIT, "Slide 9 no longer overstates things: I've replaced it with two accurate slides.", true, true, "no longer in the clause before"],
+        [EDIT, "The updated slides are below.", true, true, "updated slides are below"],
+        [EDIT, "Changes are in - have a look at the preview.", true, true, "changes are in"],
+        [EDIT, "Here's how the deck looks now:\n\n1. Cover\n2. Agenda\n9. MeetingBrain: meetings in, actions out", true, true, "here's how the deck looks now"],
+        [EDIT, "The new slides 9 and 10 are live in the preview.", true, true, "slides 9 and 10 are live"],
+        [EDIT, "Your presentation has the new MeetingBrain slides in place.", true, true, "presentation has the new slides"],
+        [EDIT, "Voila - MeetingBrain gets two slides now, and AuthorityOn moves to 11.", true, true, "gets two slides now"],
+        // Verifiers' asks the first gate missed.
+        ["Fix the copy on slide 5, it's too long", "Tightened the copy on slide 5 to two lines.", true, true, "ask: an artefact word that is a slide's field (copy on slide 5)"],
+        ["Delete the agenda slide", "I've removed the agenda slide. The deck now has 11 slides.", true, true, "ask: the agenda slide"],
+        ["Update the executive summary slide with the new revenue figure", "Updated the executive summary slide with CHF 1.2M.", true, true, "ask: the summary slide"],
+        ["Add a note to slide 10 saying access is invite-only", "I've added the invite-only note to slide 10.", true, true, "ask: a note to slide 10"],
+        ["Add speaker notes to slides 3 to 5", "I've added speaker notes to slides 3, 4 and 5.", true, true, "ask: speaker notes to slides"],
+        ["Is it possible to replace slide 9 with the two slides below?", "Slide 9 has been replaced by the two new slides.", true, true, "ask: a polite request written as a question"],
+        ["Are you able to merge slides 3 and 4?", "I've merged slides 3 and 4 into one slide.", true, true, "ask: are you able to"],
+        ["Yes please, go ahead and make those changes", "Done - slide 9 has been replaced with the two new slides.", true, true, "ask: a yes longer than 40 characters, after an offer"],
+        ["Yes, both slides please", "Done - slide 9 has been replaced with the two new slides.", true, true, "ask: a choice, after a choice question", "Should I add just the first slide, or both?"],
+        ["Replace it", "Done - slide 9 has been replaced with the two new slides.", true, true, "ask: a short answer to a choice", "Before I change anything: slide 9 now has the old copy. Replace slide 9, or insert after it?"],
+        ["How about moving AuthorityOn to the front?", "Moved AuthorityOn to the front of the deck.", true, true, "ask: how about, with a deck in the conversation"],
+        // ACCEPTED, not a defect: a turn that asks for a NEW change and also
+        // asks whether an earlier one went through. The honest confirmation
+        // reads as a claim, and the notice ("no slides were added, removed or
+        // edited in this reply") is still true, because the pricing slide was
+        // not added.
+        ["Add a pricing slide after slide 6. Did the MeetingBrain change go through?", "Yes, the MeetingBrain change went through: slide 9 is now the two-column slide. What tiers should the pricing slide show?", true, true, "accepted: an earlier edit confirmed on a turn that asks for a new one"],
+        // --- must NOT fire: no change asked this turn (honest talk about real earlier edits)
+        ["What's on slide 9 now?", "Slide 9 is now the two-column MeetingBrain slide: \"MeetingBrain: meetings in, actions out\".", true, false, "question about the live deck"],
+        ["Did the change go through?", "Yes - slide 9 was replaced by the two new MeetingBrain slides, and the deck is now 13 slides.", true, false, "confirming an earlier edit"],
+        ["Summarise what we changed in the deck today", "We replaced slide 9 with two MeetingBrain slides and added the Writer and Optimiser slides after slide 6.", true, false, "recap"],
+        ["Can you check slide 4 reads ok?", "Slide 4 now reads well - the title is short and the cards are balanced.", true, false, "judgement"],
+        ["I moved the AuthorityOn slide up myself in the preview, what do you think?", "The deck now has 13 slides and flows better with AuthorityOn first.", true, false, "user's own edit"],
+        ["Who added slide 7?", "Slide 7 was added by Carol on Tuesday.", true, false, "someone else's edit"],
+        ["What changed between the two versions?", "Slide 9 was replaced with two slides, and slides 10 to 12 shifted to 11 to 13.", true, false, "diff"],
+        ["Why does slide 9 look different?", "Slide 9 has been rebuilt as a two-column slide because the old one overstated two things.", true, false, "explaining a rebuild"],
+        ["Give me speaker notes for the deck", "Slide 1: open on the tension. Slide 9 is now two slides, so split the MeetingBrain story across them.", true, false, "speaker notes"],
+        ["Write a LinkedIn post announcing the new deck", "We've updated our deck: MeetingBrain now has two slides of its own, and the rest is unchanged.", true, false, "copy in first person"],
+        ["Draft a release note for the MeetingBrain update", "Release note: MeetingBrain now writes up your meetings. The old deck slide has been replaced with two new slides explaining it.", true, false, "release note"],
+        ["Write an email to the team saying the deck is updated", "Hi team - the deck has been updated: slide 9 is now two MeetingBrain slides.", true, false, "email about the deck"],
+        ["Did you replace slide 9?", "Yes - slide 9 has been replaced with the two new slides.", true, false, "ask: needs the question skip (a question naming an edit)"],
+        ["Draft an email that says \"Please update the deck before Friday\"", "Here's the email: The deck has been updated, please review it before Friday.", true, false, "ask: needs the quote strip (quoted copy naming an edit)"],
+        ["What should I say when presenting slide 9?", "Slide 9 is now the two-column one, so walk left to right: what goes in, then what comes out.", true, false, "presenting advice"],
+        // Verifiers' confirmed cases (2026-09-15, second pass). Each retried and
+        // regenerated the deck, or appended "The deck was not changed", through
+        // the real createStreamingResponse on all four chains.
+        ["Perfect, thanks!", "Glad it works. Slide 9 is now the two-column MeetingBrain slide, and everything else is as it was.", true, false, "an approval after a real edit"],
+        ["Ok, thanks!", "You're welcome. Slide 9 now shows the MeetingBrain pair.", true, false, "ok thanks after an offer (needs the approval exit: the answer path reads ok as yes)"],
+        ["Looks good", "Great! The deck is ready whenever you want to send it to Drive.", true, false, "an approval"],
+        ["yes go ahead", "Done - slide 9 has been replaced with the two new slides.", true, false, "a yes after a reply that offered no change (needs the offer check)", "The deck is in Drive whenever you need it."],
+        ["yes", "Done - the deck is in Drive, and slide 9 now shows the MeetingBrain pair.", true, false, "a yes to publishing, not to a change", "Want me to publish the deck to Drive?"],
+        ["Turn the deck into a Word document", "I've turned the deck into a Word document with one section per slide.", true, false, "the deck as the source of a Word document"],
+        ["Convert this presentation into a Google Doc for the board", "Converted the presentation into a Google Doc: one heading per slide, speaker notes as body text.", true, false, "the deck as the source of a Google Doc"],
+        ["Use the deck to write a LinkedIn post about the MeetingBrain update", "We've updated our deck: MeetingBrain now has two slides of its own.", true, false, "the deck used to write a post"],
+        ["Use the numbers from slide 6 to write a summary for the board", "Here's the board summary. I've put the three headline numbers from slide 6 first.", true, false, "a slide's numbers used to write a summary"],
+        ["Add a cover page to the Word report", "I've added a cover page with the client logo and today's date to the report.", false, false, "a cover page belongs to a document"],
+        ["Draft an email to Sarah and add the deck link", "Hi Sarah,\n\nI've updated the deck with the Q3 numbers - the link is below.\n\nBest, Chris", true, false, "a deck link in an email, and the email's own first person"],
+        ["Give me three options for the cover title", "I've put together three options for the cover title:\n1. Q3 in review\n2. The quarter that turned\n\nWhich one should I use?", true, false, "options to choose from"],
+        [COMMENT_Q, "The figure is right: slide 4 now shows 12%, which matches the Q3 report.", true, false, "a question typed into the slide comment box"],
+        // --- must NOT fire: change asked, but reply is honest
+        [EDIT, "I can replace slide 9 with those two slides if you want — shall I go ahead?", true, false, "offer"],
+        [EDIT, "I couldn't replace slide 9: the deck isn't in this conversation any more, so there is nothing to edit. Nothing was changed.", true, false, "refusal"],
+        [EDIT, "I haven't changed the deck — the two slides you sent use a layout name I don't recognise. Can you confirm you meant two-column?", true, false, "clarification"],
+        [EDIT, "Those two slides are already in the deck as slides 9 and 10, so there is nothing to change.", true, false, "already done earlier"],
+        [EDIT, "Here's what the two new slides would look like:\n\n**New slide 9 — MeetingBrain: meetings in, actions out.** What goes in / What comes out.", true, false, "hypothetical"],
+        [EDIT, "Slide 9 overstates two things: it implies a bot joins calls, and that prep briefs are automatic. Which of the two columns should lead?", true, false, "critique + question"],
+        [EDIT, "Adding a slide on pricing would make the deck 13 slides.", true, false, "gerund subject + modal"],
+        [EDIT, "Slide 9 is now out of date, since MeetingBrain no longer sends a bot to calls.", true, false, "evaluative"],
+        [EDIT, "Earlier I added the Writer and Optimiser slides after slide 6, so they are now slides 7 and 8. Where should the MeetingBrain pair go?", true, false, "earlier turn"],
+        [EDIT, "I'll replace slide 9 now.", true, false, "promise (the promise guard's job)"],
+        [EDIT, "Slide 9 replaced by the two-column slide only, or by both new slides?", true, false, "a clarifying question phrased as a fragment (needs the question skip)"],
+        ["Update the document's MeetingBrain section", "I've updated the document: the MeetingBrain section now says no bot joins calls.", true, false, "document edit"],
+        [EDIT, "Before I change anything: slide 9 now has the old copy, and adding slide 10 would push AuthorityOn to 11. Replace slide 9, or insert after it?", true, false, "a clarifying reply led by before I change anything (needs LEADS)"],
+        // Once negation is scoped to the clause, LEADS and HYPOTHETICAL hold
+        // every other asked decoy too, so this is the one NEGATORS carries alone.
+        [EDIT, "None of the slides have been replaced: the second new slide has no body. Should it be a cards slide?", true, false, "a negated claim in its own clause (needs NEGATORS)"],
+        [EDIT, "Good catch - I've put together what the two new slides would say:\n\n**Slide 9 - MeetingBrain: meetings in, actions out**\n\nWant me to apply it?", true, false, "a draft of what the slides would say (needs HYPOTHETICAL)"],
+        // The incident, verbatim: the user's whole message, and the 928
+        // characters sent back with no tool call.
+        [INCIDENT_USER, INCIDENT_REPLY, true, true, "the incident, verbatim (thread 04c5d402)"],
+      ];
+      const askOf = (p: Pair, off?: { [k: string]: boolean }) => asksForDeckChange(p[0], { deckInConversation: p[2], lastAssistantText: p[5] !== undefined ? p[5] : OFFER }, off);
+      const fires = (p: Pair, off?: { [k: string]: boolean }) => askOf(p, off) && deckChangeClaim(p[1]) !== null;
+
+      // a) The corpus.
+      let tp = 0, fp = 0, tn = 0, fn = 0;
+      for (let i = 0; i < PAIRS.length; i++) {
+        const p = PAIRS[i];
+        const f = fires(p);
+        const c = deckChangeClaim(p[1]);
+        if (f && p[3]) tp++;
+        else if (f) { fp++; fail(`40a: #${i + 1} (${p[4]}) fires on an honest reply [${c && c.rule}] "${c && c.sentence}"`); }
+        else if (!p[3]) tn++;
+        else { fn++; fail(`40a: #${i + 1} (${p[4]}) does not fire: asked=${askOf(p)} claim=${c ? c.rule : "none"}`); }
+      }
+      // PRECONDITION: a corpus emptied, or left with one side only, scores
+      // FP=0 FN=0 and measures nothing.
+      if (tp + fn < 40 || tn + fp < 25) fail(`40a: PRECONDITION — ${tp + fn} positives and ${tn + fp} negatives; the corpus no longer measures both directions`);
+      const incidentClaim = deckChangeClaim(INCIDENT_REPLY);
+      if (!asksForDeckChange(INCIDENT_USER, { deckInConversation: true }) || !incidentClaim) fail("40a: the verbatim incident is not read as a change asked for and a change claimed");
+
+      // b) ABLATION.
+      const positives: number[] = [];
+      const negatives: number[] = [];
+      for (let i = 0; i < PAIRS.length; i++) (PAIRS[i][3] ? positives : negatives).push(i);
+      for (let r = 0; r < CLAIM_RULES.length; r++) {
+        const without = CLAIM_RULES.filter((_, k) => k !== r);
+        let lost = 0;
+        for (let j = 0; j < positives.length; j++) if (claimingRules(PAIRS[positives[j]][1], without).length === 0) lost++;
+        if (!lost) dead(`40b: claim rule "${CLAIM_RULES[r].id}" carries no positive alone — it is untested`);
+      }
+      const suppressors: [string, ClaimOpts][] = [["TEMPORAL", { noTemporal: true }], ["NEGATORS", { noNegators: true }], ["the question skip", { noQuestion: true }], ["LEADS", { noLeads: true }], ["HYPOTHETICAL", { noHypothetical: true }]];
+      for (let k = 0; k < suppressors.length; k++) {
+        let fired = 0;
+        for (let j = 0; j < negatives.length; j++) {
+          const p = PAIRS[negatives[j]];
+          if (askOf(p) && claimingRules(p[1], CLAIM_RULES, suppressors[k][1]).length) fired++;
+        }
+        if (!fired) dead(`40b: without ${suppressors[k][0]} no asked decoy fires — it is untested`);
+      }
+      // And the three that WIDEN the claim: with each reverted to its first
+      // form, a positive must go silent, or the widening is untested.
+      const wideners: [string, ClaimOpts][] = [["the follow-up split", { noFollowUp: true }], ["clause-scoped negation", { sentenceScope: true }], ["the user-message strip", { noUserRef: true }]];
+      for (let k = 0; k < wideners.length; k++) {
+        let lost = 0;
+        for (let j = 0; j < positives.length; j++) {
+          const p = PAIRS[positives[j]];
+          if (askOf(p) && claimingRules(p[1], CLAIM_RULES, wideners[k][1]).length === 0) lost++;
+        }
+        if (!lost) dead(`40b: reverting ${wideners[k][0]} loses no positive — it is untested`);
+      }
+      const ASK_SWITCHES = ["verb-target", "ref-should", "new-slide-spec", "into-deck", "how-about", "noAnswer", "noOfferCheck", "noApproval", "noTemplate", "noSourceBlock", "noOptionsSkip", "noPolite", "noTargetGuard", "noArtefactBlock", "noArtefactExemption", "noQuestionSkip", "noStrip"];
+      for (let r = 0; r < ASK_RULES.length; r++) if (ASK_SWITCHES.indexOf(ASK_RULES[r].id) < 0) dead(`40b: ask rule "${ASK_RULES[r].id}" has no ablation switch here`);
+      for (let k = 0; k < ASK_SWITCHES.length; k++) {
+        const off: { [key: string]: boolean } = {};
+        off[ASK_SWITCHES[k]] = true;
+        let changed = 0;
+        for (let i = 0; i < PAIRS.length; i++) if (fires(PAIRS[i], off) !== PAIRS[i][3]) changed++;
+        if (!changed) dead(`40b: ask switch "${ASK_SWITCHES[k]}" changes no case — it is untested`);
+      }
+      // With no ask gate at all, the honest replies about real earlier edits
+      // fire: the gate is the only thing keeping them quiet. Not EVERY no-ask
+      // decoy — "Update the document's MeetingBrain section" neither asks for a
+      // deck change nor claims one, and is there for the artefact blocker — so
+      // the count that fires is what is held.
+      let noAsk = 0;
+      for (let j = 0; j < negatives.length; j++) {
+        const p = PAIRS[negatives[j]];
+        if (!askOf(p) && deckChangeClaim(p[1])) noAsk++;
+      }
+      if (noAsk < 28) dead(`40b: only ${noAsk} honest no-ask replies fire without the ask gate, expected 28 — the gate is barely tested`);
+
+      // c) The retry gate and the notice.
+      const base: DeckClaimRetryInput = { text: INCIDENT_REPLY, asked: true, turn: {}, offered: true, alreadyRetried: false, round: 0, maxRounds: 8, elapsedMs: 0, budgetMs: 165000, replayable: true, toolsUsed: [{ name: "query_meetingbrain", calls: 1 }] };
+      if (!shouldRetryDeckClaim(base) || !shouldRetryDeckClaim({ ...base, turn: undefined, toolsUsed: undefined })) fail("40c: the incident's own combination is not retried");
+      const noRetry: [string, Partial<DeckClaimRetryInput>][] = [
+        ["the user asked for nothing", { asked: false }],
+        ["generate_slides was not offered", { offered: false }],
+        ["the turn already retried", { alreadyRetried: true }],
+        ["a call was drawn", { turn: { lastOutcome: { kind: "ok" } } }],
+        ["a call was refused", { turn: { lastOutcome: { kind: "refused", faults: [] } } }],
+        ["a call failed", { turn: { lastOutcome: { kind: "failed" } } }],
+        ["it is the last round", { round: 7 }],
+        ["the time budget is spent", { elapsedMs: 165000 }],
+        ["the reply claims nothing", { text: "Which of the two columns should lead?" }],
+        // The claim was written in an earlier round and this round is empty:
+        // replaying an empty assistant turn is a request the Anthropic API
+        // rejects, which would throw the turn into the provider fallback.
+        ["the claiming round wrote nothing to replay", { replayable: false }],
+        ["a Word document was made this turn", { toolsUsed: [{ name: "generate_word_document", calls: 1 }] }],
+        ["a .pptx was made with generate_document", { toolsUsed: [{ name: "query_meetingbrain", calls: 1 }, { name: "generate_document", calls: 1 }] }],
+        ["a chart was made this turn", { toolsUsed: [{ name: "generate_chart", calls: 1 }] }],
+        ["an image was made this turn", { toolsUsed: [{ name: "generate_image", calls: 1 }] }],
+        ["a video was made this turn", { toolsUsed: [{ name: "generate_video", calls: 1 }] }],
+      ];
+      for (let k = 0; k < noRetry.length; k++) if (shouldRetryDeckClaim({ ...base, ...noRetry[k][1] })) fail(`40c: a retry is allowed when ${noRetry[k][0]}`);
+      // The chart request the ask gate cannot tell from a deck edit ("Make a
+      // bar chart of the numbers on slide 5"): only the tool gate holds it.
+      const CHART_USER = "Make a bar chart of the numbers on slide 5";
+      const CHART_REPLY = "I've created a bar chart from the numbers on slide 5.";
+      if (!asksForDeckChange(CHART_USER, { deckInConversation: true }) || !deckChangeClaim(CHART_REPLY)) fail("40c: PRECONDITION — the chart request no longer reads as an ask and a claim, so the tool gate below is untested here");
+      if (unmadeDeckChangeNotice(CHART_REPLY, {}, { asked: true, deckInConversation: true, alreadySaid: false, toolsUsed: [{ name: "generate_chart", calls: 1 }] })) fail("40c: the notice speaks after a chart was made from the deck");
+      const said = (turn: SlidesTurnState | undefined, o: { asked: boolean; deckInConversation: boolean; alreadySaid: boolean }, text?: string) => unmadeDeckChangeNotice(text === undefined ? INCIDENT_REPLY : text, turn, { ...o, toolsUsed: [{ name: "query_meetingbrain", calls: 1 }] });
+      // The reply a short answer is read against.
+      if (lastAssistantReply([{ role: "user", content: "a" }, { role: "assistant", content: "Want me to replace slide 9?" }, { role: "system", content: "s" }, { role: "user", content: "yes" }]) !== "Want me to replace slide 9?") fail("40c: lastAssistantReply does not return the latest assistant message");
+      if (lastAssistantReply([{ role: "user", content: "yes" }]) !== "" || lastAssistantReply(undefined) !== "" || lastAssistantReply([{ role: "assistant", content: [{ type: "text" }] }]) !== "") fail("40c: lastAssistantReply invents a reply where there is none");
+      const offers: [string, boolean][] = [
+        [OFFER, true],
+        ["Before I change anything: slide 9 now has the old copy. Replace slide 9, or insert after it?", true],
+        ["Here are three options for the title. Should I apply the first one?", false],
+        ["Here's the deck. Should I apply the first one?", true],
+        ["Want me to publish the deck to Drive?", false],
+        ["The deck is ready. Should I update the Word document as well?", false],
+        ["Slide 9 is now the two-column slide. Anything else?", false],
+      ];
+      for (let k = 0; k < offers.length; k++) if (endsInDeckChangeQuestion(offers[k][0]) !== offers[k][1]) fail(`40c: endsInDeckChangeQuestion(${JSON.stringify(offers[k][0])}) is ${!offers[k][1]}`);
+      // With no deck in the conversation the ask may be an edit to a deck that
+      // lives elsewhere, so that notice must not say there is no deck.
+      if (NO_DECK_BUILT_NOTICE.indexOf("no deck yet") >= 0 || NO_DECK_BUILT_NOTICE.indexOf("No deck was built or changed.") < 0) fail(`40c: the no-deck notice claims more than this reply shows: ${NO_DECK_BUILT_NOTICE}`);
+      const withDeck = said({}, { asked: true, deckInConversation: true, alreadySaid: false });
+      const noDeck = said(undefined, { asked: true, deckInConversation: false, alreadySaid: false });
+      if (withDeck !== DECK_NOT_CHANGED_NOTICE || withDeck.indexOf("The deck was not changed.") < 0) fail(`40c: with a deck in the conversation the notice is not "The deck was not changed." (${JSON.stringify(withDeck)})`);
+      if (noDeck !== NO_DECK_BUILT_NOTICE) fail(`40c: with no deck the notice is not NO_DECK_BUILT_NOTICE (${JSON.stringify(noDeck)})`);
+      if (said({}, { asked: false, deckInConversation: true, alreadySaid: false })) fail("40c: the notice speaks when the user asked for nothing");
+      if (said({}, { asked: true, deckInConversation: true, alreadySaid: true })) fail("40c: the notice speaks after another notice has");
+      if (said({}, { asked: true, deckInConversation: true, alreadySaid: false }, "Which of the two columns should lead?")) fail("40c: the notice speaks on a reply that claims nothing");
+      const outcomes: SlidesTurnState[] = [{ lastOutcome: { kind: "ok" } }, { lastOutcome: { kind: "refused", faults: [] } }, { lastOutcome: { kind: "failed" } }];
+      for (let k = 0; k < outcomes.length; k++) if (said(outcomes[k], { asked: true, deckInConversation: true, alreadySaid: false })) fail(`40c: the notice speaks after a call ended ${(outcomes[k].lastOutcome as any).kind}`);
+      // The same test check 38 applies to every user-facing notice.
+      const MARKERS = /do NOT|generate_slides|editSlide|insertSlides|Fix and send|`/;
+      const shown = [DECK_NOT_CHANGED_NOTICE, NO_DECK_BUILT_NOTICE];
+      for (let k = 0; k < shown.length; k++) {
+        if (MARKERS.test(shown[k]) || /SYSTEM NOTE/.test(shown[k])) fail(`40c: a user-facing notice carries model-directed text: ${shown[k]}`);
+        if (shown[k].indexOf("\n\n---\n\n⚠ **") !== 0) fail(`40c: a notice does not open with the rule and the warning mark the other notices use: ${JSON.stringify(shown[k].slice(0, 20))}`);
+        if (/[—–]| - /.test(shown[k].slice(7))) fail(`40c: a notice uses a dash: ${shown[k]}`);
+      }
+      // PRECONDITION for check 38 (h), which looks for these words to prove the
+      // nudge never reaches the user: the nudge must still carry them.
+      if (DECK_CLAIM_NUDGE.indexOf("SYSTEM NOTE") !== 0 || DECK_CLAIM_NUDGE.indexOf("never acknowledge or mention it") < 0) fail("40c: PRECONDITION — the nudge no longer opens with SYSTEM NOTE, so check 38 (h) cannot see it leak");
+
+      // f) USE.
+      const stripComments = (src: string) => src.replace(/^[ \t]*\/\*[\s\S]*?\*\//gm, "").replace(/(^|[ \t])\/\/[^\n]*/gm, "$1");
+      const prov = stripComments(readFileSync(join(__dirname, "..", "lib/ai/providers.ts"), "utf8"));
+      const countIn = (s: string, needle: string) => s.split(needle).length - 1;
+      const stopRe = /\} else if \(shouldRetryDeckClaim\(\{([^\n]*)\}\)\) \{([\s\S]*?)\n      \} else \{\n        loopEndedCleanly = true;/g;
+      const stops: { args: string; body: string; at: number }[] = [];
+      let sm: RegExpExecArray | null;
+      while ((sm = stopRe.exec(prov))) stops.push({ args: sm[1], body: sm[2], at: sm.index });
+      if (stops.length !== 4) fail(`40f: ${stops.length} retry branches between the cut-off test and loopEndedCleanly = true, expected one in each of 4 chains`);
+      if (countIn(prov, "shouldRetryDeckClaim(") !== 4) fail(`40f: shouldRetryDeckClaim is called ${countIn(prov, "shouldRetryDeckClaim(")} times, expected 4`);
+      for (let i = 0; i < stops.length; i++) {
+        const { args, body, at } = stops[i];
+        const tag = `40f: retry ${i + 1} (${i === 0 ? "Anthropic" : "OpenAI-compatible"})`;
+        if (!/stoppedAbnormally\(/.test(prov.slice(Math.max(0, at - 400), at))) fail(`${tag} is not the else of the cut-off test`);
+        // `round` as the loop's own counter: a constant here turns the last-round
+        // gate off in that chain, and no behavioural scenario runs eight rounds.
+        const need = ["asked: config.deckEditAsked === true", "turn: config.slidesTurn", "alreadyRetried: deckClaimRetried, round, maxRounds: MAX_TOOL_ROUNDS", "elapsedMs: Date.now() - turnStartedAt", "budgetMs: TURN_BUDGET_WARN_MS", "toolsUsed: toolLoopGuard.usage()"];
+        for (let k = 0; k < need.length; k++) if (args.indexOf(need[k]) < 0) fail(`${tag} does not pass ${need[k]}: ${args}`);
+        const replayable = i === 0 ? "replayable: finalMessage.content.some((b: any) => b && b.type === \"text\" && typeof b.text === \"string\" && b.text.trim() !== \"\")" : "replayable: fullText.slice(roundTextStart).trim() !== \"\"";
+        if (args.indexOf(replayable) < 0) fail(`${tag} does not gate on this round having text to replay: ${args}`);
+        // Anthropic narrows its tools on taint; the others refuse in their
+        // executors, so for them a tainted turn is simply not offered the retry.
+        if (i === 0 ? args.indexOf("offered: !suppressTools && roundTools.some(") < 0 : args.indexOf("offered: config.sawUntrustedContent !== true && tools.some(") < 0) fail(`${tag} reads the wrong tool list for offered: ${args}`);
+        if (!/deckClaimRetried = true;/.test(body)) fail(`${tag} does not record that the turn retried`);
+        if (!/push\(\{ role: "user", content: (?:\[\{ type: "text", text: DECK_CLAIM_NUDGE \}\]|DECK_CLAIM_NUDGE) \}/.test(body)) fail(`${tag} does not push the nudge`);
+        if (!/\n\s*continue;\s*$/.test(body)) fail(`${tag} does not continue to another round`);
+        if (i === 0 ? !/push\(\{ role: "assistant", content: finalMessage\.content \}\)/.test(body) : !/push\(\{ role: "assistant", content: fullText\.slice\(roundTextStart\) \}/.test(body)) fail(`${tag} does not replay this round's own text as the assistant turn`);
+      }
+      if (countIn(prov, "const roundTextStart = fullText.length;") !== 4 || countIn(prov, "let deckClaimRetried = false;") !== 4) fail("40f: each chain does not declare its own round start and retry flag");
+      const ends: number[] = [];
+      const endRe = /unstartedConversionNotice\(sourceSlideCount\(messages\)/g;
+      let em: RegExpExecArray | null;
+      while ((em = endRe.exec(prov))) ends.push(em.index);
+      if (ends.length !== 4) fail(`40f: found ${ends.length} end-of-turn sites, expected 4`);
+      for (let i = 0; i < ends.length; i++) {
+        const site = prov.slice(ends[i], prov.indexOf("return {", ends[i]));
+        const ur = site.indexOf("unresolvedSlidesNotice(config.slidesTurn)");
+        const um = site.indexOf("unmadeDeckChangeNotice(spokenText, config.slidesTurn");
+        if (um < 0 || um < ur) fail(`40f: end site ${i + 1}: the deck-claim notice does not read spokenText after the unresolved notice`);
+        if (!/const (\w+) = unmadeDeckChangeNotice\(spokenText, config\.slidesTurn, \{ asked: config\.deckEditAsked === true, deckInConversation: config\.deckInConversation === true, alreadySaid: fullText !== spokenText, toolsUsed: toolLoopGuard\.usage\(\) \}\);\s*if \(\1\) \{\s*fullText \+= \1;[\s\S]{0,40}?controller\.enqueue\(encoder\.encode\(`data: \$\{JSON\.stringify\(\{ token: \1 \}\)\}/.test(site)) fail(`40f: end site ${i + 1}: the deck-claim notice is not gated as designed, appended and streamed`);
+      }
+      if (countIn(prov, "const spokenText = fullText;") !== 4) fail(`40f: spokenText is captured ${countIn(prov, "const spokenText = fullText;")} times, expected 4`);
+      const stall = prov.indexOf("stallOutcome(stalledOut, fullText");
+      if (stall < 0 || prov.lastIndexOf("const spokenText = fullText;", stall) < prov.lastIndexOf("async function streamAnthropic(", stall)) fail("40f: Anthropic's spokenText is not taken before the stall notice is appended");
+      const route = stripComments(readFileSync(join(__dirname, "..", "app/api/ai/conversations/[id]/messages/route.ts"), "utf8"));
+      if (!/const deckEditAsked = asksForDeckChange\(userContent \|\| "", \{ deckInConversation: !!deckContext, lastAssistantText: lastAssistantReply\(messages\) \}\);/.test(route)) fail("40f: route.ts does not compute deckEditAsked from the user's message this turn, read against the reply it answers");
+      const cfgAt = route.indexOf("const aiConfigRef: any = {");
+      const cfgLit = cfgAt < 0 ? "" : route.slice(cfgAt, route.indexOf("};", cfgAt));
+      if (!cfgLit) fail("40f: aiConfigRef is not in route.ts — this check is reading the wrong file");
+      else {
+        if (!/[{,]\s*deckEditAsked\s*[,}]/.test(cfgLit)) fail("40f: aiConfigRef does not pass deckEditAsked, so no chain ever sees an ask");
+        if (cfgLit.indexOf("deckInConversation: !!deckContext") < 0) fail("40f: aiConfigRef does not pass deckInConversation from deckContext");
+      }
+
+      if (failures === before40) {
+        pass(`${PAIRS.length} pairs, TP=${tp} TN=${tn} FP=0 FN=0, the verbatim incident firing on ${incidentClaim ? incidentClaim.rule : "?"}; all ${CLAIM_RULES.length} claim rules, TEMPORAL, NEGATORS, the question skip and ${ASK_SWITCHES.length} ask switches each carry a case, and ${noAsk} honest no-ask replies fire without the gate; the retry and the notice are gated unit by unit; all four chains and the route are wired`);
+      }
+    } catch (e: any) {
+      fail(`check 40 threw: ${String((e && e.message) || e).slice(0, 200)}`);
+    }
+  }
+
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
-  process.exit(failures ? 1 : 0);
+  // 2, not 1, when a self-test detector carried nothing (check 40 b): the
+  // check did not fail, it stopped measuring.
+  process.exit(deadDetectors ? 2 : failures ? 1 : 0);
 })();

@@ -25,7 +25,8 @@ import { isSpreadsheet, isPlainTextish } from "@/lib/media/allowed-types";
 import { assertServiceAllowed, ServiceControlError } from "@/lib/admin/service-control";
 import { calculateCostTenths } from "@/lib/ai/model-costs";
 import { appendVolatile } from "@/lib/ai/prompt-cache";
-import { needsClaudeForPersonalData } from "@/lib/ai/personal-data-intent";
+import { needsClaudeForPersonalData, isPersonalMeetingQuestion } from "@/lib/ai/personal-data-intent";
+import { asksForDeckChange, lastAssistantReply } from "@/lib/slides/claim";
 
 export const maxDuration = 300; // 5 min — covers slow attachment extractions + long responses
 
@@ -1670,7 +1671,12 @@ export async function POST(
     // all. Composed here rather than in generateHints because calendarAccess
     // is not known until further down this file, and a hint naming a tool the
     // user cannot reach is worse than no hint.
-    if (calendarAccess && !isTeamThread && queryRoute.intent === "meeting_data" && model.startsWith("claude")) {
+    //
+    // Gated on the same predicate as the override, not the bare intent: the
+    // 2026-09-15 deck edit (thread 04c5d402) was classified meeting_data from
+    // the words on its slides, and this block told it "This is a question about
+    // the user's calendar" on top of moving it.
+    if (calendarAccess && !isTeamThread && isPersonalMeetingQuestion(userContent || "", queryRoute.intent) && model.startsWith("claude")) {
       systemPrompt = appendVolatile(
         systemPrompt,
         "\n\n## Also required this turn\nThis is a question about the user's calendar. query_meetingbrain carries ATTENDEES and has no organiser field — it cannot tell you who sent or scheduled anything. Call query_calendar as well, and prefer it for anything about who organised, sent or created an invite, or for the authoritative time of a specific event."
@@ -1774,6 +1780,15 @@ export async function POST(
       }
     }
 
+    // Did the user's message THIS turn ask for a deck to be built or changed?
+    // The chains retry, and then say so, when a reply claims a deck change no
+    // call made (thread 04c5d402) — but only when one was asked for, because a
+    // reply describing a REAL earlier edit ("what's on slide 9 now?") makes the
+    // same claim truthfully. The reply before this message is read so a bare
+    // "yes, go ahead" counts when that reply ended by offering a change to the
+    // slides, and "Perfect, thanks!" after a real edit does not.
+    const deckEditAsked = asksForDeckChange(userContent || "", { deckInConversation: !!deckContext, lastAssistantText: lastAssistantReply(messages) });
+
     // Create streaming response.
     // The onComplete callback saves the assistant reply. It runs when the
     // upstream AI stream finishes — which happens regardless of whether the
@@ -1782,7 +1797,7 @@ export async function POST(
     // the "user navigated away mid-stream and lost their response" bug.
     // Named so the completion callback can read flags the tool executors set
     // on it during the turn (notably sawUntrustedContent after query_gmail).
-    const aiConfigRef: any = { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, conversationVisibility: isTeamThread ? "team" : "private", selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: conversation.flag_incognito === 1, designSessionId, designFocusedShotId, enableScheduling: conversation.type_conversation_mode !== "design", scheduledTask, financeAccess, gmailAccess, calendarAccess, microsoftAccess, resourcingAccess, // ALLOWLIST: only this interactive chat route may reach a mailbox.
+    const aiConfigRef: any = { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, conversationVisibility: isTeamThread ? "team" : "private", selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: conversation.flag_incognito === 1, designSessionId, designFocusedShotId, deckEditAsked, deckInConversation: !!deckContext, enableScheduling: conversation.type_conversation_mode !== "design", scheduledTask, financeAccess, gmailAccess, calendarAccess, microsoftAccess, resourcingAccess, // ALLOWLIST: only this interactive chat route may reach a mailbox.
         allowPersonalData: true };
 
     // The last slide draft rendered this turn, persisted with the assistant

@@ -93,6 +93,37 @@ Never instruct an ACCENT (c03d4fc): it destabilises the render and produces the
 same symptom. British spelling in TEXT is fine; a British accent must come from
 the VOICE — and xAI has no British female, `leo` is British male.
 
+## Personal-data routing checks
+
+One script guards `lib/ai/personal-data-intent.ts`, which decides when an
+auto-routed turn is moved to Claude because Gmail, Calendar and Microsoft are
+registered on the Claude chains only. Run it before shipping anything that
+touches that file, `textNeedsMailbox` or `meeting_data` in `query-router.ts`,
+or the route's "Also required this turn" calendar block:
+
+```
+npx tsx scripts/verify-personal-data-routing.ts --self-test
+```
+
+It fails in both directions, and they are different incidents. Too narrow: "Did
+Carol send the kick off meeting invite?" stayed on Grok, which has no organiser
+field, and answered "No" with confidence. Too broad (thread 04c5d402,
+2026-09-15): a deck edit whose new slides were ABOUT MeetingBrain was classified
+`meeting_data` from the words on its slides, moved to Claude, and that turn
+described an edit it never made. Quoted copy in a build request is content, not
+the ask. A build request escalates only when the user names their own meetings
+("my meeting with Siemens", "who I'm meeting tomorrow"), names an organiser
+("who organised Thursday's meeting"), or still asks a question once the quoted
+copy is removed ("Did the Siemens meeting get cancelled? If so drop slide 9").
+A slide number marks a build request; it does not make the rest of the message
+slide copy.
+
+Routing does not stop that incident class on its own. A plain "Remove slide 9"
+still reaches Claude through the web-search override, left in place on purpose,
+so the slide-claim guard is what catches a turn describing an edit it never
+made. The check asserts the route's calendar block reads the same predicate
+as the override, not just that the predicate exists.
+
 ## Model and pricing checks
 
 

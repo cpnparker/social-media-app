@@ -8,7 +8,7 @@
  */
 
 import type { NormalizedContextConfig } from "./system-prompts";
-import { MAIL_INTENT } from "./personal-data-intent";
+import { MAIL_INTENT, personalDataAskText } from "./personal-data-intent";
 
 /* ─────────────── Types ─────────────── */
 
@@ -191,7 +191,14 @@ export function textNeedsMailbox(text: string): boolean {
   // escalates on one path and not the other gets the mailbox for the first
   // turn and loses it for "now write the reply", which is the exact failure
   // the inheritance was built to prevent.
-  return NEEDS_MAILBOX.some((p) => p.test(text)) || MAIL_INTENT.test(text);
+  //
+  // And it reads the same ASK text the override reads (2026-09-15): a deck of
+  // example prompts quoting "check my gmail" is a build request, not a mailbox
+  // question, and one door stripping the quotes while the other did not would
+  // send it to Claude anyway. That also means a build request whose only mail
+  // wording was quoted no longer hands the mailbox need to its follow-up.
+  const ask = personalDataAskText(text);
+  return NEEDS_MAILBOX.some((p) => p.test(ask)) || MAIL_INTENT.test(ask);
 }
 
 const COMPOSITION_REQUEST =

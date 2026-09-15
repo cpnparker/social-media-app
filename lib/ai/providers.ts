@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { applyEditSlide, unrenderableSlides, normaliseSlide, textReadySlides, PAYLOAD_FIELDS, SlideCallRefusal, blankSlideFaults, type RefusalScope } from "@/lib/slides/edit";
 import { slidesFailure, parseSlidesArguments, type SlidesTurnState } from "@/lib/slides/failure";
+import { shouldRetryDeckClaim, unmadeDeckChangeNotice, DECK_CLAIM_NUDGE } from "@/lib/slides/claim";
 import { splitVolatile } from "@/lib/ai/prompt-cache";
 import { logAiUsage } from "@/lib/ai/usage-logger";
 import OpenAI from "openai";
@@ -65,6 +66,10 @@ export interface AIProviderConfig {
    *  A refusal is kept off the screen while a later call can still fix it, so
    *  a turn that ends refused needs this to say so (unresolvedSlidesNotice). */
   slidesTurn?: SlidesTurnState;
+  /** The user's latest message asks for a deck to be built or changed (route: asksForDeckChange). */
+  deckEditAsked?: boolean;
+  /** A deck is already in this conversation (route: !!deckContext). */
+  deckInConversation?: boolean;
   workspaceClientIds?: number[];
   workspaceId?: string;
   userId?: number;
@@ -8980,7 +8985,14 @@ async function streamAnthropic(
   let warnedLastRound = false;
   let warnedTimeBudget = false;
   const turnStartedAt = Date.now();
+  // One deck-claim retry a turn. A LOCAL, not a SlidesTurnState field: a
+  // provider fallback re-runs the turn after the `fallback` event has cleared
+  // the screen, and that fresh leg deserves its own retry.
+  let deckClaimRetried = false;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    // Where this round's text starts, so a retry replays this round's words as
+    // the assistant turn and not everything the turn has said.
+    const roundTextStart = fullText.length;
     // ONE ROUND LEFT. Said once, so the model can build the thing it promised
     // rather than spend the last round on another read and stop silently.
     if (!warnedTimeBudget && Date.now() - turnStartedAt > TURN_BUDGET_WARN_MS) {
@@ -9167,6 +9179,27 @@ async function streamAnthropic(
     if (finalMessage.stop_reason !== "tool_use" || toolUseBlocks.length === 0) {
       if (stoppedAbnormally(finalMessage.stop_reason)) {
         console.warn(`[Anthropic] Round ${round} was CUT OFF (stop_reason=${finalMessage.stop_reason}) — not a finished answer; forcing a final pass`);
+      } else if (shouldRetryDeckClaim({ text: fullText, asked: config.deckEditAsked === true, turn: config.slidesTurn, offered: !suppressTools && roundTools.some((t: any) => t?.name === "generate_slides"), alreadyRetried: deckClaimRetried, round, maxRounds: MAX_TOOL_ROUNDS, elapsedMs: Date.now() - turnStartedAt, budgetMs: TURN_BUDGET_WARN_MS, replayable: finalMessage.content.some((b: any) => b && b.type === "text" && typeof b.text === "string" && b.text.trim() !== ""), toolsUsed: toolLoopGuard.usage() })) {
+        // SAYS THE DECK CHANGED, AND NOTHING WAS CALLED. Thread 04c5d402 ended
+        // round 0 here with "Slide 9 ... is gone" and no tool call, and the
+        // loop took it as a finished answer. One more round with tools on, told
+        // plainly that nothing changed. The streamed text stays: only ChatPanel
+        // can take text back, and if the call now succeeds the narration is
+        // true. finalMessage.content, so thinking blocks are replayed;
+        // roundTools, so a tainted round that cannot see generate_slides is
+        // never told to call it. Not when this round wrote no text (an empty
+        // assistant turn is a request the API rejects, and the fallback would
+        // take the turn), or when a Word document, .pptx, chart or image was
+        // made this turn: shouldRetryDeckClaim reads both.
+        deckClaimRetried = true;
+        console.warn(`[Anthropic] Round ${round} says the deck changed and generate_slides was never called — one more round with tools`);
+        anthropicMessages.push({ role: "assistant", content: finalMessage.content });
+        anthropicMessages.push({ role: "user", content: [{ type: "text", text: DECK_CLAIM_NUDGE }] } as any);
+        if (fullText.trim() && !fullText.endsWith("\n")) {
+          fullText += "\n\n";
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
+        }
+        continue;
       } else {
         loopEndedCleanly = true;
       }
@@ -10322,6 +10355,10 @@ async function streamAnthropic(
     }
   }
 
+  // What the model said, before any notice below is appended: a claimed deck
+  // change is read from this, and a notice already appended means the turn
+  // has said its piece.
+  const spokenText = fullText;
   // STALLED, WITH SOMETHING ALREADY SAID. The narration written before the tool
   // call survives and reads as a finished answer, because nothing in it knows
   // the call was dropped. Stated deterministically rather than left to the
@@ -10360,6 +10397,19 @@ async function streamAnthropic(
       fullText += unresolved;
       try {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: unresolved })}\n\n`));
+      } catch { /* client gone; the text is still on the row */ }
+    }
+  }
+  // A reply that says the deck changed, when no call reached the builder, ends
+  // by saying it did not — after the retry above declined, asked a question or
+  // claimed again, or when no retry was allowed. Only when the user asked for
+  // a change this turn, and only if no notice above has spoken: one a turn.
+  {
+    const unmade = unmadeDeckChangeNotice(spokenText, config.slidesTurn, { asked: config.deckEditAsked === true, deckInConversation: config.deckInConversation === true, alreadySaid: fullText !== spokenText, toolsUsed: toolLoopGuard.usage() });
+    if (unmade) {
+      fullText += unmade;
+      try {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: unmade })}\n\n`));
       } catch { /* client gone; the text is still on the row */ }
     }
   }
@@ -10559,7 +10609,14 @@ async function streamXAIChatCompletions(
   let warnedLastRound = false;
   let warnedTimeBudget = false;
   const turnStartedAt = Date.now();
+  // One deck-claim retry a turn. A LOCAL, not a SlidesTurnState field: a
+  // provider fallback re-runs the turn after the `fallback` event has cleared
+  // the screen, and that fresh leg deserves its own retry.
+  let deckClaimRetried = false;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    // Where this round's text starts, so a retry replays this round's words as
+    // the assistant turn and not everything the turn has said.
+    const roundTextStart = fullText.length;
     // ONE ROUND LEFT. Said once, so the model can build the thing it promised
     // rather than spend the last round on another read and stop silently.
     if (!warnedTimeBudget && Date.now() - turnStartedAt > TURN_BUDGET_WARN_MS) {
@@ -10724,6 +10781,21 @@ async function streamXAIChatCompletions(
     if (finishReason !== "tool_calls" || toolCalls.size === 0) {
       if (stoppedAbnormally(finishReason)) {
         console.warn(`[Chain] Round ${round} was CUT OFF (finishReason=${finishReason}) — not a finished answer; forcing a final pass`);
+      } else if (shouldRetryDeckClaim({ text: fullText, asked: config.deckEditAsked === true, turn: config.slidesTurn, offered: config.sawUntrustedContent !== true && tools.some((t: any) => t?.function?.name === "generate_slides"), alreadyRetried: deckClaimRetried, round, maxRounds: MAX_TOOL_ROUNDS, elapsedMs: Date.now() - turnStartedAt, budgetMs: TURN_BUDGET_WARN_MS, replayable: fullText.slice(roundTextStart).trim() !== "", toolsUsed: toolLoopGuard.usage() })) {
+        // Says the deck changed and nothing was called: one more round with
+        // tools on (see the Anthropic chain). This chain does not narrow tools
+        // on taint, its executors refuse instead, so a tainted turn is not
+        // offered the retry. This ROUND's text is replayed, not fullText: text
+        // from an earlier round is already in the history once.
+        deckClaimRetried = true;
+        console.warn(`[xAI] Round ${round} says the deck changed and generate_slides was never called — one more round with tools`);
+        openaiMessages.push({ role: "assistant", content: fullText.slice(roundTextStart) } as any);
+        openaiMessages.push({ role: "user", content: DECK_CLAIM_NUDGE } as any);
+        if (fullText.trim() && !fullText.endsWith("\n")) {
+          fullText += "\n\n";
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
+        }
+        continue;
       } else {
         loopEndedCleanly = true;
       }
@@ -11423,6 +11495,9 @@ async function streamXAIChatCompletions(
     }
   }
 
+  // What the model said, before any notice below is appended (see the
+  // Anthropic chain).
+  const spokenText = fullText;
   // A conversion asked for and never started is announced, not left for the
   // user to discover by asking whether anything is wrong. Streamed as well as
   // returned, so it reaches a client that has already rendered the text.
@@ -11444,6 +11519,19 @@ async function streamXAIChatCompletions(
       fullText += unresolved;
       try {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: unresolved })}\n\n`));
+      } catch { /* client gone; the text is still on the row */ }
+    }
+  }
+  // A reply that says the deck changed, when no call reached the builder, ends
+  // by saying it did not — after the retry above declined, asked a question or
+  // claimed again, or when no retry was allowed. Only when the user asked for
+  // a change this turn, and only if no notice above has spoken: one a turn.
+  {
+    const unmade = unmadeDeckChangeNotice(spokenText, config.slidesTurn, { asked: config.deckEditAsked === true, deckInConversation: config.deckInConversation === true, alreadySaid: fullText !== spokenText, toolsUsed: toolLoopGuard.usage() });
+    if (unmade) {
+      fullText += unmade;
+      try {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: unmade })}\n\n`));
       } catch { /* client gone; the text is still on the row */ }
     }
   }
@@ -11691,7 +11779,14 @@ async function streamGemini(
   let warnedLastRound = false;
   let warnedTimeBudget = false;
   const turnStartedAt = Date.now();
+  // One deck-claim retry a turn. A LOCAL, not a SlidesTurnState field: a
+  // provider fallback re-runs the turn after the `fallback` event has cleared
+  // the screen, and that fresh leg deserves its own retry.
+  let deckClaimRetried = false;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    // Where this round's text starts, so a retry replays this round's words as
+    // the assistant turn and not everything the turn has said.
+    const roundTextStart = fullText.length;
     // ONE ROUND LEFT. Said once, so the model can build the thing it promised
     // rather than spend the last round on another read and stop silently.
     if (!warnedTimeBudget && Date.now() - turnStartedAt > TURN_BUDGET_WARN_MS) {
@@ -11844,6 +11939,18 @@ async function streamGemini(
     if (finishReason !== "tool_calls" || toolCalls.size === 0) {
       if (stoppedAbnormally(finishReason)) {
         console.warn(`[Chain] Round ${round} was CUT OFF (finishReason=${finishReason}) — not a finished answer; forcing a final pass`);
+      } else if (shouldRetryDeckClaim({ text: fullText, asked: config.deckEditAsked === true, turn: config.slidesTurn, offered: config.sawUntrustedContent !== true && tools.some((t: any) => t?.function?.name === "generate_slides"), alreadyRetried: deckClaimRetried, round, maxRounds: MAX_TOOL_ROUNDS, elapsedMs: Date.now() - turnStartedAt, budgetMs: TURN_BUDGET_WARN_MS, replayable: fullText.slice(roundTextStart).trim() !== "", toolsUsed: toolLoopGuard.usage() })) {
+        // Says the deck changed and nothing was called: one more round with
+        // tools on (see the Anthropic and xAI chains). This round's text only.
+        deckClaimRetried = true;
+        console.warn(`[Gemini] Round ${round} says the deck changed and generate_slides was never called — one more round with tools`);
+        geminiMessages.push({ role: "assistant", content: fullText.slice(roundTextStart) } as any);
+        geminiMessages.push({ role: "user", content: DECK_CLAIM_NUDGE } as any);
+        if (fullText.trim() && !fullText.endsWith("\n")) {
+          fullText += "\n\n";
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
+        }
+        continue;
       } else {
         loopEndedCleanly = true;
       }
@@ -12522,6 +12629,9 @@ async function streamGemini(
     }
   }
 
+  // What the model said, before any notice below is appended (see the
+  // Anthropic chain).
+  const spokenText = fullText;
   // A conversion asked for and never started is announced, not left for the
   // user to discover by asking whether anything is wrong. Streamed as well as
   // returned, so it reaches a client that has already rendered the text.
@@ -12543,6 +12653,19 @@ async function streamGemini(
       fullText += unresolved;
       try {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: unresolved })}\n\n`));
+      } catch { /* client gone; the text is still on the row */ }
+    }
+  }
+  // A reply that says the deck changed, when no call reached the builder, ends
+  // by saying it did not — after the retry above declined, asked a question or
+  // claimed again, or when no retry was allowed. Only when the user asked for
+  // a change this turn, and only if no notice above has spoken: one a turn.
+  {
+    const unmade = unmadeDeckChangeNotice(spokenText, config.slidesTurn, { asked: config.deckEditAsked === true, deckInConversation: config.deckInConversation === true, alreadySaid: fullText !== spokenText, toolsUsed: toolLoopGuard.usage() });
+    if (unmade) {
+      fullText += unmade;
+      try {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: unmade })}\n\n`));
       } catch { /* client gone; the text is still on the row */ }
     }
   }
@@ -12705,7 +12828,14 @@ async function streamOpenAI(
   let warnedLastRound = false;
   let warnedTimeBudget = false;
   const turnStartedAt = Date.now();
+  // One deck-claim retry a turn. A LOCAL, not a SlidesTurnState field: a
+  // provider fallback re-runs the turn after the `fallback` event has cleared
+  // the screen, and that fresh leg deserves its own retry.
+  let deckClaimRetried = false;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    // Where this round's text starts, so a retry replays this round's words as
+    // the assistant turn and not everything the turn has said.
+    const roundTextStart = fullText.length;
     // ONE ROUND LEFT. Said once, so the model can build the thing it promised
     // rather than spend the last round on another read and stop silently.
     if (!warnedTimeBudget && Date.now() - turnStartedAt > TURN_BUDGET_WARN_MS) {
@@ -12856,6 +12986,18 @@ async function streamOpenAI(
     if (finishReason !== "tool_calls" || toolCalls.size === 0) {
       if (stoppedAbnormally(finishReason)) {
         console.warn(`[Chain] Round ${round} was CUT OFF (finishReason=${finishReason}) — not a finished answer; forcing a final pass`);
+      } else if (shouldRetryDeckClaim({ text: fullText, asked: config.deckEditAsked === true, turn: config.slidesTurn, offered: config.sawUntrustedContent !== true && tools.some((t: any) => t?.function?.name === "generate_slides"), alreadyRetried: deckClaimRetried, round, maxRounds: MAX_TOOL_ROUNDS, elapsedMs: Date.now() - turnStartedAt, budgetMs: TURN_BUDGET_WARN_MS, replayable: fullText.slice(roundTextStart).trim() !== "", toolsUsed: toolLoopGuard.usage() })) {
+        // Says the deck changed and nothing was called: one more round with
+        // tools on (see the Anthropic and xAI chains). This round's text only.
+        deckClaimRetried = true;
+        console.warn(`[OpenAI] Round ${round} says the deck changed and generate_slides was never called — one more round with tools`);
+        openaiMessages.push({ role: "assistant", content: fullText.slice(roundTextStart) } as any);
+        openaiMessages.push({ role: "user", content: DECK_CLAIM_NUDGE } as any);
+        if (fullText.trim() && !fullText.endsWith("\n")) {
+          fullText += "\n\n";
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
+        }
+        continue;
       } else {
         loopEndedCleanly = true;
       }
@@ -13531,6 +13673,9 @@ async function streamOpenAI(
     }
   }
 
+  // What the model said, before any notice below is appended (see the
+  // Anthropic chain).
+  const spokenText = fullText;
   // A conversion asked for and never started is announced, not left for the
   // user to discover by asking whether anything is wrong. Streamed as well as
   // returned, so it reaches a client that has already rendered the text.
@@ -13552,6 +13697,19 @@ async function streamOpenAI(
       fullText += unresolved;
       try {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: unresolved })}\n\n`));
+      } catch { /* client gone; the text is still on the row */ }
+    }
+  }
+  // A reply that says the deck changed, when no call reached the builder, ends
+  // by saying it did not — after the retry above declined, asked a question or
+  // claimed again, or when no retry was allowed. Only when the user asked for
+  // a change this turn, and only if no notice above has spoken: one a turn.
+  {
+    const unmade = unmadeDeckChangeNotice(spokenText, config.slidesTurn, { asked: config.deckEditAsked === true, deckInConversation: config.deckInConversation === true, alreadySaid: fullText !== spokenText, toolsUsed: toolLoopGuard.usage() });
+    if (unmade) {
+      fullText += unmade;
+      try {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: unmade })}\n\n`));
       } catch { /* client gone; the text is still on the row */ }
     }
   }
