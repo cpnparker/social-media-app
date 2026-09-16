@@ -70,16 +70,15 @@ const ACTIVITY: Record<string, ToolActivity> = {
   search_memory: { label: "Searching memories", service: "memory", subject: "your saved memories" },
   search_notebook: { label: "Searching your notebook", service: "memory", subject: "your notebook" },
   search_thread: { label: "Searching this conversation", service: "memory", subject: "this conversation" },
-  // NO SUBJECT, and this one is a judgement rather than a category. A web
-  // search reads a source like any of the above, but it is absent from the
-  // budget table, so it runs on the default cap of THREE on the three chains
-  // where it is a function tool — and an ordinary "look these four things up"
-  // turn would end with a warning that the answer may be missing something.
-  // Review 2's plan item 4 measured web_search going over in 4 of its 6 turns
-  // in the window. A notice that fires on most search turns stops being read,
-  // which is this repo's own recorded lesson about a check that cries wolf.
-  // Give it a real budget (item 4) and give it a subject in the same change.
-  web_search: { label: "Searching the web", service: "web" },
+  // SUBJECT GIVEN BACK on 2026-09-16, in the same change that gave web_search a
+  // budget of 6 in lib/ai/tool-loop-guard.ts. It was held out because on the
+  // default cap of THREE it went over in four of its six turns in the review
+  // window, and a notice that fires on most search turns stops being read. With
+  // a real budget the notice means what it says again: a turn that spends six
+  // searches and still wants a seventh has a hole in its answer worth naming.
+  // The two are a pair — check 11 of scripts/verify-tool-loop-guard.ts goes red
+  // if either moves without the other.
+  web_search: { label: "Searching the web", service: "web", subject: "web search results" },
   generate_word_document: { label: "Writing the document", service: "document" },
   generate_document: { label: "Building the deck", service: "document" },
   generate_slides: { label: "Building the deck", service: "document" },

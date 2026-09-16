@@ -97,6 +97,15 @@
  *           field, and the cast there is hand-written over an `any` column, so
  *           tsc stayed green while "(3 refused)" disappeared from every new row
  *   KILLED  web_search given back its subject while its budget is the default 3
+ *
+ * MUTATION LOG (detached worktree, 2026-09-16, item 4 — the budget raise):
+ *   KILLED  query_meetingbrain returned to 6 while section 1 pins 8 → red
+ *   KILLED  the budget raised to 6 for web_search WITHOUT giving its subject
+ *           back in lib/ai/tool-activity.ts → check 11 red, naming the file it
+ *           is missing from. This is the half that matters: the pair was only
+ *           ever proved in one direction, and an item-4 change that raised the
+ *           cap and forgot the subject would have left the notice silent on
+ *           the one tool the raise was meant to make honest.
  *           → 11 red: a fourth distinct search would end the reply on a warning
  *   KILLED  the closing line's guarantee restored ("and it will be fetched")
  *           → 11 red
@@ -129,8 +138,8 @@ console.log("\n1. The budgets every chain now sees");
 const EXPECTED: [string, number][] = [
   ["query_xero", 8], ["query_engine", 8], ["query_resourcing", 8],
   ["query_gmail", 8], ["query_slack", 8],
-  ["query_meetingbrain", 6], ["query_drive_docs", 6], ["search_notebook", 6],
-  ["query_calendar", 6], ["query_microsoft", 6],
+  ["query_meetingbrain", 8], ["query_drive_docs", 6], ["search_notebook", 6],
+  ["query_calendar", 6], ["query_microsoft", 6], ["web_search", 6],
   ["generate_image", 3], ["a_tool_that_does_not_exist", 3],
 ];
 for (let i = 0; i < EXPECTED.length; i++) {
@@ -154,7 +163,7 @@ console.log("\n2. The same call twice is refused, and says why");
 console.log("\n3. Different arguments run until the budget is spent");
 {
   const g = createToolLoopGuard();
-  const budget = toolBudgetFor("query_meetingbrain"); // 6
+  const budget = toolBudgetFor("query_meetingbrain"); // 8
   let allowed = 0;
   for (let i = 0; i < budget; i++) if (g.blockFor("query_meetingbrain", { q: `q${i}` }) === null) allowed++;
   allowed === budget ? pass(`${budget} distinct calls all ran`) : fail(`only ${allowed} of ${budget} ran`);

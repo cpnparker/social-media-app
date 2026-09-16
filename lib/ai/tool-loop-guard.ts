@@ -23,8 +23,30 @@
 const MAX_CALLS_PER_TOOL = 3;
 
 const READ_ONLY_TOOL_BUDGET: Record<string, number> = {
-  query_xero: 8, query_engine: 8, query_meetingbrain: 6, query_drive_docs: 6,
+  query_xero: 8, query_engine: 8, query_drive_docs: 6,
   search_notebook: 6,
+  // RAISED 6 → 8 on 2026-09-16, after the cap cut two client answers short in
+  // one day. Asked to brief a new client, a turn spent its six on the search
+  // and three meeting details and then reported the two meetings it never
+  // reached as unavailable — one of them "(no recording)" against a 28,563
+  // character transcript. That evening, asked to prepare for a kick-off call
+  // the next morning, a turn spent six reading the June-to-August history and
+  // never reached the three September meetings, including one from that same
+  // afternoon that had already settled the agenda.
+  //
+  // The shape of the tool is why six is short: finding a meeting costs a
+  // search, and reading one costs a separate details call, so six calls buy
+  // roughly three meetings. A question about a client relationship is a
+  // question about more meetings than that. Eight buys four.
+  query_meetingbrain: 8,
+  // THE WEB IS ITERATIVE TOO, and this is the pair to the subject given back
+  // to web_search in lib/ai/tool-activity.ts — the two move together or the
+  // notice is wrong in one direction or the other. On the default cap of 3 an
+  // ordinary "look these four things up" turn ended over budget, and a warning
+  // that fires on most search turns stops being read, which is this repo's own
+  // lesson about a check that cries wolf. Six calls is four real questions
+  // plus a retry, and only a turn that genuinely ran out now says so.
+  web_search: 6,
   // Four separate reports behind one tool name, so the default cap of 3 makes
   // "how are we tracking, and who is free to take it on" unanswerable — the
   // turn runs out of calls before it runs out of questions.
