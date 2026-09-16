@@ -80,14 +80,79 @@ const narrows =
 // out with the full set, server-side web_search included, while this script
 // reported the path closed. An enforcement point that nothing reads is a
 // comment, and a check that cannot tell the difference is worse than none.
-const sends = /tools: cacheableTools\(roundTools\)/.test(src)
-  && /tools: cacheableTools\(finalTools\)/.test(src);
-const stillSendsAll = /cacheableTools\(tools\)/.test(src);
+//
+// Read through ONE LEVEL OF INDIRECTION since the E1 prompt-cache change: both
+// request sites now take their tools from an anthropicCacheLayout result, and
+// that function calls cacheableTools on whatever array it is handed. So the
+// question "is the narrowed list the one sent" is now "which array was each
+// layout built FROM". Followed rather than re-pointed at a new string: a check
+// rewritten to match whatever the code says next is not a check.
+
+/** The balanced `{...}` starting at the first `{` at or after `from`. */
+function bodyAt(text: string, from: number): string {
+  if (from < 0) return "";
+  const open = text.indexOf("{", from);
+  if (open < 0) return "";
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") { depth--; if (depth === 0) return text.slice(open, i + 1); }
+  }
+  return "";
+}
+
+/** One object field's expression, read by balancing brackets. */
+function field(body: string, name: string): string {
+  const idx = body.indexOf(name + ":");
+  if (idx < 0) return "";
+  let depth = 0;
+  let out = "";
+  for (let i = idx + name.length + 1; i < body.length; i++) {
+    const ch = body[i];
+    if (ch === "(" || ch === "[" || ch === "{") depth++;
+    else if (ch === ")" || ch === "]" || ch === "}") { if (depth === 0) break; depth--; }
+    else if (ch === "," && depth === 0) break;
+    out += ch;
+  }
+  return out.trim();
+}
+
+const requestSites: number[] = [];
+{
+  const re = /anthropic\.messages\.stream\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src)) !== null) requestSites.push(m.index);
+}
+/** For each Anthropic request, the array its tool list was ultimately built from. */
+const sentFrom: string[] = [];
+for (let i = 0; i < requestSites.length; i++) {
+  const toolsExpr = field(bodyAt(src, requestSites[i]), "tools");
+  const viaLayout = /^([A-Za-z0-9_$]+)\.tools$/.exec(toolsExpr);
+  if (!viaLayout) {
+    // Still allowed: a site that calls cacheableTools directly, the way this
+    // read before E1. Recorded as-is so the assertion below judges it.
+    const direct = /^cacheableTools\(([A-Za-z0-9_$]+)\)$/.exec(toolsExpr);
+    sentFrom.push(direct ? direct[1] : toolsExpr || "?");
+    continue;
+  }
+  const declRe = new RegExp("const\\s+" + viaLayout[1] + "\\s*=\\s*anthropicCacheLayout\\(", "g");
+  let d: RegExpExecArray | null;
+  let declAt = -1;
+  while ((d = declRe.exec(src)) !== null) { if (d.index < requestSites[i]) declAt = d.index; }
+  sentFrom.push(declAt < 0 ? `${viaLayout[1]} (undeclared)` : field(bodyAt(src, declAt), "tools") || "?");
+}
+const sends = requestSites.length === 2
+  && sentFrom.indexOf("roundTools") >= 0
+  && sentFrom.indexOf("finalTools") >= 0;
+// The unfiltered array must not reach the API by any route — neither straight
+// into cacheableTools nor through a layout built from it.
+const stillSendsAll = /cacheableTools\(tools\)/.test(src) || sentFrom.indexOf("tools") >= 0;
 narrows && sends && !stillSendsAll
-  ? pass("the narrowed list is the one sent — server-side web_search is absent, not merely filtered")
+  ? pass(`the narrowed list is the one sent (${sentFrom.join(", ")}) — server-side web_search is absent, not merely filtered`)
   : fail(
       !narrows ? "the Anthropic tool list is not narrowed"
-      : !sends ? "roundTools is computed but never passed to the API — the narrowing is dead code"
+      : !sends ? `roundTools/finalTools never reach the API — the requests send [${sentFrom.join(", ")}], so the narrowing is dead code`
       : "a call still passes the unfiltered tool list"
     );
 

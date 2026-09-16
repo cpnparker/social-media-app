@@ -8446,6 +8446,22 @@ export interface StreamResult {
    */
   modelUsed: string;
   /**
+   * How many provider REQUESTS this turn made: tool-loop rounds plus the
+   * forced final pass. Never 0 on a turn that reached a provider.
+   *
+   * A turn is not a call. Each round re-sends the whole conversation and every
+   * tool result so far, and ONE ledger row is written for the lot — so
+   * units_input alone cannot tell one enormous request from eight small ones,
+   * and prompt caching only helps the second. Rounds per turn had never been
+   * measured, which is why it ships before the caching fix rather than with it:
+   * a saving nobody can size before the change cannot be verified after it.
+   *
+   * Required, not optional, for the same reason as modelUsed above: a new
+   * provider chain that forgets it fails to compile, which is the only version
+   * of this that stays true.
+   */
+  rounds: number;
+  /**
    * Which tools ran this turn, and how often the guard refused them.
    *
    * NAMES AND COUNTS ONLY — never arguments, never results. That keeps the
@@ -8485,7 +8501,12 @@ export function createStreamingResponse(
       // provider (capped, thrown before the branch) still attributes to something
       // real rather than to the empty string. Every branch below overwrites it with
       // what actually ran, including after a fallback.
-      let result: StreamResult = { fullText: "", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, modelUsed: modelInfo.apiModel, toolsUsed: [] };
+      //
+      // rounds seeded at 0 because a turn that never reaches a provider made no
+      // requests. The ledger stores that as NULL rather than as a measured
+      // zero — "not measured" and "measured, and it was none" are different
+      // claims, and only one of them can actually happen.
+      let result: StreamResult = { fullText: "", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, modelUsed: modelInfo.apiModel, rounds: 0, toolsUsed: [] };
 
       /**
        * Adopt a fallback leg's text WITHOUT discarding what the failed leg
@@ -8508,6 +8529,20 @@ export function createStreamingResponse(
         outputTokens: (prev.outputTokens || 0) + (next.outputTokens || 0),
         cacheReadTokens: (prev.cacheReadTokens || 0) + (next.cacheReadTokens || 0),
         cacheWriteTokens: (prev.cacheWriteTokens || 0) + (next.cacheWriteTokens || 0),
+        // Requests add for the same reason the tokens do: both legs were sent,
+        // so both were billed, and a row claiming three rounds when five were
+        // made would understate exactly the thing the column measures.
+        //
+        // THIS IS THE ONLY FALLBACK PATH WHERE THE COUNT CAN ADD, and not for
+        // want of trying. The three other paths — Anthropic→Grok,
+        // xAI→Anthropic, and withGrokFallback — fall back because the first leg
+        // THREW, so there is no first result to merge: the rounds it made are
+        // inside the stack that unwound, not in a value anyone holds. Making
+        // them recoverable means every chain attaching its count to the error
+        // on the way out, which is a change to four tool loops and belongs in
+        // its own commit. Until then a fallen-back turn reports only the leg
+        // that answered, and the migration's sanity checks say so.
+        rounds: (prev.rounds || 0) + (next.rounds || 0),
         toolsUsed: [...(prev.toolsUsed || []), ...(next.toolsUsed || [])],
       });
 
@@ -8762,16 +8797,38 @@ async function withGrokFallback(
  * cache implicitly on a stable prefix. A cache matches a PREFIX, so a
  * breakpoint says "everything up to and including this point is reusable".
  *
- * Two breakpoints, in the order the API assembles the request — tools, then
+ * FOUR breakpoints, in the order the API assembles the request — tools, then
  * system, then messages:
  *   1. the LAST tool definition  → caches the whole tools array
  *   2. the system prompt          → caches tools + system
+ *   3. the last block of the NEWEST message, moved forward each round
+ *   4. a trailing marker ~15 positions behind it, so the lookback from 3 has
+ *      something to find on a round that appended a lot (see
+ *      rollingCacheBreakpoints — this is the web-search shape, not a corner)
  *
- * That is the large, genuinely stable part: the tool schemas barely change, and
- * buildSystemPrompt now holds every turn-varying section back to a tail
- * (system-prompts.ts, `volatileTail`). No breakpoint is placed in `messages`:
- * the conversation grows every turn, so a marker there writes a new cache each
- * time and pays the 1.25x write premium for a prefix that is about to change.
+ * The first two cover the large, genuinely stable part: the tool schemas barely
+ * change, and buildSystemPrompt holds every turn-varying section back to a tail
+ * (system-prompts.ts, `volatileTail`).
+ *
+ * That is all four of Anthropic's slots, and a fifth is a 400 rather than a
+ * degradation — which is why nothing places a marker by hand any more. Every
+ * one of them is placed inside anthropicCacheLayout against a budget COMPUTED
+ * from what system and tools actually spent, and verify-prompt-cache check 11
+ * fails if `cache_control` is written anywhere the budget cannot see it.
+ *
+ * The last two are new, and they are scoped to the TOOL LOOP on purpose. Inside one
+ * turn the loop APPENDS to one array and never rebuilds it, so round n's
+ * payload is round n-1's payload with two messages on the end — byte-identical
+ * by construction. Across TURNS the history is rebuilt from the database
+ * (image-echo stripping, fenced context, a fresh nonce), and a prefix cache
+ * matches byte for byte, so a marker there would pay the 1.25x write premium
+ * for a prefix about to change. All four cache bugs this repo has shipped had
+ * exactly that shape, which is why the in-loop marker is safe and a cross-turn
+ * one is a separate decision.
+ *
+ * What it was costing: each round after the first re-sent the whole
+ * conversation PLUS every tool result so far at full price, and input is 93% of
+ * the Claude chat bill.
  *
  * NOT free. A write costs 1.25x base input, a read 0.1x, so a cached prefix
  * pays for itself on the SECOND request and loses money if there is never one.
@@ -8784,7 +8841,7 @@ async function withGrokFallback(
  */
 const CACHE_MIN_CHARS = 6000; // ~1.5k tokens, comfortably over the minimum
 
-function cacheableSystem(systemText: string | undefined): any {
+export function cacheableSystem(systemText: string | undefined): any {
   if (!systemText || systemText.length < CACHE_MIN_CHARS) return systemText;
   // Lift the volatile region out and put it LAST, in its own uncached block.
   // cache_control marks a breakpoint covering everything before it, so this
@@ -8810,13 +8867,255 @@ function flattenSystem(systemText: string): string {
   return volatile ? `${stable}\n\n${volatile}` : stable;
 }
 
-function cacheableTools(tools: Anthropic.Tool[]): Anthropic.Tool[] {
+export function cacheableTools(tools: Anthropic.Tool[]): Anthropic.Tool[] {
   if (tools.length === 0) return tools;
   // Mark only the LAST tool: the breakpoint covers everything before it, so
   // one marker caches the entire array.
   return tools.map((t, i) =>
     i === tools.length - 1 ? ({ ...t, cache_control: { type: "ephemeral" } } as any) : t
   );
+}
+
+/** Anthropic's hard ceiling on cache_control markers in one request. A fifth is
+ *  a 400, not a degradation, so the budget below is COMPUTED from what system
+ *  and tools actually spent rather than assumed to be two. */
+export const MAX_CACHE_BREAKPOINTS = 4;
+
+/** The block types that may carry cache_control, LISTED POSITIVELY.
+ *
+ *  Not because two types are special: of the 29 *BlockParam types in SDK 0.78,
+ *  FOURTEEN do not declare cache_control — the two thinking ones, the code
+ *  execution and text-editor result families, ToolSearchToolSearchResultBlockParam,
+ *  WebFetchBlockParam, WebFetchToolResultErrorBlockParam and
+ *  WebSearchResultBlockParam. That last one sits inside every
+ *  web_search_tool_result this chain already receives, so a NEGATIVE list
+ *  naming the thinking types would be wrong on the dominant path rather than
+ *  merely incomplete. Each of the six below was read out of the installed
+ *  messages.d.ts and verify-prompt-cache check 10 re-reads it, so a block type
+ *  nobody has looked up is stepped over rather than assumed safe. */
+const CACHEABLE_BLOCK_TYPES = new Set([
+  "text", "image", "document", "tool_use", "tool_result", "search_result",
+]);
+
+/** How far back a breakpoint looks for a prior cache entry, in POSITIONS —
+ *  Anthropic's documented lookback. A marker more than this past the previous
+ *  request's entry finds nothing, and the failure is silent: 200 OK, zero cache
+ *  reads, and the whole message side rewritten at 1.25x instead of sent at 1x.
+ *  That is E1 making the bill WORSE, on the turns it exists to make cheaper. */
+export const CACHE_LOOKBACK_POSITIONS = 20;
+
+/** The gap this places between consecutive message markers, in positions.
+ *  Fifteen and not twenty so that a round may append up to 35 positions before
+ *  the chain breaks: the trailing marker lands (appended − 15) past the
+ *  previous request's entry and 15 before the newest one, and BOTH of those
+ *  hops have to stay inside the lookback. */
+const CACHE_MARKER_STRIDE = 15;
+
+/** Block types whose consecutive RUNS count as ONE position, which is why a
+ *  round of parallel tool calls does not eat the lookback. Documented for
+ *  tool_use and tool_result only; nothing else is assumed to collapse, because
+ *  counting more positions than the API does places these markers closer
+ *  together, which errs towards finding a hit rather than missing one. */
+const COLLAPSING_BLOCK_TYPES = new Set(["tool_use", "tool_result"]);
+
+/**
+ * Count the cache_control markers on an assembled system / tools / messages
+ * value, including ones nested inside a tool_result's own content blocks —
+ * those count against the four as well.
+ */
+export function countCacheBreakpoints(value: unknown): number {
+  let n = 0;
+  const walk = (v: any) => {
+    if (!v || typeof v !== "object") return;
+    if (Array.isArray(v)) {
+      for (let i = 0; i < v.length; i++) walk(v[i]);
+      return;
+    }
+    if (v.cache_control) n++;
+    if (Array.isArray(v.content)) walk(v.content);
+  };
+  walk(value);
+  return n;
+}
+
+/**
+ * A breakpoint on the last block of the NEWEST message, moved forward on every
+ * request, plus a TRAILING one ~15 positions behind it. Round n then reads
+ * rounds 0…n-1 at 0.1x instead of re-sending them at full price.
+ *
+ * WHY THERE ARE TWO, when one moving marker is the obvious design. A breakpoint
+ * does not search the whole conversation for a hit: it walks back at most
+ * twenty POSITIONS (CACHE_LOOKBACK_POSITIONS) looking for an entry a previous
+ * request wrote. So the question is not how big the conversation is, it is how
+ * many positions ONE round appends — and that was measured rather than
+ * reasoned about, because the reasoning was wrong:
+ *
+ *   - no web search: 4 positions a round (a thinking block, a text block, a
+ *     tool_use run, a tool_result run — consecutive tool_use blocks collapse to
+ *     one position and so do consecutive tool_results). Comfortable.
+ *   - web search on, `max_uses: 5`: the assistant turn is echoed back whole, so
+ *     the round appends `text, server_tool_use, web_search_tool_result` FIVE
+ *     times plus the answer and the tool call — 18 positions with a one-block
+ *     answer, 23 when the answer is split across text blocks, which is what a
+ *     cited answer looks like.
+ *
+ * Eighteen is inside twenty by two, and twenty-three is not inside it at all.
+ * The miss is silent — 200 OK, no cache read, the entire message side written
+ * at 1.25x — so on the search path, which route.ts puts most unclassified
+ * Claude turns on, ONE marker would have made the bill worse on exactly the
+ * turns E1 targets. The trailing marker is Anthropic's documented mitigation
+ * ("place an intermediate breakpoint every ~15 positions in long turns") and it
+ * costs nothing: a write bills only the delta past the highest hit, and that
+ * delta is the same span whether one marker covers it or two.
+ *
+ * `budget` markers are placed, newest first, each CACHE_MARKER_STRIDE positions
+ * behind the last. Two is what the request can afford today; the loop is
+ * written for n because the whole point is that the number is computed.
+ *
+ * WHY EVERY STRING IS NORMALISED, not just the one being marked. A string
+ * content cannot carry cache_control, and the newest message is very often a
+ * plain string: buildAnthropicContent returns msg.content untouched when there
+ * are no attachments, and the two round notices are strings too. Converting
+ * only the message being marked would mean round 0 sent it as a string and
+ * round 1 sent it as a block — one byte of difference inside the overlap is all
+ * it takes to discard the lot. Converting all of them on every call keeps round
+ * n a prefix-extension of round n-1 whatever moves. An EMPTY string is left
+ * exactly as it is: an empty text block is a different rejection from an empty
+ * string, and swapping one failure for another is not a fix.
+ *
+ * `budget` is how many of the four markers are still free. Zero means place
+ * none — which is what the forced final pass asks for, because it sets
+ * tool_choice where the rounds before it did not, and a tool_choice change
+ * invalidates the messages cache: the marker there would be written at 1.25x on
+ * the last request of the turn and read by nobody.
+ *
+ * Pure. The caller's array is never touched, so markers cannot accumulate
+ * across rounds.
+ */
+export function rollingCacheBreakpoints(
+  messages: Anthropic.MessageParam[],
+  budget: number
+): Anthropic.MessageParam[] {
+  const out: any[] = (messages as any[]).map((m: any) => ({
+    ...m,
+    content:
+      typeof m.content === "string" && m.content !== ""
+        ? [{ type: "text", text: m.content }]
+        : Array.isArray(m.content)
+          ? m.content.map((b: any) => stripBlockMarkers(b))
+          : m.content,
+  }));
+  if (budget < 1 || out.length === 0) return out as Anthropic.MessageParam[];
+
+  // Number every block's POSITION the way the lookback counts them, and keep
+  // the ones that could carry a marker. Position numbering is what makes the
+  // stride mean anything: on the search path a run of blocks and a run of
+  // positions are very different lengths.
+  const slots: { m: number; b: number; pos: number }[] = [];
+  let pos = 0;
+  let prevType = "";
+  for (let i = 0; i < out.length; i++) {
+    const content = out[i].content;
+    if (!Array.isArray(content)) { pos++; prevType = ""; continue; }
+    // A run does not span a message boundary: two turns that happen to start
+    // and end on the same block type are two positions, not one. Resetting is
+    // also the safe direction — counting MORE positions moves the markers
+    // closer together.
+    prevType = "";
+    for (let j = 0; j < content.length; j++) {
+      const b = content[j];
+      const t = b && typeof b === "object" ? String(b.type) : "";
+      if (!(COLLAPSING_BLOCK_TYPES.has(t) && t === prevType)) pos++;
+      prevType = t;
+      if (b && typeof b === "object" && CACHEABLE_BLOCK_TYPES.has(t)) slots.push({ m: i, b: j, pos });
+    }
+  }
+
+  // The newest marker belongs on the LAST message — that is the boundary the
+  // next round reads back — and the search is backwards, so a trailing thinking
+  // block is stepped over rather than marked. If nothing in that message can
+  // carry a marker, place NONE, trailing one included: one round without a
+  // breakpoint costs a cache read, a rejected request costs the whole turn.
+  const lastMsg = out.length - 1;
+  let primary = -1;
+  for (let i = slots.length - 1; i >= 0; i--) {
+    if (slots[i].m === lastMsg) { primary = i; break; }
+    if (slots[i].m < lastMsg) break;
+  }
+  if (primary < 0) return out as Anthropic.MessageParam[];
+
+  const chosen: number[] = [primary];
+  while (chosen.length < budget) {
+    const anchor = slots[chosen[chosen.length - 1]];
+    let next = -1;
+    for (let i = chosen[chosen.length - 1] - 1; i >= 0; i--) {
+      if (slots[i].pos <= anchor.pos - CACHE_MARKER_STRIDE) { next = i; break; }
+    }
+    if (next < 0) break;
+    chosen.push(next);
+  }
+
+  for (let k = 0; k < chosen.length; k++) {
+    const s = slots[chosen[k]];
+    const content = (out[s.m].content as any[]).slice();
+    content[s.b] = { ...content[s.b], cache_control: { type: "ephemeral" } };
+    out[s.m] = { ...out[s.m], content };
+  }
+  return out as Anthropic.MessageParam[];
+}
+
+/**
+ * A block with every cache_control taken off it, INCLUDING ones nested in a
+ * tool_result's own content blocks.
+ *
+ * countCacheBreakpoints recurses into `content` on purpose — a nested marker
+ * counts against the four exactly like a top-level one — so a placer that
+ * stripped only the top level would leave behind a marker it cannot see and
+ * spend the budget over the wrong number. Nothing on this path builds a
+ * tool_result with block content today (every one of them is a string or a
+ * string-returning formatter), which is precisely why the two halves were free
+ * to drift: the rule the counter enforces has to be the rule the placer knows
+ * about, not the one today's inputs happen not to exercise.
+ */
+function stripBlockMarkers(b: any): any {
+  if (!b || typeof b !== "object") return b;
+  let out = b;
+  if (out.cache_control) {
+    const { cache_control, ...rest } = out;
+    out = rest;
+  }
+  if (Array.isArray(out.content)) {
+    const inner = (out.content as any[]).map((c: any) => stripBlockMarkers(c));
+    let changed = false;
+    for (let i = 0; i < inner.length; i++) if (inner[i] !== (out.content as any[])[i]) changed = true;
+    if (changed) out = { ...out, content: inner };
+  }
+  return out;
+}
+
+/**
+ * The caching-relevant half of an Anthropic request, assembled in ONE place.
+ *
+ * Both request sites in streamAnthropic go through this, so what
+ * scripts/verify-prompt-cache.ts drives is what the API is actually sent. The
+ * alternative is a check that proves its own copy is correct, which is how the
+ * post-taint tool narrowing was reported closed while it was open.
+ */
+export function anthropicCacheLayout(args: {
+  systemText: string | undefined;
+  tools: Anthropic.Tool[];
+  messages: Anthropic.MessageParam[];
+  /** True when this request sets tool_choice. Changing tool_choice leaves the
+   *  tools and system caches intact and invalidates the MESSAGES cache, so a
+   *  rolling marker on such a request is written and never read. */
+  toolChoiceSet: boolean;
+}): { system: any; tools: Anthropic.Tool[]; messages: Anthropic.MessageParam[]; breakpoints: number } {
+  const system = cacheableSystem(args.systemText);
+  const tools = cacheableTools(args.tools);
+  const used = countCacheBreakpoints(system) + countCacheBreakpoints(tools);
+  const budget = args.toolChoiceSet ? 0 : Math.max(0, MAX_CACHE_BREAKPOINTS - used);
+  const messages = rollingCacheBreakpoints(args.messages, budget);
+  return { system, tools, messages, breakpoints: used + countCacheBreakpoints(messages) };
 }
 
 async function streamAnthropic(
@@ -8980,6 +9279,9 @@ async function streamAnthropic(
   let totalOutputTokens = 0;
   let totalCacheReadTokens = 0;
   let totalCacheWriteTokens = 0;
+  // Counted at the point of SENDING, so a round that stalls mid-stream still
+  // counts: the prompt was read and it was billed.
+  let roundsUsed = 0;
 
   // Tool use loop: Claude may request tool calls, which we execute and feed back.
   // Loop continues until the model's stop_reason is "end_turn" (no more tool calls).
@@ -9058,19 +9360,37 @@ async function streamAnthropic(
     const roundTools = allowPostTaintReads
       ? tools.filter((t: any) => POST_TAINT_READ_TOOLS.has(t?.name))
       : tools;
+    // System, tools and the rolling messages marker in one place, so the check
+    // drives the same code the API is sent rather than a copy of it.
+    const layout = anthropicCacheLayout({
+      systemText,
+      tools: roundTools,
+      messages: anthropicMessages,
+      toolChoiceSet: suppressTools,
+    });
+    roundsUsed++;
     const stream = anthropic.messages.stream({
       model: apiModel,
       max_tokens: anthropicMaxTokens(apiModel, config.maxTokens),
       ...anthropicModelParams(apiModel, config),
-      system: cacheableSystem(systemText),
-      messages: anthropicMessages,
+      system: layout.system,
+      // THE CONVERSATION IS CACHED NOW. layout puts a breakpoint on the last
+      // block of the newest message and a trailing one ~15 positions behind it,
+      // so round n reads rounds 0…n-1 at 0.1x instead of re-sending them at
+      // full price. Before this, every round after the first paid again for the
+      // whole thread plus every tool result so far — and 93% of the Claude chat
+      // bill was input. The trailing marker is not belt and braces: with
+      // web_search on, one round appends ~18-23 positions and a single marker
+      // falls outside the twenty-position lookback, which costs 1.25x on bytes
+      // nothing reads back.
+      messages: layout.messages,
       // roundTools, NOT tools. The narrowing above was computed and then thrown
       // away — every tainted round still went to the API with the full set,
       // including Anthropic's server-side web_search, which runs inside the API
       // call where no executor guard of ours can reach it. The comment above
       // this described an enforcement point that did not exist.
-      ...(roundTools.length > 0
-        ? { tools: cacheableTools(roundTools), ...(suppressTools ? { tool_choice: { type: "none" as const } } : {}) }
+      ...(layout.tools.length > 0
+        ? { tools: layout.tools, ...(suppressTools ? { tool_choice: { type: "none" as const } } : {}) }
         : {}),
     });
 
@@ -9187,15 +9507,25 @@ async function streamAnthropic(
     // Get usage from this round
     const finalMessage = await stream.finalMessage();
     // Anthropic reports input_tokens NET of cache, so these are added, never
-    // subtracted. Zero on both while no cache_control is sent — which is the
-    // point of shipping this first: it proves caching is off before anything
-    // claims to turn it on.
-    totalInputTokens += finalMessage.usage?.input_tokens || 0;
-    totalOutputTokens += finalMessage.usage?.output_tokens || 0;
-    totalCacheReadTokens += (finalMessage.usage as any)?.cache_read_input_tokens || 0;
-    totalCacheWriteTokens += (finalMessage.usage as any)?.cache_creation_input_tokens || 0;
+    // subtracted.
+    //
+    // THE PER-ROUND DELTA IS THE POINT, and it is not decoration. The running
+    // totals hide the only number the saving turns on: how many DISTINCT
+    // message-side bytes a turn has. Uncached input at round n is exactly the
+    // volatile system block plus the history plus the current message plus
+    // every earlier tool result, so the LAST round's `(+N)` on `in=` reads that
+    // figure straight off the log. The existing key=value pairs are kept
+    // untouched beside it so any log query already written still matches.
+    const roundIn = finalMessage.usage?.input_tokens || 0;
+    const roundOut = finalMessage.usage?.output_tokens || 0;
+    const roundCacheRead = (finalMessage.usage as any)?.cache_read_input_tokens || 0;
+    const roundCacheWrite = (finalMessage.usage as any)?.cache_creation_input_tokens || 0;
+    totalInputTokens += roundIn;
+    totalOutputTokens += roundOut;
+    totalCacheReadTokens += roundCacheRead;
+    totalCacheWriteTokens += roundCacheWrite;
 
-    console.log(`[Anthropic] Round ${round}: stop_reason=${finalMessage.stop_reason}, toolUseBlocks=${toolUseBlocks.length}, textLength=${fullText.length}, in=${totalInputTokens} cache_r=${totalCacheReadTokens} cache_w=${totalCacheWriteTokens} out=${totalOutputTokens}`);
+    console.log(`[Anthropic] Round ${round}: stop_reason=${finalMessage.stop_reason}, toolUseBlocks=${toolUseBlocks.length}, textLength=${fullText.length}, in=${totalInputTokens}(+${roundIn}) cache_r=${totalCacheReadTokens}(+${roundCacheRead}) cache_w=${totalCacheWriteTokens}(+${roundCacheWrite}) out=${totalOutputTokens}(+${roundOut}) bp=${layout.breakpoints}`);
 
     // If no tool calls were made, we're done — UNLESS the round was cut off
     // rather than finished. A max_tokens stop is not an answer, and calling it
@@ -10338,12 +10668,23 @@ async function streamAnthropic(
         ? tools.filter((t: any) => POST_TAINT_READ_TOOLS.has(t?.name))
         : tools;
       const finalTools = narrowed.length > 0 ? narrowed : tools;
+      const finalLayout = anthropicCacheLayout({
+        systemText,
+        tools: finalTools,
+        messages: anthropicMessages,
+        // This request sets tool_choice where every round before it did not,
+        // and a tool_choice change invalidates the MESSAGES cache. A rolling
+        // marker here would buy a 1.25x write on the last request of the turn
+        // that nothing would ever read.
+        toolChoiceSet: true,
+      });
+      roundsUsed++;
       const finalStream = anthropic.messages.stream({
         model: apiModel,
         max_tokens: anthropicMaxTokens(apiModel, config.maxTokens),
         ...anthropicModelParams(apiModel, config),
-        system: cacheableSystem(systemText),
-        messages: anthropicMessages,
+        system: finalLayout.system,
+        messages: finalLayout.messages,
         // tools MUST be passed when the history contains tool_use/tool_result
         // blocks — the API 400s otherwise. tool_choice "none" is what actually
         // forces a text-only response.
@@ -10352,7 +10693,7 @@ async function streamAnthropic(
         // so this is belt and braces; the braces are there because a list that
         // is merely unreachable today is a list somebody trusts tomorrow. The
         // fallback to the full set covers the API's refusal of an empty array.
-        ...(tools.length > 0 ? { tools: cacheableTools(finalTools), tool_choice: { type: "none" as const } } : {}),
+        ...(tools.length > 0 ? { tools: finalLayout.tools, tool_choice: { type: "none" as const } } : {}),
       });
 
       for await (const event of withStallGuard(finalStream)) {
@@ -10438,6 +10779,13 @@ async function streamAnthropic(
     }
   }
 
+  // ONE LINE PER TURN, one greppable prefix across all four chains, so
+  // `vercel logs --query "Turn: rounds="` reaches every provider at once. The
+  // ledger row records the turn's totals; this records how many requests those
+  // totals were spread across, which is what decides whether caching the loop
+  // is worth anything at all.
+  console.log(`[Anthropic] Turn: rounds=${roundsUsed} model=${apiModel} in=${totalInputTokens} cache_r=${totalCacheReadTokens} cache_w=${totalCacheWriteTokens} out=${totalOutputTokens}`);
+
   return {
     fullText,
     inputTokens: totalInputTokens,
@@ -10445,6 +10793,7 @@ async function streamAnthropic(
     cacheReadTokens: totalCacheReadTokens,
     cacheWriteTokens: totalCacheWriteTokens,
     modelUsed: apiModel,
+    rounds: roundsUsed,
     toolsUsed: toolLoopGuard.usage(),
   };
 }
@@ -10615,6 +10964,10 @@ async function streamXAIChatCompletions(
   // structurally zero rather than merely unmeasured.
   const totalCacheWriteTokens = 0;
 
+  // Counted at the point of SENDING, so a round that stalls mid-stream still
+  // counts: the prompt was read and it was billed.
+  let roundsUsed = 0;
+
   // Tool use loop: model may request tool calls, which we execute and feed back
   const MAX_TOOL_ROUNDS = 8;
   let loopEndedCleanly = false; // natural stop — anything else forces a final answer
@@ -10652,6 +11005,7 @@ async function streamXAIChatCompletions(
       warnedLastRound = true;
       openaiMessages.push({ role: "user", content: LAST_ROUND_NOTICE } as any);
     }
+    roundsUsed++;
     const stream = (await xai.chat.completions.create({
       model: apiModel,
       ...tokenParam,
@@ -11496,6 +11850,7 @@ async function streamXAIChatCompletions(
       const finalTokenParam = apiModel.startsWith("grok-4")
         ? { max_completion_tokens: config.maxTokens || 4096 }
         : { max_tokens: config.maxTokens || 4096 };
+      roundsUsed++;
       const finalStream = await xai.chat.completions.create({
         model: apiModel,
         temperature: config.temperature ?? DEFAULT_CHAT_TEMPERATURE,
@@ -11560,6 +11915,13 @@ async function streamXAIChatCompletions(
     }
   }
 
+  // ONE LINE PER TURN, one greppable prefix across all four chains, so
+  // `vercel logs --query "Turn: rounds="` reaches every provider at once. The
+  // ledger row records the turn's totals; this records how many requests those
+  // totals were spread across, which is what decides whether caching the loop
+  // is worth anything at all.
+  console.log(`[xAI] Turn: rounds=${roundsUsed} model=${apiModel} in=${totalInputTokens} cache_r=${totalCacheReadTokens} cache_w=${totalCacheWriteTokens} out=${totalOutputTokens}`);
+
   return {
     fullText,
     inputTokens: totalInputTokens,
@@ -11567,6 +11929,7 @@ async function streamXAIChatCompletions(
     cacheReadTokens: totalCacheReadTokens,
     cacheWriteTokens: totalCacheWriteTokens,
     modelUsed: apiModel,
+    rounds: roundsUsed,
     toolsUsed: toolLoopGuard.usage(),
   };
 }
@@ -11654,7 +12017,7 @@ async function streamXAIResponses(
     }
   }
 
-  return { fullText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens: 0, modelUsed: apiModel, toolsUsed: [] };
+  return { fullText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens: 0, modelUsed: apiModel, rounds: 1, /* one request, no tool loop */ toolsUsed: [] };
 }
 
 /* ─────────────── Gemini Streaming ─────────────── */
@@ -11790,6 +12153,10 @@ async function streamGemini(
   // structurally zero rather than merely unmeasured.
   const totalCacheWriteTokens = 0;
 
+  // Counted at the point of SENDING, so a round that stalls mid-stream still
+  // counts: the prompt was read and it was billed.
+  let roundsUsed = 0;
+
   // Tool use loop: model may request tool calls, which we execute and feed back
   const MAX_TOOL_ROUNDS = 8;
   let loopEndedCleanly = false; // natural stop — anything else forces a final answer
@@ -11822,6 +12189,7 @@ async function streamGemini(
       warnedLastRound = true;
       geminiMessages.push({ role: "user", content: LAST_ROUND_NOTICE } as any);
     }
+    roundsUsed++;
     const stream = (await client.chat.completions.create({
       model: apiModel,
       max_tokens: config.maxTokens || 4096,
@@ -12630,6 +12998,7 @@ async function streamGemini(
         fullText += "\n\n";
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
       }
+      roundsUsed++;
       const finalStream = await client.chat.completions.create({
         model: apiModel,
         temperature: config.temperature ?? DEFAULT_CHAT_TEMPERATURE,
@@ -12694,6 +13063,13 @@ async function streamGemini(
     }
   }
 
+  // ONE LINE PER TURN, one greppable prefix across all four chains, so
+  // `vercel logs --query "Turn: rounds="` reaches every provider at once. The
+  // ledger row records the turn's totals; this records how many requests those
+  // totals were spread across, which is what decides whether caching the loop
+  // is worth anything at all.
+  console.log(`[Gemini] Turn: rounds=${roundsUsed} model=${apiModel} in=${totalInputTokens} cache_r=${totalCacheReadTokens} cache_w=${totalCacheWriteTokens} out=${totalOutputTokens}`);
+
   return {
     fullText,
     inputTokens: totalInputTokens,
@@ -12701,6 +13077,7 @@ async function streamGemini(
     cacheReadTokens: totalCacheReadTokens,
     cacheWriteTokens: totalCacheWriteTokens,
     modelUsed: apiModel,
+    rounds: roundsUsed,
     toolsUsed: toolLoopGuard.usage(),
   };
 }
@@ -12839,6 +13216,10 @@ async function streamOpenAI(
   // structurally zero rather than merely unmeasured.
   const totalCacheWriteTokens = 0;
 
+  // Counted at the point of SENDING, so a round that stalls mid-stream still
+  // counts: the prompt was read and it was billed.
+  let roundsUsed = 0;
+
   // Tool use loop: model may request tool calls, which we execute and feed back
   const MAX_TOOL_ROUNDS = 8;
   let loopEndedCleanly = false; // natural stop — anything else forces a final answer
@@ -12871,6 +13252,7 @@ async function streamOpenAI(
       warnedLastRound = true;
       openaiMessages.push({ role: "user", content: LAST_ROUND_NOTICE } as any);
     }
+    roundsUsed++;
     const stream = (await client.chat.completions.create({
       model: apiModel,
       max_tokens: config.maxTokens || 4096,
@@ -13674,6 +14056,7 @@ async function streamOpenAI(
         fullText += "\n\n";
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
       }
+      roundsUsed++;
       const finalStream = await client.chat.completions.create({
         model: apiModel,
         temperature: config.temperature ?? DEFAULT_CHAT_TEMPERATURE,
@@ -13738,6 +14121,13 @@ async function streamOpenAI(
     }
   }
 
+  // ONE LINE PER TURN, one greppable prefix across all four chains, so
+  // `vercel logs --query "Turn: rounds="` reaches every provider at once. The
+  // ledger row records the turn's totals; this records how many requests those
+  // totals were spread across, which is what decides whether caching the loop
+  // is worth anything at all.
+  console.log(`[${options?.providerLabel ?? "OpenAI"}] Turn: rounds=${roundsUsed} model=${apiModel} in=${totalInputTokens} cache_r=${totalCacheReadTokens} cache_w=${totalCacheWriteTokens} out=${totalOutputTokens}`);
+
   return {
     fullText,
     inputTokens: totalInputTokens,
@@ -13745,6 +14135,7 @@ async function streamOpenAI(
     cacheReadTokens: totalCacheReadTokens,
     cacheWriteTokens: totalCacheWriteTokens,
     modelUsed: apiModel,
+    rounds: roundsUsed,
     toolsUsed: toolLoopGuard.usage(),
   };
 }
@@ -13799,5 +14190,5 @@ async function streamPerplexity(
 
   // Perplexity offers no prompt caching, so these are structurally zero
   // rather than unmeasured.
-  return { fullText, inputTokens, outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0, modelUsed: apiModel, toolsUsed: [] };
+  return { fullText, inputTokens, outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0, modelUsed: apiModel, rounds: 1, /* one request, no tool loop */ toolsUsed: [] };
 }

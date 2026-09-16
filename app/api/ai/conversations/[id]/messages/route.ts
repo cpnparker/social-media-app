@@ -24,6 +24,7 @@ import { deckToText } from "@/lib/ai/pptx-text";
 import { isSpreadsheet, isPlainTextish } from "@/lib/media/allowed-types";
 import { assertServiceAllowed, ServiceControlError } from "@/lib/admin/service-control";
 import { calculateCostTenths } from "@/lib/ai/model-costs";
+import { isMissingColumnError } from "@/lib/ai/usage-columns";
 import { appendVolatile } from "@/lib/ai/prompt-cache";
 import { needsClaudeForPersonalData, isPersonalMeetingQuestion } from "@/lib/ai/personal-data-intent";
 import { asksForDeckChange, lastAssistantReply } from "@/lib/slides/claim";
@@ -1831,7 +1832,7 @@ export async function POST(
       // attributed to the model that failed, in the message row and the ledger
       // alike. Any per-model quality or cost comparison drawn from that data was
       // reading the wrong name.
-      async ({ fullText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, modelUsed, toolsUsed }) => {
+      async ({ fullText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, modelUsed, rounds, toolsUsed }) => {
         // Skip all persistence in incognito mode
         if (!conversation.flag_incognito) {
           let assistantErr: any = null;
@@ -1914,31 +1915,48 @@ export async function POST(
               `uncached_in=${inputTokens} model=${modelUsed}`
             );
           }
-          const { error: usageErr } = await intelligenceDb
+          const usageRow = {
+            id_workspace: conversation.id_workspace,
+            user_usage: userId,
+            name_model: modelUsed,
+            type_source: conversation.id_content ? "engine" : "enginegpt",
+            units_input: inputTokens,
+            units_output: outputTokens,
+            // PERSIST WHAT WE PRICE. These two were measured, passed to
+            // calculateCostTenths above, printed to the console and then
+            // dropped — so units_cost_tenths was right while the columns
+            // beside it could not reconstruct it. On the enginegpt/sonnet-5
+            // line that was $45.53 of $110.93 invisible: 41% of the largest
+            // item on the bill.
+            //
+            // It is not bookkeeping. A cache write costs 1.25x input and a
+            // read 0.1x, so a prefix rewritten every turn and never read back
+            // is worse than no caching at all — and without these columns that
+            // failure and a healthy cache produce an identical row.
+            units_cache_read: cacheReadTokens || 0,
+            units_cache_write: cacheWriteTokens || 0,
+            units_cost_tenths: costTenths,
+            id_conversation: conversationId,
+          };
+          // ROUNDS IS WRITTEN TOLERANTLY, not optionally. A turn is up to eight
+          // provider requests and this is the one row that records them, so the
+          // column belongs here — but naming a column the DEPLOYED schema does
+          // not have yet fails the WHOLE insert, and the app and the migrations
+          // ship separately. Losing the row would lose the very measurement the
+          // column exists to take. So: try with it, and on a missing-column
+          // error write the pre-migration shape rather than nothing.
+          //
+          // `rounds || null` on purpose. Zero rounds cannot happen, so a 0
+          // arriving from a leg that threw before its first request must read
+          // NULL — "not measured" — and never 0, which would mean "measured,
+          // and it was none".
+          let { error: usageErr } = await intelligenceDb
             .from("ai_usage")
-            .insert({
-              id_workspace: conversation.id_workspace,
-              user_usage: userId,
-              name_model: modelUsed,
-              type_source: conversation.id_content ? "engine" : "enginegpt",
-              units_input: inputTokens,
-              units_output: outputTokens,
-              // PERSIST WHAT WE PRICE. These two were measured, passed to
-              // calculateCostTenths above, printed to the console and then
-              // dropped — so units_cost_tenths was right while the columns
-              // beside it could not reconstruct it. On the enginegpt/sonnet-5
-              // line that was $45.53 of $110.93 invisible: 41% of the largest
-              // item on the bill.
-              //
-              // It is not bookkeeping. A cache write costs 1.25x input and a
-              // read 0.1x, so a prefix rewritten every turn and never read back
-              // is worse than no caching at all — and without these columns that
-              // failure and a healthy cache produce an identical row.
-              units_cache_read: cacheReadTokens || 0,
-              units_cache_write: cacheWriteTokens || 0,
-              units_cost_tenths: costTenths,
-              id_conversation: conversationId,
-            });
+            .insert({ ...usageRow, units_rounds: rounds || null });
+          if (usageErr && isMissingColumnError(usageErr, "units_rounds")) {
+            console.warn("[Usage] units_rounds is not in the schema yet — logging the row without it");
+            ({ error: usageErr } = await intelligenceDb.from("ai_usage").insert({ ...usageRow }));
+          }
           if (usageErr) console.error("[Usage] Failed to log:", usageErr);
         }
       }
