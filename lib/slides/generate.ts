@@ -17,6 +17,7 @@
 import {
   COLOR, GRID, CANVAS, TYPE, NOTE, STAT_MAX, STAT_GRID_MIN, STAT_GRID, TIMELINE, TIMELINE_PARALLEL, TRACK_COLORS, IMAGE, CHART,
   SERIES_LIGHT, SERIES_DARK, CARDS, QUOTE, PROCESS, LOGO_WALL, RULE, LAYOUT_STYLE, LOGO_PLACEMENT, SECTION, VENN,
+  SHOT, FEATURE_SHOT_STYLE,
   rgb, logoUrl, textOn, type SlideLayout, type TypeStyle, type LayoutStyle,
 } from "@/lib/slides/brand";
 import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "@/lib/slides/token";
@@ -182,9 +183,26 @@ export interface SlideInput {
     attachment?: number;
     /** A region of that attachment, in percentages of its width and height. */
     region?: { x: number; y: number; width: number; height: number };
+    /** This picture is a UI CAPTURE, not a photograph: it is matted and framed
+     *  rather than bled, and nothing is ever written over it. Implied by
+     *  `callouts`, so it only has to be set for a screenshot with no pins. */
+    screenshot?: boolean;
+    /** Up to 5 numbered pins ON the picture, in array order (1-based). x and y
+     *  are percentages of the DRAWN IMAGE BOX, after any `region` crop. Drawn
+     *  on image-split and feature; declared, not drawn, anywhere else. */
+    callouts?: { x: number; y: number; text: string }[];
   };
   /** Filled in by resolution — not supplied by the model. */
-  resolvedImage?: { url: string; scrim: number; credit?: string; logo?: "white" | "navy" };
+  resolvedImage?: {
+    url: string; scrim: number; credit?: string; logo?: "white" | "navy";
+    /** width/height of the PREPARED file. A screenshot is drawn at its own
+     *  shape rather than baked to a box, so the layout has to be told what
+     *  that shape is; a photograph is baked and leaves these unset. */
+    aspect?: number;
+    /** Its pixel width, for the legibility note — how much interface is being
+     *  asked to survive being drawn at 295 points. */
+    sourceWidth?: number;
+  };
   /** Set when resolution ran and found nothing, so publishing does not quietly
    *  search again and build a deck different from the one that was approved. */
   imageUnavailable?: boolean;
@@ -1361,6 +1379,364 @@ function creditRequests(
   }, { align: "END" });
 }
 
+/* ─────────────── Screenshots, and pointing at them ─────────────── */
+
+/** A box in canvas points. The layouts above use {x,y,width,height}; the
+ *  screenshot geometry is arithmetic on rectangles, so it uses the short
+ *  spelling and converts once at the call to filledShape. */
+export type ShotBox = { x: number; y: number; w: number; h: number };
+
+const deflateBox = (b: ShotBox, p: number): ShotBox =>
+  ({ x: b.x + p, y: b.y + p, w: b.w - 2 * p, h: b.h - 2 * p });
+const inflateBox = (b: ShotBox, p: number): ShotBox => deflateBox(b, -p);
+const shotRect = (b: ShotBox) => ({ x: b.x, y: b.y, width: b.w, height: b.h });
+
+/** The largest box of `aspect` that fits inside `inner`, centred in it.
+ *
+ *  No clamp on the aspect. An ultrawide capture or a phone screen simply gets
+ *  smaller, and the legibility note says so — a constant pretending to know
+ *  better would crop the one thing the slide is pointing at. */
+export function fitAspect(inner: ShotBox, aspect: number | undefined): ShotBox {
+  const a = typeof aspect === "number" && isFinite(aspect) && aspect > 0 ? aspect : SHOT.unknownAspect;
+  let w = inner.w, h = w / a;
+  if (h > inner.h) { h = inner.h; w = h * a; }
+  return { x: inner.x + (inner.w - w) / 2, y: inner.y + (inner.h - h) / 2, w, h };
+}
+
+/** Does this brief actually NAME a picture to go and find?
+ *
+ *  A continuation carries `{ screenshot: true }` and nothing else — the INTENT,
+ *  with the picture itself inherited from the slide it was cut from. Handing
+ *  that to the resolver is asking it to find nothing, which it reports back as
+ *  a picture the user asked for and did not get. */
+export function namesAPicture(image: SlideInput["image"]): image is NonNullable<SlideInput["image"]> {
+  return !!(image && (image.url || image.query || image.attachment));
+}
+
+/** Is this slide's picture a UI CAPTURE rather than a photograph?
+ *
+ *  ONE place the question is asked, because four things follow from it and all
+ *  four must agree: the file is not re-encoded (JPEG ringing on 12px interface
+ *  type is exactly what a callout points at), it is drawn at its own shape on a
+ *  mat rather than baked to a box, no gradient is burnt into it, and `feature`
+ *  gets a navy stage instead of a full bleed. Callouts imply it — a slide that
+ *  points at a control is pointing at an interface. */
+export function isScreenshot(slide: Pick<SlideInput, "image">): boolean {
+  return !!(slide.image?.screenshot || (slide.image?.callouts && slide.image.callouts.length > 0));
+}
+
+/** The layouts that DRAW callouts, and the phrase every note names them with.
+ *
+ *  image-split and feature only. The content/case-study rail is 239x301 and
+ *  PORTRAIT: a 1440px capture there is 6 source pixels per drawn point, so 13px
+ *  interface copy lands at 2.2pt and a pin would point at a smudge. Cards
+ *  thumbnails are narrower again, and `image.callouts` is a slide-level field
+ *  that cannot address a per-card picture at all. The photo-led layouts (cover,
+ *  section, closing) write text over a baked gradient, which is the treatment
+ *  this whole feature exists to keep off an interface. */
+export function drawsCallouts(layout: SlideLayout): boolean {
+  return layout === "image-split" || layout === "feature";
+}
+export const CALLOUT_LAYOUTS = "image-split and feature";
+
+/** Is this picture drawn RAW — at its own shape, unbaked, with nothing written
+ *  over it?
+ *
+ *  Only where the LAYOUT mats it. Everywhere else a screenshot is prepared as a
+ *  photograph and keeps its baked gradient, because those layouts write white
+ *  type ACROSS the picture: a cover carrying an undarkened UI capture is the
+ *  same invisible slide the feature stage exists to fix, one layout along. The
+ *  rail layouts keep the bake too — they crop to a portrait box, and a slide
+ *  that cannot point at anything is better off cropped than letterboxed. */
+export function drawsRawScreenshot(slide: Pick<SlideInput, "image" | "layout">, index: number): boolean {
+  return isScreenshot(slide) && drawsCallouts(layoutOf(slide.layout, index));
+}
+
+/** The on-slide admission's band, reserved whenever a screenshot carries
+ *  callouts at all rather than only when one is lost.
+ *
+ *  Reserving it conditionally would be circular: whether a pin can be placed
+ *  is decided inside the picture box, and the picture box's height depends on
+ *  whether the admission needs room. A fixed 15pt makes the geometry a
+ *  function of the callouts alone, which is also what lets the splitter's probe
+ *  read a stable ceiling. */
+const SHOT_ADMISSION_H = 15;
+
+/** Where a screenshot feature's title starts. The photo variant hangs its
+ *  title off the bottom of the picture; the stage variant stacks downwards
+ *  from the eyebrow, so the title needs a top rather than a bottom. */
+const FEATURE_SHOT_TITLE_Y = 46;
+
+/** A percentage as a reader would say it, for a note that quotes one back. */
+function pctText(v: number): string {
+  return String(Number(v.toFixed(1)));
+}
+
+/** Where each pin goes, and what had to be done to get it there.
+ *
+ *  NUDGE, AND SAY SO. Not "report and overlap": two pins on top of each other
+ *  fail the overlap check and look broken. Not "nudge silently": a moved pin
+ *  points at the wrong control, and only the author can fix that. The nudge
+ *  keeps the slide drawable and the note keeps it honest — the same trade the
+ *  hub makes when it drops a group.
+ *
+ *  Separation is CHEBYSHEV, not Euclidean, because the thing that must not
+ *  overlap is the square numeral box: two of them 22.6pt apart at 45 degrees
+ *  are 16pt apart in both axes and overlap in both. */
+export function placeCallouts(
+  box: ShotBox,
+  callouts: { x: number; y: number; text: string }[],
+  d: number = SHOT.pin
+): { placed: ({ x: number; y: number } | null)[]; dropped: number; notes: string[] } {
+  const half = d / 2;
+  const notes: string[] = [];
+  const placed: ({ x: number; y: number } | null)[] = [];
+  const clampX = (v: number) => Math.min(box.x + box.w - half, Math.max(box.x + half, v));
+  const clampY = (v: number) => Math.min(box.y + box.h - half, Math.max(box.y + half, v));
+  let dropped = 0;
+  for (let i = 0; i < callouts.length; i++) {
+    const c = callouts[i] || ({} as { x: number; y: number; text: string });
+    if (typeof c.x !== "number" || typeof c.y !== "number" || !isFinite(c.x) || !isFinite(c.y)) {
+      placed.push(null); dropped++;
+      notes.push(`callout ${i + 1} has no position — give it an x and a y, as percentages of the picture`);
+      continue;
+    }
+    if (c.x < 0 || c.x > 100 || c.y < 0 || c.y > 100) {
+      notes.push(`callout ${i + 1} points outside the picture (${pctText(c.x)}%, ${pctText(c.y)}%)` +
+        ` — it is pinned to the edge; x and y are percentages of the picture, 0-100`);
+    }
+    const ox = clampX(box.x + (c.x / 100) * box.w);
+    const oy = clampY(box.y + (c.y / 100) * box.h);
+    let px = ox, py = oy, hitWith = -1, stuck = true;
+    for (let guard = 0; guard <= 24; guard++) {
+      let hit = -1;
+      for (let j = 0; j < placed.length; j++) {
+        const p = placed[j];
+        if (p && Math.max(Math.abs(p.x - px), Math.abs(p.y - py)) < SHOT.separation) { hit = j; break; }
+      }
+      if (hit < 0) { stuck = false; break; }
+      hitWith = hit;
+      const p = placed[hit] as { x: number; y: number };
+      const dx = px - p.x, dy = py - p.y;
+      // Along the LARGER axis of the offset: pushing along the smaller one
+      // walks a pin across the picture to escape a neighbour it was already
+      // nearly clear of.
+      if (Math.abs(dx) >= Math.abs(dy)) px = clampX(p.x + (dx >= 0 ? SHOT.separation : -SHOT.separation));
+      else py = clampY(p.y + (dy >= 0 ? SHOT.separation : -SHOT.separation));
+    }
+    if (stuck) {
+      placed.push(null); dropped++;
+      notes.push(`callout ${i + 1} could not be placed without covering callout ${hitWith + 1}` +
+        ` — it was left off; crop to the panel with image.region, or give it its own slide`);
+      continue;
+    }
+    const moved = Math.sqrt((px - ox) * (px - ox) + (py - oy) * (py - oy));
+    if (moved > 0.5) {
+      notes.push(`callouts ${hitWith + 1} and ${i + 1} are closer than one pin's width — pin ${i + 1} was moved` +
+        ` ${Math.round(moved)}pt so both stay readable; crop tighter with image.region if they must sit apart`);
+    }
+    placed.push({ x: px, y: py });
+  }
+  return { placed, dropped, notes };
+}
+
+/** One numbered pin: navy ring, white ring, blue disc, white numeral.
+ *
+ *  Concentric FILLS rather than an outlined disc, because preview-model reads
+ *  no solid outline at all — only `outline.dashStyle === "DASH"` — so an
+ *  outlined pin would be a pin the deck has and the preview does not. Fills
+ *  round-trip already, which keeps the whole device inside the request kinds
+ *  the preview check sweeps.
+ *
+ *  The numeral's box is the FULL pin box on purpose: at 9pt its ink reaches
+ *  3.6 + 9*1.38 = 16.0pt, inside 22, so the overflow check sees no overrun, and
+ *  with Chebyshev separation of at least the diameter plus one, two numeral
+ *  boxes can never overlap. */
+function pinRequests(
+  id: (part: string) => string, page: string,
+  cx: number, cy: number, n: number, d: number, numeralSize: number
+): Req[] {
+  const ro = d * SHOT.ringOuter, ri = d * SHOT.ringInner;
+  const disc = (dd: number) => ({ x: cx - dd / 2, y: cy - dd / 2, width: dd, height: dd });
+  return [
+    ...filledShape(id("a"), page, "ELLIPSE", COLOR.navy, disc(d)),
+    ...filledShape(id("b"), page, "ELLIPSE", COLOR.white, disc(d - 2 * ro)),
+    ...filledShape(id("c"), page, "ELLIPSE", COLOR.blue, disc(d - 2 * ro - 2 * ri)),
+    ...textBox(id("n"), page, String(n),
+      { font: "Roboto", size: numeralSize, bold: true, color: COLOR.white }, disc(d),
+      { align: "CENTER", vCenter: true, lineSpacing: 1.0, spaceBelow: 0 }),
+  ];
+}
+
+/** The mat, the hairline and the picture, in that order.
+ *
+ *  The keyline is an OUTLINE BY INFLATION: a rectangle one point bigger than
+ *  the picture on every side, with the picture drawn on top of it, leaves
+ *  exactly 1pt of edge showing. Exact, and it needs nothing taught to the
+ *  preview — where `updateImageProperties.outline` and filledShape's own
+ *  `outline` are both invisible.
+ *
+ *  Slides cannot clip or round-corner an image, and nothing here pretends
+ *  otherwise: the frame is drawn AROUND the picture, never over it. No scrim,
+ *  ever — a gradient over a user interface destroys what the slide points at. */
+function screenshotFrame(
+  id: (s: string) => string, page: string, box: ShotBox, url: string, onDark: boolean
+): Req[] {
+  return [
+    ...filledShape(id("shmat"), page, "RECTANGLE",
+      onDark ? COLOR.white : SHOT.matLight, shotRect(inflateBox(box, SHOT.pad)),
+      onDark ? SHOT.matDarkAlpha : undefined),
+    ...filledShape(id("shkey"), page, "RECTANGLE",
+      onDark ? COLOR.white : COLOR.navy, shotRect(inflateBox(box, SHOT.keyline)),
+      onDark ? SHOT.keylineDarkAlpha : SHOT.keylineLightAlpha),
+    {
+      createImage: {
+        objectId: id("shimg"),
+        url,
+        elementProperties: {
+          pageObjectId: page,
+          size: { width: pt(box.w), height: pt(box.h) },
+          transform: { scaleX: 1, scaleY: 1, translateX: box.x, translateY: box.y, unit: "PT" },
+        },
+      },
+    },
+  ];
+}
+
+/** Nothing is missing, but what IS there cannot be read from the room.
+ *
+ *  A whole 1440px app window drawn 295pt wide is 4.9 source pixels per drawn
+ *  point, which puts 13px interface body copy — the reference, because that is
+ *  what a control's label is set in — at 2.7pt. Nothing geometric notices, so
+ *  the note is the only thing that can. */
+function legibilityNote(box: ShotBox, sourceWidth: number | undefined): string | null {
+  if (!sourceWidth || !(box.w > 0)) return null;
+  const perPt = sourceWidth / box.w;
+  if (perPt <= SHOT.maxPxPerPt) return null;
+  return `the screenshot is drawn ${Math.round(box.w)}pt wide from ${sourceWidth} source pixels —` +
+    ` interface text lands at about ${(SHOT.uiBodyPx / perPt).toFixed(1)}pt and will not be readable from the room;` +
+    ` crop to the panel with image.region`;
+}
+
+/** A pin is a percentage of the DRAWN box, and the drawn box is the shape of
+ *  the file — unless nothing ever measured the file.
+ *
+ *  A draft saved before callouts shipped, and an attachment whose dimensions
+ *  could not be read, arrive with no `aspect`: the picture is then fitted to
+ *  SHOT.unknownAspect, which is a guess, and pdf-html's object-fit:cover crops
+ *  away whatever does not match it. A pin at 20% of that box is not at 20% of
+ *  the interface, and no geometry here can tell — the render is the only thing
+ *  that sees it, so the note is the only thing that can say it. */
+function guessedShapeNote(aspect: number | undefined, pins: number): string | null {
+  if (!pins || typeof aspect === "number") return null;
+  return `nothing measured this screenshot's proportions, so it is drawn at ${SHOT.unknownAspect}:1 —` +
+    ` a guess, and its ${pins} pin${pins === 1 ? "" : "s"} ${pins === 1 ? "is" : "are"} placed against that` +
+    ` rather than against the capture; re-attach the image so its shape is read`;
+}
+
+/** The callouts this slide will actually draw, and the note for the rest.
+ *
+ *  quoteClip is load-bearing: droppedContent filters out text a note has
+ *  already quoted IN THAT EXACT FORM, so without it the model is told about
+ *  the same lost phrase twice in two different voices. */
+function calloutsFor(slide: SlideInput, note: (s: string) => void): { x: number; y: number; text: string }[] {
+  const all = (slide.image?.callouts || []).filter((c) => c && String(c.text || "").trim());
+  if (all.length <= SHOT.max) return all;
+  const cut = all.slice(SHOT.max);
+  note(`a screenshot carries at most ${SHOT.max} callouts — ${cut.map((c) => quoteClip(c.text)).join(", ")}` +
+    ` ${cut.length === 1 ? "was" : "were"} left off; give the extra ones a second slide, or crop to the panel they are in`);
+  return all.slice(0, SHOT.max);
+}
+
+/** "Showing 5 of 7 callouts" — the slot and the sentence shape the hub, the
+ *  timeline, the process row and the stat grid all already use. */
+function shotAdmission(
+  objectId: string, page: string, shown: number, total: number,
+  slot: { x: number; y: number; width: number }, onDark: boolean
+): Req[] {
+  if (shown >= total) return [];
+  const t = `Showing ${shown} of ${total} callouts`;
+  const w = Math.min(slot.width, labelBoxWidth(t, 7.5));
+  return textBox(objectId, page, t,
+    { font: "Roboto", size: 7.5, weight: 300, color: onDark ? COLOR.greyLight : COLOR.ink },
+    { x: slot.x + slot.width - w, y: slot.y, width: w, height: SHOT_ADMISSION_H - 2 },
+    { align: "END", lineSpacing: 1.0, spaceBelow: 0 });
+}
+
+/** A one-line box for a hugged label.
+ *
+ *  labelWidthPt measures the glyphs; estimateLines measures at a mixed-case
+ *  MEAN, and the mean is the wider of the two. A box sized to the glyphs alone
+ *  is therefore a box the overflow check reads as holding two lines — which is
+ *  not a false alarm to be argued with, because the same estimator is what
+ *  every layout here sizes with. So the box takes the wider of the two and the
+ *  label is one line by both. */
+function labelBoxWidth(t: string, size: number): number {
+  const s = drawnText(String(t || "")).trim();
+  return Math.max(labelWidthPt(t, size) + 6, s.length * size * faceAdvance() + 0.01) + TEXT_INSET_X;
+}
+
+/** How tall a block of text is when it HUGS its words — the height a box would
+ *  need, as against the ceiling it is given. */
+export function hugHeight(text: string | undefined, width: number, size: number, bullets: boolean): number {
+  const paras = String(text || "").split("\n").map((l) => l.trim()).filter(Boolean);
+  if (!paras.length) return 0;
+  let lines = 0;
+  for (let i = 0; i < paras.length; i++) lines += estimateLines(paras[i], width, size, bullets);
+  return drawnTextHeight(lines, size, SPACE_BELOW, paras.length);
+}
+
+/** The feature legend's rows: `chip + phrase` entries laid across the content
+ *  width, at most two rows, BALANCED so five entries read 3+2 rather than 4 and
+ *  a lone orphan. Entries that will not fit in two rows are returned as the
+ *  shortfall, for the caller to declare. */
+function legendEntryWidth(t: string): number {
+  // The trailing 18 is the gap to the NEXT entry; the caller drops it from the
+  // last one when measuring a row to centre it.
+  return SHOT.chip + labelBoxWidth(t, SHOT.legendSize) + 18;
+}
+function legendRowWidth(row: string[]): number {
+  let w = 0;
+  for (let i = 0; i < row.length; i++) w += legendEntryWidth(row[i]);
+  return w - (row.length ? 18 : 0);
+}
+function legendLayout(entries: string[]): { rows: string[][]; kept: number } {
+  const greedy = (list: string[]): string[][] => {
+    const out: string[][] = [];
+    let line: string[] = [], used = 0;
+    for (let i = 0; i < list.length; i++) {
+      const w = legendEntryWidth(list[i]);
+      if (line.length && used + w > GRID.contentWidth) { out.push(line); line = []; used = 0; }
+      line.push(list[i]); used += w;
+    }
+    if (line.length) out.push(line);
+    return out;
+  };
+  for (let n = entries.length; n > 0; n--) {
+    const kept = entries.slice(0, n);
+    const rows = greedy(kept);
+    if (rows.length > 2) continue;
+    // A row too WIDE for the measure is as much a refusal as a third row, and
+    // it used not to be one: greedy puts a phrase longer than the whole content
+    // width on a line of its own and returned it, and the caller centred that
+    // line — to a NEGATIVE x, so the numbered chip was drawn off the left edge
+    // of the slide and the phrase was clipped at both ends. The entry falls
+    // through to the n-- below and is declared as shortfall instead.
+    let overWide = false;
+    for (let i = 0; i < rows.length; i++) if (legendRowWidth(rows[i]) > GRID.contentWidth) overWide = true;
+    if (overWide) continue;
+    // Balanced, if the balance still fits the measure; greedy otherwise, since
+    // an even split that overflows is worse than an uneven one that does not.
+    const per = Math.ceil(n / rows.length);
+    const even: string[][] = [];
+    for (let i = 0; i < n; i += per) even.push(kept.slice(i, Math.min(n, i + per)));
+    let fits = even.length <= 2;
+    for (let i = 0; i < even.length; i++) if (legendRowWidth(even[i]) > GRID.contentWidth) fits = false;
+    return { rows: fits ? even : rows, kept: n };
+  }
+  return { rows: [], kept: 0 };
+}
+
 /** Format a number the way a reader says it, not the way a machine stores it. */
 function formatValue(v: number): string {
   const abs = Math.abs(v);
@@ -1392,9 +1768,16 @@ export function isStatGrid(stats: { value: string }[] | undefined): boolean {
  *  the layout check — so no reader can answer for the layout while the slide
  *  is drawn on the other ground. */
 const STAT_GRID_STYLE: LayoutStyle = { background: COLOR.offWhite, logo: "navy", logoPlacement: "content", onDark: false };
-export function slideStyle(slide: Pick<SlideInput, "layout" | "stats">, index: number): LayoutStyle {
+export function slideStyle(slide: Pick<SlideInput, "layout" | "stats" | "image">, index: number): LayoutStyle {
   // A layout-less hub is a hub here as it is in the builder (normaliseSlide).
   const layout = layoutOf(normaliseSlide(slide as SlideInput).layout, index);
+  // A FEATURE SLIDE SHOWING A SCREENSHOT IS A NAVY STAGE, not a full bleed.
+  // The layout's white eyebrow, title and body are solved for a baked
+  // gradient, and a screenshot never gets one — so an attached light UI
+  // capture drew white type on a near-white interface and the slide was
+  // invisible. Decided here, with the stat grid, because this is the only
+  // place a slide's ground may be read from.
+  if (layout === "feature" && isScreenshot(slide)) return FEATURE_SHOT_STYLE;
   return layout === "stat" && isStatGrid(slide.stats) ? STAT_GRID_STYLE : LAYOUT_STYLE[layout];
 }
 
@@ -5430,8 +5813,24 @@ export function buildSlideRequests(
   // to the flat blue ground when it does not — the image used to be resolved,
   // and paid for, then never drawn.
   const sectionPhoto = layout === "section" && !!slide.resolvedImage;
-  if (style.background === null || layout === "feature" || sectionPhoto) {
+  // A SCREENSHOT ON `feature` IS NOT A BLEED. It is matted on the navy stage
+  // the style above chose for it, so no full-canvas image and no credit line
+  // are drawn here — the branch below places the picture itself.
+  if (style.background === null || (layout === "feature" && !isScreenshot(slide)) || sectionPhoto) {
     requests.push(...backdropRequests(page, id, slide));
+  }
+  /** A layout's own clause for deckWarnings — only the hub, and now the
+   *  screenshot branches, write to it. */
+  const shotNote = (s: string) => { if (notes) notes.push(s); };
+  // Callouts on a layout that cannot draw them are DECLARED rather than
+  // silently ignored: the model asked for a pointer and got none, and only it
+  // can move the slide to a layout that points.
+  {
+    const asked = (slide.image?.callouts || []).filter((c) => c && String(c.text || "").trim()).length;
+    if (asked && !drawsCallouts(layout)) {
+      shotNote(`callouts are drawn on ${CALLOUT_LAYOUTS} only — this slide is a ${layout}, so its ${asked}` +
+        ` callout${asked === 1 ? "" : "s"} ${asked === 1 ? "was" : "were"} not drawn; move it to image-split`);
+    }
   }
   /** Where this slide's content ENDS, set by layouts that size their boxes to
    *  their words. The takeaway bar sits just beneath it. Left unset, the bar
@@ -5945,6 +6344,190 @@ export function buildSlideRequests(
         x: GRID.margin, y: stTitle.y + stTitle.height + 14, width: GRID.contentWidth * 0.7, height: 60,
       }),
     );
+  } else if (layout === "feature" && isScreenshot(slide)) {
+    // A SCREENSHOT FEATURE CANNOT BE A FULL BLEED, and pretending otherwise is
+    // the bug this closes. A 16:10 capture filling 405pt of height is 648pt
+    // wide, leaving 72pt for a statement; anything written over it covers the
+    // interface. So the picture becomes a matted STAGE on navy, with the words
+    // above it and a numbered legend under it.
+    const W = GRID.contentWidth * 0.72;
+    const fitted = fitHeading(slide.title, TYPE.featureTitle, W, {
+      bottom: CANVAS.height * 0.40, minTop: FEATURE_SHOT_TITLE_Y,
+      minHeight: GRID.titleHeight, minSize: 18,
+    });
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, TYPE.eyebrowDark, {
+        x: GRID.margin, y: GRID.eyebrowY, width: GRID.eyebrowWidth, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, fitted.style, {
+        x: GRID.margin, y: FEATURE_SHOT_TITLE_Y, width: W, height: fitted.height,
+      }),
+    );
+    const titleBottom = FEATURE_SHOT_TITLE_Y + fitted.height;
+    const bodyTop = titleBottom + 6;
+    const bodyHug = hugHeight(slide.body, W, TYPE.featureBody.size, false);
+
+    // MEASURED UPWARDS FROM THE TAKEAWAY BAR, never downwards from the title.
+    // Everything under the picture — the legend, the "showing N of M" line —
+    // has a fixed end and no float, and the bar is drawn LAST, on top of
+    // whatever is there. Measured downwards, a long body walked the legend
+    // through the bar and then off the bottom of the page, and the only thing
+    // that noticed was a render. So the foot is the fixed end, and the picture
+    // is what gives way.
+    const shotFloor = NOTE.bottom - noteHeight(slide.note, noteWidth)
+      - (slide.note?.trim() ? NOTE.gap : 0);
+
+    const asked = calloutsFor(slide, shotNote);
+    // The admission's band is reserved because this slide WAS GIVEN callouts,
+    // not because it ends up drawing any — the line that says so is needed
+    // most in the case where none of them survive.
+    const admission = asked.length ? SHOT_ADMISSION_H : 0;
+
+    // The whole geometry as a function of the callouts, so it can be asked
+    // twice: once with them, and — when the answer is that there is no room
+    // for a picture worth pointing at — once without.
+    const planStage = (calls: { x: number; y: number; text: string }[]) => {
+      const legend = calls.length ? legendLayout(calls.map((c) => c.text)) : { rows: [] as string[][], kept: 0 };
+      const legendH = legend.rows.length * (SHOT.chip + 6);
+      const bottom = shotFloor - admission - (legendH ? legendH + SHOT.legendGap : 0);
+      // What is left for the body once the stage has taken its minimum, and
+      // what the splitter is told when it probes — so a body too long for this
+      // slide is CUT IN TWO rather than drawn at its own height and pushing
+      // the legend off the page. Probing reads the ceiling, drawing reads the
+      // hug, exactly as image-split does a few branches down.
+      //
+      // The ceiling is a function of the title, the takeaway and the callouts
+      // and NEVER of the body: the splitter rewrites the body between the
+      // probe and the draw, so a geometry that read the body's own height
+      // would answer two different questions and settle on neither.
+      const ceiling = bottom - SHOT.legendGap - SHOT.minStage - bodyTop;
+      const bodyH = bodyHug > 0 && ceiling > 0
+        ? (PROBING ? ceiling : Math.min(ceiling, bodyHug))
+        : 0;
+      const top = (bodyH ? bodyTop + bodyH : titleBottom) + SHOT.legendGap;
+      return { legend, legendH, bottom, ceiling, bodyH, top };
+    };
+
+    let calls = asked;
+    let plan = planStage(calls);
+    if (plan.bottom - plan.top < SHOT.minStage && calls.length) {
+      // The title, the body and the takeaway have taken the slide. Pins the
+      // reader cannot match to a legend are worse than no pins, so both go —
+      // and the slide says so rather than drawing a stage the size of a stamp.
+      shotNote(`there is no room under the picture for a legend on this slide —` +
+        ` ${calls.map((c) => quoteClip(c.text)).join(", ")}` +
+        ` ${calls.length === 1 ? "was" : "were"} left off; shorten the title or the takeaway, or use image-split,` +
+        ` which lists them down the side`);
+      calls = [];
+      plan = planStage(calls);
+    }
+    if (bodyHug > 0 && !plan.bodyH) {
+      shotNote(`this slide's body had nowhere to go above the picture and was not drawn —` +
+        ` ${quoteClip(slide.body || "")}; shorten the title or the takeaway, or move the words to image-split`);
+    } else if (!PROBING && plan.bodyH && bodyHug > plan.bodyH + 0.5) {
+      // The splitter has already had its turn by the time anything is drawn, so
+      // a body still taller than its box here is one it could not divide — a
+      // single paragraph. It is clipped, which every layout does with a
+      // paragraph it cannot split, and clipping is exactly the kind of loss
+      // nothing else on the slide would ever mention.
+      shotNote(`this slide's body does not fit above the picture and is clipped —` +
+        ` ${quoteClip(slide.body || "")}; shorten it, break it into separate lines so it can be split` +
+        ` across two slides, or move the words to image-split`);
+    }
+    const { legend, legendH } = plan;
+    if (plan.bodyH) {
+      requests.push(...textBox(id("body"), page, slide.body, TYPE.featureBody, {
+        x: GRID.margin, y: bodyTop, width: W, height: plan.bodyH,
+      }));
+    }
+
+    // No clamp off the lockup: the title block alone clears it by 50pt
+    // (FEATURE_SHOT_TITLE_Y 46 + the title's 45.36 minimum + the 14pt gap
+    // against a mark that ends at 54.8), so a clamp here would be a line that
+    // can never bind pretending to be a guard. Check 41c is what holds it.
+    const stage: ShotBox = {
+      x: GRID.margin, y: plan.top, w: GRID.contentWidth, h: plan.bottom - plan.top,
+    };
+    let drawn = 0;
+    let legendTop = stage.y + stage.h;
+    let pins: ({ x: number; y: number } | null)[] = [];
+    if (slide.resolvedImage) {
+      const box = fitAspect(deflateBox(stage, SHOT.pad), slide.resolvedImage.aspect);
+      requests.push(...screenshotFrame(id, page, box, slide.resolvedImage.url, true));
+      // Only the callouts the legend can NAME get a pin: a number on the
+      // picture with no line under it explaining it is worse than no number.
+      const placement = placeCallouts(box, calls.slice(0, legend.kept), SHOT.pin);
+      pins = placement.placed;
+      for (let i = 0; i < placement.notes.length; i++) shotNote(placement.notes[i]);
+      for (let i = 0; i < pins.length; i++) {
+        const p = pins[i];
+        if (!p) continue;
+        drawn++;
+        requests.push(...pinRequests((part) => id(`shp${i}${part}`), page, p.x, p.y, i + 1, SHOT.pin, SHOT.numeral));
+      }
+      const leg = legibilityNote(box, slide.resolvedImage.sourceWidth);
+      if (leg) shotNote(leg);
+      const guess = guessedShapeNote(slide.resolvedImage.aspect, drawn);
+      if (guess) shotNote(guess);
+      legendTop = box.y + box.h + SHOT.pad + SHOT.legendGap;
+    } else if (calls.length) {
+      shotNote(`callouts need a picture — this slide has none, so its ${calls.length}` +
+        ` callout${calls.length === 1 ? "" : "s"} ${calls.length === 1 ? "was" : "were"} not drawn`);
+    }
+
+    let entry = 0, legendY = legendTop;
+    if (slide.resolvedImage) {
+      for (let r = 0; r < legend.rows.length; r++) {
+        const row = legend.rows[r];
+        // Clamped to the margin as well as centred. legendLayout refuses a row
+        // wider than the measure, so this can only be belt and braces — but the
+        // failure it stops is a chip drawn at a NEGATIVE x, entirely off the
+        // left edge of the slide, which is what centring on an over-wide row
+        // used to do.
+        let lx = Math.max(GRID.margin, GRID.margin + (GRID.contentWidth - legendRowWidth(row)) / 2);
+        for (let k = 0; k < row.length; k++) {
+          const i = entry++;
+          const tw = labelBoxWidth(row[k], SHOT.legendSize);
+          // An entry whose pin could not be placed keeps its SLOT — so the row
+          // stays centred where it was measured — and draws nothing in it.
+          if (pins[i]) {
+            requests.push(...pinRequests((part) => id(`shc${i}${part}`), page,
+              lx + SHOT.chip / 2, legendY + SHOT.chip / 2, i + 1, SHOT.chip, SHOT.chipNumeral));
+            // The box starts at the chip's own edge: the gap to the glyphs is
+            // the box's left inset, which is what SHOT.chipGap is worth. Pulled
+            // back by the inset instead, the box would start INSIDE the chip
+            // and the two would be reported as overlapping text.
+            requests.push(...textBox(id(`col${i}`), page, row[k],
+              { font: "Roboto", size: SHOT.legendSize, weight: 300, color: COLOR.greyLight }, {
+                x: lx + SHOT.chip, y: legendY, width: tw, height: SHOT.chip,
+              }, { vCenter: true, lineSpacing: 1.0, spaceBelow: 0 }));
+          }
+          lx += SHOT.chip + tw + 18;
+        }
+        legendY += SHOT.chip + 6;
+      }
+      // Three nets, not one: the note above, this line on the slide, and
+      // droppedContent naming every phrase the deck does not carry.
+      //
+      // It hugs the legend, but never past the band reserved for it. With no
+      // legend rows at all there is nothing between the picture and the foot,
+      // and hugging alone put the line level with the footer — inside the
+      // bottom margin, where no layout is allowed to draw.
+      requests.push(...shotAdmission(id("shdrop"), page,
+        Math.min(drawn, legend.kept), (slide.image?.callouts || []).filter((c) => c && String(c.text || "").trim()).length,
+        { x: GRID.margin, y: Math.min(legendY + 2, shotFloor - SHOT_ADMISSION_H + 2), width: GRID.contentWidth }, true));
+      // THE PHOTOGRAPHER'S LINE, which this branch used to lose entirely. It
+      // was drawn by backdropRequests, and a screenshot stage does not call it
+      // — so a stock picture declared a screenshot went out uncredited, the
+      // exact hole creditRequests was pulled out of backdropRequests to close.
+      requests.push(...creditRequests(id("credit"), page, slide.resolvedImage.credit,
+        { x: GRID.margin, width: GRID.contentWidth }, true));
+    }
+    if (legend.kept < calls.length) {
+      const lost = calls.slice(legend.kept);
+      shotNote(`a legend under the picture holds two rows — ${lost.map((c) => quoteClip(c.text)).join(", ")}` +
+        ` ${lost.length === 1 ? "was" : "were"} left off; shorten the phrases, or use image-split, which lists them down the side`);
+    }
   } else if (layout === "feature") {
     const feature = fitHeading(slide.title, TYPE.featureTitle, GRID.contentWidth * 0.72, {
       bottom: IMAGE.overlayBodyY - 10,
@@ -5969,8 +6552,110 @@ export function buildSlideRequests(
   } else if (layout === "image-split") {
     // Image bleeds off the left edge; text takes the right half. Bleeding
     // rather than insetting is what makes it read as editorial instead of as a
-    // picture pasted into a document.
-    if (slide.resolvedImage) {
+    // picture pasted into a document — which is exactly why a SCREENSHOT does
+    // the opposite: an interface bled off the edge reads as a mistake, and
+    // cropping it to the half-slide's shape cuts off what the slide is about.
+    const shot = isScreenshot(slide);
+    const calls = shot ? calloutsFor(slide, shotNote) : [];
+    let shotBox: ShotBox | null = null;
+    if (slide.resolvedImage && shot) {
+      const region: ShotBox = {
+        x: GRID.margin, y: GRID.margin,
+        w: IMAGE.splitWidth - GRID.margin, h: CANVAS.height - 2 * GRID.margin,
+      };
+      shotBox = fitAspect(deflateBox(region, SHOT.pad), slide.resolvedImage.aspect);
+    }
+    // THE NUMBERED ROWS, MEASURED BEFORE THE BODY. They depend only on the
+    // callouts — never on the body — so the body's ceiling can give up exactly
+    // the room they take with no circularity, and the splitter's probe reads a
+    // ceiling that already knows about them. A body that no longer fits beside
+    // five callouts SPLITS instead of running under them.
+    const listTextW = IMAGE.splitTextWidth - SHOT.chip - SHOT.chipGap;
+    // THE ROOM IS RESERVED FROM THE CALLOUTS, NOT FROM THE PICTURE. Splitting
+    // runs BEFORE images are resolved, so at probe time no slide has a
+    // resolvedImage at all — a ceiling that keyed on one measured the full
+    // column and every body was judged to fit beside five callouts it would
+    // then be drawn straight through. (The rail had the same bug, and the
+    // probe's own comment is about the fix.) Drawing still needs the picture.
+    const reserveList = calls.length > 0;
+    const drawList = !!shotBox && reserveList;
+    const rowHeights: number[] = [];
+    if (reserveList) {
+      for (let i = 0; i < calls.length; i++) {
+        rowHeights.push(Math.max(SHOT.chip,
+          drawnTextHeight(estimateLines(calls[i].text, listTextW, TYPE.body.size), TYPE.body.size)));
+      }
+    }
+    let listBlock = 0;
+    for (let i = 0; i < rowHeights.length; i++) listBlock += rowHeights[i] + (i ? SHOT.rowGap : 0);
+    // THE TAKEAWAY BAR IS PART OF THE FLOOR. It is drawn last and over
+    // everything, and this branch used to measure to the bottom margin as
+    // though the bar were not there — so on a slide with a takeaway the
+    // numbered rows and the "showing N of M" line were painted over by it, and
+    // the one statement on the slide saying a callout had been dropped was the
+    // thing the bar hid. Every other layout gives way by exactly this height.
+    const columnFloor = Math.min(
+      CANVAS.height - GRID.margin - 18,
+      NOTE.bottom - noteHeight(slide.note, noteWidth) - (slide.note?.trim() ? NOTE.gap : 0),
+    ) - (reserveList ? SHOT_ADMISSION_H : 0);
+    const bodyTop = Math.max(GRID.bodyY, titleBox.y + titleBox.height + 8);
+    const splitBodyCeiling = Math.max(reserveList ? 40 : 60,
+      columnFloor - bodyTop - listBlock - (listBlock ? SHOT.legendGap : 0));
+    // WHERE THE ROWS ACTUALLY START, and how many of them reach the floor.
+    //
+    // The rows hug the body, and the body's ceiling has a hard 40pt floor that
+    // says a one- or two-line body always "fits" — so the two can both be true
+    // and still not both fit, and the rows used to be clamped UP to
+    // `columnFloor - listBlock` to make room, straight through the body. An
+    // ordinary slide — one-line title, one-sentence body, five phrases —
+    // printed its callouts over its own body, and nothing said a word.
+    //
+    // So the body keeps its room, the rows start beneath it, and the ones that
+    // no longer reach the floor are dropped and declared like everything else.
+    // THE BOX HUGS ITS WORDS when rows follow it, and takes the ceiling when
+    // nothing does. The slack belongs UNDER the box, not inside it: a
+    // ceiling-sized box pushes the rows to the foot of the column and opens a
+    // hole where the sentence ended — and, because the rows then start lower,
+    // drops rows that would otherwise have fitted.
+    //
+    // The `!PROBING` is belt and braces beside the clamp: when the hug is under
+    // the ceiling the body genuinely fits, and when it is over, the clamp
+    // answers the ceiling either way. It is the statement of intent, and the
+    // feature stage's own PROBING guard is not redundant at all.
+    const drawnBodyHeight = drawList && !PROBING
+      ? Math.min(splitBodyCeiling, Math.max(20, hugHeight(slide.body, IMAGE.splitTextWidth, bodyStyle.size, true)))
+      : splitBodyCeiling;
+    const listTop = bodyTop + drawnBodyHeight + SHOT.legendGap;
+    let keptRows = 0;
+    for (let i = 0, yy = listTop; i < rowHeights.length; i++) {
+      if (yy + rowHeights[i] > columnFloor) break;
+      keptRows++;
+      yy += rowHeights[i] + SHOT.rowGap;
+    }
+
+    // Placed BEFORE the rows are drawn, so a row whose pin could not be placed
+    // is left out rather than carrying a number that points at nothing. The
+    // row's HEIGHT is still reserved, so the geometry the splitter probed does
+    // not move under it.
+    let pins: ({ x: number; y: number } | null)[] = [];
+    if (shotBox && slide.resolvedImage) {
+      requests.push(...screenshotFrame(id, page, shotBox, slide.resolvedImage.url, false));
+      // Only the callouts that get a NUMBERED LINE get a pin, the same rule the
+      // feature legend keeps: a number on the picture the reader cannot match
+      // to a phrase is worse than no number at all.
+      const placement = placeCallouts(shotBox, calls.slice(0, keptRows), SHOT.pin);
+      pins = placement.placed;
+      for (let i = 0; i < placement.notes.length; i++) shotNote(placement.notes[i]);
+      for (let i = 0; i < pins.length; i++) {
+        const p = pins[i];
+        if (!p) continue;
+        requests.push(...pinRequests((part) => id(`shp${i}${part}`), page, p.x, p.y, i + 1, SHOT.pin, SHOT.numeral));
+      }
+      const leg = legibilityNote(shotBox, slide.resolvedImage.sourceWidth);
+      if (leg) shotNote(leg);
+      const guess = guessedShapeNote(slide.resolvedImage.aspect, pins.filter(Boolean).length);
+      if (guess) shotNote(guess);
+    } else if (slide.resolvedImage) {
       requests.push({
         createImage: {
           objectId: id("half"),
@@ -5982,6 +6667,10 @@ export function buildSlideRequests(
           },
         },
       });
+    }
+    if (calls.length && !shotBox) {
+      shotNote(`callouts need a picture — this slide has none, so its ${calls.length}` +
+        ` callout${calls.length === 1 ? "" : "s"} ${calls.length === 1 ? "was" : "were"} not drawn`);
     }
     requests.push(
       ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
@@ -5996,9 +6685,9 @@ export function buildSlideRequests(
         x: IMAGE.splitTextX,
         // Under the title, wherever it ended up — not at a fixed y that the
         // title may now reach past.
-        y: Math.max(GRID.bodyY, titleBox.y + titleBox.height + 8),
+        y: bodyTop,
         width: IMAGE.splitTextWidth,
-        height: Math.max(60, CANVAS.height - GRID.margin - 18 - Math.max(GRID.bodyY, titleBox.y + titleBox.height + 8)),
+        height: drawnBodyHeight,
       }, { bullets: true }),
       // In the TEXT column, not on the picture. On the picture it would sit
       // beside what it credits, but this layout resolves with gradient:false —
@@ -6007,6 +6696,45 @@ export function buildSlideRequests(
       ...creditRequests(id("credit"), page, slide.resolvedImage?.credit,
         { x: IMAGE.splitTextX, width: IMAGE.splitTextWidth }, false),
     );
+    if (drawList) {
+      // A NEW LIST RATHER THAN REUSING `body`. The numbers have to match the
+      // pins, and `body` is a disc-bulleted, unnumbered field whose order the
+      // splitter is allowed to change. `body` still draws, above the list; if
+      // both genuinely do not fit, the splitter takes the slide, which is the
+      // correct outcome.
+      //
+      // The list HUGS the body. It is never pushed UP to make room for itself —
+      // that is what printed it over the body — so a row that does not reach
+      // the floor is left off and named instead.
+      let y = listTop;
+      let drawn = 0;
+      for (let i = 0; i < keptRows; i++) {
+        const h = rowHeights[i];
+        if (pins[i]) {
+          requests.push(...pinRequests((part) => id(`shc${i}${part}`), page,
+            IMAGE.splitTextX + SHOT.chip / 2, y + SHOT.chip / 2 + 1.5, i + 1, SHOT.chip, SHOT.chipNumeral));
+          requests.push(...textBox(id(`col${i}`), page, calls[i].text, TYPE.body, {
+            x: IMAGE.splitTextX + SHOT.chip + SHOT.chipGap, y,
+            width: listTextW, height: Math.max(SHOT.chip, h),
+          }, { spaceBelow: 0 }));
+          drawn++;
+        }
+        y += h + SHOT.rowGap;
+      }
+      // Said on the slide as well as in the note, in the slot every other
+      // diagram uses: a note-free build passes every geometric check there is.
+      requests.push(...shotAdmission(id("shdrop"), page, drawn,
+        (slide.image?.callouts || []).filter((c) => c && String(c.text || "").trim()).length,
+        // Hugging the last row, but never below the band columnFloor reserved
+        // for it — the same rule the feature stage keeps.
+        { x: IMAGE.splitTextX, y: Math.min(y - SHOT.rowGap + 3, columnFloor + 2), width: IMAGE.splitTextWidth }, false));
+      if (keptRows < calls.length) {
+        const lost = calls.slice(keptRows);
+        shotNote(`the text column has room for ${keptRows} numbered line${keptRows === 1 ? "" : "s"}` +
+          ` beside this body — ${lost.map((c) => quoteClip(c.text)).join(", ")}` +
+          ` ${lost.length === 1 ? "was" : "were"} left off; shorten the body, or give the extra ones a second slide`);
+      }
+    }
   } else if (layout === "image-grid") {
     requests.push(
       ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
@@ -6568,7 +7296,16 @@ function splitOnce(slide: SlideInput, index: number): SlideInput[] {
       // conversion produced a continuation carrying one leftover sentence,
       // padded to a full slide by the intro and the takeaway repeated verbatim
       // — framing cloned to dress up a slide that holds almost nothing.
-      image: undefined, eyebrow: undefined, notes: undefined, bodyRight: undefined,
+      // THE ONE THING THE PICTURE'S BRIEF LEAVES BEHIND IS THAT IT IS A
+      // SCREENSHOT. Clearing `image` outright cleared that too, so the tail
+      // inherited an un-baked, un-gradiented UI capture and treated it as a
+      // photograph: `feature` bled it full-bleed under white type and
+      // image-split cropped it to the half-slide and ran it off the edge — the
+      // invisible slide this whole treatment exists to prevent, one slide
+      // along. The callouts do NOT come with it: the pins and their numbered
+      // lines belong to the half of the body that explains them.
+      image: isScreenshot(slide) ? { screenshot: true } : undefined,
+      eyebrow: undefined, notes: undefined, bodyRight: undefined,
       subtitle: undefined, note: undefined, strip: undefined, tones: undefined,
       continuation: true,
     },
@@ -6730,13 +7467,13 @@ export async function resolveDeckImages(
     return { ...req, query: `${req.query}. ${deckStyle}` };
   };
 
-  const pending = slides.filter((sx) => sx.image && !sx.resolvedImage && !sx.imageUnavailable).length;
+  const pending = slides.filter((sx) => namesAPicture(sx.image) && !sx.resolvedImage && !sx.imageUnavailable).length;
   let done = 0;
   const tick = () => { done++; try { onProgress?.(done, pending); } catch { /* progress must never break a build */ } };
 
   await Promise.all(
     slides.map(async (slide, slideIndex) => {
-      const counted = !!(slide.image && !slide.resolvedImage && !slide.imageUnavailable);
+      const counted = !!(namesAPicture(slide.image) && !slide.resolvedImage && !slide.imageUnavailable);
       try {
       await (async () => {
       // `imageUnavailable` means we already tried and could not find one. It
@@ -6754,24 +7491,47 @@ export async function resolveDeckImages(
         if (file) {
           const src = await attachmentImageSource(file.bytes, file.contentType, slide.image.region);
           if (src) {
-            // Baked to the box it will sit in, like any other picture, so it
-            // does not letterbox. A screenshot carries text, so it is never
-            // darkened by a gradient — the crop is the whole treatment.
             const railShape = slide.layout === "content" || slide.layout === "case-study"
               ? { width: CANVAS.width - (GRID.margin + GRID.proseNarrow + IMAGE.railGap),
                   height: CANVAS.height - GRID.bodyY }
               : null;
             const split = slide.layout === "image-split";
-            const baked = await bakeImageSource(src, {
-              aspect: railShape ? railShape.width / railShape.height
-                : split ? IMAGE.splitWidth / CANVAS.height
-                : CANVAS.width / CANVAS.height,
-              gradient: false,
-              // contain, not cover: cropping a UI screenshot to fill a box cuts
-              // off the very thing the slide is pointing at.
-              fit: "contain",
-            });
-            slide.resolvedImage = { url: baked.url, scrim: 0, credit: baked.credit, logo: baked.logo };
+            if (drawsRawScreenshot(slide, slideIndex)) {
+              // NOT BAKED AT ALL. The upload is already a signed, Google-
+              // fetchable PNG of exactly the region asked for, and bakeBackdrop
+              // re-encodes at JPEG q86 — which puts ringing on 12px interface
+              // type, the one thing a callout points at. The layout draws it at
+              // its own shape on a mat instead of cropping it to a box, so
+              // nothing letterboxes either.
+              //
+              // Skipping the bake also skips safeFetchBuffer's SSRF guard, and
+              // that is only safe because these are bytes the USER uploaded
+              // rather than a URL. A `screenshot: true` with `image.url` still
+              // goes through the bake below.
+              slide.resolvedImage = {
+                url: src.url, scrim: 0,
+                aspect: src.width && src.height ? src.width / src.height : undefined,
+                sourceWidth: src.width,
+              };
+            } else {
+              // An attached PHOTOGRAPH is baked to the box it will sit in, like
+              // any other picture, so it does not letterbox — AND it gets the
+              // gradient wherever text sits on it. This said `gradient: false`
+              // unconditionally, which is why an attached photo on a feature
+              // slide was drawn under white type on raw daylight.
+              const baked = await bakeImageSource(src, {
+                aspect: railShape ? railShape.width / railShape.height
+                  : split ? IMAGE.splitWidth / CANVAS.height
+                  : CANVAS.width / CANVAS.height,
+                gradient: !split && !railShape,
+                textBands: split || railShape ? undefined : textBandsFor(slide, slideIndex),
+                // contain, not cover: an attached picture is one the user chose
+                // deliberately, and cropping it to fill a box cuts off whatever
+                // made them choose it.
+                fit: "contain",
+              });
+              slide.resolvedImage = { url: baked.url, scrim: 0, credit: baked.credit, logo: baked.logo };
+            }
           }
         }
         if (!slide.resolvedImage) {
@@ -6780,7 +7540,7 @@ export async function resolveDeckImages(
         }
       }
 
-      if (slide.image && !slide.resolvedImage && !slide.imageUnavailable) {
+      if (namesAPicture(slide.image) && !slide.resolvedImage && !slide.imageUnavailable) {
         // Crop to the SHAPE OF THE BOX the image will sit in. Baking everything
         // to 16:9 and dropping it into a tall half-slide letterboxes exactly the
         // way the full-bleed cover used to, which is the bug this closes.
@@ -6797,14 +7557,23 @@ export async function resolveDeckImages(
         // the part of the picture the mark actually sits on.
         const style = slideStyle(slide, slideIndex);
         const place = LOGO_PLACEMENT[style.logoPlacement];
+        // A `url` or `query` picture declared a SCREENSHOT still goes through
+        // the bake — this is the path that fetches an arbitrary URL, and the
+        // SSRF guard lives in it. Nothing measured its shape, so it is fitted
+        // whole onto the MAT's own colour at 16:10: the bars then read as the
+        // picture sitting on its mat rather than as letterboxing.
+        const shot = drawsRawScreenshot(slide, slideIndex);
         const r = await resolveImage(styled(slide.image), generate, {
-          aspect: railShape
+          aspect: shot ? SHOT.unknownAspect
+            : railShape
             ? railShape.width / railShape.height
             : split ? IMAGE.splitWidth / CANVAS.height : CANVAS.width / CANVAS.height,
           // No text sits on the rail or the split picture, so neither is
-          // darkened; a gradient there would dim a photograph for nothing.
-          gradient: !split && !railShape,
-          textBands: split || railShape ? undefined : textBandsFor(slide, slideIndex),
+          // darkened; a gradient there would dim a photograph for nothing. And
+          // a gradient over an INTERFACE destroys what the slide points at.
+          gradient: !shot && !split && !railShape,
+          ...(shot ? { fit: "contain" as const, background: SHOT.matLight } : {}),
+          textBands: shot || split || railShape ? undefined : textBandsFor(slide, slideIndex),
           logoRegion: {
             x: place.x / CANVAS.width, y: place.y / CANVAS.height,
             w: place.width / CANVAS.width, h: place.height / CANVAS.height,
@@ -6816,7 +7585,10 @@ export async function resolveDeckImages(
         // type on raw daylight. The designed navy ground is better, and the
         // reason is recorded rather than swallowed.
         if (r && !r.unusable) {
-          slide.resolvedImage = { url: r.url, scrim: r.scrim, credit: r.credit, logo: r.logo };
+          slide.resolvedImage = {
+            url: r.url, scrim: r.scrim, credit: r.credit, logo: r.logo,
+            ...(shot ? { aspect: SHOT.unknownAspect } : {}),
+          };
         } else {
           slide.imageUnavailable = true;
           slide.imageError = r?.unusable || "no image could be found for it";

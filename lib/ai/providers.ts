@@ -1591,7 +1591,7 @@ const SLIDE_ITEM_PROPS: Record<string, any> = {
       attachment: {
         type: "number",
         description:
-          "Use an image the USER ATTACHED to this conversation: 1 = the first image on their most recent message that had one, 2 = the second, and so on. ALWAYS use this rather than `query` when the slide is about something they showed you — their own product, a screenshot, a chart, a photo of their site. A generated approximation of their screenshot is worthless; the real file is the point.",
+          "Use an image the USER ATTACHED to this conversation: 1 = the first image on their most recent message that had one, 2 = the second, and so on. ALWAYS use this rather than `query` when the slide is about something they showed you — their own product, a screenshot, a chart, a photo of their site. A generated approximation of their screenshot is worthless; the real file is the point. If explaining a feature would be clearer with a picture of it and the user has not sent one, ASK for the screenshot before building the slide rather than describing the interface in prose; say which screen you want.",
       },
       region: {
         type: "object",
@@ -1602,6 +1602,24 @@ const SLIDE_ITEM_PROPS: Record<string, any> = {
           width: { type: "number" }, height: { type: "number" },
         },
         required: ["x", "y", "width", "height"],
+      },
+      screenshot: {
+        type: "boolean",
+        description:
+          "This picture is a SCREENSHOT of an interface, not a photograph. It is framed on a soft panel instead of bled to the edges, and nothing is written over it. Set it for any UI capture. Implied by `callouts`.",
+      },
+      callouts: {
+        type: "array",
+        maxItems: 5,
+        description:
+          "Number up to 5 places ON the screenshot and explain them. Each pin is drawn on the picture and the same number appears beside its words, so the reader can match them; they are numbered in the order you list them. x and y are PERCENTAGES OF THE PICTURE YOU CAN SEE (0-100, top-left origin) AFTER any `region` crop — estimate them from the image. Put the pin just OUTSIDE the thing it marks, not over its label. Each `text` is a PHRASE, not a sentence: 'Share of voice per prompt', not 'This column shows you the share of voice for each prompt.' ONE TOOL OR ONE SCREEN PER SLIDE — a second screen is a second slide. Drawn on image-split (pins on the picture, numbered lines beside it) and feature (a stage with a numbered legend under it); ignored on every other layout. If the whole app window is too small to read, crop to the panel with `region` and use two or three slides.",
+        items: {
+          type: "object",
+          required: ["x", "y", "text"],
+          properties: {
+            x: { type: "number" }, y: { type: "number" }, text: { type: "string" },
+          },
+        },
       },
     },
   },
@@ -2058,6 +2076,11 @@ export const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
             bodyRight: { type: "string", description: "Right-hand column text, for an inserted two-column slide." },
             eyebrow: { type: "string", description: "Small label above the title — 'CASE STUDY', or a numeral like '02' on a section divider." },
             imageQuery: { type: "string", description: "A photograph for this slide, described. On a change, the old one is replaced." },
+            // The whole `image` object, shape only. `imageQuery` can say
+            // "find me a photograph of"; it cannot say "pin a number on the
+            // user's screenshot", so adding a callout to one slide meant
+            // resending the slide through insertSlides.
+            image: SLIDE_ITEM_LEAN_PROPS.image,
             title: { type: "string", description: "Title text for this slide." },
             subtitle: { type: "string", description: "Subtitle/standfirst for this slide." },
             body: { type: "string", description: "Body text for this slide (newline per bullet)." },
@@ -5043,6 +5066,7 @@ export async function prepareSlidesForBuild(
       slideNumber: src.slideNumber, insertAfter: src.insertAfter, insertSlides: src.insertSlides,
       removeSlides: src.removeSlides,
       layout: src.layout, title: src.slideTitle, body: src.slideBody, imageQuery: src.imageQuery,
+      image: src.image,
     };
     const carried = PAYLOAD_FIELDS.concat(["groups", "items", "caption"]);
     for (let i = 0; i < carried.length; i++) {

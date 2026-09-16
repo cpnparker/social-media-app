@@ -451,6 +451,10 @@ export function applyEditSlide(
     insertAfter?: number;
     layout?: string;
     imageQuery?: string;
+    /** The whole `image` object — the route a CALLOUT has to travel, since
+     *  imageQuery can only ever say "find me a photograph of". Replaces the
+     *  slide's picture wholesale, exactly as imageQuery does. */
+    image?: any;
     title?: string;
     subtitle?: string;
     body?: string;
@@ -646,7 +650,8 @@ export function applyEditSlide(
     for (const f of PAYLOAD_FIELDS) {
       if (f !== "cards" && !isEmptyPayload(edit[f])) fresh[f] = edit[f];
     }
-    if (edit.imageQuery?.trim()) fresh.image = { query: edit.imageQuery.trim() };
+    if (isObj(edit.image)) fresh.image = edit.image;
+    else if (edit.imageQuery?.trim()) fresh.image = { query: edit.imageQuery.trim() };
     return slides.slice(0, at).concat([fresh], slides.slice(at));
   }
 
@@ -693,6 +698,7 @@ export function applyEditSlide(
   const changesPayload = PAYLOAD_FIELDS.some((f) => !isEmptyPayload(edit[f]));
   if (
     !edit.imageQuery?.trim() &&
+    !isObj(edit.image) &&
     typeof edit.title !== "string" &&
     typeof edit.subtitle !== "string" &&
     typeof edit.body !== "string" &&
@@ -700,7 +706,7 @@ export function applyEditSlide(
     !changesPayload
   ) {
     throw new SlideCallRefusal(
-      `No change was given for slide ${edit.slideNumber}: pass at least one of title, subtitle, body, imageQuery, or a payload such as ${PAYLOAD_FIELDS.slice(0, 3).join(", ")}.`,
+      `No change was given for slide ${edit.slideNumber}: pass at least one of title, subtitle, body, image, or a payload such as ${PAYLOAD_FIELDS.slice(0, 3).join(", ")}.`,
       // A reason, not a fault: nothing about slide N fails to DRAW, and a notice
       // saying it "could not be drawn" would send the user looking for a
       // problem with the slide rather than with the request.
@@ -713,10 +719,14 @@ export function applyEditSlide(
   return slides.map((sl, i) => {
     if (i !== idx) return sl;                       // every other slide byte-for-byte
     const next: any = { ...sl };
-    if (edit.imageQuery?.trim()) {
+    if (isObj(edit.image) || edit.imageQuery?.trim()) {
       // New picture: set the brief and drop the resolved image so a fresh one is
-      // fetched. imageUnavailable is cleared so resolution runs again.
-      next.image = { query: edit.imageQuery.trim() };
+      // fetched. imageUnavailable is cleared so resolution runs again. `image`
+      // wins over `imageQuery`, because it is the only one of the two that can
+      // carry an attachment, a region or a callout — a patch adding callouts to
+      // a screenshot had no route here at all, so the model had to resend the
+      // whole slide through insertSlides to add one.
+      next.image = isObj(edit.image) ? edit.image : { query: String(edit.imageQuery).trim() };
       delete next.resolvedImage;
       delete next.imageUnavailable;
       delete next.imageError;

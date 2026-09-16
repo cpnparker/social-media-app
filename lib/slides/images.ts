@@ -46,6 +46,13 @@ export interface ImageSource {
   url: string;
   source: ResolvedImage["source"];
   credit?: string;
+  /** The prepared file's pixel dimensions, where they are known. Only the
+   *  attachment path fills these in, and only because a SCREENSHOT is drawn at
+   *  its own aspect rather than baked to a box: the layout has to know the
+   *  shape, and the legibility note has to know how many source pixels land on
+   *  each drawn point. A photograph is baked to the box, so neither matters. */
+  width?: number;
+  height?: number;
 }
 
 export type ImageGenerator = (prompt: string) => Promise<string>;
@@ -226,6 +233,7 @@ async function bakeBackdrop(
   opts: {
     aspect: number; gradient: boolean; logoRegion?: LogoRegion;
     fit?: "cover" | "contain";
+    background?: string;
     /** Where this layout draws text on the picture. Supplied by the caller
      *  because only the layout knows: a cover writes across the foot, a closing
      *  slide across the middle, a feature slide starts at the very top. */
@@ -243,8 +251,17 @@ async function bakeBackdrop(
     // logo: cropping a client's mark is a misuse of their trademark, not a
     // design choice. `contain` fits it whole on white instead.
     const fit = opts.fit ?? "cover";
+    // The letterbox colour, white unless the caller names one — a screenshot of
+    // unknown shape asks for the mat's colour so the bars read as its mat.
+    const bg = opts.background ? String(opts.background).replace("#", "") : "ffffff";
+    const band = {
+      r: parseInt(bg.slice(0, 2), 16) || 0,
+      g: parseInt(bg.slice(2, 4), 16) || 0,
+      b: parseInt(bg.slice(4, 6), 16) || 0,
+      alpha: 1,
+    };
     let pipeline = fit === "contain"
-      ? sharp(input).resize(W, H, { fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 1 } })
+      ? sharp(input).resize(W, H, { fit: "contain", background: band })
       : sharp(input).resize(W, H, { fit: "cover", position: "attention" });
 
     let logo: "white" | "navy" = "white";
@@ -458,6 +475,11 @@ export interface ImageRequest {
 export interface ImageTreatment {
   aspect: number; gradient: boolean; logoRegion?: LogoRegion; fit?: "cover" | "contain";
   textBands?: TextBand[];
+  /** The letterbox colour under a `contain` fit, as a bare hex. White is right
+   *  for a client logo fitted whole; a screenshot of unknown shape wants the
+   *  MAT's colour, so the bars read as the picture sitting on its mat rather
+   *  than as bars. Ignored by `cover`, which leaves no bars. */
+  background?: string;
   /** This image must be a REAL mark, so the search and the generator are both
    *  off. A client logo that cannot be found has to be absent: standing an
    *  Unsplash photograph or an invented image in for someone's trademark puts
@@ -592,13 +614,24 @@ export async function attachmentImageSource(
         img = sharp(await img.extract({ left, top, width, height }).toBuffer());
       }
     }
-    const out = await img.png().toBuffer();
+    // Down to a sane width before publishing. Slides caps an image at 25
+    // megapixels and a 3000px capture past that is nothing but weight; 1600 is
+    // the same width every baked photograph lands at. `withoutEnlargement` so a
+    // small panel crop is never upscaled into mush.
+    const out = await img.resize(1600, null, { withoutEnlargement: true }).png().toBuffer();
+    // Measured off the OUTPUT, not the input: the region crop and the resize
+    // both change it, and the shape the layout draws has to be the shape of the
+    // file Google will fetch.
+    const meta = await sharp(out).metadata();
     const blob = await put(`slides/attachments/${Date.now()}.png`, out, {
       access: "private",
       contentType: "image/png",
       addRandomSuffix: true,
     });
-    return { url: signedMediaUrl(blob.pathname), source: "supplied" };
+    return {
+      url: signedMediaUrl(blob.pathname), source: "supplied",
+      width: meta.width, height: meta.height,
+    };
   } catch (err: any) {
     console.warn(`[SlideImages] attachment image failed: ${err?.message}`);
     return null;

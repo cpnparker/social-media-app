@@ -106,6 +106,12 @@ const INDEXED: [RegExp, (i: number) => (string | number)[]][] = [
   [/^x(\d+)$/,  (i) => ["milestones", i, "detail"]],
   [/^gc(\d+)$/, (i) => ["images", i, "caption"]],
   [/^tn(\d+)$/, (i) => ["tracks", i, "name"]],
+  // A screenshot callout's PHRASE — the numbered line beside the pin. Its
+  // numeral is a separate box (`shc0n`) that matches nothing here on purpose:
+  // the number is the array's order, not something to edit. Two lines, and
+  // they are what let a wrong phrase be fixed in the preview rather than by
+  // asking the model to rebuild the slide.
+  [/^col(\d+)$/, (i) => ["image", "callouts", i, "text"]],
 ];
 
 function pathOf(objectId: string): (string | number)[] | undefined {

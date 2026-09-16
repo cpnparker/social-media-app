@@ -15,10 +15,10 @@ import {
   estimateLines, drawnTextHeight, inheritContinuationImages, resolveDeckImages,
   niceTicks, isNumericColumn, fitCell, fitColumnWidths, parseAccents, parseBold, deckWarnings, cardGeometry, bandHeightFor,
   CAPS_WIDEN, faceAdvance, stripImageMarkdown, drawnText, TEXT_INSET_X, TEXT_INSET_Y, pillWidth, droppedContent, fitHeading, FOOTER_Y, captionParagraphs, splitStageOwner, slideStyle,
-  labelWidthPt,
+  labelWidthPt, quoteClip, drawsRawScreenshot, isScreenshot, fitAspect, namesAPicture, hugHeight,
   type SlideInput,
 } from "../lib/slides/generate";
-import { toPreviewModel } from "../lib/slides/preview-model";
+import { toPreviewModel, readPath } from "../lib/slides/preview-model";
 import { applyEditSlide, unrenderableSlides, PAYLOAD_FIELDS, insertableLayout, normaliseSlide, SlideCallRefusal } from "../lib/slides/edit";
 import { slidesFailure, parseSlidesArguments, SLIDES_FAILED_FOR_USER, type SlidesTurnState } from "../lib/slides/failure";
 import {
@@ -35,7 +35,7 @@ import { readFileSync } from "fs";
 import { createServer } from "http";
 import { join } from "path";
 import { gradientProfileFor, CONTRAST } from "../lib/slides/images";
-import { CANVAS, LAYOUT_STYLE, COLOR, GRID, LAYOUTS, NOTE, SECTION, TYPE, PROCESS } from "../lib/slides/brand";
+import { CANVAS, LAYOUT_STYLE, COLOR, GRID, LAYOUTS, NOTE, SECTION, TYPE, PROCESS, SHOT, IMAGE, FEATURE_SHOT_STYLE, LOGO_PLACEMENT } from "../lib/slides/brand";
 
 const TYPE_STAT_CAP = 54;   // the multi-stat value cap; a hero must exceed it
 let failures = 0;
@@ -272,11 +272,220 @@ const STRESS: SlideInput[] = [
       name: `Stage ${i + 1}`, caption: "What happens at this point in the work." })) },
 ];
 
+/** SCREENSHOTS AND THEIR CALLOUTS.
+ *
+ *  Held with the stress deck rather than beside check 41, so the canvas,
+ *  overlap, preview round-trip, ink-overflow and lockup sweeps all see them —
+ *  which is most of the value. `aspect` and `sourceWidth` are what resolution
+ *  measures off the prepared file; a photograph leaves both unset. */
+const SHOT_PANEL = { url: "shot.png", scrim: 0, aspect: 330 / 406, sourceWidth: 330 };
+const SHOT_WIDE = { url: "shot.png", scrim: 0, aspect: 890 / 346, sourceWidth: 890 };
+const SHOT_APP = { url: "shot.png", scrim: 0, aspect: 1440 / 760, sourceWidth: 1440 };
+
+const SHOTS: SlideInput[] = [
+  // A. A tight panel crop, four pins, no body.
+  { layout: "image-split", eyebrow: "The platform", title: "Where the visibility score comes from",
+    image: { attachment: 1, callouts: [
+      { x: 50, y: 22, text: "One number, every model" },
+      { x: 50, y: 30, text: "Movement since the last run" },
+      { x: 62, y: 46, text: "Retrieval and recall, split" },
+      { x: 50, y: 78, text: "Straight into a deck" } ] },
+    resolvedImage: SHOT_PANEL },
+  // B. A wide crop with a BODY above the list — the case where the list has to
+  //    hug the body and the body's ceiling has to give up the list's room.
+  { layout: "image-split", eyebrow: "The platform", title: "Every prompt, every model, one table",
+    body: "The audit runs the same prompt set across four models\nEach row records what that model actually said",
+    image: { attachment: 1, callouts: [
+      { x: 6, y: 12, text: "Filter by model or window" },
+      { x: 42, y: 55, text: "Share of voice per prompt" },
+      { x: 86, y: 80, text: "Cited, partial or absent" } ] },
+    resolvedImage: SHOT_WIDE },
+  // C. SEVEN callouts against a cap of five, one of them two lines long.
+  { layout: "image-split", eyebrow: "Stress", title: "Seven callouts, five pins",
+    image: { attachment: 1, callouts: [
+      { x: 8, y: 14, text: "Navigation, which is where every audit starts and where the saved views live" },
+      { x: 40, y: 30, text: "Prompt table" },
+      { x: 62, y: 55, text: "Share of voice" },
+      { x: 88, y: 20, text: "Score panel" },
+      { x: 88, y: 49, text: "Export to a deck" },
+      { x: 30, y: 80, text: "A sixth callout that will not be drawn" },
+      { x: 50, y: 90, text: "A seventh callout that will not be drawn either" } ] },
+    resolvedImage: SHOT_APP },
+  // D. Two pins three per cent apart, one that points off the picture, and —
+  //    the pair that only CHEBYSHEV separation catches — two whose centres are
+  //    23.5pt apart DIAGONALLY. Euclidean says they are clear; their square
+  //    numeral boxes are 16.6pt apart in both axes and overlap in both.
+  { layout: "image-split", eyebrow: "Stress", title: "Two pins on top of each other, and one off the edge",
+    image: { attachment: 1, callouts: [
+      { x: 50, y: 22, text: "The score" },
+      { x: 52, y: 24, text: "The delta, three per cent away" },
+      { x: 118, y: 50, text: "A callout that points off the picture" },
+      { x: 50, y: 50, text: "Retrieval" },
+      { x: 56.078, y: 54.94, text: "Recall, one pin away on the diagonal" } ] },
+    resolvedImage: SHOT_PANEL },
+  // E. The feature stage, four pins, one legend row.
+  { layout: "feature", eyebrow: "Case study", title: "The audit, on one screen",
+    body: "Four models, 248 prompts, one score the communications team can act on.",
+    image: { attachment: 1, callouts: [
+      { x: 8, y: 14, text: "Navigation" },
+      { x: 46, y: 45, text: "Prompt table" },
+      { x: 88, y: 22, text: "Score panel" },
+      { x: 88, y: 49, text: "Export to a deck" } ] },
+    resolvedImage: SHOT_APP },
+  // F. Five real phrases: the legend has to wrap to two rows and balance them.
+  { layout: "feature", eyebrow: "The platform", title: "The audit, on one screen",
+    image: { attachment: 1, callouts: [
+      { x: 8, y: 14, text: "Saved views and navigation" },
+      { x: 46, y: 45, text: "Every prompt, every model" },
+      { x: 62, y: 62, text: "Share of voice per prompt" },
+      { x: 88, y: 22, text: "The visibility score" },
+      { x: 88, y: 49, text: "Straight into a client deck" } ] },
+    resolvedImage: SHOT_APP },
+  // G. A screenshot with NO callouts: the frame alone, the body untouched.
+  { layout: "image-split", eyebrow: "The platform", title: "The prompt table",
+    body: "Every prompt, every model\nShare of voice per row\nCited, partial or absent",
+    image: { attachment: 1, screenshot: true }, resolvedImage: SHOT_WIDE },
+  // H. A cover carrying callouts it cannot draw.
+  { layout: "cover", title: "A cover that tried to point at something", subtitle: "Prepared for a client",
+    image: { attachment: 1, callouts: [
+      { x: 20, y: 20, text: "A phrase the cover cannot draw" },
+      { x: 50, y: 50, text: "Another phrase the cover cannot draw" },
+      { x: 80, y: 80, text: "A third phrase the cover cannot draw" } ] },
+    resolvedImage: { ...SHOT_APP, logo: "white" as const } },
+  // I. A LIGHT capture on the navy stage — the mat is a light halo round a
+  //    light picture, so the keyline is what has to separate them.
+  { layout: "feature", eyebrow: "The platform", title: "One panel, four numbers",
+    image: { attachment: 1, callouts: [
+      { x: 50, y: 22, text: "The score" },
+      { x: 62, y: 46, text: "Retrieval and recall" },
+      { x: 50, y: 78, text: "Straight into a deck" } ] },
+    resolvedImage: SHOT_PANEL },
+  // J. THE ORDINARY SLIDE THAT OVERPRINTED ITSELF. One-line title, one
+  //    sentence of body, five phrases of nine or ten words — nothing stressed
+  //    about it, and the numbered rows were clamped up over the body because
+  //    the body's ceiling has a 40pt floor that says two lines always "fit".
+  //    The splitter cannot save it: it can only divide paragraphs, and this
+  //    body is one. Checks 1, 2 and 11 are what catch it.
+  { layout: "image-split", eyebrow: "The platform", title: "Where the score comes from",
+    body: "Four models, 248 prompts and one number the communications team is asked to move",
+    image: { attachment: 1, callouts: [
+      { x: 8, y: 14, text: "Saved views and the navigation rail down the left-hand side" },
+      { x: 46, y: 30, text: "Every prompt against every model, gathered into a single table" },
+      { x: 62, y: 55, text: "Share of voice for each prompt and each model in turn" },
+      { x: 88, y: 22, text: "The visibility score, and the four things it is made of" },
+      { x: 88, y: 49, text: "Straight into a client deck, without leaving the page" } ] },
+    resolvedImage: SHOT_APP },
+  // K. A FEATURE WHOSE BODY WALKED THE LEGEND OFF THE PAGE. Forty-eight words
+  //    across four lines: the stage used to be measured downwards from the
+  //    title, so the legend and the "showing N of M" line were simply drawn
+  //    past the bottom edge of the canvas. Check 1.
+  { layout: "feature", eyebrow: "Case study", title: "The audit, on one screen",
+    body: "The audit runs the same prompt set across four models every week\n" +
+      "Each row records what that model actually said about the brand\n" +
+      "Movement is what the communications team is asked to act on\n" +
+      "A single snapshot tells them nothing they can do anything about",
+    image: { attachment: 1, callouts: [
+      { x: 8, y: 14, text: "Navigation" },
+      { x: 46, y: 45, text: "Prompt table" },
+      { x: 88, y: 22, text: "Score panel" },
+      { x: 60, y: 70, text: "Export" },
+      { x: 30, y: 60, text: "Filters" } ] },
+    resolvedImage: SHOT_APP },
+  // L. THE TAKEAWAY BAR OVER THE ROWS. Seven callouts and a three-line
+  //    takeaway: the bar is drawn last and over everything, and this branch
+  //    measured to the bottom margin as though it were not there — so the one
+  //    line on the slide saying a callout had been dropped was hidden by it.
+  { layout: "image-split", eyebrow: "Stress", title: "Seven callouts under a takeaway",
+    body: "Every prompt, every model\nShare of voice per row",
+    // A takeaway at the bar's full height, because the hole is proportional to
+    // it: a one-line bar leaves the rows enough room to look fine either way.
+    note: "Why this matters: the audit is the only place a communications team can see what four different models say about them in one view, which is the difference between a snapshot nobody can act on and a programme somebody can be asked to own, quarter after quarter, against a number that moves.",
+    image: { attachment: 1, callouts: [
+      { x: 8, y: 14, text: "Navigation" },
+      { x: 40, y: 30, text: "Prompt table" },
+      { x: 62, y: 55, text: "Share of voice" },
+      { x: 88, y: 20, text: "Score panel" },
+      { x: 88, y: 49, text: "Export to a deck" },
+      { x: 30, y: 80, text: "A sixth callout that will not be drawn" },
+      { x: 50, y: 90, text: "A seventh callout that will not be drawn either" } ] },
+    resolvedImage: SHOT_APP },
+  // M. A LEGEND PHRASE WIDER THAN THE WHOLE MEASURE. greedy() put it on a row
+  //    of its own and returned it, and the caller centred that row — to a
+  //    NEGATIVE x, so the chip was drawn off the left edge of the slide and the
+  //    phrase was clipped at both ends. Check 1 is what catches the chip.
+  { layout: "feature", eyebrow: "Stress", title: "One phrase, too wide for the slide",
+    image: { attachment: 1, callouts: [
+      { x: 30, y: 30, text: "A phrase so extravagantly long that it cannot possibly fit inside the content width of the slide even when it is given a whole row entirely to itself" },
+      { x: 60, y: 60, text: "A second phrase of exactly the same extravagant length, so that neither of them can be laid out on a row of its own either" } ] },
+    resolvedImage: SHOT_APP },
+  // N. THE LEGEND'S OWN OVERFLOW PATH. Five twelve-word phrases: two fit the
+  //    two rows a legend holds and three do not, so `kept` is 2 and the pins
+  //    have to stop at 2 as well. Nothing drove this path before.
+  { layout: "feature", eyebrow: "Stress", title: "Five phrases, two rows",
+    image: { attachment: 1, callouts: [
+      { x: 10, y: 12, text: "A first phrase of twelve words that has to wrap onto two lines" },
+      { x: 40, y: 30, text: "A second phrase of twelve words that has to wrap onto two lines" },
+      { x: 70, y: 48, text: "A third phrase of twelve words that has to wrap onto two lines" },
+      { x: 25, y: 66, text: "A fourth phrase of twelve words that also has to wrap over two" },
+      { x: 60, y: 86, text: "A fifth phrase of twelve words which likewise wraps onto two lines" } ] },
+    resolvedImage: SHOT_APP },
+  // O. A BLANK PHRASE BETWEEN TWO REAL ONES. A pin numbered for a line that
+  //    says nothing points at nothing, so the blank is dropped before anything
+  //    is numbered and the two survivors are 1 and 2.
+  { layout: "image-split", eyebrow: "The platform", title: "A callout with nothing to say",
+    image: { attachment: 1, callouts: [
+      { x: 30, y: 25, text: "The visibility score" },
+      { x: 50, y: 50, text: "   " },
+      { x: 70, y: 75, text: "Retrieval and recall" } ] },
+    resolvedImage: SHOT_PANEL },
+  // P. NO MEASURED ASPECT — a draft saved before callouts shipped, or a `url`
+  //    declared a capture. SHOT.unknownAspect decides both the bake and the
+  //    drawn box, and nothing drove it.
+  { layout: "feature", eyebrow: "The platform", title: "A capture nothing measured",
+    image: { attachment: 1, callouts: [
+      { x: 30, y: 30, text: "The score" },
+      { x: 70, y: 70, text: "The export" } ] },
+    resolvedImage: { url: "shot.png", scrim: 0 } },
+  // R. NOTHING LEFT FOR A LEGEND. A fourteen-word title, a takeaway at the
+  //    bar's full height and five twelve-word phrases: the title and the bar
+  //    have taken the slide between them. Pins the reader cannot match to a
+  //    phrase are worse than no pins, so both go and the slide says so — the
+  //    fallback that stops the stage being squeezed to a postage stamp.
+  { layout: "feature", eyebrow: "Stress",
+    title: "Fourteen words of title here to see whether the heading and the picture can both fit",
+    body: "Four models, 248 prompts, one score the communications team can act on.",
+    // The bar at NOTE.maxHeight, which is what a real four-sentence takeaway
+    // reaches: below it the fallback has room it does not need, and the
+    // fixture proves nothing.
+    note: "Why this matters: the audit is the only place a communications team can see what four different models say about them in one view, which is the difference between a snapshot nobody can act on and a programme somebody can be asked to own. The number moves quarter by quarter, and the movement is the thing to report upwards rather than the score itself. A single run tells you where you stand today; four runs tell you whether the work is landing, and that is the only question the board ever asks about any of this.",
+    image: { attachment: 1, callouts: [
+      { x: 10, y: 12, text: "A first phrase of twelve words that has to wrap onto two lines" },
+      { x: 40, y: 30, text: "A second phrase of twelve words that has to wrap onto two lines" },
+      { x: 70, y: 48, text: "A third phrase of twelve words that has to wrap onto two lines" },
+      { x: 25, y: 66, text: "A fourth phrase of twelve words that also has to wrap over two" },
+      { x: 60, y: 86, text: "A fifth phrase of twelve words which likewise wraps onto two lines" } ] },
+    resolvedImage: SHOT_APP },
+  // Q. The feature stage under a takeaway bar — the same hole as L, on the
+  //    branch whose legend and admission sit lowest on the slide.
+  { layout: "feature", eyebrow: "Case study", title: "The audit, under a takeaway",
+    body: "Four models, 248 prompts, one score the communications team can act on.",
+    note: "Why this matters: a single snapshot tells a communications team nothing they can do anything about, and movement is the only thing they can be asked to own.",
+    image: { attachment: 1, callouts: [
+      { x: 8, y: 14, text: "Navigation" },
+      { x: 46, y: 45, text: "Prompt table" },
+      { x: 88, y: 22, text: "Score panel" },
+      { x: 60, y: 70, text: "Export" } ] },
+    resolvedImage: SHOT_APP },
+];
+/** Where the screenshot fixtures start in ALL, so check 41 can address one. */
+const SHOT_AT = DECK.length + STRESS.length;
+const SHOT_IX = (letter: string) => SHOT_AT + "ABCDEFGHIJKLMNOPRQ".indexOf(letter);
+
 /* 1. Nothing may fall off the canvas. */
 console.log(`\n1. Every element stays on the 720x405 canvas`);
 // Indexed loop, not .entries(): tsconfig sets no target, so iterating an
 // iterator needs downlevelIteration and fails the production build.
-const ALL = DECK.concat(STRESS);
+const ALL = DECK.concat(STRESS).concat(SHOTS);
 for (let i = 0; i < ALL.length; i++) {
   const slide = ALL[i];
   for (const req of buildSlideRequests(slide, i, "v")) {
@@ -302,7 +511,7 @@ for (let i = 0; i < ALL.length; i++) {
     }
   }
 }
-if (!failures) pass(`all ${ALL.length} layouts fit, including ${STRESS.length} overloaded ones`);
+if (!failures) pass(`all ${ALL.length} layouts fit, including ${STRESS.length} overloaded ones and ${SHOTS.length} screenshots`);
 
 /* 2. Text boxes must not sit on top of each other. */
 const before2 = failures;
@@ -1329,7 +1538,11 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       // deliberately not. `columns` was declared on slides[] and insertSlides[]
       // and on neither editSlide nor the copy applyEditSlide makes, so a
       // two-column insert lost its headers with no report.
-      const SINGLE_ROUTE_EXCLUDED = ["image"];   // imageQuery stands in for it
+      // Nothing is excluded any more: `image` used to be, on the grounds that
+      // `imageQuery` stood in for it — which was true only while a picture was
+      // just a photograph to find. It cannot carry an attachment, a region or a
+      // callout, so a patch adding one had to resend the whole slide.
+      const SINGLE_ROUTE_EXCLUDED: string[] = [];
       const missingOnEdit = Object.keys(itemProps).filter((k) => !editProps[k] && SINGLE_ROUTE_EXCLUDED.indexOf(k) < 0);
       assertEdit(missingOnEdit.length === 0, `editSlide does not offer these slide fields, and nothing says why: ${missingOnEdit.join(", ")}`);
     }
@@ -6071,6 +6284,937 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       fail(`check 40 threw: ${String((e && e.message) || e).slice(0, 200)}`);
     }
   }
+
+  /* 41. A SCREENSHOT IS FRAMED, AND A CALLOUT POINTS AT SOMETHING
+   *
+   * Two live bugs closed, plus the device that did not exist.
+   *
+   *   - A `feature` slide carrying an attached picture drew it full bleed with
+   *     gradient:false and set the eyebrow, title and body in WHITE — measured
+   *     255,255,255 at 26pt. A light UI capture therefore made the whole slide
+   *     invisible, and every geometric check passed over it because nothing
+   *     asked what was behind the type. A screenshot feature is now a navy
+   *     STAGE, decided in slideStyle like the stat grid's ground.
+   *   - An attachment on image-split was baked to aspect 0.839 with fit:contain
+   *     onto WHITE, so a 1.895 screenshot became a 179pt strip in a 405pt white
+   *     slab. A screenshot is no longer baked at all: it is drawn at its own
+   *     shape on a mat.
+   *
+   * And the pointing. Nothing could mark a place on a picture and explain it,
+   * so the model described the interface in prose beside a picture of it and
+   * the reader matched the two by eye.
+   *
+   * THE FRAME IS DRAWN, NOT DECLARED. preview-model reads no solid outline at
+   * all — only `outline.dashStyle === "DASH"` — so `updateImageProperties`
+   * outline and filledShape's own outline are both invisible in the preview.
+   * The keyline is an inflated filled rectangle with the picture on top of it,
+   * which is exact and keeps the whole feature inside the request kinds check 3
+   * already round-trips.
+   *
+   * MUTATION LOG (detached worktree, 2026-09-16)
+   *
+   * Two of these first came back GREEN, and both were findings about the
+   * check rather than about the code:
+   *   - M4 (Chebyshev → Euclidean) survived because no fixture had a DIAGONAL
+   *     pair. Two pins 23.5pt apart at 45 degrees are clear by Euclid and
+   *     16.6pt apart in both axes, which is exactly the case the metric was
+   *     chosen for. Fixture D now carries that pair, and M4 dies on it.
+   *   - M11 was first written as quoteClip → JSON.stringify, which is the
+   *     SAME STRING for short text, so the mutation was a no-op. Dropping the
+   *     quotes is the real difference, and it is what breaks droppedContent's
+   *     filter.
+   *
+   * And one bug was found by RENDERING rather than by any assertion: fixture H
+   * printed a cover with a raw UI capture under its white title, because
+   * "do not bake a screenshot" had been written as a property of the PICTURE
+   * when it is a property of the LAYOUT. 41j-pre and M28 came from the PNG.
+   *
+   *   killed  M1  navy outer ring dropped                       → 41a
+   *   killed  M2  white middle ring dropped                     → 41a
+   *   killed  M3  numeral 9pt → 6pt                             → 41a
+   *   killed  M4  Chebyshev separation → Euclidean              → 41c (and check 2)
+   *   killed  M5  separation 23 → 12                            → 41c (and check 2)
+   *   killed  M6  pins placed with no clamp to the image box    → 41c
+   *   killed  M7  every pin nudged unconditionally              → 41b
+   *   killed  M8  nudge applied, note not emitted               → 41b, 41g
+   *   killed  M9  cap raised from 5 to 12                       → 41g
+   *   killed  M10 cap enforced, `Showing N of M` not drawn      → 41g
+   *   killed  M11 over-cap note stops using quoteClip           → 41g (droppedContent doubles up)
+   *   killed  M12 keyline rectangle removed                     → 41d
+   *   killed  M13 keyline drawn as filledShape's `outline`      → 41d (invisible in the preview)
+   *   killed  M14 mat alpha dropped on the dark branch          → 41d
+   *   killed  M15 image drawn BEFORE the mat                    → 41d
+   *   killed  M16 box sized to a fixed 16/10, not the aspect    → 41e
+   *   killed  M17 feature keeps background: null for a shot     → 41f (and check 4)
+   *   killed  M18 feature still calls backdropRequests          → 41f
+   *   killed  M20 body box stops subtracting listBlock          → 41i
+   *   killed  M21 body box left at the full ceiling when drawn  → 41m (the hug)
+   *   killed  M22 legibility threshold 2.4 → 99                 → 41h
+   *   killed  M23 legibility note fires unconditionally         → 41h
+   *   killed  M24 callouts honoured on `cover` too              → 41g
+   *   killed  M25 `callouts` removed from SLIDE_ITEM_PROPS      → 41j
+   *   killed  M27 `col` ids renamed so pathOf misses them       → 41k
+   *   killed  M28 a screenshot drawn raw on EVERY layout          → 41j-pre
+   *
+   * SECOND PASS (2026-09-16). Six defects that every check above passed over,
+   * five of them found by RENDERING the slides and one by asking what a
+   * continuation inherits. Each is a fixture in the shared sweep as well as an
+   * assertion here, because most of the value of these fixtures is checks 1, 2
+   * and 11 seeing them at all.
+   *
+   *   killed  M29 image-split list clamped UP over the body      → 41m, check 2
+   *   killed  M30 rows drawn past the column's floor             → 41m, check 1
+   *   killed  M31 rows that did not fit are not declared         → 41m
+   *   killed  M32 pins placed for rows that are not drawn        → 41m
+   *   killed  M33 image-split floor ignores the takeaway bar     → 41n, check 2
+   *   killed  M34 feature stage floor ignores the takeaway bar   → 41n, check 2
+   *   killed  M35 feature body takes its hug with no ceiling     → 41o, 41p
+   *   killed  M35b the pre-fix geometry exactly (hug + max(48))  → 41o (off canvas)
+   *   killed  M36 feature body box hugs while PROBING            → 41p
+   *   killed  M37 legendLayout stops refusing an over-wide row   → check 1
+   *   killed  M39 continuation clears `image` again              → 41q
+   *   killed  M40 namesAPicture true for a source-less brief     → 41q
+   *   killed  M41 the feature stage draws no credit              → 41r
+   *   killed  M42 image-split draws no credit (the X11 hole)     → 41r
+   *   killed  M43 fitAspect stops centring                       → 41s
+   *   killed  M44 calloutsFor stops dropping a blank phrase      → 41s, 41m
+   *   killed  M45 fitAspect's fallback stops reading unknownAspect → 41s, 41e
+   *   killed  M46 legendLayout over-claims `kept`                → 41m (pins vs rows)
+   *   killed  M47 SHOT.minStage → 0                              → 41o
+   *   killed  M48 the callout-drop fallback stops firing         → 41c (fixture R)
+   *   killed  M48b the fallback fires and says nothing           → 41m
+   *   killed  M50 image-split body box left at the ceiling       → 41m (the hug)
+   *   killed  M52 the admission's band is not reserved           → check 2
+   *   killed  M53 the clipped-body admission removed             → 41o
+   *   killed  M54 the clipped-body admission fires always        → 41o
+   *   killed  M55 the body-dropped admission removed             → 41o, 41m
+   *   killed  M56 a dropped body drawn at two points instead     → check 2, check 11
+   *   killed  M57 feature body box left at the ceiling           → 41m (the hug)
+   *   SURVIVED M38 the legend's `lx` clamp to GRID.margin removed: belt and
+   *            braces only, now that legendLayout refuses a row wider than the
+   *            measure. It is kept because it is the last thing between a
+   *            future width bug and a chip drawn at a negative x, and a guard
+   *            that cannot fire today is cheaper than the render that found it.
+   *   SURVIVED M49 image-split's `!PROBING` on the body box: redundant given
+   *            the `Math.min(splitBodyCeiling, …)` beside it — when the hug is
+   *            under the ceiling the body genuinely fits, and when it is over
+   *            the clamp answers the same number either way. Kept as the
+   *            statement of intent; the feature branch's own PROBING guard is
+   *            NOT redundant and M36 proves it.
+   *
+   * M19 was recorded here as killed and was not: the stage-top clamp off the
+   * lockup can never bind. LOGO_PLACEMENT.content ends at 54.8, while the
+   * smallest possible stage top is FEATURE_SHOT_TITLE_Y (46) + the title's
+   * 45.36 minimum + SHOT.legendGap (14) = 105.36 — fifty points clear, with an
+   * EMPTY title. Deleting the clamp left every fixture byte-identical and the
+   * suite green, so 41c's "the mat clears the lockup" was passing on the title
+   * geometry and never on the clamp. The clamp is gone and 41c is the guard.
+   *   SURVIVED S1 SHOT.pad 10 → 8: nothing asserts the mat's exact width, only
+   *            that it exists, contains the picture and clears the lockup. The
+   *            mat is a taste value; pinning it would pin taste. (It first
+   *            came back KILLED, by 41h quoting the drawn width to the point —
+   *            a coupling that would have gone red on any harmless geometry
+   *            change, so 41h now reads the width out of the note instead.)
+   *   SURVIVED S2 legend rows greedy (4+1) instead of balanced (3+2): 41f
+   *            asserts the rows fit and stay on the canvas, not that they are
+   *            even. Recorded rather than writing a check nobody would believe.
+   *   SURVIVED S3 chip diameter 16 → 15: 41a's sweep is size-independent and
+   *            41c measures only the pins on the picture.
+   *   SURVIVED M26 attachment branch back to unconditional `gradient: false`.
+   *            The attachment path cannot run here at all: attachmentImageSource
+   *            needs a Vercel Blob token for a PRIVATE store, and the local one
+   *            is an older token against a public store, so it returns null and
+   *            the branch is never entered (which is why check 23 tests the crop
+   *            arithmetic rather than the path). The fix is in the tree and
+   *            rendered; nothing local can go red on it.
+   */
+  const before41 = failures;
+  console.log(`\n41. A screenshot is framed, and a callout points at something`);
+  {
+    const A41 = (ok: boolean, m: string) => { if (!ok) fail(`41: ${m}`); };
+    const reqsOf = (i: number, notes?: string[]) => buildSlideRequests(ALL[i], i, `sh${i}`, notes) as any[];
+    const notesOf = (i: number) => { const n: string[] = []; reqsOf(i, n); return n; };
+    const boxOfReq = (r: any) => {
+      const o = r.createShape || r.createImage;
+      const t = o.elementProperties.transform;
+      return { id: o.objectId as string, x: t.translateX, y: t.translateY,
+        w: o.elementProperties.size.width.magnitude, h: o.elementProperties.size.height.magnitude };
+    };
+    const shapeById = (rs: any[], suffix: string) => {
+      for (const r of rs) {
+        const o = r.createShape || r.createImage;
+        if (o && String(o.objectId).endsWith(`_${suffix}`)) return boxOfReq(r);
+      }
+      return null;
+    };
+    const fillOf = (rs: any[], suffix: string) => {
+      for (const r of rs) {
+        const u = r.updateShapeProperties;
+        if (u && String(u.objectId).endsWith(`_${suffix}`)) {
+          const sf = u.shapeProperties?.shapeBackgroundFill?.solidFill;
+          const c = sf?.color?.rgbColor;
+          return c ? { hex: [c.red, c.green, c.blue].map((v: number) => Math.round((v ?? 0) * 255).toString(16).padStart(2, "0")).join("").toUpperCase(), alpha: sf.alpha } : null;
+        }
+      }
+      return null;
+    };
+    const inkOfBox = (rs: any[], suffix: string) => {
+      for (const r of rs) {
+        const u = r.updateTextStyle;
+        if (u && String(u.objectId).endsWith(`_${suffix}`) && u.textRange?.type === "ALL") {
+          const c = u.style?.foregroundColor?.opaqueColor?.rgbColor;
+          return { hex: c ? [c.red, c.green, c.blue].map((v: number) => Math.round((v ?? 0) * 255).toString(16).padStart(2, "0")).join("").toUpperCase() : null,
+            size: u.style?.fontSize?.magnitude as number | undefined };
+        }
+      }
+      return null;
+    };
+    const pinsOf = (rs: any[]) => {
+      const out: { n: number; cx: number; cy: number; d: number }[] = [];
+      for (const r of rs) {
+        const o = r.createShape;
+        if (!o || o.shapeType !== "ELLIPSE") continue;
+        const m = /_shp(\d+)a$/.exec(String(o.objectId));
+        if (!m) continue;
+        const b = boxOfReq(r);
+        out.push({ n: Number(m[1]) + 1, cx: b.x + b.w / 2, cy: b.y + b.h / 2, d: b.w });
+      }
+      return out;
+    };
+    const lum = (hex: string) => {
+      const f = (c: number) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+      const v = [0, 2, 4].map((i) => f(parseInt(hex.substr(i, 2), 16) / 255));
+      return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+    };
+    const ratio = (a: number, b: number) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+    const overlaps = (p: { x: number; y: number; w: number; h: number }, q: { x: number; y: number; w: number; h: number }) =>
+      !(p.x + p.w <= q.x + 0.01 || q.x + q.w <= p.x + 0.01 || p.y + p.h <= q.y + 0.01 || q.y + q.h <= p.y + 0.01);
+
+    let mark = failures;
+    const okIf = (m: string) => { if (failures === mark) pass(m); mark = failures; };
+    // Every screenshot fixture that actually draws one. H is the cover, which
+    // mats nothing.
+    const DRAWN_SHOTS = ["A", "B", "C", "D", "E", "F", "G", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R"];
+
+    /* 41a. THE PIN IS LEGIBLE ON EVERY POSSIBLE GROUND.
+     *
+     * Not a sample: a screenshot can be any colour anywhere, so the guarantee
+     * has to hold for every ground luminance there is. Colours are read off the
+     * DRAWN requests, never off SHOT — a check that reads the constants proves
+     * the constants, not the pin. */
+    {
+      const rs = reqsOf(SHOT_IX("A"));
+      const outer = fillOf(rs, "shp0a"), mid = fillOf(rs, "shp0b"), disc = fillOf(rs, "shp0c");
+      const numeral = inkOfBox(rs, "shp0n");
+      A41(!!outer && !!mid && !!disc && !!numeral, `a pin draws three discs and a numeral (${[outer, mid, disc, numeral].map((v) => !!v).join(",")})`);
+      if (outer && mid && disc && numeral && numeral.hex) {
+        A41(outer.hex !== mid.hex, `the pin's two rings are the same colour (${outer.hex}) — one ring cannot cover both a light and a dark ground`);
+        const nOn = ratio(lum(numeral.hex), lum(disc.hex));
+        A41(nOn >= 4.5, `the numeral is ${nOn.toFixed(2)}:1 on the disc, under the 4.5:1 small-text floor`);
+        A41((numeral.size ?? 0) >= 8, `the numeral is set at ${numeral.size}pt — too small to read from a room`);
+        let worst = 99, at = 0;
+        for (let i = 0; i <= 1000; i++) {
+          const Lg = i / 1000;
+          const best = Math.max(ratio(lum(outer.hex), Lg), ratio(lum(mid.hex), Lg));
+          if (best < worst) { worst = best; at = Lg; }
+        }
+        A41(worst >= 3, `a ground at L=${at.toFixed(3)} leaves the pin's rings at ${worst.toFixed(2)}:1 — the pin would vanish into the screenshot`);
+        // And the DISC alone is not enough, which is why there are rings at
+        // all: brand blue on brand blue is a pin on our own product's button.
+        let discWorst = 99;
+        for (let i = 0; i <= 1000; i++) discWorst = Math.min(discWorst, ratio(lum(disc.hex), i / 1000));
+        A41(discWorst < 3, `the disc alone clears 3:1 everywhere (${discWorst.toFixed(2)}:1) — this fixture no longer proves the rings do any work`);
+        okIf(`41a numeral ${nOn.toFixed(2)}:1 on the disc; the ring pair's worst ground is ${worst.toFixed(2)}:1 at L=${at.toFixed(3)} (a bare disc: ${discWorst.toFixed(2)}:1)`);
+      }
+    }
+
+    /* 41b. PINS LAND WHERE THE PERCENTAGES SAY, unless a note says one moved. */
+    {
+      for (const key of ["A", "E"]) {
+        const i = SHOT_IX(key);
+        const rs = reqsOf(i), notes = notesOf(i);
+        const img = shapeById(rs, "shimg");
+        const calls = (ALL[i].image?.callouts || []);
+        A41(!!img, `${key}: no picture is drawn, so nothing can be pinned to it`);
+        if (!img) continue;
+        const pins = pinsOf(rs);
+        A41(pins.length === calls.length, `${key}: ${pins.length} pins for ${calls.length} callouts`);
+        for (const p of pins) {
+          const c = calls[p.n - 1];
+          const want = { x: img.x + (c.x / 100) * img.w, y: img.y + (c.y / 100) * img.h };
+          const off = Math.max(Math.abs(p.cx - want.x), Math.abs(p.cy - want.y));
+          const moved = notes.some((n) => n.indexOf(`pin ${p.n} was moved`) >= 0);
+          if (moved) continue;   // declared, and only the author can re-aim it
+          A41(off <= 0.5, `${key}: pin ${p.n} asked for (${c.x}%, ${c.y}%) and landed ${off.toFixed(1)}pt away, with no note saying it moved`);
+        }
+      }
+      okIf("41b every pin lands on the percentage it was given, or a note says it was moved and by how far");
+    }
+
+    /* 41c. SEPARATION, CONTAINMENT, AND CLEARING THE LOCKUP. */
+    {
+      for (const key of DRAWN_SHOTS) {
+        const i = SHOT_IX(key);
+        const rs = reqsOf(i);
+        const img = shapeById(rs, "shimg"), mat = shapeById(rs, "shmat");
+        A41(!!img && !!mat, `${key}: the frame is missing (image=${!!img} mat=${!!mat})`);
+        if (!img || !mat) continue;
+        const pins = pinsOf(rs);
+        for (let a = 0; a < pins.length; a++) {
+          for (let b = a + 1; b < pins.length; b++) {
+            const cheb = Math.max(Math.abs(pins[a].cx - pins[b].cx), Math.abs(pins[a].cy - pins[b].cy));
+            A41(cheb >= SHOT.separation - 0.01,
+              `${key}: pins ${pins[a].n} and ${pins[b].n} are ${cheb.toFixed(1)}pt apart in the wider axis, under ${SHOT.separation} — their numeral boxes overlap`);
+          }
+          const p = pins[a];
+          A41(p.cx - p.d / 2 >= img.x - 0.01 && p.cx + p.d / 2 <= img.x + img.w + 0.01 &&
+              p.cy - p.d / 2 >= img.y - 0.01 && p.cy + p.d / 2 <= img.y + img.h + 0.01,
+            `${key}: pin ${p.n} hangs off the picture (centre ${p.cx.toFixed(1)},${p.cy.toFixed(1)} in ${img.x.toFixed(1)},${img.y.toFixed(1)} ${img.w.toFixed(1)}x${img.h.toFixed(1)})`);
+        }
+        A41(mat.x >= -0.01 && mat.y >= -0.01 && mat.x + mat.w <= CANVAS.width + 0.01 && mat.y + mat.h <= CANVAS.height + 0.01,
+          `${key}: the mat leaves the canvas (${mat.x.toFixed(1)},${mat.y.toFixed(1)} ${mat.w.toFixed(1)}x${mat.h.toFixed(1)})`);
+        // A PICTURE, NOT A POSTAGE STAMP. Everything else on these slides —
+        // the title, the body, the legend, the takeaway — takes its room from
+        // the top or the foot, and the picture is what is left in the middle;
+        // with no floor under it, a long title and a full-height takeaway
+        // between them squeezed a 1440px capture into thirteen points and
+        // every geometric check here still passed.
+        A41(img.h >= 48,
+          `${key}: the picture is ${img.h.toFixed(1)}pt tall — the words above and below it have squeezed the one thing the slide is about`);
+        const place = LOGO_PLACEMENT[slideStyle(ALL[i], i).logoPlacement];
+        A41(!overlaps(mat, { x: place.x, y: place.y, w: place.width, h: place.height }),
+          `${key}: the mat runs under the lockup — a white mark over a light screenshot is exactly what check 4 cannot see`);
+      }
+      okIf(`41c pins on ${DRAWN_SHOTS.length} screenshots are a pin's width apart, inside the picture, and every mat clears the lockup`);
+    }
+
+    /* 41d. THE FRAME IS DRAWN AND READ BACK — through the PREVIEW, not the
+     *      request list, because the alpha is the field preview-model has
+     *      dropped before. */
+    {
+      for (const key of ["A", "E"]) {
+        const i = SHOT_IX(key);
+        const page = toPreviewModel([ALL[i]]).slides[0];
+        const onDark = slideStyle(ALL[i], i).onDark;
+        const imgAt = page.elements.findIndex((e) => e.kind === "image" && e.src === "shot.png");
+        A41(imgAt >= 0, `${key}: the screenshot never reaches the preview`);
+        if (imgAt < 0) continue;
+        const img = page.elements[imgAt];
+        const near = (a: number, b: number) => Math.abs(a - b) < 0.01;
+        const findRect = (pad: number) => {
+          for (let k = 0; k < page.elements.length; k++) {
+            const e = page.elements[k];
+            if (e.kind !== "rect") continue;
+            if (near(e.x, img.x - pad) && near(e.y, img.y - pad) && near(e.w, img.w + 2 * pad) && near(e.h, img.h + 2 * pad)) return { e, k };
+          }
+          return null;
+        };
+        const key1 = findRect(SHOT.keyline), mat = findRect(SHOT.pad);
+        A41(!!key1, `${key}: no hairline exactly ${SHOT.keyline}pt round the picture reaches the preview — an outline would not, which is why it is drawn as an inflated rectangle`);
+        A41(!!mat, `${key}: no mat ${SHOT.pad}pt round the picture reaches the preview`);
+        if (key1 && mat) {
+          A41(key1.k < imgAt && mat.k < imgAt, `${key}: the picture is drawn before its own frame — element order is z-order, so the frame would cover the interface`);
+          A41(mat.k < key1.k, `${key}: the hairline is drawn before the mat, so the mat covers it`);
+          const want = onDark
+            ? { mat: `#${COLOR.white.toLowerCase()}`, matA: SHOT.matDarkAlpha, key: `#${COLOR.white.toLowerCase()}`, keyA: SHOT.keylineDarkAlpha }
+            : { mat: `#${SHOT.matLight.toLowerCase()}`, matA: undefined, key: `#${COLOR.navy.toLowerCase()}`, keyA: SHOT.keylineLightAlpha };
+          A41(String(mat.e.fill).toLowerCase() === want.mat, `${key}: the mat previews as ${mat.e.fill}, not ${want.mat}`);
+          A41(String(key1.e.fill).toLowerCase() === want.key, `${key}: the hairline previews as ${key1.e.fill}, not ${want.key}`);
+          A41(mat.e.opacity === want.matA, `${key}: the mat's opacity previews as ${mat.e.opacity}, not ${want.matA} — a dropped alpha renders a 10% wash as a solid slab`);
+          A41(key1.e.opacity === want.keyA, `${key}: the hairline's opacity previews as ${key1.e.opacity}, not ${want.keyA}`);
+        }
+      }
+      okIf("41d the mat and the hairline round-trip with their fills and their alphas, and the picture is drawn on top of both");
+    }
+
+    /* 41e. THE SHOT IS ITS OWN SHAPE, so nothing letterboxes and pdf-html's
+     *      object-fit:cover cannot disagree with the preview's contain. */
+    {
+      for (const key of DRAWN_SHOTS) {
+        const i = SHOT_IX(key);
+        const img = shapeById(reqsOf(i), "shimg");
+        const measured = ALL[i].resolvedImage?.aspect;
+        // A draft saved before callouts shipped — and a `url` or `query`
+        // declared a capture — has no measured aspect, and SHOT.unknownAspect
+        // is then BOTH the shape the file was fitted onto and the shape of the
+        // box it is drawn in. If the two ever stop being the same constant,
+        // pdf-html's object-fit:cover crops the difference in silence.
+        const want = typeof measured === "number" ? measured : SHOT.unknownAspect;
+        A41(!!img, `${key}: no picture is drawn`);
+        if (!img) continue;
+        A41(Math.abs(img.w / img.h - want) < 0.01,
+          `${key}: the picture is drawn at ${(img.w / img.h).toFixed(3)} but the shape it was fitted to is ${want.toFixed(3)} — it is being stretched or letterboxed`);
+      }
+      okIf(`41e every screenshot is drawn at the shape of the file it came from`);
+    }
+
+    /* 41f. A FEATURE SCREENSHOT IS A NAVY STAGE, NOT A BLEED. */
+    {
+      for (const key of ["E", "F", "I"]) {
+        const i = SHOT_IX(key);
+        const style = slideStyle(ALL[i], i);
+        A41(style.background === FEATURE_SHOT_STYLE.background && style.onDark,
+          `${key}: a feature screenshot is on ${style.background} — the layout's white type is solved for a baked gradient a screenshot never gets`);
+        A41(style.logo === "white", `${key}: the navy stage does not carry the white lockup`);
+        const rs = reqsOf(i);
+        A41(!rs.some((r) => String(r.createImage?.objectId || "").endsWith("_bg")),
+          `${key}: backdropRequests still draws a full-bleed picture behind the stage`);
+        const img = shapeById(rs, "shimg")!;
+        for (const r of rs) {
+          if (!r.createImage) continue;
+          const b = boxOfReq(r);
+          if (String(b.id).indexOf("logo") >= 0) continue;
+          A41(b.w * b.h <= CANVAS.width * CANVAS.height * 0.8,
+            `${key}: an image covers ${Math.round((100 * b.w * b.h) / (CANVAS.width * CANVAS.height))}% of the slide — that is a bleed, not a stage`);
+        }
+        // Nothing is WRITTEN on a screenshot. The pin numerals are the pins
+        // themselves, not writing, so they are excluded by name.
+        for (const r of rs) {
+          const o = r.createShape;
+          if (!o || o.shapeType !== "TEXT_BOX") continue;
+          if (/_shp\d+n$/.test(String(o.objectId))) continue;
+          const b = boxOfReq(r);
+          A41(!overlaps(b, img), `${key}: "${b.id}" is drawn over the interface — a screenshot carries no text on it`);
+        }
+      }
+      okIf("41f a feature screenshot is a matted navy stage with its white lockup, nothing bleeds and nothing is written on the picture");
+    }
+
+    /* 41g. WHAT IS DROPPED IS SAID, THREE WAYS — asserted on the STRINGS,
+     *      because a note-free build passes every geometric check there is. */
+    {
+      // C: seven callouts against a cap of five.
+      {
+        const i = SHOT_IX("C");
+        const notes = notesOf(i), rs = reqsOf(i);
+        const joined = notes.join(" | ");
+        const lost = (ALL[i].image!.callouts || []).slice(5);
+        A41(/at most 5 callouts/.test(joined), `C: nothing says the cap was hit (${joined.slice(0, 90)})`);
+        for (const c of lost) {
+          A41(joined.indexOf(quoteClip(c.text)) >= 0, `C: the note does not quote "${c.text.slice(0, 30)}" in quoteClip's form`);
+        }
+        const admitted = rs.filter((r) => r.insertText).map((r) => String(r.insertText.text));
+        A41(admitted.some((t) => t === "Showing 5 of 7 callouts"), `C: the slide itself never says how many callouts it is showing (${JSON.stringify(admitted.slice(-2))})`);
+        // And the model is not told the same thing twice in two voices.
+        const dropped = droppedContent(ALL[i], i, notes);
+        for (const c of lost) {
+          A41(dropped.indexOf(c.text) < 0, `C: droppedContent repeats "${c.text.slice(0, 30)}" that the note already quoted`);
+        }
+      }
+      // D: a nudge with a distance, and an off-picture callout with its number.
+      {
+        const notes = notesOf(SHOT_IX("D")).join(" | ");
+        A41(/pin 2 was moved \d+pt/.test(notes), `D: the nudge is not declared with a distance (${notes.slice(0, 120)})`);
+        A41(/callout 3 points outside the picture \(118%, 50%\)/.test(notes), `D: the off-picture callout is not declared with its percentage (${notes.slice(0, 160)})`);
+      }
+      // H: a layout that cannot point, declared and reported.
+      {
+        const i = SHOT_IX("H");
+        const notes = notesOf(i);
+        A41(notes.some((n) => n.indexOf("image-split and feature only") >= 0 && n.indexOf("cover") >= 0),
+          `H: a cover carrying callouts says nothing about them (${notes.join(" | ").slice(0, 120)})`);
+        const dropped = droppedContent(ALL[i], i, notes);
+        for (const c of ALL[i].image!.callouts!) {
+          A41(dropped.indexOf(c.text) >= 0, `H: droppedContent does not name "${c.text.slice(0, 30)}", which the cover never draws`);
+        }
+      }
+      // And a well-formed screenshot says NOTHING about drops, or the report
+      // is noise and gets ignored, which is the same as not having it.
+      for (const key of ["A", "G"]) {
+        const notes = notesOf(SHOT_IX(key)).join(" | ");
+        A41(notes.indexOf("left off") < 0 && notes.indexOf("was moved") < 0 && notes.indexOf("outside the picture") < 0,
+          `${key}: a well-formed screenshot reports a drop it did not make (${notes.slice(0, 120)})`);
+        A41(droppedContent(ALL[SHOT_IX(key)], SHOT_IX(key), notesOf(SHOT_IX(key))).length === 0,
+          `${key}: a well-formed screenshot reports dropped content`);
+      }
+      okIf("41g the cap, the nudge, the off-picture pin and the wrong layout are each named in words, on the slide, and to the model exactly once");
+    }
+
+    /* 41h. NOTHING IS MISSING, BUT IT CANNOT BE READ. */
+    {
+      const big = notesOf(SHOT_IX("C")).join(" | ");
+      // The SENTENCE, not the exact width: a mat one point wider would move
+      // the drawn width and a check pinned to it would go red on a taste
+      // change. What has to be true is that the note fires, says how wide the
+      // picture is drawn, says how many pixels went into it, and says the size
+      // the interface text lands at — which is the number a reader acts on.
+      const m41h = /drawn (\d+)pt wide from 1440 source pixels/.exec(big);
+      A41(!!m41h, `a whole app window at half-slide width is not called out (${big.slice(0, 160)})`);
+      A41(/lands at about \d+\.\dpt/.test(big), `the note does not say what size the interface text lands at`);
+      if (m41h) A41(1440 / Number(m41h[1]) > SHOT.maxPxPerPt, `41h's fixture is drawn ${m41h[1]}pt wide, which is inside the threshold — it proves nothing`);
+      // The negative half: the same source cropped to a panel is fine, and a
+      // note that fires on everything is a note nobody reads.
+      const cropped: SlideInput = {
+        layout: "image-split", title: "A panel crop", eyebrow: "x",
+        image: { attachment: 1, callouts: [{ x: 50, y: 50, text: "The score" }] },
+        resolvedImage: { url: "shot.png", scrim: 0, aspect: 330 / 406, sourceWidth: 330 },
+      };
+      const quiet: string[] = [];
+      buildSlideRequests(cropped, 0, "sh41h", quiet);
+      A41(!quiet.some((n) => n.indexOf("source pixels") >= 0),
+        `a 330px panel drawn at 273pt is reported as unreadable (${quiet.join(" | ").slice(0, 120)})`);
+      okIf("41h a 1440px window drawn at 295pt is called unreadable with the size it lands at; a 330px panel at 273pt is not");
+    }
+
+    /* 41i. THE SPLITTER SEES THE LIST.
+     *
+     * The body box is the room the field HAS, and it has to give up exactly
+     * what the numbered rows take — or a body that no longer fits beside five
+     * callouts is drawn straight through them instead of splitting. */
+    {
+      const body = Array.from({ length: 6 }, (_, k) => `A bullet long enough to wrap once in the half-width column, number ${k + 1}`).join("\n");
+      const bare: SlideInput = { layout: "image-split", eyebrow: "x", title: "A body and a list", body,
+        image: { attachment: 1, screenshot: true },
+        resolvedImage: { url: "shot.png", scrim: 0, aspect: 1440 / 760, sourceWidth: 1440 } };
+      const withList: SlideInput = { ...bare, image: { attachment: 1, callouts: [
+        { x: 10, y: 10, text: "One" }, { x: 40, y: 20, text: "Two" }, { x: 70, y: 30, text: "Three" },
+        { x: 20, y: 60, text: "Four" }, { x: 80, y: 70, text: "Five" } ] } };
+      const alone = splitOverflowingSlides([JSON.parse(JSON.stringify(bare))]).length;
+      const beside = splitOverflowingSlides([JSON.parse(JSON.stringify(withList))]).length;
+      A41(alone === 1, `a body that fits the column on its own was split into ${alone} — this fixture proves nothing about the list`);
+      A41(beside > 1, `the same body beside five callouts was NOT split (${beside}) — the body box is not giving up the rows' room, so the bullets are drawn through them`);
+      okIf(`41i a body that fits alone (${alone} slide) splits once five callouts take the room beneath it (${beside} slides)`);
+    }
+
+    /* 41j-pre. A SCREENSHOT IS ONLY DRAWN RAW WHERE THE LAYOUT MATS IT.
+     *
+     * Skipping the bake is what keeps 12px interface type off JPEG ringing,
+     * and it also skips the baked GRADIENT. On image-split and the feature
+     * stage nothing is written over the picture, so there is nothing to
+     * darken for. On a cover there is: the title is drawn white ACROSS the
+     * picture, and a raw UI capture under it is the same invisible slide the
+     * stage exists to fix, one layout along. Found by rendering fixture H and
+     * reading the PNG, not by any assertion here.
+     *
+     * This asserts the DECISION, because the path that acts on it cannot run
+     * on a laptop: attachmentImageSource needs a Vercel Blob token for a
+     * PRIVATE store and the local one is an older public-store token, so it
+     * returns null and the branch is never entered. */
+    {
+      const shotImg = { attachment: 1, callouts: [{ x: 50, y: 50, text: "The score" }] };
+      const raw: [string, boolean][] = [
+        ["image-split", true], ["feature", true],
+        ["cover", false], ["section", false], ["closing", false],
+        ["content", false], ["case-study", false], ["cards", false], ["image-grid", false],
+      ];
+      for (const [layout, want] of raw) {
+        const got = drawsRawScreenshot({ layout: layout as any, image: shotImg }, 3);
+        A41(got === want, `a screenshot on ${layout} is ${got ? "drawn raw" : "baked"}; it should be ${want ? "drawn raw" : "baked"}`);
+      }
+      A41(!drawsRawScreenshot({ layout: "image-split", image: { query: "a factory at dusk" } }, 3),
+        "a PHOTOGRAPH on image-split is treated as a screenshot — it would lose its crop and its gradient");
+      A41(drawsRawScreenshot({ layout: "image-split", image: { attachment: 1, screenshot: true } }, 3),
+        "`screenshot: true` with no callouts is not enough to mat a picture");
+      okIf("41j-pre a screenshot is drawn raw only on the two layouts that mat it; everywhere else it is prepared as a photograph and keeps its gradient");
+    }
+
+    /* 41j. THE SCHEMA OFFERS IT — read off the tool OBJECT the model receives,
+     *      never off the file text. */
+    {
+      const params: any = (SLIDES_GEN_OPENAI_TOOL as any).function.parameters;
+      const routes: [string, any][] = [
+        ["slides.items", params?.properties?.slides?.items?.properties?.image],
+        ["editSlide.insertSlides.items", params?.properties?.editSlide?.properties?.insertSlides?.items?.properties?.image],
+        ["editSlide", params?.properties?.editSlide?.properties?.image],
+      ];
+      for (const [route, img] of routes) {
+        A41(!!img?.properties?.screenshot, `${route}: image declares no \`screenshot\``);
+        const co = img?.properties?.callouts;
+        A41(!!co, `${route}: image declares no \`callouts\`, so the model cannot point at anything`);
+        if (!co) continue;
+        A41(co.maxItems === 5, `${route}: callouts declares maxItems ${co.maxItems}, not the 5 the builder draws`);
+        const it = co.items?.properties;
+        A41(!!it?.x && !!it?.y && !!it?.text, `${route}: a callout declares no x/y/text (${Object.keys(it || {}).join(",")})`);
+      }
+      const desc = String(routes[0][1]?.properties?.callouts?.description || "");
+      A41(/PERCENTAGES OF THE PICTURE/.test(desc), "the callouts guidance does not say x and y are percentages of the picture");
+      A41(/PHRASE, not a sentence/.test(desc), "the callouts guidance does not say the text is a phrase");
+      A41(/ONE TOOL OR ONE SCREEN PER SLIDE/.test(desc), "the callouts guidance does not say one screen per slide");
+      A41(/ASK for the screenshot/.test(String(routes[0][1]?.properties?.attachment?.description || "")),
+        "nothing tells the model to ask for a screenshot when one would help");
+      const size = JSON.stringify(SLIDES_GEN_OPENAI_TOOL).length;
+      A41(size <= 55000, `generate_slides is ${size} characters, over its 55,000 ceiling`);
+      okIf(`41j callouts and screenshot are declared on all three routes, and the tool is ${size} characters of its 55,000`);
+    }
+
+    /* 41k. A WRONG PHRASE IS FIXABLE IN THE PREVIEW. */
+    {
+      for (const key of ["A", "F"]) {
+        const i = SHOT_IX(key);
+        const page = toPreviewModel([ALL[i]]).slides[0];
+        const calls = ALL[i].image!.callouts!;
+        for (let k = 0; k < Math.min(calls.length, 5); k++) {
+          const el = page.elements.find((e) => e.kind === "text" && e.text === calls[k].text);
+          A41(!!el, `${key}: callout ${k + 1} is not drawn at all`);
+          if (!el) continue;
+          A41(JSON.stringify(el.path) === JSON.stringify(["image", "callouts", k, "text"]),
+            `${key}: callout ${k + 1} previews with path ${JSON.stringify(el.path)} — an edit there would not reach the spec`);
+          A41(readPath(ALL[i] as any, el.path!) === calls[k].text,
+            `${key}: the path does not read back the phrase it was drawn from`);
+        }
+      }
+      okIf("41k every callout phrase carries the spec path that edits it");
+    }
+
+    /* 41l. THE PIN SURVIVES THE PRINT PATH.
+     *
+     * 41a proves the contrast analytically, for every ground there is, which
+     * is strictly stronger than sampling one render. What a render adds is
+     * whether the three discs actually ARRIVE concentric and circular in the
+     * printed page — so that is what this asserts, on the HTML the PDF route
+     * prints, the way check 20h does. The nine fixtures are also rendered
+     * through headless Chrome by hand and the PNGs read; that is a thing to
+     * do, not a thing to run in a check. */
+    {
+      const i = SHOT_IX("A");
+      const html = deckToHtml(toPreviewModel([ALL[i]]), "Screenshot callouts");
+      const S = 4 / 3;
+      const rs = reqsOf(i);
+      const outer = shapeById(rs, "shp0a")!, mid = shapeById(rs, "shp0b")!, disc = shapeById(rs, "shp0c")!;
+      for (const [name, b] of [["outer", outer], ["middle", mid], ["disc", disc]] as [string, typeof outer][]) {
+        const left = `left:${b.x * S}px`, top = `top:${b.y * S}px`;
+        A41(html.indexOf(left) >= 0 && html.indexOf(top) >= 0,
+          `the pin's ${name} disc is not printed at ${left};${top} — the print path and the preview disagree about where the pin is`);
+        A41(Math.abs(b.w - b.h) < 0.01, `the pin's ${name} disc is ${b.w.toFixed(2)}x${b.h.toFixed(2)} — not a circle`);
+        A41(Math.abs((b.x + b.w / 2) - (outer.x + outer.w / 2)) < 0.01 && Math.abs((b.y + b.h / 2) - (outer.y + outer.h / 2)) < 0.01,
+          `the pin's ${name} disc is not concentric with the outer ring`);
+      }
+      A41(/border-radius:50%/.test(html), "the discs do not print as circles");
+      A41(html.indexOf(`#${COLOR.blue.toLowerCase()}`) >= 0, "the pin's brand-blue disc never reaches the print");
+      okIf("41l the pin prints as three concentric circles at the geometry the preview drew");
+    }
+
+    /* 41m. THE NUMBERED LIST NEVER RUNS OVER THE BODY, and every row it
+     *       cannot reach the floor with is declared.
+     *
+     * The rows used to be clamped UP to `columnFloor - listBlock` to make room
+     * for themselves, straight through the body above them — and the splitter
+     * could not save the slide, because it can only divide paragraphs and the
+     * body's ceiling has a hard 40pt floor that says a two-line body always
+     * "fits". Fixture J is an ordinary slide: a one-line title, one sentence,
+     * five phrases. It printed one over the other and said nothing.
+     *
+     * The pin-count half covers the FEATURE legend as well, and is what pins
+     * its overflow path: a `kept` that over-claims puts a numbered pin on the
+     * picture with no phrase under it anywhere, and nothing else looks. */
+    {
+      for (const key of DRAWN_SHOTS) {
+        const i = SHOT_IX(key);
+        const rs = reqsOf(i), notes = notesOf(i);
+        const els = toPreviewModel([ALL[i]]).slides[0].elements;
+        // Found by the SPEC PATH each box carries, not by an object id the
+        // preview never had: the path is also what says the row on the slide is
+        // the phrase from the spec rather than a coincidence of wording.
+        const body = els.find((e) => e.kind === "text" && e.path?.length === 1 && e.path[0] === "body");
+        const rows = els.filter((e) => e.kind === "text" && e.path?.[0] === "image" && e.path?.[1] === "callouts");
+        // A body the slide had no room for is a whole field gone. It is the
+        // loss least likely to be noticed, because the slide still looks
+        // composed without it.
+        if (!body && String(ALL[i].body || "").trim()) {
+          A41(notes.some((n) => n.indexOf("had nowhere to go above the picture") >= 0 && n.indexOf(quoteClip(String(ALL[i].body))) >= 0),
+            `${key}: the body is not drawn at all and nothing quotes it — the slide simply lost a field`);
+        }
+        if (body) {
+          // THE BOX HUGS ITS WORDS WHEN SOMETHING FOLLOWS IT, and the slack
+          // falls outside. A body box left at its ceiling passes every
+          // collision check there is — the rows are simply pushed to the
+          // bottom of the column and the slide opens a hole where the sentence
+          // ended. (With nothing under it the ceiling is right, and is what
+          // every other image-split slide draws.)
+          if (rows.length) {
+            const hug = ALL[i].layout === "feature"
+              ? hugHeight(ALL[i].body, GRID.contentWidth * 0.72, TYPE.featureBody.size, false)
+              : hugHeight(ALL[i].body, IMAGE.splitTextWidth, TYPE.body.size, true);
+            A41(body.h <= hug + 0.5,
+              `${key}: the body box is ${body.h.toFixed(1)}pt for ${hug.toFixed(1)}pt of words, with ${rows.length} numbered rows under it — the slack is inside the box, not under it`);
+          }
+          for (const r of rows) {
+            A41(r.y >= body.y + body.h - 0.01,
+              `${key}: numbered row "${String(r.text).slice(0, 24)}" starts at ${r.y.toFixed(1)}, above the foot of the body at ${(body.y + body.h).toFixed(1)} — the two are printed over each other`);
+          }
+        }
+        // A pin with no line under it explaining it is worse than no pin. The
+        // two counts are what tie the picture to the column.
+        const pins = pinsOf(rs);
+        A41(pins.length === rows.length,
+          `${key}: ${pins.length} pins on the picture and ${rows.length} numbered lines beside it — a number the reader cannot match to a phrase`);
+        // Everything asked for, minus everything drawn, is named in words.
+        const asked = (ALL[i].image?.callouts || []).filter((c) => c && String(c.text || "").trim());
+        const lost = asked.slice(rows.length);
+        for (const c of lost) {
+          A41(notes.some((n) => n.indexOf(quoteClip(c.text)) >= 0),
+            `${key}: "${c.text.slice(0, 30)}" is not drawn and no note quotes it in quoteClip's form — droppedContent will report it a second time, in a second voice`);
+        }
+        const shown = els.find((e) => e.kind === "text" && /^Showing \d+ of \d+ callouts$/.test(String(e.text || "")));
+        if (lost.length) {
+          A41(!!shown && String(shown.text) === `Showing ${rows.length} of ${asked.length} callouts`,
+            `${key}: the slide itself never says it is showing ${rows.length} of ${asked.length} callouts (${shown ? JSON.stringify(shown.text) : "no line at all"})`);
+        } else {
+          A41(!shown, `${key}: a slide drawing every callout it was given still says ${shown ? JSON.stringify(shown.text) : ""}`);
+        }
+        // AND IT STAYS OUT OF THE BOTTOM MARGIN. The line hugs whatever is
+        // above it, and on a slide with no legend rows there is nothing between
+        // the picture and the foot — so hugging alone drew it level with the
+        // footer, in the band no layout is allowed to draw in.
+        if (shown) A41(shown.y + shown.h <= FOOTER_Y + 0.01,
+          `${key}: "${shown.text}" is drawn at ${shown.y.toFixed(1)}..${(shown.y + shown.h).toFixed(1)}, into the footer's own band below ${FOOTER_Y}`);
+      }
+      okIf(`41m on ${DRAWN_SHOTS.length} screenshots the numbered rows start under the body, every pin has a line, and every row that did not fit is quoted and counted`);
+    }
+
+    /* 41n. THE TAKEAWAY BAR IS PART OF THE FLOOR.
+     *
+     * The bar is pushed LAST and drawn over whatever is there; every other
+     * layout shortens its band by the bar's height first. Both screenshot
+     * branches measured to the bottom margin instead, so on a slide with a
+     * takeaway the numbered rows, the legend and — worst — the one line on the
+     * slide admitting a callout had been dropped were painted over by it.
+     * Asserted against the bar's OWN drawn rectangle, not a recomputed one. */
+    {
+      for (const key of ["L", "Q"]) {
+        const i = SHOT_IX(key);
+        const rs = reqsOf(i);
+        const bar = shapeById(rs, "noteBar");
+        A41(!!bar, `${key}: this fixture is supposed to carry a takeaway bar and draws none`);
+        if (!bar) continue;
+        let seen = 0;
+        for (const r of rs) {
+          const o = r.createShape || r.createImage;
+          if (!o) continue;
+          const idStr = String(o.objectId);
+          if (!/_(shmat|shkey|shimg|shp\d+[abcn]|shc\d+[abcn]|col\d+|shdrop|body)$/.test(idStr)) continue;
+          seen++;
+          A41(!overlaps(boxOfReq(r), bar),
+            `${key}: ${idStr} is drawn under the takeaway bar (${boxOfReq(r).y.toFixed(1)}..${(boxOfReq(r).y + boxOfReq(r).h).toFixed(1)} against a bar at ${bar.y.toFixed(1)}..${(bar.y + bar.h).toFixed(1)})`);
+        }
+        A41(seen > 6, `${key}: only ${seen} screenshot elements were measured against the bar — this fixture is not exercising the branch`);
+      }
+      okIf("41n nothing either screenshot branch draws is painted over by the takeaway bar");
+    }
+
+    /* 41o. THE FEATURE STAGE IS MEASURED FROM THE FOOT UPWARDS.
+     *
+     * Measured downwards from the title, a body of 48 words walked the legend
+     * rows and the admission clean off the bottom of the canvas — reachable
+     * after the real splitter, because a single paragraph is never divided.
+     * The sweep is over body LENGTH because that is the axis the bug lived on;
+     * one fixture at one length would have sat either side of it by luck. */
+    {
+      const W = "audit prompts models retrieval recall attribution sentiment coverage benchmark publisher citation visibility".split(" ");
+      const FIVE = [
+        { x: 10, y: 12, text: "A first phrase of twelve words that has to wrap onto two lines" },
+        { x: 40, y: 30, text: "A second phrase of twelve words that has to wrap onto two lines" },
+        { x: 70, y: 48, text: "A third phrase of twelve words that has to wrap onto two lines" },
+        { x: 25, y: 66, text: "A fourth phrase of twelve words that also has to wrap over two" },
+        { x: 60, y: 86, text: "A fifth phrase of twelve words which likewise wraps onto two lines" },
+      ];
+      for (let n = 8; n <= 80; n += 8) {
+        const words: string[] = [];
+        for (let k = 0; k < n; k++) words.push(W[k % W.length]);
+        const slide: SlideInput = {
+          layout: "feature", eyebrow: "Stress",
+          title: "Fourteen words of title here to see whether the heading and the picture can both fit",
+          body: words.join(" "), image: { attachment: 1, callouts: FIVE },
+          resolvedImage: { url: "shot.png", scrim: 0, aspect: 1440 / 760, sourceWidth: 1440 },
+        };
+        const after = splitOverflowingSlides([JSON.parse(JSON.stringify(slide))]);
+        const rs = buildSlideRequests(after[0], 0, "o") as any[];
+        for (const r of rs) {
+          const o = r.createShape || r.createImage;
+          if (!o || /_ftl$/.test(String(o.objectId))) continue;
+          const b = boxOfReq(r);
+          A41(b.y + b.h <= CANVAS.height + 0.6 && b.x >= -0.6 && b.x + b.w <= CANVAS.width + 0.6,
+            `${n} words: ${o.objectId} is drawn at ${b.x.toFixed(1)},${b.y.toFixed(1)} ${b.w.toFixed(1)}x${b.h.toFixed(1)} — off the canvas`);
+        }
+        const img = shapeById(rs, "shimg");
+        A41(!!img && img.h >= 48, `${n} words: the picture is ${img ? img.h.toFixed(1) : "0"}pt tall — the stage has been squeezed out of existence`);
+        // A SINGLE PARAGRAPH IS THE ONE THE SPLITTER CANNOT HELP WITH, so past
+        // the ceiling it is clipped — and a clip is the kind of loss nothing
+        // else on the slide would ever mention. Both directions: eight words
+        // fit and must not be reported, eighty do not and must be.
+        const clip: string[] = [];
+        buildSlideRequests(after[0], 0, "o", clip);
+        const said = clip.some((t) => t.indexOf("does not fit above the picture and is clipped") >= 0);
+        const box = shapeById(rs, "body");
+        const fits = !box || drawnTextHeight(estimateLines(String(after[0].body || ""), GRID.contentWidth * 0.72, TYPE.featureBody.size), TYPE.featureBody.size) <= box.h + 0.5;
+        A41(said !== fits,
+          fits ? `${n} words: a body that fits its box is reported as clipped`
+               : `${n} words: the body is clipped to ${box ? box.h.toFixed(1) : "0"}pt and the deck says nothing about it`);
+      }
+      // AND THE END OF THE SCALE: a takeaway at the bar's full height under a
+      // title at its own, which leaves nothing above the picture at all. The
+      // body is then dropped rather than drawn at two points, and a dropped
+      // field is the loss least likely to be noticed — the slide still looks
+      // composed without it. Built here rather than in the sweep because the
+      // takeaway has to be a thousand characters to reach NOTE.maxHeight, and
+      // a fixture nobody can read is a fixture nobody maintains.
+      {
+        const sentences: string[] = ["Why this matters: the movement is the thing to report upwards, not the score."];
+        for (let k = 0; k < 7; k++) sentences.push("A single run says where the brand stands today, and four runs say whether the work is landing at all.");
+        const squeezed: SlideInput = {
+          layout: "feature", eyebrow: "Stress",
+          title: "Fourteen words of title here to see whether the heading and the picture can both fit",
+          body: "Four models, 248 prompts, one score the communications team can act on.",
+          note: sentences.join(" "),
+          image: { attachment: 1, callouts: [{ x: 30, y: 30, text: "The score" }] },
+          resolvedImage: { url: "shot.png", scrim: 0, aspect: 1440 / 760, sourceWidth: 1440 },
+        };
+        const notes: string[] = [];
+        const rs = buildSlideRequests(squeezed, 0, "sq", notes) as any[];
+        const bar = shapeById(rs, "noteBar");
+        A41(!!bar && bar.h >= NOTE.maxHeight - 0.01,
+          `the squeezed fixture's takeaway is only ${bar ? bar.h.toFixed(1) : "0"}pt of ${NOTE.maxHeight} — it does not squeeze anything`);
+        A41(!shapeById(rs, "body"), `the squeezed fixture still draws a body, so it is not driving the drop at all`);
+        A41(notes.some((n) => n.indexOf("had nowhere to go above the picture") >= 0 && n.indexOf(quoteClip(String(squeezed.body))) >= 0),
+          `a body with no room left on the slide was dropped and nothing quotes it: ${JSON.stringify(notes)}`);
+        const img = shapeById(rs, "shimg");
+        A41(!!img && img.h >= 48, `even with everything given up, the picture is ${img ? img.h.toFixed(1) : "0"}pt tall`);
+      }
+      okIf("41o a feature stage keeps the legend and the admission on the canvas at every body length, keeps the picture, and says which field it gave up");
+    }
+
+    /* 41p. THE SPLITTER IS TOLD THE CEILING, NOT THE HUG.
+     *
+     * A box drawn to fit its own words answers "it fits" to every question the
+     * splitter asks, so the feature branch reported a ~39pt box for every body
+     * and every body of three lines or more was split in two for no reason.
+     * Both directions, because a check that only proves it splits is satisfied
+     * by a rule that splits everything. */
+    {
+      const shot = { url: "shot.png", scrim: 0, aspect: 1440 / 760, sourceWidth: 1440 };
+      const three = "The audit runs the same prompt set across four models every week\n" +
+        "Each row records what that model actually said about the brand\n" +
+        "Movement, not a snapshot, is what a team can be asked to own";
+      const fits: SlideInput = { layout: "feature", eyebrow: "Case study", title: "The audit, on one screen",
+        body: three, image: { attachment: 1, callouts: [{ x: 20, y: 20, text: "Navigation" }] }, resolvedImage: shot };
+      const one = splitOverflowingSlides([JSON.parse(JSON.stringify(fits))]);
+      A41(one.length === 1, `a three-line body that fits its feature stage was split into ${one.length} — the splitter is being told the box hugs its words`);
+      const longer: string[] = [];
+      for (let k = 0; k < 14; k++) longer.push(`Line ${k + 1}: something the audit does that takes a whole line of the column to say`);
+      const over: SlideInput = { ...fits, body: longer.join("\n") };
+      const many = splitOverflowingSlides([JSON.parse(JSON.stringify(over))]);
+      A41(many.length > 1, `a fourteen-line body on the same stage was NOT split (${many.length}) — the ceiling is not being reported at all`);
+      okIf("41p a feature screenshot reports its stage's ceiling to the splitter: a body that fits stays whole and one that does not is cut");
+    }
+
+    /* 41q. A CONTINUATION IS STILL A SCREENSHOT.
+     *
+     * splitOnce cleared `image` outright and inheritContinuationImages handed
+     * the tail the parent's RAW, un-baked, un-gradiented capture — so the
+     * continuation read as a photograph: `feature` bled it full-bleed under
+     * white type and image-split cropped it to the half-slide and ran it off
+     * the edge. The invisible slide this whole treatment exists to prevent,
+     * one slide along, with nothing declared. */
+    {
+      const shot = { url: "shot.png", scrim: 0, aspect: 1440 / 760, sourceWidth: 1440 };
+      const photo = { url: "photo.jpg", scrim: 0.4 };
+      const longBody: string[] = [];
+      for (let k = 0; k < 14; k++) longBody.push(`Line ${k + 1}: something the audit does that takes a whole line of the column to say`);
+      for (const layout of ["image-split", "feature"] as const) {
+        const parent: SlideInput = { layout, eyebrow: "The platform", title: "Every prompt, every model",
+          body: longBody.join("\n"),
+          image: { attachment: 1, callouts: [
+            { x: 8, y: 14, text: "Navigation" }, { x: 40, y: 30, text: "Prompt table" },
+            { x: 62, y: 55, text: "Share of voice" }, { x: 88, y: 20, text: "Score panel" },
+            { x: 88, y: 49, text: "Export" } ] } };
+        const after = splitOverflowingSlides([JSON.parse(JSON.stringify(parent))]);
+        A41(after.length > 1, `${layout}: the continuation fixture did not split, so it proves nothing`);
+        if (after.length < 2) continue;
+        after[0].resolvedImage = { ...shot };
+        inheritContinuationImages(after);
+        const tail = after[1];
+        A41(isScreenshot(tail), `${layout}: the continuation is no longer a screenshot, so it takes the photograph path — a bleed under white type`);
+        A41(drawsRawScreenshot(tail, 1), `${layout}: the continuation's inherited capture is not drawn raw, so it is cropped to a box it was never baked for`);
+        const rs = buildSlideRequests(tail, 1, "q") as any[];
+        const mat = shapeById(rs, "shmat"), keyline = shapeById(rs, "shkey"), img = shapeById(rs, "shimg");
+        A41(!!mat && !!keyline && !!img, `${layout}: the continuation draws no frame (mat=${!!mat} keyline=${!!keyline} picture=${!!img})`);
+        A41(!shapeById(rs, "half") && !shapeById(rs, "bg"),
+          `${layout}: the continuation still bleeds the capture (half=${!!shapeById(rs, "half")} bg=${!!shapeById(rs, "bg")})`);
+        if (img) A41(Math.abs(img.w / img.h - shot.aspect) < 0.01,
+          `${layout}: the continuation draws a ${shot.aspect.toFixed(3)} capture at ${(img.w / img.h).toFixed(3)} — cover-cropped, so the toolbar and the status column are cut away`);
+        // No pins and no numbered lines: the phrases belong to the half of the
+        // body that explains them.
+        A41(pinsOf(rs).length === 0, `${layout}: the continuation carries pins whose numbered lines are on the slide before it`);
+        // And the tail's brief must not send the resolver looking for a picture
+        // it was never given — that comes back as a failure the user caused.
+        A41(!namesAPicture(tail.image), `${layout}: the continuation's brief names a picture to go and find, which resolution reports as one the user asked for and did not get`);
+      }
+      // The control: a PHOTOGRAPH's continuation still bleeds, so the rule
+      // above is about screenshots and not about continuations in general.
+      const photoParent: SlideInput = { layout: "image-split", title: "A photograph", body: longBody.join("\n"), image: { query: "a factory" } };
+      const pa = splitOverflowingSlides([JSON.parse(JSON.stringify(photoParent))]);
+      if (pa.length > 1) {
+        pa[0].resolvedImage = { ...photo };
+        inheritContinuationImages(pa);
+        A41(!isScreenshot(pa[1]) && !!shapeById(buildSlideRequests(pa[1], 1, "q") as any[], "half"),
+          `a photograph's continuation stopped bleeding — the screenshot rule has been applied to every picture`);
+      }
+      okIf("41q a split screenshot keeps its frame on the continuation, a photograph keeps its bleed, and neither sends the resolver looking");
+    }
+
+    /* 41r. THE PHOTOGRAPHER IS STILL CREDITED.
+     *
+     * `feature` drew its credit inside backdropRequests, and the screenshot
+     * stage does not call it — so a stock picture declared a screenshot went
+     * out uncredited, which is the exact hole creditRequests was pulled out of
+     * backdropRequests to close. Local fixtures, not sweep ones: the credit
+     * line and the footer share the bottom band on EVERY layout, which is a
+     * separate and older collision than anything here. */
+    {
+      const credit = "Photo: Ada Lovelace / Unsplash";
+      for (const layout of ["feature", "image-split"] as const) {
+        const s: SlideInput = { layout, title: "A capture from the stock library", body: "One line under it.",
+          image: { query: "an analytics dashboard", screenshot: true },
+          resolvedImage: { url: "shot.png", scrim: 0, aspect: SHOT.unknownAspect, credit } };
+        const drawn = (buildSlideRequests(s, 0, "cr") as any[]).some((r) => r.insertText?.text === credit);
+        A41(drawn, `${layout}: a stock picture declared a screenshot is published with no attribution at all`);
+      }
+      okIf("41r a stock picture declared a screenshot is credited on both layouts that mat it");
+    }
+
+    /* 41s. THE SMALL PARTS NOTHING ELSE DRIVES.
+     *
+     * fitAspect's centring, the blank-phrase filter and SHOT.unknownAspect were
+     * each mutable with the whole suite green. They are one line of arithmetic
+     * apiece, which is exactly the kind of line that gets "simplified". */
+    {
+      const inner = { x: 100, y: 50, w: 400, h: 200 };
+      const wide = fitAspect(inner, 4);          // width-bound: slack above and below
+      A41(Math.abs(wide.w - inner.w) < 0.01, `fitAspect gave a 4:1 picture ${wide.w.toFixed(1)}pt of a ${inner.w}pt box`);
+      A41(Math.abs((wide.y - inner.y) - ((inner.y + inner.h) - (wide.y + wide.h))) < 0.01,
+        `fitAspect did not centre a wide picture: ${(wide.y - inner.y).toFixed(1)}pt above, ${((inner.y + inner.h) - (wide.y + wide.h)).toFixed(1)}pt below`);
+      const tall = fitAspect(inner, 0.5);        // height-bound: slack left and right
+      A41(Math.abs(tall.h - inner.h) < 0.01, `fitAspect gave a 1:2 picture ${tall.h.toFixed(1)}pt of a ${inner.h}pt box`);
+      A41(Math.abs((tall.x - inner.x) - ((inner.x + inner.w) - (tall.x + tall.w))) < 0.01,
+        `fitAspect did not centre a tall picture: ${(tall.x - inner.x).toFixed(1)}pt left, ${((inner.x + inner.w) - (tall.x + tall.w)).toFixed(1)}pt right`);
+      const unknown = fitAspect(inner, undefined);
+      A41(Math.abs(unknown.w / unknown.h - SHOT.unknownAspect) < 0.01,
+        `an unmeasured capture is fitted at ${(unknown.w / unknown.h).toFixed(3)}, not SHOT.unknownAspect (${SHOT.unknownAspect})`);
+      // AND THE SLIDE SAYS IT IS A GUESS. Fixture P's pins are placed against
+      // a shape nothing measured, and the print path's object-fit:cover crops
+      // away whatever the capture does not match — so a pin at 20% of the box
+      // is not at 20% of the interface, and only the render can see it.
+      A41(notesOf(SHOT_IX("P")).some((n) => n.indexOf("nothing measured this screenshot's proportions") >= 0),
+        `a capture with no measured shape carries pins and says nothing about the guess: ${JSON.stringify(notesOf(SHOT_IX("P")))}`);
+      A41(!notesOf(SHOT_IX("A")).some((n) => n.indexOf("nothing measured this screenshot's proportions") >= 0),
+        `a capture whose shape WAS measured is reported as a guess`);
+
+      // The blank phrase: a numbered pin pointing at an empty line is a number
+      // the reader cannot resolve, so it never gets one — and the two real
+      // phrases stay 1 and 2.
+      const o = SHOT_IX("O");
+      const pins = pinsOf(reqsOf(o));
+      const rows = toPreviewModel([ALL[o]]).slides[0].elements
+        .filter((e) => e.kind === "text" && e.path?.[0] === "image" && e.path?.[1] === "callouts");
+      A41(pins.length === 2 && rows.length === 2,
+        `a callout with an empty phrase was numbered anyway (${pins.length} pins, ${rows.length} lines for two real phrases)`);
+      const numbers = pins.map((p) => p.n).sort().join(",");
+      A41(numbers === "1,2", `the numbering ran ${numbers} round a blank phrase instead of 1,2`);
+      A41(rows.every((r) => String(r.text).trim().length > 0), `an empty phrase was drawn as a numbered line`);
+      okIf("41s fitAspect centres what it fits, an unmeasured capture takes SHOT.unknownAspect, and a blank phrase is never numbered");
+    }
+  }
+  if (failures === before41) pass("screenshots are framed, pins point where they are told or say they moved, and the deck never claims a callout it did not draw");
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   // 2, not 1, when a self-test detector carried nothing (check 40 b): the

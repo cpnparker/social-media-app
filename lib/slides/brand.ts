@@ -611,6 +611,87 @@ export const IMAGE = {
   gridCaptionHeight: 0.22 * IN,
 } as const;
 
+/** A SCREENSHOT, which is not a photograph.
+ *
+ *  A UI capture dropped into a branded deck reads as pasted rather than
+ *  designed, and the two devices that fix it are the same one: a mat and a
+ *  hairline round the picture so it sits ON the page instead of covering it,
+ *  and a numbered pin so a slide can POINT at a control and explain it. There
+ *  was no way to say "this thing here, on the screen" at all — the model
+ *  described the interface in prose beside a picture of it, and the reader had
+ *  to match the two by eye.
+ *
+ *  Never a scrim: a gradient over an interface destroys the very thing the
+ *  slide is pointing at, which is why a screenshot on `feature` gets its own
+ *  ground (FEATURE_SHOT_STYLE) rather than the full bleed the layout assumes. */
+export const SHOT = {
+  /** The pin ON the picture. 22pt is ~3% of the canvas width: findable from
+   *  the back of a room, small enough to cover a control and not a panel. */
+  pin: 22,
+  /** The same object beside its words, in the list and the legend. */
+  chip: 16,
+  /** Ring widths as FRACTIONS of the diameter, so both sizes read as one
+   *  object. Navy outside, white inside, brand blue in the middle.
+   *
+   *  THREE discs rather than one, and measured rather than assumed. Sweeping
+   *  every possible ground luminance, white alone drops under 3:1 above
+   *  Lg=0.30 and navy alone drops under 3:1 below Lg=0.19 — and those two
+   *  conditions cannot both hold, so the ring PAIR never falls below 3.66:1
+   *  whatever is underneath. A bare blue disc bottoms out at 1.00:1 at
+   *  Lg=0.138, which is the luminance of brand blue itself: the pin would
+   *  vanish on a screenshot of our own product's primary button. */
+  ringOuter: 0.07,
+  ringInner: 0.09,
+  numeral: 9,          // on the pin
+  chipNumeral: 7.5,    // in the list and the legend
+  /** The mat behind the picture, and the hairline on its very edge. */
+  pad: 10,
+  keyline: 1,
+  /** CHEBYSHEV separation between pin centres. Euclidean is the wrong metric:
+   *  two square numeral boxes 22.6pt apart at 45 degrees still overlap in both
+   *  axes, and the overlap check fails on any overlap at all. */
+  separation: 23,      // pin + 1
+  max: 5,
+  rowGap: 9,           // between numbered rows in the list
+  chipGap: 7,          // chip to its words
+  legendGap: 14,
+  /** The smallest a feature stage is allowed to be before the slide stops
+   *  being a slide about a screenshot.
+   *
+   *  The picture is the CONTENT here, so it is the one thing that does not
+   *  give way: the body's box is measured as what is left once the stage has
+   *  taken this, and a slide with no room even for that drops its callouts and
+   *  says so. 96pt is a quarter of the canvas height — a 16:10 capture 154pt
+   *  wide, which is small but still a picture rather than a smudge. */
+  minStage: 96,
+  /** The phrase beside a chip in the feature legend. */
+  legendSize: 8.5,
+  /** Source pixels per drawn point past which interface text stops being
+   *  readable. 13px UI body copy is the reference; 2.4 puts it at 5.4pt, just
+   *  above the deck's own smallest type (the 6pt credit line). */
+  maxPxPerPt: 2.4,
+  /** The pixel size of the interface body copy the legibility note assumes. */
+  uiBodyPx: 13,
+  /** The mat's fill, and the letterbox colour when the aspect is unknown. */
+  matLight: COLOR.lav,        // solid, on off-white
+  matDarkAlpha: 0.10,         // COLOR.white at this alpha, on navy
+  keylineLightAlpha: 0.30,    // COLOR.navy
+  keylineDarkAlpha: 0.38,     // COLOR.white
+  /** The aspect a screenshot falls back to when nothing measured the file —
+   *  a draft saved before callouts shipped, or a `url` marked as a capture. */
+  unknownAspect: 1.6,
+} as const;
+
+/** A feature slide whose picture is a screenshot is a NAVY STAGE, not a full
+ *  bleed: the layout's white type is solved for a baked gradient, and a
+ *  screenshot never gets one. Its own style so this is a decision rather than
+ *  an inheritance — and it closes a live bug, because `feature` drew the
+ *  eyebrow, title and body in white over an undarkened capture, which on a
+ *  light UI made the whole slide invisible. */
+export const FEATURE_SHOT_STYLE = {
+  background: COLOR.navy, logo: "white", logoPlacement: "content", onDark: true,
+} as const;
+
 /** A pull quote. Large, set in the display face, with the speaker beneath. */
 export const QUOTE = {
   // The mark sits ABOVE the quote, on the same left edge, rather than beside
