@@ -85,8 +85,45 @@ export function toolBudgetFor(name: string): number {
   return READ_ONLY_TOOL_BUDGET[name] ?? MAX_CALLS_PER_TOOL;
 }
 
+/**
+ * WHOSE LIMIT WAS HIT. Two clauses, and the split matters more than the words.
+ *
+ * THE INCIDENT, 2026-09-16 (thumbs-down #7). A turn made 9 query_meetingbrain
+ * calls against a budget of 6 and told the user it could not open "the 1
+ * September client meeting (no recording)". That meeting sits on his own
+ * MeetingBrain record with a 28,563-character transcript, and he personally sat
+ * in it. The model could not see WHY its call was refused, so it supplied a
+ * reason — and the reason it invented was a fact about the source.
+ *
+ * `overBudgetNotice` said "Say plainly which parts you could not fetch AND
+ * WHY", which is an invitation to do exactly that; `repeatedCallNotice` said
+ * "if the data isn't available, say so plainly", which is the same invitation
+ * in fewer words. Both are replaced rather than supplemented. The correct
+ * wording already existed three functions away in postTaintRefusal, so this is
+ * that clause made shared.
+ *
+ * WHY IT IS TWO CONSTANTS AND NOT ONE. The first draft carried a single clause
+ * into all four refusal branches, and in two of them its opening sentence was
+ * FALSE. A duplicate-signature refusal reached everything — the result is in
+ * the context, a line above — so telling that branch to "say the lookup was cut
+ * short" asks for exactly the class of invented statement this work exists to
+ * remove. A post-taint refusal of a GENERATOR reached no source at all; a
+ * blocked deck build is not a cut-short lookup, which is the same category
+ * error the user-facing notice's `dataSubject` gate exists to prevent, made in
+ * the model-facing text instead. So the half that is true of every refusal is
+ * carried everywhere, and the half about a cut-short lookup is carried only
+ * where a lookup really was cut short.
+ */
+export const DO_NOT_BLAME_THE_SOURCE =
+  "Do NOT report it as the source being unavailable, missing, unrecorded, not transcribed or non-existent — you cannot see " +
+  "that from a refusal, and what you did not reach may well be there.";
+
+/** The other half: true only where OUR allowance stopped a real lookup. */
+export const OUR_LIMIT_CUT_IT_SHORT =
+  "The limit that stopped you is OURS, not the source's: name what you did not reach and say the lookup was cut short here.";
+
 export function repeatedCallNotice(name: string): string {
-  return `You already called ${name} with these exact arguments this turn — the result is above. Do NOT call it again. Answer the user now with what you have; if the data isn't available, say so plainly. Never promise to run a search or tool you cannot actually run.`;
+  return `You already called ${name} with these exact arguments this turn — the result is above. Do NOT call it again. Answer the user now with what you have: you already HAVE this result, so do not describe it as something you could not reach. ${DO_NOT_BLAME_THE_SOURCE} Never promise to run a search or tool you cannot actually run.`;
 }
 
 /**
@@ -158,7 +195,7 @@ export function slidesWritten(partialJson: string): number {
 }
 
 export function overBudgetNotice(name: string): string {
-  return `You have called ${name} too many times this turn. Stop calling it and answer now. IMPORTANT: report only what you actually retrieved — do NOT fill missing rows or columns with placeholders — no "[not retrieved]", "Not retrieved", "N/A", "TBC" or dashes standing in for figures you never fetched. If a whole column would be placeholders, drop that column and say why underneath the table instead of shipping a column of nothing. Say plainly which parts you could not fetch and why, and mention that many of these tools accept a comma-separated list (or "all") so the rest can be fetched in ONE call next time.`;
+  return `You have called ${name} too many times this turn. Stop calling it and answer now. IMPORTANT: report only what you actually retrieved — do NOT fill missing rows or columns with placeholders — no "[not retrieved]", "Not retrieved", "N/A", "TBC" or dashes standing in for figures you never fetched. If a whole column would be placeholders, drop that column and say why underneath the table instead of shipping a column of nothing. Say plainly which parts you could not fetch. ${OUR_LIMIT_CUT_IT_SHORT} ${DO_NOT_BLAME_THE_SOURCE} Mention that many of these tools accept a comma-separated list (or "all") so the rest can be fetched in ONE call next time.`;
 }
 
 /** What a turn actually did with one tool. */
@@ -166,8 +203,80 @@ export interface ToolUsage {
   name: string;
   /** Times the model asked for it, INCLUDING refused attempts. */
   calls: number;
-  /** Times the guard refused — duplicate signature or over budget. */
-  blocked: number;
+  /**
+   * Refused because the same tool was asked for with the SAME arguments.
+   *
+   * Costs the user nothing: the result is already in the context, and the model
+   * is told so. This is the model asking twice, not a hole in the answer.
+   */
+  blockedRepeat: number;
+  /**
+   * Refused because the per-tool budget was spent.
+   *
+   * This IS a hole: data the answer never saw and cannot know it is missing.
+   * The two were one `blocked` field until 2026-09-16, and reviewing the
+   * NatureFinance flag meant reconstructing which was which arithmetically
+   * against the budget table. Only this one drives the user-facing notice.
+   */
+  blockedBudget: number;
+}
+
+/**
+ * THE TURN SAYS ITS OWN LOOKUP WAS CUT SHORT, rather than hoping the model
+ * will. Deterministic text, appended and streamed at the end of the turn beside
+ * the four notices that already exist.
+ *
+ * The model cannot see this gap honestly: asked why it had not read two
+ * meetings, it volunteered "(no recording)" about a meeting carrying a
+ * 28,563-character transcript. A refusal is invisible from inside the answer,
+ * so the system states the one thing it knows for a fact — that it stopped
+ * itself — and does not ask the model to be honest about something it cannot
+ * see. This is the review-1 precedent (the unstarted-conversion notice) applied
+ * one level down. 13 turns in the 2026-09-03 to 09-16 window would have carried
+ * it.
+ *
+ * OVER-BUDGET ONLY. A duplicate-signature refusal is the model asking the same
+ * question twice and the result is already above it; announcing that would cry
+ * wolf on a turn that lost nothing.
+ *
+ * `subjectOf` is passed in rather than imported so this file stays free of
+ * every other module and a check can drive it with its own map. In the app it
+ * is dataSubject() from lib/ai/tool-activity.ts, which is null for generators
+ * and for tools nobody has mapped — so a notice never names the deck builder
+ * as something the turn failed to read.
+ */
+export function cutShortLookupNotice(
+  usage: ToolUsage[] | null | undefined,
+  subjectOf: (name: string) => string | null
+): string {
+  const subjects: string[] = [];
+  const used = usage || [];
+  for (let i = 0; i < used.length; i++) {
+    const u = used[i];
+    if (!u || !(u.blockedBudget > 0)) continue;
+    const subject = subjectOf(u.name);
+    if (!subject || subjects.indexOf(subject) >= 0) continue;
+    subjects.push(subject);
+  }
+  if (!subjects.length) return "";
+  const list = subjects.length === 1
+    ? subjects[0]
+    : `${subjects.slice(0, subjects.length - 1).join(", ")} and ${subjects[subjects.length - 1]}`;
+  const source = subjects.length === 1 ? "the source" : "the sources";
+  return (
+    `\n\n---\n\n⚠ **A lookup was cut short.** This turn ran out of its own allowance for reading ` +
+    `${list}, so some of what was asked for was never fetched and the answer above may be missing ` +
+    `it. That is a limit at this end, not a gap in ${source} — what was not reached may well be ` +
+    // "CAN", not "will", and the ask is qualified. The first draft promised
+    // "ask for that part on its own and it will be fetched", which the product
+    // does not always keep: the router sends "Summarise the call with Thomas"
+    // conversational with no hints at all, while "Summarise the 1 September
+    // client meeting" reaches the meeting tools. Routing is frozen pending a
+    // separate decision, so the sentence is made true rather than the router
+    // made to match it — and naming the thing is the form that demonstrably
+    // gets there.
+    `there.\n\nAsk for that part on its own, naming what you want — a date, a meeting, a document — and it can be fetched.`
+  );
 }
 
 export interface ToolLoopGuard {
@@ -192,7 +301,12 @@ export interface ToolLoopGuard {
 export function createToolLoopGuard(): ToolLoopGuard {
   const executed = new Set<string>();
   const counts = new Map<string, number>();
-  const blocked = new Map<string, number>();
+  // TWO COUNTERS, NOT ONE WITH A TOTAL BESIDE IT. The two refusals mean
+  // opposite things to the user — one costs nothing, the other is data the
+  // answer never saw — and a redundant total would be a second source of truth
+  // for a number that already has one.
+  const repeats = new Map<string, number>();
+  const overBudget = new Map<string, number>();
   const sigOf = (name: string, args: unknown) =>
     `${name}:${typeof args === "string" ? args : JSON.stringify(args ?? {})}`;
 
@@ -201,12 +315,12 @@ export function createToolLoopGuard(): ToolLoopGuard {
       const sig = sigOf(name, args);
       const n = (counts.get(name) || 0) + 1;
       counts.set(name, n);
-      const refuse = (why: string) => {
-        blocked.set(name, (blocked.get(name) || 0) + 1);
+      const refuse = (map: Map<string, number>, why: string) => {
+        map.set(name, (map.get(name) || 0) + 1);
         return why;
       };
-      if (executed.has(sig)) return refuse(repeatedCallNotice(name));
-      if (n > toolBudgetFor(name)) return refuse(overBudgetNotice(name));
+      if (executed.has(sig)) return refuse(repeats, repeatedCallNotice(name));
+      if (n > toolBudgetFor(name)) return refuse(overBudget, overBudgetNotice(name));
       executed.add(sig);
       return null;
     },
@@ -220,7 +334,12 @@ export function createToolLoopGuard(): ToolLoopGuard {
       names.sort();
       const out: ToolUsage[] = [];
       for (let i = 0; i < names.length; i++) {
-        out.push({ name: names[i], calls: counts.get(names[i]) || 0, blocked: blocked.get(names[i]) || 0 });
+        out.push({
+          name: names[i],
+          calls: counts.get(names[i]) || 0,
+          blockedRepeat: repeats.get(names[i]) || 0,
+          blockedBudget: overBudget.get(names[i]) || 0,
+        });
       }
       return out;
     },

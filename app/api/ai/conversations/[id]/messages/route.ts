@@ -1832,7 +1832,7 @@ export async function POST(
       // attributed to the model that failed, in the message row and the ledger
       // alike. Any per-model quality or cost comparison drawn from that data was
       // reading the wrong name.
-      async ({ fullText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, modelUsed, rounds, toolsUsed }) => {
+      async ({ fullText, keptText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, modelUsed, rounds, toolsUsed }) => {
         // Skip all persistence in incognito mode
         if (!conversation.flag_incognito) {
           let assistantErr: any = null;
@@ -1840,7 +1840,14 @@ export async function POST(
             const { error } = await intelligenceDb
               .from("ai_messages")
               .update({
-                document_message: fullText,
+                // keptText, not fullText. What the user WATCHED is fullText;
+                // what the transcript keeps drops the text of any round that
+                // ended in tool calls — an intention stated before the tool
+                // ran, which was the whole first screen of a flagged answer.
+                // This column is also what every later turn's history is
+                // rebuilt from (the select below), so the narration stops
+                // being fed back as an example of the house style.
+                document_message: keptText,
                 name_model: modelUsed,
                 // Which tools ran, on EVERY message rather than only flagged
                 // ones — most quality events are found by mining turns nobody
@@ -1861,7 +1868,7 @@ export async function POST(
               .insert({
                 id_conversation: conversationId,
                 role_message: "assistant",
-                document_message: fullText,
+                document_message: keptText,
                 name_model: modelUsed,
                 data_tools: toolsUsed && toolsUsed.length ? toolsUsed : null,
               });

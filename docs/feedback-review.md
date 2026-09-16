@@ -212,52 +212,138 @@ contain a false statement. One small date slip is real but trivial:
 
 Ordered by how often the class would recur, not by how loud the flag was.
 
-1. **Stop interim round narration reaching the user as answer text** (#7, #5).
-   Two parts, in this order. (a) An anti-preamble rule in the UNGATED chat
-   section of `lib/ai/system-prompts.ts` — today the only two such rules are
-   both gated behind Design Mode at :621 and :660, while voice has a CRITICAL
-   one at `lib/ai/voice.ts:396` with a check on it. Assert it against the
-   ASSEMBLED prompt in `scripts/verify-incident-fixes.ts`, where the prompt is
-   already built at :185. (b) The deterministic half: drop a round's text from
-   the PERSISTED `document_message` when that round ended in `tool_calls`. The
-   seam exists — `roundTextStart` at `providers.ts:10996` / `:9321`, already
-   replayed for the deck-claim retry at :11170.
-   *Cost:* (a) six lines and a check, half an hour. (b) ~10 lines × 4 chains
-   plus a check, half a day.
-   *Risk:* (a) low but partial — nothing tells the model to narrate and it does
-   it anyway, so this reduces rather than eliminates; re-run the probe in a
-   fortnight rather than assuming. (b) real, and do not ship it without (a)
-   first: persisted text would differ from what was streamed, and a round can
-   carry genuine answer text the model continues after a tool call, so strip
-   only leading plan-shaped paragraphs. **Also fix `ChatPanel.tsx:1049-1057`
-   with it** — the first token of any round calls `setRunningTools([])`, so
-   today each narration paragraph wipes the honest activity card and the turn
-   goes quiet again. Removing the narration without that leaves two silent
-   minutes, which is the failure the activity map was written against.
+1. ~~**Stop interim round narration reaching the user as answer text**~~
+   (#7, #5). **Done 16 Sep**, both parts in one commit.
+   (a) The rule sits in `FORMATTING_GUIDELINES`, so it is in every gate
+   combination by construction, and the two sentences that competed with it
+   (`system-prompts.ts` :470 and :534) were reworded in the same commit rather
+   than left beside it. `verify-incident-fixes.ts` section 7b asserts it
+   against 19 assembled variants, scans all 320 tool descriptions in
+   `providers.ts` as prompt text, and self-tests its own pattern list against
+   five sentences that have really appeared here — which is how it found the
+   list was deaf to "Announce nothing you do not immediately call".
+   (b) Each chain records a `[start, end)` span per round that ended in tool
+   calls and cuts them once, at its return, into a new REQUIRED
+   `StreamResult.keptText` (`lib/ai/round-text.ts`); the route persists that
+   instead of `fullText`. The live stream, `roundTextStart`, the model's replay
+   and the four end-of-turn notices are all untouched — a span closes before
+   the executors run, so image markdown, deck links and download links are
+   outside it by construction. Check 38h captures both copies on every turn
+   and asserts three invariants on every one of them: no artefact marker is
+   ever lost, the saved text is a subsequence of what was said, and a turn that
+   streamed something never saves nothing.
+   **AND THE CUT IS BOUNDED, which the first version of it was not.** Driven
+   through 38h's own transport, the unconditional rule deleted ANSWERS: a
+   237-character briefing followed in the same round by a lookup was saved as
+   the next round's "Done."; a text block emitted AFTER the tool_use block in
+   the same Anthropic message went with it; a numbered list split across a
+   round was saved starting at item 3; and it was not even monotone — the
+   identical turn with a SILENT last round kept everything through the
+   backstop, so adding "Done." was what deleted the answer. A span is now cut
+   only when it is SMALLER than what survives it, and the deterministic
+   end-of-turn notices are excluded from that measure (they are three or four
+   hundred characters of our own text, and counting them would delete the
+   answer on exactly the shape item 3 exists for). The flagged turn is
+   untouched by the bound — 139, 213 and 177 characters of plan above 6,437 of
+   briefing. Six scenarios in 38h pin it, and removing the bound turns all of
+   them red.
+   **Invariant (i) needed a precondition too.** It named five artefact markers
+   and only one of them — `📄` — occurred anywhere in the corpus, so four of
+   its five branches were unreachable and a mutation that dropped a legitimate
+   image from the saved row (the duplicate-URL set shared between the two
+   `scrub` passes) walked through the whole suite. The list is now the two
+   markers turns really make, there is an image-generating scenario, and the
+   check fails if any marker on the list goes unexercised.
+   **NOT done, and it turned out not to be needed:** the `ChatPanel.tsx`
+   activity-card fix. Persist-time filtering leaves the stream exactly as it
+   was, so there are no new silent minutes — the narration is still streamed
+   and still clears the card the way it does today. The card behaviour is worth
+   fixing on its own merits (review 2 plan item 12), not as part of this.
+   **WHAT IS STILL DELIBERATELY LOST:** a round that writes a plan SHORTER than
+   the answer that follows it loses that plan from the row, whether or not it
+   was really a plan. The rule stays structural and has no shape test — text in
+   a round that ends in tool calls is pre-tool by construction, so a
+   "plan-shaped paragraph" classifier would only add a way to be wrong in both
+   directions, which is the documented `personal-data-intent` failure one level
+   down. The claim that "the later rounds and the forced final normally restate
+   it" was written here and is NOT what happens: the transcript keeps whatever
+   the last round said, even when that is three words. The length bound is what
+   replaced that claim, because it was the only part of the design resting on
+   something unmeasured. The saved reply is still shorter than the one that
+   streamed, so a reload shows less than the screen did; that belongs in the
+   changelog rather than in a support ticket.
 
-2. **Make a refused call say whose limit was hit** (#7). Add to
-   `overBudgetNotice` and `repeatedCallNotice` in `lib/ai/tool-loop-guard.ts`
-   the clause `postTaintRefusal` already carries: do NOT report this as the
-   source being unavailable, missing, unrecorded or non-existent — say the
-   lookup budget for this turn was used up and name what was not reached.
-   *Cost:* two string constants; the file is already the single source of
-   refusal wording for all four chains.
-   *Risk:* low, wording only. Pin it with an assertion that both notices carry
-   the do-not-blame-the-source clause, so the chains cannot drift on it the way
-   they once drifted on the numbers.
+2. ~~**Make a refused call say whose limit was hit**~~ (#7). **Done 16 Sep.**
+   TWO exported constants, and the split is the point. `DO_NOT_BLAME_THE_SOURCE`
+   is carried verbatim by `repeatedCallNotice`, `overBudgetNotice` and both
+   branches of `postTaintRefusal` (now exported so the check can assert the
+   words rather than the line). `OUR_LIMIT_CUT_IT_SHORT` — "name what you did
+   not reach and say the lookup was cut short here" — goes only where a lookup
+   really was cut short: `overBudgetNotice` and the post-taint READ allowance.
+   The first draft carried one merged clause into all four branches and pinned
+   it there, and in two of them it was FALSE: a duplicate-signature refusal
+   reached everything (the result is a line above it), and a post-taint refusal
+   of `generate_slides` reached no source at all. Telling those two to say a
+   lookup was cut short instructs exactly the class of invented statement this
+   item exists to remove — the same category error `dataSubject`'s gate
+   prevents in the user-facing notice, made in the model-facing text instead.
+   Each of the two now says something true of itself: "you already HAVE this
+   result" and "this specific STEP was blocked here".
+   The old wording was REPLACED, not supplemented: "say plainly
+   which parts you could not fetch **and why**" and "if the data isn't
+   available, say so plainly" are both invitations to answer with "(no
+   recording)", and the check fails if either comes back. It also fails if the
+   constant stops naming any of the five words — unavailable, missing,
+   unrecorded, not transcribed, non-existent — because the next answer will
+   reach for whichever one is left unnamed.
 
-3. **A deterministic end-of-turn notice when a data tool was refused over
-   budget** (#7). Name the tool, say the lookup was cut short, say the answer
-   may be missing what it would have fetched. Beside the four notices already
-   at `providers.ts:11879-11915` and `:10726-10780`, driven off
-   `toolLoopGuard.usage()`, which route.ts already persists to `data_tools`.
-   13 turns in the window would have carried it.
-   *Cost:* ~15 lines plus four call sites and a check. A day, check first.
-   *Risk:* low. Keep it to OVER-BUDGET refusals only — a duplicate-signature
-   refusal is not a hole (`repeatedCallNotice` says the result is already
-   above) and announcing it would cry wolf. This is the review-1 precedent
-   applied a level down: say it yourself rather than hoping the model is honest
-   about a gap it cannot see. It volunteered "(no recording)" instead.
+3. ~~**A deterministic end-of-turn notice when a data tool was refused over
+   budget**~~ (#7). **Done 16 Sep.** `cutShortLookupNotice` in
+   `tool-loop-guard.ts`, hooked into all four chains LAST of the five notices
+   so the deck family's one-a-turn rule is settled before it exists — a
+   cut-short lookup and an unmade deck change are different facts and a turn
+   can owe the user both. Over-budget only, which needed `ToolUsage.blocked`
+   split into `blockedRepeat` and `blockedBudget` (item 12's instrumentation,
+   brought forward because this notice cannot be written without it).
+   **Correction:** this said "nothing else read `blocked`, so it was replaced
+   rather than supplemented". One thing did — `scripts/review-answer-quality.ts`,
+   the instrument this whole review was written from. Its cast is hand-written
+   over an `any` column, so `tsc` stayed green while "(3 refused)" silently
+   disappeared from every row written after the split, including the "9 calls
+   against a budget of 6" signal that found #7. It now reads both shapes and
+   prints "(2 over budget, 1 repeat)" for new rows and "(3 refused)" for old
+   ones, and `verify-tool-loop-guard` 13 asserts that the reader understands
+   both — asserted as USE, not existence.
+   It names the SOURCE in the user's words, never the tool's machine name, and
+   is silent for a generator or an unmapped tool: the subject comes from
+   `lib/ai/tool-activity.ts`, which gained a `subject` per reading tool and a
+   `dataSubject()` that returns null for anything that builds. That gate was
+   found by running it, not by reading it — unscoped, it produced "ran out of
+   its own allowance for reading the deck builder".
+   **The gaps that remain, all three deliberate:**
+   - A NEW data tool nobody adds to `tool-activity.ts` stays silent about its
+     own cut-short lookups. That is the safe direction, and
+     `verify-incident-fixes` section 14 already fails when a post-taint read
+     tool has no label, but it is worth knowing.
+   - `web_search` is held out of the notice ON PURPOSE, and this is the one
+     judgement in the item rather than a category. It reads a source like the
+     rest, but it is absent from the budget table, so it runs on the default
+     cap of three wherever it is a function tool — and an ordinary four-search
+     turn would end on "the answer above may be missing it". Item 4 measured
+     `web_search` going over in 4 of its 6 turns in the window. A notice that
+     fires on most search turns stops being read, which is this repo's own
+     recorded lesson about a check that cries wolf. Give `web_search` a real
+     budget and give it back its `subject` in the SAME change; a check fails if
+     the budget moves and the subject does not follow.
+   - THE POST-TAINT READ ALLOWANCE DOES NOT REACH THIS NOTICE, and item 3
+     deliberately covers only the per-tool budget. `postTaintRefusal` is pushed
+     and `continue`d before `toolLoopGuard.blockFor` in all four chains, so
+     `blockedBudget` never moves for it — yet its read branch says in so many
+     words that OUR allowance (6) ran out, which is the same kind of fact. A
+     tainted turn that spends its six reads therefore says nothing
+     deterministic to the user while an ordinary over-budget turn does. Closing
+     it means a new method on the guard and a change to the post-taint path in
+     four chains; recorded here so it is not rediscovered as a bug.
 
 4. **Raise `query_meetingbrain` 6 → 8 and put `web_search` in the table at 6**
    (`lib/ai/tool-loop-guard.ts:29` and :25). `query_meetingbrain` has the same
@@ -267,7 +353,11 @@ Ordered by how often the class would recur, not by how loud the flag was.
    absent from the table entirely, so it runs on the default 3 and went over in
    4 of its 6 turns.
    *Cost:* two constants plus two lines in the EXPECTED list at
-   `scripts/verify-tool-loop-guard.ts:37`. Under an hour.
+   `scripts/verify-tool-loop-guard.ts:37`. Under an hour. **And one more line
+   now:** give `web_search` back its `subject` in `lib/ai/tool-activity.ts` in
+   the SAME change. Item 3 held it out precisely because of the default 3, and
+   `verify-tool-loop-guard` 11 fails the moment the budget moves without the
+   subject following, so this will announce itself.
    *Risk:* more tokens on a model that already fans out eight calls a round —
    this turn read 280,704 cached tokens for ~41 cents. Watch the ledger. This
    treats the symptom: see "not planned" on the per-round cap.
@@ -388,10 +478,10 @@ Ordered by how often the class would recur, not by how loud the flag was.
     the user writes "update ME on". A demonstrably wrong comment inside a frozen
     file is worth a one-word fix on its own.
 
-12. **Instrumentation, for the next review rather than the user.** Split
-    `ToolUsage.blocked` (`tool-loop-guard.ts:139`) into `blockedRepeat` and
-    `blockedBudget` — this review had to reconstruct the two causes
-    arithmetically against the budget table. Move the Anthropic chain's
+12. **Instrumentation, for the next review rather than the user.**
+    ~~Split `ToolUsage.blocked` into `blockedRepeat` and `blockedBudget`~~ —
+    **done 16 Sep** with item 3, which cannot be written without it. The rest
+    is still open. Move the Anthropic chain's
     activity frame (`providers.ts:9447`) below its guard (:9618), or emit a
     distinct `tool_blocked` frame: today Claude shows "Reading meeting notes"
     for a call that never ran, while the other three chains show nothing, which
@@ -399,7 +489,11 @@ Ordered by how often the class would recur, not by how loud the flag was.
     Wire up `toolDoneEvent` (`tool-activity.ts:88`), exported, never called, and
     already handled at `ChatPanel.tsx:1022`.
     *Cost:* half a day, additive to `data_tools` so old rows still read.
-    *Risk:* low. Nothing reads `blocked` today except a human doing this.
+    *Risk:* low — but not for the reason written here. "Nothing reads `blocked`"
+    was wrong: `scripts/review-answer-quality.ts` did, and the split silently
+    dropped its refusal annotation until that was fixed on 16 Sep. Anything
+    changing the shape of `data_tools` must go through that reader, and
+    `verify-tool-loop-guard` 13 now fails if it does not.
 
 ### Not planned, deliberately
 

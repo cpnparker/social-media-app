@@ -4934,7 +4934,92 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
    *   now deep-copies its argument: D2 (copy and text step both removed) is
    *   killed the same way; D1 (the copy alone removed) SURVIVES offline,
    *   because nothing nested is written without the network — it is there for
-   *   icons resolved online, onto items shared with the call. */
+   *   icons resolved online, onto items shared with the call.
+   *
+   * THIRD MUTATION LOG (detached worktree, 2026-09-16). (h) is now the harness
+   * for the persist-time narration filter as well, because it is the only place
+   * the four chains run end to end: every turn captures BOTH copies —
+   * `spoken` (what the chain returned and the screen showed) and `persisted`
+   * (keptText, what the route writes to document_message) — and three
+   * invariants are asserted on EVERY turn the file runs, not only on the
+   * scenarios written for it. Then new turns for the shapes thumbs-down #7 and
+   * its neighbours actually had — in both directions, because the filter has
+   * two ways to be wrong and the second one cost an answer.
+   *   killed  N1 narrationSpans.push deleted from ONE chain — that chain's
+   *           narration lands in the transcript, and only that chain's
+   *   killed  N3 the push moved AFTER the executors: the .pptx download link is
+   *           eaten with the paragraph above it. THE TRAP THE SPAN DESIGN
+   *           EXISTS FOR, and invariant (i) is what sees it
+   *   killed  N4 span end = roundTextStart (nothing is ever cut)
+   *   killed  N5 the backstop deleted — but see the FOURTH log: it is now the
+   *           unit at verify-tool-loop-guard 9 that kills it, not this file
+   *   killed  N8 scrub applied to the streamed copy only — invariant (ii), the
+   *           saved text stops being a subsequence of what was said
+   *   killed  N9 the filter made the identity function
+   *   killed  N14 the cut-short notice reading blockedRepeat; N16 the notice
+   *           appended but never streamed; N17 it hooked into three chains;
+   *           N18 it placed before the unmade-deck notice, where the deck
+   *           family's one-a-turn rule silences it
+   *   CORRECTED  N15 was recorded here as "the data-source gate removed from
+   *           dataSubject → killed". Re-run alone, the mutation it names — the
+   *           `known.service === "document" || …` line, and nothing else —
+   *           SURVIVES both this file and verify-tool-loop-guard, because no
+   *           generator in the map carries a `subject` and the line above it
+   *           has already returned null. The kill was recorded against an
+   *           earlier subject-less implementation and carried forward without
+   *           re-running. What IS killed is removing the `!known.subject`
+   *           guard, which is the mutation the quoted evidence describes. See
+   *           the fourth log.
+   *   SURVIVOR  N2, the push moved BEFORE the round separator. The design
+   *           predicted invariant (iii) would kill it — the saved text opening
+   *           on a newline — and it does not, because the scrub in
+   *           createStreamingResponse collapses runs of blank lines and trims,
+   *           so the separator being inside or outside the span produces the
+   *           same saved bytes in every shape this file reaches. Recorded
+   *           rather than tidied away: the push stays after the separator
+   *           because that is the position that reads correctly, not because
+   *           anything here can tell the difference.
+   *   A FINDING, from N5's first run. Only the Anthropic and xAI chains break
+   *           on a no-progress round (`if (!executedAnyTool) break;`); Gemini
+   *           and OpenAI run on to the next round. A backstop scenario built
+   *           around that break tested the backstop on two chains and an
+   *           ordinary clean ending on the other two — it now ends on the ROUND
+   *           CAP, which every chain reaches the same way. Pre-existing
+   *           divergence, not touched here.
+   *
+   * FOURTH MUTATION LOG (detached worktree, 2026-09-16), after verifiers drove
+   * the filter through this file's own transport and found it deleting ANSWERS
+   * rather than plans. The rule is now bounded — a span is cut only when it is
+   * smaller than what survives it — and six scenarios pin the bound, along with
+   * an image turn and a coverage assertion for invariant (i).
+   *   killed  P1 the bound removed (the unconditional rule, as shipped). Five
+   *           scenarios red per chain, and they reproduce the verifiers'
+   *           measurements exactly: a 184-character answer saved as "Done.",
+   *           a text block emitted after the tool_use block gone with it, and
+   *           a numbered list saved starting at item 3
+   *   killed  P2 the `spokenText.length` boundary dropped from ONE chain: the
+   *           end-of-turn notices count as surviving answer text, and "an
+   *           answer, then a refused deck" loses its answer — on that chain
+   *           alone, plus the wiring assertion naming it
+   *   killed  P8 `seenImageUrls` hoisted out of `scrub`, so the two copies
+   *           share one duplicate set. THE MUTATION A VERIFIER FOUND SURVIVING
+   *           the whole suite: the saved row loses an image the screen kept.
+   *           Red on all four chains, by invariant (i) and by the scenario
+   *           P9 the image scenario deleted → the coverage assertion fires:
+   *           "no turn produced the artefact marker "![", so the assertion
+   *           guarding it tested nothing". Four of invariant (i)'s five
+   *           original markers occurred in ZERO of 132 turns; the list is now
+   *           two markers that turns really make, and this is what keeps it so
+   *   killed  N3 RE-RUN under the bound, because a bound could have let a span
+   *           that swallowed an artefact through on size: it does not. The
+   *           pptx download link and the image both go red
+   *   SURVIVOR  N5, the backstop, no longer has a scenario of its own HERE. The
+   *           bound subsumes it — when every word is inside a span the survivor
+   *           is empty, so nothing clears the bar and nothing is cut. Deleting
+   *           `return out.trim() ? out : text` now goes red only at
+   *           verify-tool-loop-guard 9, on the whitespace-only survivor. The
+   *           scenario stays because the behaviour it asserts is still right;
+   *           it just no longer isolates that line. */
   const before38 = failures;
   console.log(`\n38. A refusal reaches only the model, and a turn that ends refused says so`);
   {
@@ -5213,10 +5298,16 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       //    turn. The Google publish runs with no signed-in user, which is the
       //    deterministic {ok:false} branch.
       // A step may carry text AND a call, as a real round can: narration, then
-      // the call, in one message.
-      type Step = { text?: string; tool?: string; args?: string };
+      // the call, in one message. `textAfter` is the other order Anthropic
+      // routinely emits — a text block AFTER the tool_use block, in the SAME
+      // assistant message. It is inside the round's span like everything else,
+      // which is only safe because the span is bounded.
+      type Step = { text?: string; tool?: string; args?: string; textAfter?: string };
       let script: Step[] = [];
       let reqNo = 0;
+      // What the tools-off final pass says, and whether it can run at all.
+      let forcedText = "Forced final.";
+      let failForced = false;
       const seenResults: string[] = [];
       // What each request carried, for the deck-claim scenarios: a retry must
       // be a tools-on round offering generate_slides, with the assistant's own
@@ -5229,11 +5320,25 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
         req.on("end", () => {
           let p: any = {};
           try { p = JSON.parse(body); } catch { /* not JSON: answered anyway */ }
-          // A fake blob store, for the one scenario that builds a real .pptx
-          // with generate_document: the file is "uploaded" here, offline.
+          // A fake blob store, for the scenarios that build a real .pptx with
+          // generate_document or a real image with generate_image: the file is
+          // "uploaded" here, offline. The pathname is echoed back from the
+          // request so an image's markdown carries an image's path rather than
+          // a deck's — the persisted URL is what the scrub's dedupe keys on.
           if ((req.url || "").indexOf("/api/blob") === 0) {
+            const asked = decodeURIComponent((req.url || "").replace(/^\/api\/blob\/?/, "").split("?")[0]) || "presentations/x.pptx";
+            const isImage = /\.png$/i.test(asked);
             res.writeHead(200, { "content-type": "application/json" });
-            res.end(JSON.stringify({ url: "https://store.private.blob.vercel-storage.com/presentations/x.pptx", downloadUrl: "https://store.private.blob.vercel-storage.com/presentations/x.pptx?download=1", pathname: "presentations/x.pptx", contentType: "application/vnd.openxmlformats-officedocument.presentationml.presentation", contentDisposition: "attachment" }));
+            res.end(JSON.stringify({ url: `https://store.private.blob.vercel-storage.com/${asked}`, downloadUrl: `https://store.private.blob.vercel-storage.com/${asked}?download=1`, pathname: asked, contentType: isImage ? "image/png" : "application/vnd.openxmlformats-officedocument.presentationml.presentation", contentDisposition: isImage ? "inline" : "attachment" }));
+            return;
+          }
+          // A fake gpt-image-1. All four chains reach image generation through
+          // an OpenAI-compatible /images/generations (xAI's client included),
+          // so one branch serves them all. A 1x1 PNG is an image as far as
+          // everything downstream is concerned.
+          if ((req.url || "").indexOf("/images/generations") >= 0) {
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end(JSON.stringify({ created: 1, data: [{ b64_json: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" }] }));
             return;
           }
           const msgs: any[] = p.messages || [];
@@ -5251,7 +5356,16 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
           const prev = msgs[msgs.length - 2];
           reqs.push({ lastUserText: last && last.role === "user" ? textOf(last) : "", prevRole: (prev && prev.role) || "", prevText: textOf(prev), forced: !!forced,
             offered: (p.tools || []).map((t: any) => t.name || (t.function && t.function.name)).filter(Boolean) });
-          const step: Step = forced ? { text: "Forced final." } : (script[reqNo++] || { text: "Nothing more." });
+          // A FORCED FINAL THAT CANNOT RUN. The one turn whose whole text sits
+          // inside a narration span and has nothing after it — the backstop in
+          // withoutRoundNarration is all that stands between the user and a
+          // blank row.
+          if (forced && failForced) {
+            res.writeHead(500, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: { type: "api_error", message: "forced final unavailable" } }));
+            return;
+          }
+          const step: Step = forced ? { text: forcedText } : (script[reqNo++] || { text: "Nothing more." });
           res.writeHead(200, { "content-type": "text/event-stream" });
           const w = (s: string) => res.write(s);
           if ((req.url || "").indexOf("/messages") >= 0) {
@@ -5268,6 +5382,12 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
               ev("content_block_start", { index: idx, content_block: { type: "tool_use", id: `toolu_${reqNo}`, name: step.tool, input: {} } });
               ev("content_block_delta", { index: idx, delta: { type: "input_json_delta", partial_json: step.args || "{}" } });
               ev("content_block_stop", { index: idx });
+              idx++;
+            }
+            if (step.textAfter) {
+              ev("content_block_start", { index: idx, content_block: { type: "text", text: "" } });
+              ev("content_block_delta", { index: idx, delta: { type: "text_delta", text: step.textAfter } });
+              ev("content_block_stop", { index: idx });
             }
             ev("message_delta", { delta: { stop_reason: step.tool ? "tool_use" : "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } });
             ev("message_stop", {});
@@ -5279,6 +5399,7 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
               ev({ choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: `call_${reqNo}`, type: "function", function: { name: step.tool, arguments: "" } }] } }] });
               ev({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: step.args || "{}" } }] } }] });
             }
+            if (step.textAfter) ev({ choices: [{ index: 0, delta: { content: step.textAfter } }] });
             ev({ choices: [{ index: 0, delta: {}, finish_reason: step.tool ? "tool_calls" : "stop" }] });
             ev({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } });
             w("data: [DONE]\n\n");
@@ -5294,7 +5415,12 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       const saidBefore = { log: console.log, warn: console.warn, error: console.error, info: console.info };
       const slidesCall = (input: any): Step => ({ tool: "generate_slides", args: JSON.stringify(input) });
       const GOOD = () => [{ layout: "content", title: "One", body: "A line" }, { layout: "content", title: "Two", body: "Another line" }];
-      type Turn = { events: any[]; persisted: string; streamed: string; results: string[]; reqs: Req[] };
+      // THREE COPIES, because they are three different claims. `streamed` is the
+      // SSE the client rendered; `spoken` is what the chain returned as its
+      // fullText; `persisted` is what the route writes to document_message, and
+      // since 2026-09-16 that is keptText — the same text with the narration of
+      // any round that ended in tool calls cut out.
+      type Turn = { events: any[]; persisted: string; spoken: string; streamed: string; results: string[]; reqs: Req[] };
       const runs: { chain: string; name: string; asked: boolean; turn?: Turn; threw?: string }[] = [];
       const CHAINS = [["Anthropic", "claude-sonnet-5"], ["xAI", "grok-4-1-fast"], ["Gemini", "gemini-3-flash"], ["OpenAI", "gpt-5-6-terra"]];
       // The deck-claim guard (check 40): a reply that says the deck changed when
@@ -5304,10 +5430,43 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       const FALSE_FIRST = "Replacing slide 9 with the two corrected MeetingBrain slides";
       const REAL_INSERT = "Inserting the Writer and Optimiser slides after slide 6, leaving the rest of the deck untouched.\n\nTwo slides are now in after the live-demo slide.";
       const EDIT = "Remove slide 9 and put these two slides in its place";
+      // The flagged turn's own shape, in its own register: a first-person plan
+      // paragraph per tool round, then the answer.
+      const PLAN_ONE = "I'll pull the contract and the meeting records first.";
+      const PLAN_TWO = "Now let me get the September plan row.";
+      const PAST_TENSE = "Pulled the contract and both meeting records.";
+      const ANSWER = "Contract 255 runs 17 September to 30 December: 12 CU commissioned, none drawn down yet, and the kick-off sits on the 22nd with Thomas and Gary.";
+      const LATE_ANSWER = "Here is the full picture, now that all of it is finally in.";
+      // ── The other half of the filter: what it must NOT cut ──
+      //
+      // A round that did the work and THEN reached for one more tool. Every
+      // word of this is inside a span, and the first version of this filter
+      // deleted all of it and saved the next round's "Done." in its place.
+      const BRIEFING =
+        "Contract 255 runs 17 September to 30 December. 12 CU are commissioned and none have been drawn down yet, " +
+        "so the whole balance is still available. The kick-off is on the 22nd, and the September plan row is open.";
+      const SIGNOFF = "Done.";
+      const AFTER_CALL =
+        "That is the whole contract position, and nothing in it has been invoiced against yet — the balance you see is the balance you have.";
+      const LIST_HEAD = "1. Contract 255 runs 17 September to 30 December.\n2. Twelve content units are commissioned under it.";
+      const LIST_TAIL = "3. Nothing has been drawn down.\n\nSo the runway is the whole balance.";
+      /** Eight rounds that each narrate and each call a DIFFERENT tool, so none
+       *  is refused and the loop runs out of rounds rather than out of budget. */
+      const CAPPED_ROUNDS = (): Step[] => {
+        const out: Step[] = [];
+        for (let i = 0; i < 8; i++) out.push({ text: `Round ${i}: still pulling.`, tool: `not_a_tool_${i}`, args: "{}" });
+        return out;
+      };
+      /** n distinct calls to one tool, which runs it past its per-tool budget. */
+      const OVER_BUDGET = (tool: string, n: number): Step[] => {
+        const out: Step[] = [];
+        for (let i = 0; i < n; i++) out.push({ tool, args: JSON.stringify({ query: `q${i}` }) });
+        return out;
+      };
       // The user's message (default "make me a deck"), whether a deck is in the
       // conversation (default: needsConv), extra config, an attached source, and
       // whether the fake blob store is switched on for this turn.
-      type ScenarioOpts = { user?: string; deck?: boolean; cfg?: any; attach?: string; blob?: boolean };
+      type ScenarioOpts = { user?: string; deck?: boolean; cfg?: any; attach?: string; blob?: boolean; forcedText?: string; failForced?: boolean };
       const COMMENT_QUESTION = "On slide 4 (\"Pricing\") of \"Q3 review\": is this 12% figure right?\n\nChange only that slide. Leave every other slide exactly as it is, and resend the complete deck.";
       const SCENARIOS: [string, Step[], boolean, ScenarioOpts?][] = [
         ["refused, then text", [slidesCall({ title: "T", slides: [cover, NODES_HUB()] }), { text: "Here is your deck, all done." }], false],
@@ -5354,6 +5513,87 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
         ["pptx made with generate_document, then described", [{ tool: "generate_document", args: JSON.stringify({ title: "Q3 results", slides: [{ layout: "title", title: "Q3 results" }, { layout: "content", title: "Revenue", bullets: ["Up 12%"] }] }) }, { text: "Here's your deck as a PowerPoint file, ready to email." }, { text: "UNREACHED" }], false,
           { user: "Make me a pptx deck of our Q3 results I can email", deck: false, blob: true }],
         ["claim and a lookup, then an empty round", [{ text: "Replacing slide 9 with the two corrected MeetingBrain slides.", tool: "not_a_tool", args: "{}" }, {}, { text: "UNREACHED" }], false, { user: EDIT, deck: true }],
+        // ── The reply does not open with its own plan (thumbs-down #7) ──
+        //
+        // Text written in a round that ENDED IN TOOL CALLS is pre-tool by
+        // construction, so it is streamed and not saved. These drive the shapes
+        // the flagged turn and its neighbours actually had.
+        ["plan, tool, plan, tool, answer", [
+          { text: PLAN_ONE, tool: "not_a_tool", args: '{"q":1}' },
+          { text: PLAN_TWO, tool: "not_a_tool", args: '{"q":2}' },
+          { text: ANSWER }], false],
+        ["narration with no tool call is kept", [{ text: `${PAST_TENSE}\n\n${ANSWER}` }], false],
+        ["a tool round with no text at all", [{ tool: "not_a_tool", args: '{"q":1}' }, { text: ANSWER }], false],
+        ["every round narrates, the loop hits the cap", CAPPED_ROUNDS(), false, { forcedText: LATE_ANSWER }],
+        // EVERY WORD OF THIS TURN IS INSIDE A SPAN, and the pass that would
+        // have written more cannot run. The round cap is what ends it, because
+        // only two of the four chains break on a no-progress round — a turn
+        // shaped around that break would test half of them and something else
+        // on the other half. It used to isolate the backstop; the bound now
+        // reaches this case first (nothing clears a bar of zero), so the
+        // backstop's own kill lives at verify-tool-loop-guard 9.
+        ["every round narrates, and the forced final fails", CAPPED_ROUNDS(), false, { failForced: true }],
+        // An ARTEFACT appended by an executor sits outside the span by
+        // construction — this is the mutation the span design exists for.
+        ["plan, then a pptx", [
+          { text: PLAN_ONE, tool: "generate_document", args: JSON.stringify({ title: "Q3 results", slides: [{ layout: "title", title: "Q3 results" }, { layout: "content", title: "Revenue", bullets: ["Up 12%"] }] }) },
+          { text: ANSWER }], false, { user: "Make me a pptx deck of our Q3 results I can email", deck: false, blob: true }],
+        // BOTH COPIES ARE SCRUBBED, or the row keeps a fabricated link the
+        // screen showed removed.
+        ["a fabricated link in the answer", [
+          { text: PLAN_ONE, tool: "not_a_tool", args: '{"q":1}' },
+          { text: `${ANSWER} See [the signed contract](https://example.invalid/contract-255) for detail.` }], false],
+        ["plan, then a refused deck", [
+          { text: PLAN_ONE, tool: "generate_slides", args: JSON.stringify({ title: "T", slides: [cover, NODES_HUB()] }) },
+          { text: ANSWER }], false],
+        // ── A refused lookup says so, and only when it cost the user something ──
+        ["seven distinct notebook searches", OVER_BUDGET("search_notebook", 7), false],
+        ["four distinct calls to a tool nobody mapped", OVER_BUDGET("not_a_tool", 4), false],
+        // Two different facts, and a turn can owe the user both.
+        // The claim is BOTH the forced final's text and a scripted last round:
+        // the Anthropic and xAI chains break on the refused round and reach it
+        // through the forced pass, while Gemini and OpenAI carry on and reach
+        // it as an ordinary round. Same turn, same two facts owed, either way.
+        ["a cut-short lookup and an unmade deck change", OVER_BUDGET("search_memory", 4).concat([{ text: FALSE_REPLY }]), false, { user: EDIT, deck: true, forcedText: FALSE_REPLY }],
+        // ── …and what the filter must NOT cut (the bound) ──
+        //
+        // "Pre-tool" says nothing about SIZE. Driven against these shapes, the
+        // unbounded rule deleted real answers: a briefing that ended in a
+        // lookup became the next round's "Done.", a text block emitted after
+        // the tool_use block in the same message went with it, and a numbered
+        // list was saved starting at item 3. A span is now cut only when it is
+        // smaller than what survives it.
+        ["an answer, then a lookup, then a sign-off", [
+          { text: BRIEFING, tool: "not_a_tool", args: '{"q":1}' },
+          { text: SIGNOFF }], false],
+        // THE CONTROL, and the property it pins is monotonicity: the identical
+        // turn ending silently keeps everything through the backstop, so
+        // adding "Done." must not be what deletes the answer.
+        ["an answer, then a lookup, and nothing after", [
+          { text: BRIEFING, tool: "not_a_tool", args: '{"q":1}' },
+          {}], false],
+        // Anthropic emits this routinely: a text block AFTER the tool_use
+        // block, in the SAME assistant message. It is inside the span too.
+        ["text either side of the tool call", [
+          { text: "Here is what the record shows.", tool: "not_a_tool", args: '{"q":1}', textAfter: AFTER_CALL },
+          { text: SIGNOFF }], false],
+        ["a numbered list split across a round", [
+          { text: LIST_HEAD, tool: "not_a_tool", args: '{"q":1}' },
+          { text: LIST_TAIL }], false],
+        // The answer is longer than the sign-off but SHORTER than the notice
+        // that follows it, so this turn only keeps its answer if the notices
+        // are excluded from the measure of what survived.
+        ["an answer, then a refused deck", [
+          { text: BRIEFING, tool: "generate_slides", args: JSON.stringify({ title: "T", slides: [cover, NODES_HUB()] }) },
+          { text: "Sorry — that did not work." }], false],
+        // The shape item 3 exists for, with an answer above it.
+        ["an answer, then a cut-short lookup", (() => { const s = OVER_BUDGET("search_notebook", 7); s[0] = { ...s[0], text: BRIEFING }; return s; })(), false],
+        // AN IMAGE IS AN ARTEFACT TOO, and the only one whose handling this
+        // change restructured: the duplicate-URL set inside `scrub` has to be
+        // per COPY, or the saved row loses an image the screen kept.
+        ["plan, then an image", [
+          { text: PLAN_ONE, tool: "generate_image", args: JSON.stringify({ prompt: "a cover image" }) },
+          { text: ANSWER }], false, { user: "Make me a cover image", deck: false, blob: true }],
       ];
       try {
         (globalThis as any).fetch = (input: any, init?: any) => {
@@ -5382,6 +5622,7 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
             // As the route computes it, so the chain sees what production would.
             const asked = asksForDeckChange(user, { deckInConversation: deck });
             script = steps; reqNo = 0; seenResults.length = 0; reqs.length = 0;
+            forcedText = o.forcedText || "Forced final."; failForced = o.failForced === true;
             if (o.blob) {
               process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_storefake_secretfake";
               process.env.VERCEL_BLOB_API_URL = `http://127.0.0.1:${port}/api/blob`;
@@ -5404,7 +5645,7 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
                 if (lines[i].indexOf("data: ") === 0) { try { events.push(JSON.parse(lines[i].slice(6))); } catch { /* [DONE] */ } }
               }
               const streamed = events.filter((e) => typeof e.token === "string").map((e) => e.token).join("");
-              runs.push({ chain: CHAINS[c][0], name, asked, turn: { events, streamed, persisted: String((completed && completed.fullText) || ""), results: seenResults.slice(), reqs: reqs.slice() } });
+              runs.push({ chain: CHAINS[c][0], name, asked, turn: { events, streamed, spoken: String((completed && completed.fullText) || ""), persisted: String((completed && completed.keptText) || ""), results: seenResults.slice(), reqs: reqs.slice() } });
             } catch (e: any) {
               runs.push({ chain: CHAINS[c][0], name, asked, threw: String((e && e.message) || e).slice(0, 120) });
             }
@@ -5423,6 +5664,18 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
         server.close();
       }
       if (runs.length !== CHAINS.length * SCENARIOS.length) fail(`38h ran ${runs.length} turns, expected ${CHAINS.length * SCENARIOS.length} — the harness measured nothing`);
+      // WHAT INVARIANT (i) ACTUALLY SEES. The first version of it named five
+      // artefact markers and only ONE of them ever occurred in the corpus, so
+      // four of its five branches were unreachable and a mutation that dropped
+      // a legitimate image from the saved row survived the whole suite. A
+      // marker earns its place here by being produced by a turn; these two are,
+      // and the coverage assertion below is what keeps that true. A chart, a
+      // video and the scheduled-proposal marker are deliberately NOT in the
+      // list: nothing here builds one, and naming them would be four more
+      // assertions that test nothing.
+      const ARTEFACTS = ["📄", "!["];
+      const artefactSeen: number[] = [];
+      for (let a = 0; a < ARTEFACTS.length; a++) artefactSeen.push(0);
       for (let r = 0; r < runs.length; r++) {
         const { chain, name, asked, turn, threw } = runs[r];
         const tag = `${chain} chain, ${name}`;
@@ -5445,6 +5698,40 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
         const NOTICE = "⚠ **";
         const noticeIn = (s: string) => s.indexOf(NOTICE) >= 0;
         const persistedAndStreamed = (re: RegExp) => re.test(turn.persisted) && re.test(turn.streamed);
+        // EVERY TURN, whatever it was testing. The persist-time filter runs on
+        // all of them, so the three things it must never do are asserted on all
+        // of them — every scenario in the file, not only the ones written for it.
+        //
+        // (i) AN ARTEFACT IS NEVER CUT. Image markdown and a download link are
+        // appended by the EXECUTORS, after the round's text ends and before the
+        // next round starts. A span that closed a line later would eat them, and the
+        // reply would describe a file the user has no link to.
+        for (let a = 0; a < ARTEFACTS.length; a++) {
+          const said = turn.spoken.split(ARTEFACTS[a]).length - 1;
+          if (said > 0) artefactSeen[a]++;
+          if (said > 0 && turn.persisted.split(ARTEFACTS[a]).length - 1 < said) {
+            fail(`${tag}: the artefact marker "${ARTEFACTS[a]}" appears ${said} time(s) in what was streamed and fewer on the saved row — the filter ate something an executor made`);
+          }
+        }
+        // (ii) FILTERING ONLY EVER REMOVES. Anything the saved copy contains
+        // must appear, in order, in what was said — nothing may be invented at
+        // persist time.
+        const isSubsequence = (needle: string, hay: string) => {
+          let j = 0;
+          for (let i = 0; i < needle.length && j < hay.length; i++) {
+            while (j < hay.length && hay[j] !== needle[i]) j++;
+            if (j < hay.length) j++; else return false;
+          }
+          return true;
+        };
+        if (!isSubsequence(turn.persisted, turn.spoken)) fail(`${tag}: the saved text is not a subsequence of what was said — the filter invented something`);
+        // (iii) A TURN NEVER SAVES A BLANK ROW, and never opens on debris. The
+        // notices are separated from the text above them by a `---`, so a reply
+        // whose only survivor is a notice would otherwise open on an orphan
+        // horizontal rule.
+        if (turn.spoken.trim() && !turn.persisted.trim()) fail(`${tag}: ${turn.spoken.trim().length} chars were streamed and the row saved nothing`);
+        if (turn.persisted !== turn.persisted.trim()) fail(`${tag}: the saved text opens or ends on whitespace`);
+        if (/^---/.test(turn.persisted)) fail(`${tag}: the saved text opens on an orphan horizontal rule`);
         if (name === "refused, then text") {
           if (!has("slides_refused") || has("slides_error")) fail(`${tag}: events ${JSON.stringify(turn.events.map((e) => Object.keys(e)[0]))} — a refusal should clear the indicator and toast nothing`);
           if (!persistedAndStreamed(/The deck was not built\./) || turn.persisted.indexOf("slide 2") < 0) fail(`${tag}: the reply does not carry the notice naming slide 2, both saved and streamed (${turn.persisted.slice(0, 160)})`);
@@ -5469,6 +5756,94 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
           else if (faults !== 2 || has("slides_error") !== 2) fail(`${tag}: the identical call after a fault did not run again (${faults} faults run, ${has("slides_error")} shown; results ${JSON.stringify(turn.results.map((t) => t.slice(0, 40)))}) — its signature was not released with this chain's key`);
           const shown = turn.events.filter((e) => e.slides_error !== undefined).map((e) => String(e.slides_error));
           if (shown.some((t) => t !== SLIDES_FAILED_FOR_USER)) fail(`${tag}: a fault showed the user something other than the fixed sentence: ${shown[0]}`);
+        } else if (name === "plan, tool, plan, tool, answer") {
+          // THE FLAGGED TURN'S SHAPE. Both plans were watched; neither is saved.
+          if (turn.streamed.indexOf(PLAN_ONE) < 0 || turn.streamed.indexOf(PLAN_TWO) < 0) fail(`${tag}: the narration never reached the screen — pulling text back is not what this does`);
+          if (turn.persisted.indexOf(PLAN_ONE) >= 0 || turn.persisted.indexOf(PLAN_TWO) >= 0) fail(`${tag}: a plan paragraph written before a tool call is in the transcript (${turn.persisted.slice(0, 120)})`);
+          if (turn.persisted.trim() !== ANSWER) fail(`${tag}: the saved reply is not the answer alone (${JSON.stringify(turn.persisted.slice(0, 160))})`);
+          if (turn.spoken.length <= turn.persisted.length) fail(`${tag}: PRECONDITION — nothing was cut, so this scenario proves nothing (spoken ${turn.spoken.length}, saved ${turn.persisted.length})`);
+        } else if (name === "narration with no tool call is kept") {
+          // THE OTHER DIRECTION, and the reason the rule is structural rather
+          // than a shape test: this paragraph reads exactly like a plan and is
+          // not one, because the round called nothing.
+          if (turn.persisted.indexOf(PAST_TENSE) < 0) fail(`${tag}: text from a round that called no tool was dropped`);
+          if (turn.persisted !== turn.spoken) fail(`${tag}: a turn with no tool round saved something other than what it said`);
+        } else if (name === "a tool round with no text at all") {
+          if (turn.persisted.trim() !== ANSWER) fail(`${tag}: a silent tool round left something behind (${JSON.stringify(turn.persisted.slice(0, 120))})`);
+        } else if (name === "every round narrates, the loop hits the cap") {
+          if (turn.reqs.length !== 9) fail(`${tag}: PRECONDITION — expected 8 rounds and a forced final, got ${turn.reqs.length} requests`);
+          if (turn.streamed.indexOf("Round 0: still pulling.") < 0) fail(`${tag}: the rounds never reached the screen`);
+          if (/Round \d: still pulling\./.test(turn.persisted)) fail(`${tag}: a capped turn saved its narration (${turn.persisted.slice(0, 120)})`);
+          if (turn.persisted.trim() !== LATE_ANSWER) fail(`${tag}: the saved reply is not the forced final's answer (${JSON.stringify(turn.persisted.slice(0, 160))})`);
+        } else if (name === "every round narrates, and the forced final fails") {
+          // THE BACKSTOP. Every word is inside a span and nothing came after
+          // it, so the whole text is kept rather than the row going blank.
+          if (turn.reqs.filter((q) => q.forced).length < 1) fail(`${tag}: PRECONDITION — no forced final was attempted, so the backstop was never reached`);
+          if (turn.persisted !== turn.spoken) fail(`${tag}: a turn whose whole text was pre-tool did not keep it (saved ${turn.persisted.length} of ${turn.spoken.length} chars)`);
+          if (turn.persisted.indexOf("Round 0: still pulling.") < 0) fail(`${tag}: the only text this turn had is not on the row`);
+        } else if (name === "plan, then a pptx") {
+          if (has("document_ready") !== 1) fail(`${tag}: PRECONDITION — no .pptx was built (${JSON.stringify(turn.events.map((e) => Object.keys(e)[0]))}), so the artefact is not there to lose`);
+          if (turn.persisted.indexOf("📄") < 0 || turn.persisted.indexOf("Download") < 0) fail(`${tag}: the download link was cut with the paragraph above it (${JSON.stringify(turn.persisted.slice(0, 160))})`);
+          if (turn.persisted.indexOf(PLAN_ONE) >= 0) fail(`${tag}: the plan paragraph is on the row`);
+          if (turn.streamed.indexOf(PLAN_ONE) < 0) fail(`${tag}: the plan never reached the screen`);
+        } else if (name === "a fabricated link in the answer") {
+          if (turn.persisted.indexOf("https://example.invalid") >= 0) fail(`${tag}: the saved copy kept a fabricated link the screen was shown without`);
+          if (turn.spoken.indexOf("https://example.invalid") >= 0) fail(`${tag}: PRECONDITION — the streamed copy kept it too, so the link strip is not running at all`);
+          if (turn.persisted.indexOf("the signed contract") < 0) fail(`${tag}: the link's own words were dropped with it`);
+        } else if (name === "plan, then a refused deck") {
+          // A TURN THAT ENDS REFUSED still says so: the end-of-turn notices are
+          // appended after the loop, so they sit outside every span.
+          if (!persistedAndStreamed(/The deck was not built\./)) fail(`${tag}: the refusal notice did not survive the filter (${turn.persisted.slice(0, 160)})`);
+          if (turn.persisted.indexOf(PLAN_ONE) >= 0) fail(`${tag}: the plan written before the refused call is on the row`);
+          if (turn.streamed.indexOf(PLAN_ONE) < 0) fail(`${tag}: the plan never reached the screen`);
+        } else if (name === "seven distinct notebook searches") {
+          const u = turn.events.filter((e) => e.token !== undefined).length;
+          if (!persistedAndStreamed(/A lookup was cut short\./)) fail(`${tag}: a lookup that ran out of ITS OWN allowance said nothing, saved or streamed (${u} tokens, ${turn.persisted.slice(0, 200)})`);
+          if (turn.persisted.indexOf("your notebook") < 0) fail(`${tag}: the notice does not name what was not reached (${turn.persisted.slice(-260)})`);
+          if (turn.persisted.indexOf("search_notebook") >= 0) fail(`${tag}: the notice shows the user a machine name`);
+        } else if (name === "four distinct calls to a tool nobody mapped") {
+          if (/A lookup was cut short\./.test(turn.persisted + turn.streamed)) fail(`${tag}: a tool nobody mapped produced a sentence about what the turn failed to read`);
+        } else if (name === "a cut-short lookup and an unmade deck change") {
+          if (!asked) fail(`${tag}: PRECONDITION — the ask gate does not read this as a deck request, so only one notice could ever fire`);
+          const deckAt = turn.persisted.indexOf("The deck was not changed.");
+          const cutAt = turn.persisted.indexOf("A lookup was cut short.");
+          if (deckAt < 0 || cutAt < 0) fail(`${tag}: a turn owing the user two different facts carried ${turn.persisted.split(NOTICE).length - 1} notice(s) (${turn.persisted.slice(-300)})`);
+          else if (deckAt > cutAt) fail(`${tag}: the cut-short notice runs before the deck notice, so the deck family's one-a-turn rule can see it and fall silent`);
+          if (turn.persisted.indexOf("your saved memories") < 0) fail(`${tag}: the cut-short notice does not name the source`);
+        } else if (name === "an answer, then a lookup, then a sign-off" || name === "an answer, then a lookup, and nothing after") {
+          // THE BOUND. Every word of the briefing is inside a span, and it is
+          // larger than everything after it, so it stays. Measured: the
+          // unbounded filter saved "Done." here and threw 210 characters away.
+          if (turn.streamed.indexOf(BRIEFING) < 0) fail(`${tag}: PRECONDITION — the briefing never reached the screen, so nothing was there to lose`);
+          if (turn.persisted.indexOf(BRIEFING) < 0) fail(`${tag}: a round that answered and then reached for one more tool lost its answer (saved ${JSON.stringify(turn.persisted.slice(0, 120))})`);
+        } else if (name === "text either side of the tool call") {
+          if (turn.streamed.indexOf(AFTER_CALL) < 0) fail(`${tag}: PRECONDITION — this chain never emitted the text after the tool call, so the span's reach is untested here`);
+          else if (turn.persisted.indexOf(AFTER_CALL) < 0) fail(`${tag}: a text block emitted after the tool_use block in the same message was cut from the transcript`);
+        } else if (name === "a numbered list split across a round") {
+          if (turn.persisted.indexOf("1. Contract 255") < 0) fail(`${tag}: the saved reply is a numbered list starting at item 3 (${JSON.stringify(turn.persisted.slice(0, 80))})`);
+          if (turn.persisted.indexOf(LIST_TAIL) < 0) fail(`${tag}: the rest of the list is missing`);
+        } else if (name === "an answer, then a refused deck") {
+          // This answer is longer than the sign-off after it and SHORTER than
+          // the notice after that, so it survives only if the deterministic
+          // notices are excluded from the measure of what survived.
+          if (!persistedAndStreamed(/The deck was not built\./)) fail(`${tag}: the refusal notice did not survive (${turn.persisted.slice(0, 160)})`);
+          const noticeAt = turn.spoken.indexOf("\n\n---\n\n⚠");
+          if (noticeAt < 0 || turn.spoken.length - noticeAt <= BRIEFING.length) fail(`${tag}: PRECONDITION — the notice is not longer than the answer under it, so this turn cannot tell the two measures apart`);
+          if (turn.persisted.indexOf(BRIEFING) < 0) fail(`${tag}: the end-of-turn notice counted as surviving answer text, so the answer above it was cut (saved ${JSON.stringify(turn.persisted.slice(0, 120))})`);
+        } else if (name === "an answer, then a cut-short lookup") {
+          if (!persistedAndStreamed(/A lookup was cut short\./)) fail(`${tag}: the cut-short notice did not survive (${turn.persisted.slice(-200)})`);
+          if (turn.persisted.indexOf(BRIEFING) < 0) fail(`${tag}: the turn the notice exists for lost the very answer the notice is about (saved ${JSON.stringify(turn.persisted.slice(0, 120))})`);
+        } else if (name === "plan, then an image") {
+          if (has("image_ready") !== 1) fail(`${tag}: PRECONDITION — no image was generated (${JSON.stringify(turn.events.map((e) => Object.keys(e)[0]))}), so the artefact is not there to lose`);
+          else {
+            // ONE image, saved and streamed once. The dedupe set inside the
+            // scrub has to be per COPY: shared between the two passes, the
+            // saved row loses an image the screen was shown.
+            if (turn.spoken.split("![").length - 1 !== 1) fail(`${tag}: PRECONDITION — the streamed copy carries ${turn.spoken.split("![").length - 1} images, so a lost one would not be visible as a loss`);
+            if (turn.persisted.split("![").length - 1 !== 1) fail(`${tag}: the saved row carries ${turn.persisted.split("![").length - 1} images where the screen carried one — an image the executor appended did not survive to the row (the likeliest cause is a duplicate-URL set shared between the two scrub passes)`);
+            if (turn.persisted.indexOf("/api/media/") < 0) fail(`${tag}: the image's URL was stripped from the saved row`);
+          }
+          if (turn.persisted.indexOf(PLAN_ONE) >= 0) fail(`${tag}: the plan paragraph above the image is on the row`);
         } else {
           // The deck-claim guard. Check 40 holds its units, corpus and wiring.
           const notices = turn.persisted.split(NOTICE).length - 1;
@@ -5490,6 +5865,10 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
           } else if (name === "text and a lookup, then claim") {
             if (turn.reqs.length !== 4 || nudged !== 1 || has("slides_draft") !== 1 || notices !== 0) fail(`${tag}: expected 4 requests, 1 nudge, 1 draft and no notice (${summary})`);
             retryShape(2, FALSE_FIRST);
+            // Round 0 narrated and then called a tool, so it was watched and is
+            // not saved. The claim in round 1 called nothing and stays.
+            if (turn.streamed.indexOf("Checking the deck first.") < 0) fail(`${tag}: the round's narration never reached the screen`);
+            if (turn.persisted.indexOf("Checking the deck first.") >= 0) fail(`${tag}: a round that ended in a tool call wrote its narration to the transcript`);
           } else if (name === "claim, retry asks") {
             if (turn.reqs.length !== 2 || nudged !== 1) fail(`${tag}: expected 2 requests and 1 nudge (${summary})`);
             if (notices !== 1 || !onceIn(turn.persisted, "The deck was not changed.") || !onceIn(turn.streamed, "The deck was not changed.")) fail(`${tag}: "The deck was not changed." is not saved and streamed exactly once (${summary})`);
@@ -5523,6 +5902,16 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
             fail(`${tag}: no assertions for this scenario — a turn run and never judged proves nothing`);
           }
         }
+      }
+      // INVARIANT (i) MUST HAVE SOMETHING TO SEE. It reads as the strongest
+      // assertion in this block and it is worthless for any marker no turn
+      // produces — four of its original five markers occurred in zero of 132
+      // turns, and a mutation that dropped a legitimate image from the saved
+      // row walked through the whole suite. A marker stays on the list only
+      // while a turn still makes one.
+      for (let a = 0; a < ARTEFACTS.length; a++) {
+        if (artefactSeen[a] < 1) fail(`38h: no turn produced the artefact marker "${ARTEFACTS[a]}", so the assertion guarding it tested nothing — give it a scenario or take it off the list`);
+        else pass(`38h: "${ARTEFACTS[a]}" survives the filter on ${artefactSeen[a]} turn(s) that made one`);
       }
     } catch (e: any) {
       fail(`check 38 threw: ${String((e && e.message) || e).slice(0, 160)}`);

@@ -210,6 +210,215 @@ console.log("\n7. The prompt carries the rules that were missing");
 
 
 
+/* ─────────── The reply does not open with its own plan ───────────
+ *
+ * THUMBS-DOWN #7, 2026-09-16. A briefing written four minutes before the
+ * meeting it was for opened with three paragraphs of the model narrating its
+ * own plan — 139, then 213, then 177 characters, one per tool round — above
+ * 6,437 characters of answer. Measured over the last 200 assistant messages:
+ * 55 of them (27.5%) open with a first-person plan paragraph, 53% of
+ * tool-running turns against 6% of tool-free ones.
+ *
+ * Chat had NO anti-preamble rule. The only two lived inside Design Mode, and
+ * voice has a CRITICAL one with its own check. This asserts the chat rule
+ * against the ASSEMBLED prompt for every gate combination, because a rule that
+ * holds for one combination is not a rule — and because the voice check's
+ * recorded lesson is that a new rule beside a contradicting old one changes
+ * nothing, so the two competing sentences are scanned for too.
+ *
+ * MUTATION LOG (detached worktree, restored after):
+ *   KILLED  delete the rule from FORMATTING_GUIDELINES → every variant red
+ *   KILLED  move the rule inside `if (ctx.designMode)` → the design=false variants red
+ *   KILLED  restore "Announce nothing you do not immediately call" → contradiction scan red
+ *   KILLED  plant "Tell the user you're checking first" in a tool description → description scan red
+ *   KILLED  empty the pattern list → self-test red, and nothing is reported
+ *   SURVIVOR  rewording the rule's THIRD bullet (the "not a rule about length"
+ *             paragraph) survives: only two sentences are pinned, on purpose —
+ *             pinning all of it would fail on every honest edit.
+ *
+ * SECOND MUTATION LOG (detached worktree, 2026-09-16). A verifier showed this
+ * section passing with a live contradiction in the assembled prompt, twice
+ * over: the studio block's "propose the shot list briefly in your reply, then
+ * call design_create_shot four times" and design mode's "Before calling
+ * generate_video, sketch the shot in plain English" were both present in the
+ * same string as the rule, and NONE of the nine patterns could see either.
+ * Worse, the scan stripped the rule's WHOLE block first, so the one place a
+ * contradicting instruction could hide was inside the rule itself — which is
+ * the most likely future edit to it.
+ *   KILLED  the studio sentence restored → (b) red, 8 hits
+ *   KILLED  the design-mode sentence restored → (b) red, 8 hits
+ *   KILLED  a qualifying bullet planted INSIDE the rule block ("Before a
+ *           lookup, tell the user what you are about to fetch…") → (b) red, 19
+ *           hits. It SURVIVED before the strip was narrowed from the whole
+ *           block to the two phrases the rule quotes: 176 passed, 0 failed,
+ *           with the rule and its own contradiction side by side.
+ *   All three are in the BAD self-test below, so the patterns that see them are
+ *   themselves proven rather than assumed — which is how the first two were
+ *   found: the self-test was deaf to them before it was not.
+ */
+console.log("\n7b. Nothing in the chat prompt tells the model to speak before a tool call");
+{
+  /**
+   * Phrases that make the model narrate before it calls. Lifted from
+   * scripts/verify-voice-config.ts, which caught a live instruction saying the
+   * exact opposite, plus two for the shapes a chat prompt would use.
+   */
+  const PRE_TOOL_FILLER: [string, RegExp][] = [
+    ["let me look", /\blet me (look|check|see|dig|pull|grab|fetch)\b/i],
+    ["one moment", /\b(one moment|just a (moment|sec|second)|hang on|bear with)\b/i],
+    ["digging into that", /\bdigging into (that|it)\b/i],
+    ["tell the user first", /\btell (the user|them)\b[^.]{0,40}\bfirst\b/i],
+    ["say you're checking", /\bsay (you're|you are)\s+(checking|looking|searching|fetching)/i],
+    ["I'll check / I'm checking … first", /\b(i'll (check|look|see)|i'm (checking|looking))\b[^.]{0,20}\bfirst\b/i],
+    ["acknowledge first", /\backnowledg\w*\b[^.]{0,30}\bfirst\b/i],
+    ["announce before the call", /\b(announce|say|state|tell)\b[^.]{0,40}\bbefore (any |the |a |each )?(tool|call|lookup|fetch|search)/i],
+    // "Announce nothing you do not immediately call" reads as a prohibition and
+    // is a PERMISSION: announce all you like, provided you then call. It was
+    // one of the two sentences competing with the new rule, and the self-test
+    // below is what showed the other seven patterns were deaf to it.
+    ["announce it, then call it", /\bannounce\b[^.]{0,60}\b(call|tool)\b/i],
+    // The two shapes a WORKFLOW line uses, and both were live in this prompt
+    // while this section reported clean: "propose the shot list briefly in your
+    // reply, then call design_create_shot four times" (studio) and "Before
+    // calling generate_video, sketch the shot in plain English" (design mode).
+    // Neither reads like filler, and both instruct a paragraph before a call —
+    // which item 1(b) then deletes from the transcript.
+    ["propose it, then call it", /\b(propose|sketch|outline|draft|list|describe)\b[^.]{0,80}\bthen\s+call\b/i],
+    // Both directions of the same instruction. "Before calling generate_video,
+    // sketch the shot" was live; "Before a lookup, tell the user what you are
+    // about to fetch" is the bullet a verifier planted INSIDE the rule, which
+    // the whole-block strip above used to hide.
+    ["before the call, describe it", /\bbefore\s+(calling\s+)?(any\s+|a\s+|the\s+|each\s+)?(tool\s+call|lookup|fetch|search|call|generat\w+|design_\w+|query_\w+)\b[^.]{0,80}\b(sketch|propose|outline|draft|describe|list|say|tell|explain|announce)\b/i],
+  ];
+  // The rule QUOTES the two phrases it forbids, so those two strings — and
+  // ONLY those two — are removed before the scan.
+  //
+  // It used to strip the rule's WHOLE block, from its heading to the next
+  // section, which made the block the one place in the prompt a contradicting
+  // instruction could hide. A verifier planted "Before a lookup, tell the user
+  // what you are about to fetch" as a fourth bullet INSIDE the rule and this
+  // section reported 176 passed, 0 failed — with the rule and its own
+  // contradiction in the same assembled string. The most likely future edit to
+  // a rule is a qualifying bullet appended to it, so that is the edit the scan
+  // has to be able to see.
+  const RULE_QUOTES = ["“I’ll pull the contract”", "“Let me check the meeting record”", '"I\'ll pull the contract"', '"Let me check the meeting record"'];
+  const withoutRule = (t: string) => {
+    let out = t;
+    for (let j = 0; j < RULE_QUOTES.length; j++) out = out.split(RULE_QUOTES[j]).join("");
+    return out;
+  };
+
+  const base: any = {
+    conversationVisibility: "private",
+    userName: "Test",
+    workspaceConfig: { companyContext: "TCE is a content agency.", contentTypes: [], cuDefinitions: [], formatDescriptions: {}, typeInstructions: {} },
+    clientContext: null,
+    contentDetail: null,
+  };
+  const variants: { label: string; text: string }[] = [];
+  const FLAGS = [false, true];
+  for (let a = 0; a < FLAGS.length; a++) {
+    for (let b = 0; b < FLAGS.length; b++) {
+      for (let c = 0; c < FLAGS.length; c++) {
+        for (let d = 0; d < FLAGS.length; d++) {
+          variants.push({
+            label: `image=${FLAGS[a]} design=${FLAGS[b]} studio=${FLAGS[c]} resourcing=${FLAGS[d]}`,
+            text: buildSystemPrompt({ ...base, contextConfig: { imageGeneration: FLAGS[a] ? "on" : "off" },
+              designMode: FLAGS[b], studioMode: FLAGS[c], resourcingAccess: FLAGS[d] }),
+          });
+        }
+      }
+    }
+  }
+  // A role persona and a team thread are different assemblies of the same
+  // block, and AuthorityOn adds a whole section of its own.
+  variants.push({ label: "role persona", text: buildSystemPrompt({ ...base, contextConfig: { imageGeneration: "on" }, role: { name: "Editor", instructions: "You edit." } }) });
+  variants.push({ label: "team thread", text: buildSystemPrompt({ ...base, contextConfig: { imageGeneration: "on" }, conversationVisibility: "team" }) });
+  const savedKey = process.env.AUTHORITYON_MCP_KEY;
+  process.env.AUTHORITYON_MCP_KEY = "verify-offline";
+  variants.push({ label: "authorityon", text: buildSystemPrompt({ ...base, contextConfig: { imageGeneration: "on" } }) });
+  if (savedKey === undefined) delete process.env.AUTHORITYON_MCP_KEY; else process.env.AUTHORITYON_MCP_KEY = savedKey;
+
+  // PRECONDITIONS. A builder returning "" would satisfy every assertion below
+  // about what is ABSENT, and report nothing about what is present.
+  check("19 prompt variants assembled", variants.length === 19, String(variants.length));
+  const shortest = variants.reduce((x, y) => (x.text.length < y.text.length ? x : y));
+  check("the shortest variant is a real prompt", shortest.text.length > 4000, `${shortest.label} is ${shortest.text.length} chars`);
+  const longest = variants.reduce((x, y) => (x.text.length > y.text.length ? x : y));
+  check("the gates really change the prompt", longest.text.length > shortest.text.length + 1000, `${shortest.text.length} … ${longest.text.length}`);
+
+  // (a) THE RULE IS IN EVERY VARIANT. Two load-bearing sentences, not the whole
+  // block: pinning all of it would go red on every honest edit.
+  const SENTENCES = [
+    "When you need a tool, CALL IT. Do not write a line before the call.",
+    "say what you DID: past tense, one short line at most",
+  ];
+  let missing = 0;
+  for (let i = 0; i < variants.length; i++) {
+    for (let j = 0; j < SENTENCES.length; j++) {
+      if (variants[i].text.indexOf(SENTENCES[j]) < 0) { missing++; console.log(`      (${variants[i].label} is missing: ${SENTENCES[j].slice(0, 40)}…)`); }
+    }
+  }
+  check("the anti-preamble rule is in every gate combination", missing === 0, `${missing} variant/sentence pairs missing`);
+
+  // (b) AND NOTHING ANYWHERE ELSE SAYS THE OPPOSITE.
+  let hits = 0;
+  for (let i = 0; i < variants.length; i++) {
+    const stripped = withoutRule(variants[i].text);
+    // PRECONDITION: the strip found the quotes it exists for. Removing nothing
+    // would leave the rule's own examples in and report them as hits; removing
+    // them when they are no longer there would mean the rule stopped quoting
+    // the phrases it forbids, and the list below should be re-read against it.
+    if (stripped.length === variants[i].text.length) { check(`the rule still quotes the phrases it forbids, in ${variants[i].label}`, false); break; }
+    for (let j = 0; j < PRE_TOOL_FILLER.length; j++) {
+      if (PRE_TOOL_FILLER[j][1].test(stripped)) { hits++; console.log(`      (${variants[i].label}: "${PRE_TOOL_FILLER[j][0]}")`); }
+    }
+  }
+  check("no variant instructs pre-tool speech outside the rule's own block", hits === 0, `${hits} hits`);
+
+  // (c) TOOL DESCRIPTIONS ARE PROMPT TEXT TOO. A description saying "Tell the
+  // user you're digging into that" lived in the voice surface for months and
+  // instructed exactly what the session prompt forbade. Read from source: the
+  // tool constants are module-private, and the source set is a superset of any
+  // assembled set.
+  const provSrc = readFileSync(join(process.cwd(), "lib/ai/providers.ts"), "utf8");
+  const descs = provSrc.match(/description:\s*(`[\s\S]*?`|"(?:[^"\\]|\\.)*")/g) || [];
+  check("tool descriptions were found to scan", descs.length > 100, `${descs.length} found`);
+  let descHits = 0;
+  for (let i = 0; i < descs.length; i++) {
+    // A description may FORBID the behaviour; it may not instruct it.
+    const forbids = /\bsay nothing\b|\bsilently\b|\bdo not (write|say|announce)\b/i.test(descs[i]);
+    if (forbids) continue;
+    for (let j = 0; j < PRE_TOOL_FILLER.length; j++) {
+      if (PRE_TOOL_FILLER[j][1].test(descs[i])) { descHits++; console.log(`      (description #${i}: "${PRE_TOOL_FILLER[j][0]}" — ${descs[i].slice(0, 90)})`); }
+    }
+  }
+  check("no tool description instructs pre-tool speech", descHits === 0, `${descHits} hits`);
+
+  // SELF-TEST. The pattern list is the whole value of this section, so it is
+  // driven against the real sentences that have appeared in prompts here. A
+  // detector that cannot fire reports "clean" for ever.
+  const BAD: [string, string][] = [
+    ["the live voice instruction this class was found in", "Before any tool call, say a SHORT acknowledgment first"],
+    ["the tool description that outlived its own fix", "Tell the user you're digging into that while it runs"],
+    ["the plan paragraph itself", "Let me check the meeting record and I'll come back to you"],
+    ["a description telling the model to narrate", "Say you're checking the contract before calling this"],
+    ["the deck sentence, as it used to read", "Announce nothing you do not immediately call"],
+    ["the studio workflow line, as it used to read", "propose the shot list briefly in your reply, then call design_create_shot four times"],
+    ["the design-mode shot list line, as it used to read", "Before calling generate_video, sketch the shot in plain English: subject, motion, camera"],
+    ["a qualifying bullet appended to the rule itself", "Before a lookup, tell the user what you are about to fetch so they are not left staring at a blank screen"],
+  ];
+  let deaf = 0;
+  for (let i = 0; i < BAD.length; i++) {
+    let caught = false;
+    for (let j = 0; j < PRE_TOOL_FILLER.length; j++) if (PRE_TOOL_FILLER[j][1].test(BAD[i][1])) caught = true;
+    if (!caught) { deaf++; console.log(`      (no detector fires on: ${BAD[i][1]})`); }
+  }
+  check("every detector fires on the bad prompt it exists for", deaf === 0, `${deaf} of ${BAD.length} not detected`);
+  if (deaf) console.log("      — the two assertions above cannot be trusted while a detector is deaf");
+}
+
+
 /* ─────────── Mailbox routing + the dangling-promise guard ─────────── */
 {
   console.log("\n8. A turn that needs the mailbox reaches a model that has one");

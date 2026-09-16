@@ -12,8 +12,9 @@ import { supabase } from "@/lib/supabase";
 import { searchNotebook } from "@/lib/notebook/search";
 import { generateSlides, updateSlides, resolveDeckImages, splitOverflowingSlides, isVisualSlide, deckWarnings, stampFooter } from "@/lib/slides/generate";
 import { authorityOnEnabled } from "@/lib/authorityon/mcp";
-import { toolActivityEvent } from "@/lib/ai/tool-activity";
-import { createToolLoopGuard, repeatedCallNotice, overBudgetNotice, stallOutcome, slidesWritten, type ToolUsage } from "@/lib/ai/tool-loop-guard";
+import { toolActivityEvent, dataSubject } from "@/lib/ai/tool-activity";
+import { createToolLoopGuard, repeatedCallNotice, overBudgetNotice, stallOutcome, slidesWritten, cutShortLookupNotice, DO_NOT_BLAME_THE_SOURCE, OUR_LIMIT_CUT_IT_SHORT, type ToolUsage } from "@/lib/ai/tool-loop-guard";
+import { withoutRoundNarration, type RoundSpan } from "@/lib/ai/round-text";
 import { toPreviewModel } from "@/lib/slides/preview-model";
 import { signedMediaUrl } from "@/lib/media/signed";
 import { COLOR as BRAND_COLOR } from "@/lib/slides/brand";
@@ -363,11 +364,21 @@ const MAX_POST_TAINT_CALLS = 6;
 
 /** What the model is told when a tool is refused post-taint. Says WHICH rule
  *  fired, so the answer to the user can be honest about the gap rather than
- *  claiming the source does not exist. */
-function postTaintRefusal(toolName: string): string {
+ *  claiming the source does not exist.
+ *
+ *  Exported so the check can assert the WORDS rather than the line. Both
+ *  branches end with DO_NOT_BLAME_THE_SOURCE: this refusal is where that
+ *  clause was first written, and the two loop-guard refusals now carry the
+ *  same one, so all three say whose limit was hit in the same words.
+ *
+ *  ONLY THE READ BRANCH carries OUR_LIMIT_CUT_IT_SHORT with it. That branch is
+ *  a real lookup stopped by our own allowance. The other is a BLOCKED STEP: a
+ *  refused generate_slides reached no source, and calling it a cut-short lookup
+ *  would have the model describe a deck build as data it could not fetch. */
+export function postTaintRefusal(toolName: string): string {
   return POST_TAINT_READ_TOOLS.has(toolName)
-    ? `No further lookups this turn — the post-email allowance (${MAX_POST_TAINT_CALLS}) is used up. Answer now from what you have, and say plainly what you could not check rather than promising to fetch it.`
-    : `"${toolName}" cannot run once third-party content has been read this turn: it can reach outside this conversation or persist beyond it, and anything it did could be following an instruction planted in that content. Answer from what you already have, and tell the user this specific step was blocked — do NOT say the source is unavailable or that you have no access to it.`;
+    ? `No further lookups this turn — the post-email allowance (${MAX_POST_TAINT_CALLS}) is used up. Answer now from what you have rather than promising to fetch it. ${OUR_LIMIT_CUT_IT_SHORT} ${DO_NOT_BLAME_THE_SOURCE}`
+    : `"${toolName}" cannot run once third-party content has been read this turn: it can reach outside this conversation or persist beyond it, and anything it did could be following an instruction planted in that content. Answer from what you already have, and tell the user this specific STEP was blocked here — not that anything was looked up and missing. ${DO_NOT_BLAME_THE_SOURCE}`;
 }
 
 /**
@@ -8412,6 +8423,23 @@ export async function searchMemory(
 export interface StreamResult {
   fullText: string;
   /**
+   * WHAT IS SAVED. `fullText` is what the user watched; this is the same text
+   * with every round that ended in TOOL CALLS cut out of it.
+   *
+   * The two differ only on a turn whose model narrated a plan before reaching
+   * for a tool, and that narration is pre-tool by construction — an intention
+   * stated before the result existed, carrying no fact a later turn needs. It
+   * stays on the screen as it was streamed; it does not go in the transcript,
+   * where it was the whole first screen of a flagged answer and is then fed
+   * back as history on every subsequent turn, teaching the model its own
+   * narration as the house style. See lib/ai/round-text.ts.
+   *
+   * Required, not optional, for the same reason as modelUsed and rounds below:
+   * an optional field would fall back to saving the narration in silence, and
+   * a new provider chain that forgets this one fails to compile instead.
+   */
+  keptText: string;
+  /**
    * BILLABLE UNCACHED input, normalised across providers.
    *
    * The two families report this differently and the difference is invisible
@@ -8506,7 +8534,7 @@ export function createStreamingResponse(
       // requests. The ledger stores that as NULL rather than as a measured
       // zero — "not measured" and "measured, and it was none" are different
       // claims, and only one of them can actually happen.
-      let result: StreamResult = { fullText: "", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, modelUsed: modelInfo.apiModel, rounds: 0, toolsUsed: [] };
+      let result: StreamResult = { fullText: "", keptText: "", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, modelUsed: modelInfo.apiModel, rounds: 0, toolsUsed: [] };
 
       /**
        * Adopt a fallback leg's text WITHOUT discarding what the failed leg
@@ -8657,6 +8685,13 @@ export function createStreamingResponse(
           }
         }
 
+        // ONE SCRUB, APPLIED TO BOTH COPIES. What is saved is no longer what
+        // was streamed (see StreamResult.keptText), so a strip that ran on one
+        // string only would leave a fabricated link on the row while the
+        // screen showed it removed, or the reverse. `quiet` on the second pass
+        // because the two copies share their faults: logging the same strip
+        // twice would read in the logs as two incidents.
+        //
         // Strip fabricated image markdown AND deduplicate legitimate ones.
         // Models sometimes write their own ![alt](url) repeating a tool-generated
         // URL — or, worse, ECHO a previous turn's image to cover a FAILED
@@ -8674,52 +8709,64 @@ export function createStreamingResponse(
             let im: RegExpExecArray | null;
             while ((im = imgRe.exec(hc)) !== null) historyImageUrls.add(im[1]);
           }
+        }
+        const scrub = (input: string, quiet: boolean): string => {
+          const note = (m: string, d: string) => { if (!quiet) console.warn(m, d); };
+          let text = input;
           // Context-placeholder debris only appears when the model is covering
           // a failure — a clean reply legitimately containing this phrase is
           // left alone.
-          result.fullText = result.fullText.replace(/\[Previously generated image\]/g, "");
-        }
-        const seenImageUrls = new Set<string>();
-        result.fullText = result.fullText.replace(
-          /!\[([^\]]*)\]\(([^)]+)\)/g,
-          (match, _alt, url) => {
-            if (imageFailed && historyImageUrls.has(url)) {
-              console.warn("[Stream] Stripped history-echoed image:", url.slice(0, 80));
-              return "";
-            }
-            if (url.startsWith("/api/media/")) {
-              // Legitimate URL — but only keep first occurrence
-              if (seenImageUrls.has(url)) {
-                console.warn("[Stream] Stripped duplicate image:", url.slice(0, 80));
+          if (imageFailed) text = text.replace(/\[Previously generated image\]/g, "");
+          // Per COPY, not per turn: the same legitimate image surviving in both
+          // strings is one image shown once, not a duplicate.
+          const seenImageUrls = new Set<string>();
+          text = text.replace(
+            /!\[([^\]]*)\]\(([^)]+)\)/g,
+            (match, _alt, url) => {
+              if (imageFailed && historyImageUrls.has(url)) {
+                note("[Stream] Stripped history-echoed image:", url.slice(0, 80));
                 return "";
               }
-              seenImageUrls.add(url);
-              return match;
-            }
-            console.warn("[Stream] Stripped fabricated image markdown:", match.slice(0, 100));
-            return "";
-          }
-        );
-        // Strip fabricated markdown links — keep our own URLs, anchors, and web search citations.
-        // IMPORTANT: when webSearch is active (xAI LiveSearch or Claude web_search), all http/https
-        // URLs are real citations returned by the search — do NOT strip them.
-        if (!config.preserveLinks) {
-          result.fullText = result.fullText.replace(
-            /\[([^\]]+)\]\(([^)]+)\)/g,
-            (match, text, url) => {
-              if (url.startsWith("/api/media/")) return match;
-              if (url.startsWith("#")) return match;
-              if (url.startsWith("https://app.thecontentengine.com/")) return match;
-              // Preserve all http/https URLs when web search is active — these are real citations
-              if (config.webSearch && (url.startsWith("https://") || url.startsWith("http://"))) return match;
-              console.warn("[Stream] Stripped fabricated link:", url.slice(0, 100));
-              return text;
+              if (url.startsWith("/api/media/")) {
+                // Legitimate URL — but only keep first occurrence
+                if (seenImageUrls.has(url)) {
+                  note("[Stream] Stripped duplicate image:", url.slice(0, 80));
+                  return "";
+                }
+                seenImageUrls.add(url);
+                return match;
+              }
+              note("[Stream] Stripped fabricated image markdown:", match.slice(0, 100));
+              return "";
             }
           );
-        }
-
-        // Clean up leftover blank lines from stripped content
-        result.fullText = result.fullText.replace(/\n{3,}/g, "\n\n").trim();
+          // Strip fabricated markdown links — keep our own URLs, anchors, and web search citations.
+          // IMPORTANT: when webSearch is active (xAI LiveSearch or Claude web_search), all http/https
+          // URLs are real citations returned by the search — do NOT strip them.
+          if (!config.preserveLinks) {
+            text = text.replace(
+              /\[([^\]]+)\]\(([^)]+)\)/g,
+              (match, label, url) => {
+                if (url.startsWith("/api/media/")) return match;
+                if (url.startsWith("#")) return match;
+                if (url.startsWith("https://app.thecontentengine.com/")) return match;
+                // Preserve all http/https URLs when web search is active — these are real citations
+                if (config.webSearch && (url.startsWith("https://") || url.startsWith("http://"))) return match;
+                note("[Stream] Stripped fabricated link:", url.slice(0, 100));
+                return label;
+              }
+            );
+          }
+          // Clean up leftover blank lines from stripped content
+          text = text.replace(/\n{3,}/g, "\n\n").trim();
+          // AN ORPHAN RULE IS NOT AN ANSWER. Cutting a round's narration can
+          // leave a reply whose only survivor is an end-of-turn notice, and
+          // every one of those opens with the `---` that used to separate it
+          // from the text above. Observed; the notice reads fine without it.
+          return text.replace(/^---\s*\n+/, "");
+        };
+        result.fullText = scrub(result.fullText, false);
+        result.keptText = scrub(result.keptText, true);
 
         // Notify caller with accumulated text + usage
         if (onComplete) {
@@ -9275,6 +9322,12 @@ async function streamAnthropic(
   console.log(`[Anthropic] Streaming with tools: [${tools.map(t => (t as any).name || (t as any).type).join(', ') || 'none'}], imageGeneration=${config.imageGeneration}, designMode=${!!config.designMode}`);
 
   let fullText = "";
+  // WHERE THIS TURN'S NARRATION IS. One [start, end) per round that ended in
+  // tool calls, cut out of the SAVED copy at the return below and out of
+  // nothing else: the stream, the model's replay and roundTextStart are all
+  // untouched. See lib/ai/round-text.ts for why spans rather than a second
+  // accumulator.
+  const narrationSpans: RoundSpan[] = [];
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCacheReadTokens = 0;
@@ -9566,6 +9619,14 @@ async function streamAnthropic(
       fullText += "\n\n";
       controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
     }
+    // THIS ROUND ENDED IN TOOL CALLS, so whatever it said was said BEFORE the
+    // result existed. Recorded here and cut from the saved copy only — the
+    // guard above has already fallen through, so the round's fate is known,
+    // and the executors have not run, so nothing they append (image markdown,
+    // a deck link, a download link) is inside the span. AFTER the separator on
+    // purpose: the blank line leaves with the paragraph it separated, instead
+    // of the saved text opening on a newline.
+    narrationSpans.push({ start: roundTextStart, end: fullText.length });
 
     // Execute tool calls and build tool results
     // First, add the assistant's response (with tool_use blocks) to messages
@@ -10778,6 +10839,21 @@ async function streamAnthropic(
       } catch { /* client gone; the text is still on the row */ }
     }
   }
+  // A DATA TOOL REFUSED OVER BUDGET is said out loud: the model cannot see its
+  // own refusal, and asked why it had not read two meetings it volunteered
+  // "(no recording)" about one carrying a 28,563-character transcript. LAST of
+  // the notices, so the deck family's one-a-turn rule is settled before this
+  // exists — a cut-short lookup and an unmade deck change are different facts
+  // and a turn can owe the user both.
+  {
+    const cutShort = cutShortLookupNotice(toolLoopGuard.usage(), dataSubject);
+    if (cutShort) {
+      fullText += cutShort;
+      try {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: cutShort })}\n\n`));
+      } catch { /* client gone; the text is still on the row */ }
+    }
+  }
 
   // ONE LINE PER TURN, one greppable prefix across all four chains, so
   // `vercel logs --query "Turn: rounds="` reaches every provider at once. The
@@ -10788,6 +10864,7 @@ async function streamAnthropic(
 
   return {
     fullText,
+    keptText: withoutRoundNarration(fullText, narrationSpans, spokenText.length),
     inputTokens: totalInputTokens,
     outputTokens: totalOutputTokens,
     cacheReadTokens: totalCacheReadTokens,
@@ -10956,6 +11033,12 @@ async function streamXAIChatCompletions(
   console.log(`[xAI] Streaming model=${apiModel}, webSearch=${config.webSearch}, imageGen=${config.imageGeneration}, tools=[${tools.map(t => (t as any).function?.name || t.type).join(', ') || 'none'}]`);
 
   let fullText = "";
+  // WHERE THIS TURN'S NARRATION IS. One [start, end) per round that ended in
+  // tool calls, cut out of the SAVED copy at the return below and out of
+  // nothing else: the stream, the model's replay and roundTextStart are all
+  // untouched. See lib/ai/round-text.ts for why spans rather than a second
+  // accumulator.
+  const narrationSpans: RoundSpan[] = [];
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCacheReadTokens = 0;
@@ -11186,6 +11269,14 @@ async function streamXAIChatCompletions(
       fullText += "\n\n";
       controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
     }
+    // THIS ROUND ENDED IN TOOL CALLS, so whatever it said was said BEFORE the
+    // result existed. Recorded here and cut from the saved copy only — the
+    // guard above has already fallen through, so the round's fate is known,
+    // and the executors have not run, so nothing they append (image markdown,
+    // a deck link, a download link) is inside the span. AFTER the separator on
+    // purpose: the blank line leaves with the paragraph it separated, instead
+    // of the saved text opening on a newline.
+    narrationSpans.push({ start: roundTextStart, end: fullText.length });
 
     // Build the assistant message with tool_calls for the conversation
     const toolCallsArray = Array.from(toolCalls.values()).map((tc) => ({
@@ -11914,6 +12005,21 @@ async function streamXAIChatCompletions(
       } catch { /* client gone; the text is still on the row */ }
     }
   }
+  // A DATA TOOL REFUSED OVER BUDGET is said out loud: the model cannot see its
+  // own refusal, and asked why it had not read two meetings it volunteered
+  // "(no recording)" about one carrying a 28,563-character transcript. LAST of
+  // the notices, so the deck family's one-a-turn rule is settled before this
+  // exists — a cut-short lookup and an unmade deck change are different facts
+  // and a turn can owe the user both.
+  {
+    const cutShort = cutShortLookupNotice(toolLoopGuard.usage(), dataSubject);
+    if (cutShort) {
+      fullText += cutShort;
+      try {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: cutShort })}\n\n`));
+      } catch { /* client gone; the text is still on the row */ }
+    }
+  }
 
   // ONE LINE PER TURN, one greppable prefix across all four chains, so
   // `vercel logs --query "Turn: rounds="` reaches every provider at once. The
@@ -11924,6 +12030,7 @@ async function streamXAIChatCompletions(
 
   return {
     fullText,
+    keptText: withoutRoundNarration(fullText, narrationSpans, spokenText.length),
     inputTokens: totalInputTokens,
     outputTokens: totalOutputTokens,
     cacheReadTokens: totalCacheReadTokens,
@@ -12017,7 +12124,9 @@ async function streamXAIResponses(
     }
   }
 
-  return { fullText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens: 0, modelUsed: apiModel, rounds: 1, /* one request, no tool loop */ toolsUsed: [] };
+  // One request and no tool loop, so there is no round that ended in tool
+  // calls and nothing to cut: what was said is what is saved.
+  return { fullText, keptText: fullText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens: 0, modelUsed: apiModel, rounds: 1, /* one request, no tool loop */ toolsUsed: [] };
 }
 
 /* ─────────────── Gemini Streaming ─────────────── */
@@ -12145,6 +12254,12 @@ async function streamGemini(
   }
 
   let fullText = "";
+  // WHERE THIS TURN'S NARRATION IS. One [start, end) per round that ended in
+  // tool calls, cut out of the SAVED copy at the return below and out of
+  // nothing else: the stream, the model's replay and roundTextStart are all
+  // untouched. See lib/ai/round-text.ts for why spans rather than a second
+  // accumulator.
+  const narrationSpans: RoundSpan[] = [];
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCacheReadTokens = 0;
@@ -12356,6 +12471,14 @@ async function streamGemini(
       fullText += "\n\n";
       controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
     }
+    // THIS ROUND ENDED IN TOOL CALLS, so whatever it said was said BEFORE the
+    // result existed. Recorded here and cut from the saved copy only — the
+    // guard above has already fallen through, so the round's fate is known,
+    // and the executors have not run, so nothing they append (image markdown,
+    // a deck link, a download link) is inside the span. AFTER the separator on
+    // purpose: the blank line leaves with the paragraph it separated, instead
+    // of the saved text opening on a newline.
+    narrationSpans.push({ start: roundTextStart, end: fullText.length });
 
     // Build the assistant message with tool_calls
     const toolCallsArray = Array.from(toolCalls.values()).map((tc) => ({
@@ -13062,6 +13185,21 @@ async function streamGemini(
       } catch { /* client gone; the text is still on the row */ }
     }
   }
+  // A DATA TOOL REFUSED OVER BUDGET is said out loud: the model cannot see its
+  // own refusal, and asked why it had not read two meetings it volunteered
+  // "(no recording)" about one carrying a 28,563-character transcript. LAST of
+  // the notices, so the deck family's one-a-turn rule is settled before this
+  // exists — a cut-short lookup and an unmade deck change are different facts
+  // and a turn can owe the user both.
+  {
+    const cutShort = cutShortLookupNotice(toolLoopGuard.usage(), dataSubject);
+    if (cutShort) {
+      fullText += cutShort;
+      try {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: cutShort })}\n\n`));
+      } catch { /* client gone; the text is still on the row */ }
+    }
+  }
 
   // ONE LINE PER TURN, one greppable prefix across all four chains, so
   // `vercel logs --query "Turn: rounds="` reaches every provider at once. The
@@ -13072,6 +13210,7 @@ async function streamGemini(
 
   return {
     fullText,
+    keptText: withoutRoundNarration(fullText, narrationSpans, spokenText.length),
     inputTokens: totalInputTokens,
     outputTokens: totalOutputTokens,
     cacheReadTokens: totalCacheReadTokens,
@@ -13208,6 +13347,12 @@ async function streamOpenAI(
   }
 
   let fullText = "";
+  // WHERE THIS TURN'S NARRATION IS. One [start, end) per round that ended in
+  // tool calls, cut out of the SAVED copy at the return below and out of
+  // nothing else: the stream, the model's replay and roundTextStart are all
+  // untouched. See lib/ai/round-text.ts for why spans rather than a second
+  // accumulator.
+  const narrationSpans: RoundSpan[] = [];
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCacheReadTokens = 0;
@@ -13417,6 +13562,14 @@ async function streamOpenAI(
       fullText += "\n\n";
       controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
     }
+    // THIS ROUND ENDED IN TOOL CALLS, so whatever it said was said BEFORE the
+    // result existed. Recorded here and cut from the saved copy only — the
+    // guard above has already fallen through, so the round's fate is known,
+    // and the executors have not run, so nothing they append (image markdown,
+    // a deck link, a download link) is inside the span. AFTER the separator on
+    // purpose: the blank line leaves with the paragraph it separated, instead
+    // of the saved text opening on a newline.
+    narrationSpans.push({ start: roundTextStart, end: fullText.length });
 
     // Build the assistant message with tool_calls for the conversation
     const toolCallsArray = Array.from(toolCalls.values()).map((tc) => ({
@@ -14120,6 +14273,21 @@ async function streamOpenAI(
       } catch { /* client gone; the text is still on the row */ }
     }
   }
+  // A DATA TOOL REFUSED OVER BUDGET is said out loud: the model cannot see its
+  // own refusal, and asked why it had not read two meetings it volunteered
+  // "(no recording)" about one carrying a 28,563-character transcript. LAST of
+  // the notices, so the deck family's one-a-turn rule is settled before this
+  // exists — a cut-short lookup and an unmade deck change are different facts
+  // and a turn can owe the user both.
+  {
+    const cutShort = cutShortLookupNotice(toolLoopGuard.usage(), dataSubject);
+    if (cutShort) {
+      fullText += cutShort;
+      try {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: cutShort })}\n\n`));
+      } catch { /* client gone; the text is still on the row */ }
+    }
+  }
 
   // ONE LINE PER TURN, one greppable prefix across all four chains, so
   // `vercel logs --query "Turn: rounds="` reaches every provider at once. The
@@ -14130,6 +14298,7 @@ async function streamOpenAI(
 
   return {
     fullText,
+    keptText: withoutRoundNarration(fullText, narrationSpans, spokenText.length),
     inputTokens: totalInputTokens,
     outputTokens: totalOutputTokens,
     cacheReadTokens: totalCacheReadTokens,
@@ -14190,5 +14359,5 @@ async function streamPerplexity(
 
   // Perplexity offers no prompt caching, so these are structurally zero
   // rather than unmeasured.
-  return { fullText, inputTokens, outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0, modelUsed: apiModel, rounds: 1, /* one request, no tool loop */ toolsUsed: [] };
+  return { fullText, keptText: fullText, inputTokens, outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0, modelUsed: apiModel, rounds: 1, /* one request, no tool loop */ toolsUsed: [] };
 }

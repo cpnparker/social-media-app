@@ -121,7 +121,7 @@ export async function POST(
         temperature: 0.2,
         preserveLinks: true,
       },
-      async ({ fullText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, modelUsed }) => {
+      async ({ fullText, keptText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, modelUsed }) => {
         // LOG THE SPEND, FIRST AND UNCONDITIONALLY.
         //
         // This route called no usage logger at all. It runs Sonnet 5 at 4,096
@@ -149,11 +149,13 @@ export async function POST(
         });
 
         // Save as assistant message (unless incognito)
-        if (!conversation.flag_incognito && fullText.trim()) {
+        // The same transcript the chat route writes, read back as history by
+        // every later turn — so it saves the same copy, for the same reason.
+        if (!conversation.flag_incognito && keptText.trim()) {
           await intelligenceDb.from("ai_messages").insert({
             id_conversation: conversationId,
             role_message: "assistant",
-            document_message: fullText,
+            document_message: keptText,
             name_model: modelUsed,
           });
 

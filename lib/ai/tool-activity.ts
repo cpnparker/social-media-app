@@ -23,6 +23,17 @@
 export interface ToolActivity {
   /** Present tense, what is happening, in the user's words not ours. */
   label: string;
+  /**
+   * WHAT THE TOOL READS, as a noun a sentence can be built around: "your
+   * meeting records", "your mail". Present only on tools that fetch a SOURCE,
+   * so the cut-short notice can name what a refused lookup would have reached.
+   *
+   * Absent on everything that builds rather than reads. That gate was found by
+   * running the notice, not by reading it: unscoped, it produced "ran out of
+   * its own allowance for reading the deck builder" and, on an unmapped tool,
+   * "…for reading not a tool".
+   */
+  subject?: string;
   /** Which system is being reached. Drives the icon on the client. */
   service:
     | "authorityon"
@@ -41,22 +52,33 @@ export interface ToolActivity {
 }
 
 const ACTIVITY: Record<string, ToolActivity> = {
-  query_authorityon: { label: "Reading AuthorityOn", service: "authorityon" },
-  query_engine: { label: "Querying the Engine", service: "engine" },
-  query_resourcing: { label: "Checking resourcing", service: "engine" },
-  lookup_client_context: { label: "Looking up the client", service: "engine" },
+  query_authorityon: { label: "Reading AuthorityOn", service: "authorityon", subject: "AuthorityOn" },
+  query_engine: { label: "Querying the Engine", service: "engine", subject: "the Engine database" },
+  query_resourcing: { label: "Checking resourcing", service: "engine", subject: "the resourcing data" },
+  lookup_client_context: { label: "Looking up the client", service: "engine", subject: "the client record" },
+  // Scores content rather than fetching it, so no subject: a notice about a
+  // cut-short lookup of the scorer would name a thing nobody asked it to read.
   query_content_score: { label: "Scoring the content", service: "engine" },
-  query_page_audit: { label: "Auditing the page", service: "engine" },
-  query_gmail: { label: "Searching your mail", service: "mail" },
-  query_calendar: { label: "Checking your calendar", service: "calendar" },
-  query_microsoft: { label: "Checking Microsoft 365", service: "calendar" },
-  query_slack: { label: "Searching Slack", service: "slack" },
-  query_meetingbrain: { label: "Reading meeting notes", service: "meetings" },
-  query_drive_docs: { label: "Reading Drive documents", service: "drive" },
-  query_xero: { label: "Reading Xero", service: "finance" },
-  search_memory: { label: "Searching memories", service: "memory" },
-  search_notebook: { label: "Searching your notebook", service: "memory" },
-  search_thread: { label: "Searching this conversation", service: "memory" },
+  query_page_audit: { label: "Auditing the page", service: "engine", subject: "the page being audited" },
+  query_gmail: { label: "Searching your mail", service: "mail", subject: "your mail" },
+  query_calendar: { label: "Checking your calendar", service: "calendar", subject: "your calendar" },
+  query_microsoft: { label: "Checking Microsoft 365", service: "calendar", subject: "Microsoft 365" },
+  query_slack: { label: "Searching Slack", service: "slack", subject: "Slack" },
+  query_meetingbrain: { label: "Reading meeting notes", service: "meetings", subject: "your meeting records" },
+  query_drive_docs: { label: "Reading Drive documents", service: "drive", subject: "Drive documents" },
+  query_xero: { label: "Reading Xero", service: "finance", subject: "Xero" },
+  search_memory: { label: "Searching memories", service: "memory", subject: "your saved memories" },
+  search_notebook: { label: "Searching your notebook", service: "memory", subject: "your notebook" },
+  search_thread: { label: "Searching this conversation", service: "memory", subject: "this conversation" },
+  // NO SUBJECT, and this one is a judgement rather than a category. A web
+  // search reads a source like any of the above, but it is absent from the
+  // budget table, so it runs on the default cap of THREE on the three chains
+  // where it is a function tool — and an ordinary "look these four things up"
+  // turn would end with a warning that the answer may be missing something.
+  // Review 2's plan item 4 measured web_search going over in 4 of its 6 turns
+  // in the window. A notice that fires on most search turns stops being read,
+  // which is this repo's own recorded lesson about a check that cries wolf.
+  // Give it a real budget (item 4) and give it a subject in the same change.
   web_search: { label: "Searching the web", service: "web" },
   generate_word_document: { label: "Writing the document", service: "document" },
   generate_document: { label: "Building the deck", service: "document" },
@@ -77,6 +99,29 @@ export function toolActivity(name: string): ToolActivity {
   const known = ACTIVITY[name];
   if (known) return known;
   return { label: `Running ${String(name || "a tool").replace(/_/g, " ")}`, service: "generic" };
+}
+
+/**
+ * The source a tool reads, or null when it reads no source.
+ *
+ * Null for a generator, for a tool this map has never heard of, and for
+ * anything whose service builds rather than fetches. A notice naming a machine
+ * name, or naming the deck builder as something the turn failed to READ, is
+ * worse than no notice at all.
+ *
+ * THE SERVICE GATE IS UNREACHABLE TODAY, deliberately and on the record. No
+ * generator in the map above carries a `subject`, so the line before it has
+ * already returned null by the time it is read: it is a second lock on a door
+ * the first lock holds shut, and it exists for the entry somebody adds later
+ * with a subject copied from the row above. A mutation that deletes it alone
+ * therefore SURVIVES every check in this repo, and both mutation logs say so
+ * rather than claiming a kill nothing can reproduce.
+ */
+export function dataSubject(name: string): string | null {
+  const known = ACTIVITY[name];
+  if (!known || !known.subject) return null;
+  if (known.service === "document" || known.service === "image" || known.service === "generic") return null;
+  return known.subject;
 }
 
 /** The SSE frame the chains emit when a tool starts. One shape, four chains. */

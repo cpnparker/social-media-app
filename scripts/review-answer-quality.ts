@@ -271,11 +271,27 @@ async function main() {
       // The question a reviewer actually has. A turn that answered from nothing,
       // or that never tried the tool holding the answer, looks identical in the
       // text — this is the only place the difference shows.
-      const tools = (h.row.data_tools || []) as { name: string; calls: number; blocked: number }[];
+      // TWO SHAPES, because the row you are reading may predate the split.
+      // Until 2026-09-16 a refusal was one `blocked` total and reviewing the
+      // NatureFinance flag meant working out arithmetically, against the budget
+      // table, which of its refusals were duplicates and which were the budget
+      // running out. Rows written since carry the two separately — and only the
+      // over-budget one is a hole in the answer, so it is named as one. Reading
+      // `blocked` alone would silently drop the annotation from every new row,
+      // and the cast is `any` at source, so nothing would have complained.
+      const tools = (h.row.data_tools || []) as { name: string; calls: number; blocked?: number; blockedRepeat?: number; blockedBudget?: number }[];
       if (tools.length) {
         const parts: string[] = [];
         for (let k = 0; k < tools.length; k++) {
-          parts.push(`${tools[k].name}×${tools[k].calls}${tools[k].blocked ? ` (${tools[k].blocked} refused)` : ""}`);
+          const t = tools[k];
+          const over = t.blockedBudget || 0;
+          const repeat = t.blockedRepeat || 0;
+          const legacy = t.blocked || 0;
+          const bits: string[] = [];
+          if (over) bits.push(`${over} over budget`);
+          if (repeat) bits.push(`${repeat} repeat`);
+          if (!bits.length && legacy) bits.push(`${legacy} refused`);
+          parts.push(`${t.name}×${t.calls}${bits.length ? ` (${bits.join(", ")})` : ""}`);
         }
         console.log(`    TOOLS: ${parts.join(", ")}`);
       } else {
