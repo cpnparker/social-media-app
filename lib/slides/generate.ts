@@ -3349,8 +3349,19 @@ export function quoteClip(t: string): string {
  *  model is the one having the conversation, and a user who is told "four of
  *  your six pictures could not be found" can supply them. Silence here meant
  *  the model described a deck that was quietly missing things. */
-export function deckWarnings(slides: SlideInput[]): string {
+export function deckWarnings(slides: SlideInput[], measured: string[] = []): string {
   const notes: string[] = [];
+  // What was MEASURED on the built deck rather than read off its spec: the
+  // geometry faults from lib/slides/validate.ts, which the caller runs because
+  // it is the one place holding the built requests. They arrive as sentences
+  // and join the same advisory list — a second block of warnings beside this
+  // one, with its own framing, is how a deck ends up telling the model two
+  // different things about the same slide.
+  //
+  // Passed IN rather than measured here so that this module does not import
+  // the validator that imports it. The list is first because a box drawn off
+  // the page outranks a note about dark grounds.
+  for (let i = 0; i < measured.length; i++) notes.push(measured[i]);
   for (let i = 0; i < slides.length; i++) {
     const s = slides[i];
     const n = i + 1;

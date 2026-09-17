@@ -30,6 +30,11 @@ import {
 import { createToolLoopGuard } from "../lib/ai/tool-loop-guard";
 import { deckToHtml, safeSrc } from "../lib/slides/pdf-html";
 import { SLIDES_TEXT_INSET, NATURAL_LINE } from "../lib/slides/preview-style";
+import {
+  validateDeck, offCanvasFaults, overlapFaults, overrunFaults, geometryNotes, geometryRefusal,
+  faultCounts, relayableFaults, logDeckGeometry, inkBottom, GEOMETRY_SEVERITY, type DeckGeometry,
+} from "../lib/slides/validate";
+import { previewSlideFrom } from "../lib/slides/preview-model";
 import { prepareSlidesForBuild, sourceSlideCount, fidelityAudit, SLIDES_GEN_OPENAI_TOOL, unresolvedSlidesNotice, createStreamingResponse } from "../lib/ai/providers";
 import { draftPreview } from "../lib/slides/preview-model";
 import { readFileSync } from "fs";
@@ -536,71 +541,47 @@ const SHOTS: SlideInput[] = [
 const SHOT_AT = DECK.length + STRESS.length;
 const SHOT_IX = (letter: string) => SHOT_AT + "ABCDEFGHIJKLMNOPRQ".indexOf(letter);
 
-/* 1. Nothing may fall off the canvas. */
+/* 1. Nothing may fall off the canvas.
+ *
+ *  THE ASSERTION ITSELF NOW LIVES IN lib/slides/validate.ts, with checks 2 and
+ *  11, and runs on every deck a user is about to see as well as on these
+ *  fixtures. It was moved rather than copied: the recorded failure mode in this
+ *  repo is two copies of a rule kept in step by a comment, and a runtime guard
+ *  that had drifted from this script would be worse than none, because this
+ *  script's green would be read as covering both. Check 46 is the migration
+ *  test — same corpus, same population, same verdict — and the reasons for
+ *  every exclusion moved with the code. */
 console.log(`\n1. Every element stays on the 720x405 canvas`);
 // Indexed loop, not .entries(): tsconfig sets no target, so iterating an
 // iterator needs downlevelIteration and fails the production build.
 const ALL = DECK.concat(STRESS).concat(SHOTS);
-for (let i = 0; i < ALL.length; i++) {
-  const slide = ALL[i];
-  for (const req of buildSlideRequests(slide, i, "v")) {
-    const body: any = Object.values(req)[0];
-    const ep = body?.elementProperties;
-    if (!ep) continue;
-    const t = ep.transform;
-    const { translateX: x, translateY: y, scaleX = 1, scaleY = 1, shearX = 0, shearY = 0 } = t;
-    const w = ep.size.width.magnitude, h = ep.size.height.magnitude;
-    // Sample the FOUR corners under the full affine — a line-chart segment is a
-    // sheared/rotated rectangle, so size×scale at the translate is not its
-    // bounding box. A check on size alone also missed scaleX:2 on a full-bleed
-    // image.
-    const corners: [number, number][] = [[0, 0], [w, 0], [0, h], [w, h]];
-    let off = false;
-    for (const [u, v] of corners) {
-      const px = scaleX * u + shearX * v + x;
-      const py = shearY * u + scaleY * v + y;
-      if (px < -0.6 || py < -0.6 || px > CANVAS.width + 0.6 || py > CANVAS.height + 0.6) off = true;
-    }
-    if (off) {
-      fail(`${slide.layout}: element ${body.objectId || ""} (${Math.round(w)}x${Math.round(h)}) leaves the canvas`);
-    }
-  }
+/** One build per slide, read back for all three geometry checks. Built with
+ *  the same run id the old check 1 used, so an id in a failure message reads
+ *  the way it always did. */
+const GEOM_ALL = validateDeck(ALL, "v");
+for (let i = 0; i < GEOM_ALL.faults.length; i++) {
+  if (GEOM_ALL.faults[i].kind === "off-canvas") fail(GEOM_ALL.faults[i].note);
 }
-if (!failures) pass(`all ${ALL.length} layouts fit, including ${STRESS.length} overloaded ones and ${SHOTS.length} screenshots`);
+if (!failures) {
+  pass(`all ${ALL.length} layouts fit, including ${STRESS.length} overloaded ones and ${SHOTS.length} screenshots` +
+    ` (${GEOM_ALL.elementsChecked} elements)`);
+}
 
-/* 2. Text boxes must not sit on top of each other. */
+/* 2. Text boxes must not sit on top of each other.
+ *
+ *  Inset-aware and not float-exact, both of which moved into validate.ts with
+ *  their reasons: a table cell overhangs its row by exactly SLIDES_TEXT_INSET.y
+ *  on purpose so that ten rows do not spend 72pt on padding, and a six-row
+ *  table accumulates fractional heights so the row below starts 2.8e-14pt above
+ *  where the row above ended. Check 46 drives both near misses directly. */
 const before2 = failures;
 console.log(`\n2. No two text boxes overlap`);
-const deck = toPreviewModel(ALL);
-deck.slides.forEach((page, i) => {
-  const texts = page.elements.filter((e) => e.kind === "text");
-  for (let a = 0; a < texts.length; a++) {
-    for (let b = a + 1; b < texts.length; b++) {
-      const p = texts[a], q = texts[b];
-      // A box's vertical INSET is not content: Slides never draws a glyph in
-      // the 3.6pt above or below the text. Table cells overhang their row by
-      // exactly that, on purpose, so that ten rows do not spend 72pt on
-      // padding — two cells whose insets touch are not two texts that touch.
-      const iy = SLIDES_TEXT_INSET.y;
-      const py0 = p.y + iy, py1 = p.y + Math.max(0, p.h - iy), qy0 = q.y + iy, qy1 = q.y + Math.max(0, q.h - iy);
-      // AND NOT FLOAT-EXACT. A six-row table's rows are laid out by
-      // accumulating fractional heights, so the row below starts 2.8e-14pt
-      // above where the row above ended — and `py1 <= qy0` read that as two
-      // text boxes on top of each other, eight times on one slide. The
-      // tolerance is a millionth of a point: far below anything a reader or a
-      // renderer can resolve, and far above the arithmetic. Without it the
-      // fixture that matters most here — a realistic table, which is the shape
-      // of every slide check 44 recovered — cannot be added to the battery.
-      // MUTATION (2026-09-17): restoring the exact comparison turns the
-      // six-row fixture red four times over. Recorded here because this check
-      // predates the log convention and has no header to put it in.
-      const EPS = 1e-6;
-      const apart = p.x + p.w <= q.x + EPS || q.x + q.w <= p.x + EPS || py1 <= qy0 + EPS || qy1 <= py0 + EPS;
-      if (!apart) fail(`${ALL[i].layout}: "${String(p.text).slice(0, 18)}" overlaps "${String(q.text).slice(0, 18)}"`);
-    }
-  }
-});
-if (failures === before2) pass("no collisions, including with two-line titles");
+for (let i = 0; i < GEOM_ALL.faults.length; i++) {
+  if (GEOM_ALL.faults[i].kind === "overlap") fail(GEOM_ALL.faults[i].note);
+}
+if (failures === before2) {
+  pass(`no collisions across ${GEOM_ALL.textBoxesChecked} text boxes, including with two-line titles`);
+}
 
 /* 3. The preview must consume everything the builder emits. */
 const before3 = failures;
@@ -661,6 +642,9 @@ if (failures === before3) pass(`all ${emitted.size} request kinds are consumed, 
 /* 4. The logo has to be visible against whatever is behind it. */
 const before4 = failures;
 console.log(`\n4. The lockup contrasts with what is behind it`);
+/** The fixtures as the preview renders them, for the checks below that read
+ *  boxes rather than requests. */
+const deck = toPreviewModel(ALL);
 deck.slides.forEach((page, i) => {
   const slide = ALL[i];
   const logo = page.elements.find((e) => e.kind === "image" && e.src?.includes("logo_engine"));
@@ -858,7 +842,11 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
    *  MUTATION LOG (detached worktree): killed — a process stage name drawn
    *  14pt narrower than it was measured ("Commissioning" runs onto its
    *  caption); killed — the sizing margin left in, which reports that same
-   *  name, 73.9pt in 76.2, as overrunning while it draws on one line. */
+   *  name, 73.9pt in 76.2, as overrunning while it draws on one line.
+   *
+   *  The measurement is `inkBottom` in lib/slides/validate.ts now, with those
+   *  reasons, and this check drives it over a WIDER fixture set than checks 1
+   *  and 2: ten more slides whose titles are long enough to run over. */
   const before11 = failures;
   console.log(`\n11. Text that overflows its box lands on nothing`);
   const LONG_TITLE = "AI platforms aren't a new channel. They're a new layer above every channel you already have";
@@ -874,49 +862,13 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     { layout: "feature", title: LONG_TITLE, body: "A line under it", resolvedImage: PHOTO_DARK },
     { layout: "closing", title: LONG_TITLE, subtitle: "www.thecontentengine.com", resolvedImage: PHOTO_DARK },
   ]);
-  const inkOf = (el: { text?: string; w: number; size?: number; bullets?: boolean; font?: string; weight?: number }) => {
-    const paras = String(el.text || "").split("\n");
-    let lines = 0;
-    // A semibold or bold Roboto box is measured glyph by glyph, with the same
-    // primitive the layouts size those boxes with. Counted at the unnamed
-    // 0.55em mean instead, a hub label sized to its measured width — it holds
-    // one line, in Roboto, with 6% to spare — was reported as two lines
-    // running onto the node below, and a mean that cries wolf here is one
-    // nobody believes when it is right. (Its text is already in capitals when
-    // the style draws them, so it is measured as drawn.) The sizing margin is
-    // divided back out: this is the real ink, like the line box below, and
-    // with the 6% left in, "Commissioning" — 73.9pt in 76.2pt, which draws on
-    // one line — was reported as running onto its own caption.
-    const bold = el.font === "Roboto" && (el.weight || 400) >= 600 && !el.bullets;
-    for (const para of paras) {
-      lines += bold
-        ? Math.max(1, Math.ceil(labelWidthPt(para, el.size || 10) / 1.06 / Math.max(1, el.w - TEXT_INSET_X) - 1e-9))
-        : Math.max(1, estimateLines(para, el.w, el.size || 10, el.bullets));
-    }
-    // One inset (the top), and the real line box rather than the splitter's
-    // deliberately generous one — this is measuring collision, not deciding it.
-    return 3.6 + lines * (el.size || 10) * 1.38 + Math.max(0, paras.length - 1) * (el.bullets ? 6 : 0);
-  };
-  toPreviewModel(INK).slides.forEach((page, i) => {
-    const texts = page.elements.filter((e) => e.kind === "text" && e.text);
-    for (const el of texts) {
-      // A single glyph is an ornament — the quote mark — and its line box is
-      // mostly the space a descender would use. Measuring it as ink says it
-      // collides with everything under it, which it visibly does not.
-      if (String(el.text).trim().length <= 1) continue;
-      const bottom = el.y + inkOf(el);
-      if (bottom <= el.y + el.h + 1) continue;    // stays inside its own box
-      for (const other of texts) {
-        if (other === el) continue;
-        const sideBySide = el.x + el.w <= other.x + 1 || other.x + other.w <= el.x + 1;
-        if (sideBySide || other.y < el.y + el.h) continue;   // beside it, or above it
-        if (bottom > other.y + 1) {
-          fail(`${INK[i].layout}: "${String(el.text).slice(0, 24)}…" overruns its box onto "${String(other.text).slice(0, 20)}…"`);
-        }
-      }
-    }
-  });
-  if (failures === before11) pass(`no text on ${INK.length} slides is drawn over other text`);
+  const GEOM_INK = validateDeck(INK, "v");
+  for (let i = 0; i < GEOM_INK.faults.length; i++) {
+    if (GEOM_INK.faults[i].kind === "overrun") fail(GEOM_INK.faults[i].note);
+  }
+  if (failures === before11) {
+    pass(`no text on ${INK.length} slides is drawn over other text (${GEOM_INK.inkBoxesChecked} boxes measured)`);
+  }
 
   /* 12. What splitting a slide produces has to be a slide worth looking at. */
   const before12 = failures;
@@ -8938,6 +8890,478 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     }
   }
   if (failures === before45) pass("the standfirst is drawn above the figures out of a band they gave up, or it is named, refused and still reported");
+
+  /* 46. The migration test, and the seam that is not yet a refusal.
+   *
+   *  Checks 1, 2 and 11 used to be three copies of three predicates living only
+   *  in this file. They are now lib/slides/validate.ts and they run on every
+   *  deck a user is about to see. That move is only safe if the moved code
+   *  measures the SAME THING over the SAME POPULATION, which is what (a) and
+   *  (b) assert — not by keeping a second copy to compare against, which would
+   *  reintroduce exactly the drift the move exists to remove, but by driving
+   *  the module down one route and the fixtures down the other and comparing
+   *  the results.
+   *
+   *  Then the near misses. Every one of the three carries an exclusion that
+   *  looks like slack: the corner sampling, the vertical inset, the
+   *  side-by-side and single-glyph skips. An exclusion moved without its reason
+   *  is a silent behaviour change, so each is driven here in both directions —
+   *  the thing it must catch and the thing it must not.
+   *
+   *  MUTATION LOG (detached worktree, 2026-09-17). The assertions' own log is
+   *  in lib/slides/validate.ts; these are the mutations this CHECK is the only
+   *  thing standing between and production.
+   *   - KILLED (46c): the affine reduced to translate + size x scale. The
+   *     sheared fixture's corner is 30pt off the page and its axis-aligned box
+   *     is not, so the reduction reports nothing and only 46c notices.
+   *   - KILLED (46a, 46f, 46g): off-canvas skipping TEXT_BOX elements — a
+   *     validator that sweeps 893 of 1,888 elements and says nothing. Four
+   *     assertions go red, and the first of them is the count.
+   *   - KILLED (46a): a geometry value made to depend on the run id, so the
+   *     guard's build and the preview's build differ. 67 of 67 fixtures.
+   *   - KILLED (46e): inkBottom measuring from the top of the page rather than
+   *     the top of the box. The precondition catches it first, which is the
+   *     point of asserting the fixture's own ink before asserting the verdict.
+   *   - KILLED (46g): geometryRefusal ignoring its severity argument. The seam
+   *     is driven end to end rather than asserted to exist, because a line
+   *     proving a rule was WRITTEN has reported a live hole here as closed.
+   *   - KILLED (46h): the notes dropped on the floor inside deckWarnings. A
+   *     fault measured and not relayed is the same as no fault at all.
+   *   - KILLED (46h): logDeckGeometry emptied out, and separately its call site
+   *     removed. The rate is the one input the escalation decision needs, and
+   *     it was the one line in this whole change nothing asserted.
+   *   - KILLED (46h): the try/catch around the build path's call removed, so a
+   *     validator that threw would be the thing that stopped the deck.
+   *   - KILLED (46i): the face dropped from the ink measurement, which is how
+   *     the module first shipped. Nothing else in 9,000 lines of check notices,
+   *     because every title in this battery is long enough to wrap either way.
+   *   - KILLED (46j): INK_LEAD loosened to 1.2, and (46a) the ink sweep made to
+   *     skip type above 12pt — a validator quietly measuring 786 boxes where
+   *     the fixtures draw 897.
+   *   - KILLED (46k): the ink gate forced on, and forced off. On, a credit
+   *     375pt clear of the footer is reported as drawn through it; off, a real
+   *     collision is excused in silence.
+   *   - KILLED (46l): the note cap turned down to one, and the counted tail
+   *     deleted. What the user is actually TOLD was the only part of the module
+   *     nothing drove.
+   *   - KILLED (46m): the guards removed, both of them. Each ends with the
+   *     validator throwing on the build path, which would make the guard the
+   *     thing that stopped the deck.
+   *   - KILLED (46n): the bold glyph branch deleted. It used to be killed by
+   *     fourteen fixtures and, once the mean became the right mean, by none —
+   *     the reason 46n exists is that four real overruns still depend on it.
+   *  Two mutations SURVIVED this check and are recorded in validate.ts with
+   *  what the corpus said about them: the edge tolerance is unpinned by
+   *  anything anyone has built, and the ink tolerance is pinned by the stored
+   *  decks and not by these fixtures. */
+  const before46 = failures;
+  console.log(`\n46. The geometry checks measure a real deck, and say so rather than blocking it`);
+  const A46 = (ok: boolean, what: string) => { if (!ok) fail(`46: ${what}`); };
+
+  {
+    // (a) PARITY OF THE POPULATION, element by element. The old checks read
+    // toPreviewModel(fixtures); the module reads previewSlideFrom over requests
+    // it built itself. If those two routes ever disagree the runtime guard is
+    // measuring a deck the preview is not showing, which is the one failure a
+    // preview may not have.
+    // Built under a DIFFERENT run id, so this also pins that the run id reaches
+    // object ids and nothing else: two builds of one spec are the same deck.
+    const viaPreviewModel = toPreviewModel(ALL);
+    let mismatched = 0, comparedBoxes = 0;
+    for (let i = 0; i < ALL.length; i++) {
+      const direct = previewSlideFrom(ALL[i], buildSlideRequests(ALL[i], i, "v"));
+      comparedBoxes += direct.elements.length;
+      if (JSON.stringify(direct) !== JSON.stringify(viaPreviewModel.slides[i])) mismatched++;
+    }
+    A46(comparedBoxes > 1500, `46a precondition: only ${comparedBoxes} elements compared across ${ALL.length} fixtures`);
+    A46(mismatched === 0, `46a ${mismatched} of ${ALL.length} fixtures render differently through previewSlideFrom than`
+      + ` through toPreviewModel — the runtime guard and the preview disagree`);
+
+    // The counts the module says it swept, against the fixtures' own. A
+    // predicate that silently examines nothing passes vacuously, and this repo
+    // has already shipped a check that tested exactly nothing.
+    let elements = 0;
+    for (let i = 0; i < ALL.length; i++) {
+      const reqs = buildSlideRequests(ALL[i], i, "v") as any[];
+      for (let r = 0; r < reqs.length; r++) {
+        const vals = Object.values(reqs[r]);
+        const b: any = vals.length ? vals[0] : undefined;
+        if (b && b.elementProperties) elements++;
+      }
+    }
+    let textBoxes = 0;
+    for (let i = 0; i < viaPreviewModel.slides.length; i++) {
+      const els = viaPreviewModel.slides[i].elements;
+      for (let e = 0; e < els.length; e++) if (els[e].kind === "text") textBoxes++;
+    }
+    A46(GEOM_ALL.slidesChecked === ALL.length && GEOM_ALL.unbuildable === 0,
+      `46a the validator built ${GEOM_ALL.slidesChecked} of ${ALL.length} fixtures (${GEOM_ALL.unbuildable} unbuildable)`);
+    A46(GEOM_ALL.elementsChecked === elements,
+      `46a off-canvas swept ${GEOM_ALL.elementsChecked} elements, the fixtures emit ${elements}`);
+    A46(GEOM_ALL.textBoxesChecked === textBoxes,
+      `46a overlap swept ${GEOM_ALL.textBoxesChecked} text boxes, the preview has ${textBoxes}`);
+    // The ink sweep counted EXACTLY, not as a ratio. A ratio passes while half
+    // the deck goes unmeasured, and a sweep that quietly stops covering boxes
+    // is the way this check goes to sleep without anybody noticing.
+    let inkBoxes = 0;
+    const viaInk = toPreviewModel(INK);
+    for (let i = 0; i < viaInk.slides.length; i++) {
+      const els = viaInk.slides[i].elements;
+      for (let e = 0; e < els.length; e++) {
+        if (els[e].kind === "text" && els[e].text && String(els[e].text).trim().length > 1) inkBoxes++;
+      }
+    }
+    A46(GEOM_INK.inkBoxesChecked === inkBoxes && GEOM_INK.slidesChecked === INK.length,
+      `46a overrun swept ${GEOM_INK.inkBoxesChecked} boxes on ${GEOM_INK.slidesChecked} of ${INK.length} slides,`
+      + ` the fixtures draw ${inkBoxes} worth measuring`);
+
+    // (b) PARITY OF THE VERDICT. Green on every fixture before the move, green
+    // on every fixture after it. Checks 1, 2 and 11 above already print this
+    // one fault at a time; asserted here as a whole so that the migration has
+    // a single line that says it held.
+    const c = faultCounts(GEOM_ALL), ci = faultCounts(GEOM_INK);
+    A46(c["off-canvas"] === 0 && c.overlap === 0 && ci.overrun === 0,
+      `46b the fixture battery was green on all three before the move and is not after it:`
+      + ` ${c["off-canvas"]} off-canvas, ${c.overlap} overlapping, ${ci.overrun} overrunning`);
+  }
+
+  {
+    // (c) THE CORNER SAMPLING. A line-chart segment is a sheared rectangle, so
+    // size x scale at the translate is not its bounding box. This element's
+    // axis-aligned box is comfortably on the page and its top-right corner is
+    // 30pt off it.
+    const sheared = (shearX: number) => [{
+      createShape: {
+        objectId: "v_s0_seg", shapeType: "RECTANGLE",
+        elementProperties: {
+          size: { width: { magnitude: 200, unit: "PT" }, height: { magnitude: 100, unit: "PT" } },
+          transform: { scaleX: 1, scaleY: 1, shearX, shearY: 0, translateX: 500, translateY: 100, unit: "PT" },
+        },
+      },
+    }];
+    const bent = offCanvasFaults(sheared(0.5), { layout: "line-chart" } as SlideInput, 0);
+    const flat = offCanvasFaults(sheared(0), { layout: "line-chart" } as SlideInput, 0);
+    A46(bent.faults.length === 1 && Math.round(bent.faults[0].overBy) === 30,
+      `46c a sheared element whose corner is 30pt off the page was reported ${bent.faults.length} times`
+      + `${bent.faults.length ? ` at ${bent.faults[0].overBy.toFixed(1)}pt` : ""} — size x scale is not a bounding box`);
+    A46(flat.faults.length === 0, `46c the same element unsheared, wholly on the page, was reported off it`);
+    A46(bent.elements === 1 && flat.elements === 1, `46c precondition: the synthetic element was not swept at all`);
+  }
+
+  {
+    // (d) THE VERTICAL INSET, in both directions. Slides draws no glyph in the
+    // 3.6pt above or below the text, and a table cell overhangs its row by
+    // exactly that so that ten rows do not spend 72pt on padding. Two cells
+    // whose insets touch are two boxes that touch and two texts that do not.
+    const box = (y: number, h: number, text: string) =>
+      ({ kind: "text" as const, x: 40, y, w: 300, h, text, size: 10 });
+    const rows = { background: "#FFFFFF", elements: [box(100, 24, "Domain"), box(120.4, 24, "Sessions")] };
+    const iy = SLIDES_TEXT_INSET.y;
+    A46(120.4 < 100 + 24 && 120.4 + iy >= 100 + 24 - iy,
+      `46d precondition: the fixture rows do not overhang each other by exactly one inset`);
+    A46(overlapFaults(rows as any, { layout: "table" } as SlideInput, 0).faults.length === 0,
+      `46d two table rows overhanging by one inset were reported as a collision`);
+    const real = { background: "#FFFFFF", elements: [box(100, 24, "A title"), box(112, 24, "A body")] };
+    A46(overlapFaults(real as any, { layout: "content" } as SlideInput, 0).faults.length === 1,
+      `46d two boxes genuinely 12pt into each other were not reported`);
+    // The millionth of a point. Six rows laid out by accumulating fractional
+    // heights start 2.8e-14pt above where the row above ended.
+    const hair = { background: "#FFFFFF", elements: [box(100, 24, "Row one"), box(124 - 2.8e-14, 24, "Row two")] };
+    A46(overlapFaults(hair as any, { layout: "table" } as SlideInput, 0).faults.length === 0,
+      `46d rows separated by 2.8e-14pt were reported as a collision`);
+  }
+
+  {
+    // (e) INK, NOT BOXES — and the two skips. A 30pt box holding four lines of
+    // 10pt text draws about 55pt of ink; whether that matters depends entirely
+    // on what is beneath it.
+    const runner = { kind: "text" as const, x: 40, y: 100, w: 200, h: 30, size: 10,
+      text: "One line\nTwo lines\nThree lines\nFour lines and the ink runs well past the box" };
+    const below = { kind: "text" as const, x: 40, y: 140, w: 200, h: 30, size: 10, text: "The box beneath it" };
+    const beside = { kind: "text" as const, x: 260, y: 140, w: 200, h: 30, size: 10, text: "The box beside it" };
+    A46(inkBottom(runner) > runner.y + runner.h,
+      `46e precondition: the fixture's ink (${inkBottom(runner).toFixed(1)}pt) does not leave its box`);
+    A46(overrunFaults({ background: "#FFFFFF", elements: [runner, below] } as any,
+      { layout: "content" } as SlideInput, 0).faults.length === 1,
+      `46e ink running ${(inkBottom(runner) - below.y).toFixed(1)}pt onto the box below was not reported`);
+    A46(overrunFaults({ background: "#FFFFFF", elements: [runner, beside] } as any,
+      { layout: "two-column" } as SlideInput, 0).faults.length === 0,
+      `46e ink running past its box onto NOTHING — the column beside it — was reported`);
+    // The quote mark: one glyph, whose line box is mostly the space a descender
+    // would use. Measuring it as ink says it collides with everything below.
+    const mark = { kind: "text" as const, x: 40, y: 100, w: 40, h: 8, size: 40, text: "“" };
+    A46(overrunFaults({ background: "#FFFFFF", elements: [mark, below] } as any,
+      { layout: "quote" } as SlideInput, 0).faults.length === 0,
+      `46e a single-glyph ornament was measured as ink`);
+  }
+
+  {
+    // (f) THE LIVE DEFECT, through the real builder, kept here deliberately.
+    // A single hero stat reports the whole band as its height, so a `body`
+    // beneath it is placed at about 414pt on a 405pt canvas. It is unfixed at
+    // HEAD and out of scope for this stage on purpose: it is the proof that
+    // this check measures decks rather than fixtures. If it ever stops being
+    // reported, either somebody fixed the stat layout — in which case delete
+    // this and say so in the commit — or the assertion has gone to sleep.
+    const hero: SlideInput[] = [{
+      layout: "stat", title: "One number that earns the slide",
+      stats: [{ value: "64 GW", label: "Installed capacity" }],
+      body: "A paragraph beneath the figure, which this layout places below the bottom of the page.",
+    }];
+    const g = validateDeck(hero, "t46f");
+    const off = g.faults.filter((f) => f.kind === "off-canvas");
+    A46(g.slidesChecked === 1 && g.elementsChecked > 3,
+      `46f precondition: the hero-stat fixture swept ${g.elementsChecked} elements`);
+    A46(off.length === 1 && off[0].where.indexOf("_body") >= 0 && off[0].overBy > 5,
+      `46f a hero stat's body is drawn below the canvas and the off-canvas check reported`
+      + ` ${off.length} faults${off.length ? ` (${off[0].where}, ${off[0].overBy.toFixed(1)}pt)` : ""}`);
+    A46(geometryNotes(g).length > 0 && geometryNotes(g)[0].indexOf("past the edge") >= 0,
+      `46f the fault does not reach the model as a sentence: ${JSON.stringify(geometryNotes(g)[0] || "")}`);
+    // BOTH KINDS, ON THE ONE SLIDE THAT HAS BOTH. This slide draws its body off
+    // the canvas AND through the footer, which are two different things to fix
+    // in two different places. Grouping the notes by slide alone rather than by
+    // slide and kind drops whichever sorts second — a collision, every time,
+    // because only the off-canvas and overrun faults carry a distance to sort
+    // on — and the deck would then report a box off the page while saying
+    // nothing about the text drawn through the footer beneath it.
+    const heroNotes = geometryNotes(g);
+    let saysOff = false, saysOverlap = false;
+    for (let i = 0; i < heroNotes.length; i++) {
+      if (heroNotes[i].indexOf("past the edge") >= 0) saysOff = true;
+      if (heroNotes[i].indexOf("overlap") >= 0) saysOverlap = true;
+    }
+    A46(g.faults.length === 2 && saysOff && saysOverlap,
+      `46f the slide carries ${g.faults.length} faults of two kinds and relays ${heroNotes.length}:`
+      + ` ${JSON.stringify(heroNotes)}`);
+
+    // (g) WARNING-ONLY, and the seam driven end to end. The severity is a
+    // parameter with the constant as its default, so this asserts the seam
+    // WORKS rather than that it exists — a line proving a rule was written has
+    // reported a live hole in this repo as closed.
+    A46(GEOMETRY_SEVERITY === "advisory", `46g the escalation seam ships set to "${GEOMETRY_SEVERITY}"`);
+    A46(geometryRefusal(g) === null,
+      `46g a deck with ${g.faults.length} faults is refused today; nothing this validator finds may block a build yet`);
+    const wouldSay = geometryRefusal(g, "refuse");
+    A46(!!wouldSay && wouldSay.indexOf("past the edge") >= 0,
+      `46g flipping the seam does not produce a refusal naming the fault`);
+    A46(buildSlideRequests(hero[0], 0, "t46g").length > 0,
+      `46g the faulty slide no longer builds — the validator has become a gate`);
+
+    // (h) AND THE NOTES ACTUALLY REACH THE MODEL. deckWarnings is the channel,
+    // already threaded into the tool result on all four chains; a fault
+    // measured and then dropped on the floor is the same as no fault at all.
+    const relayed = deckWarnings(hero, geometryNotes(g));
+    A46(relayed.indexOf("past the edge") >= 0, `46h deckWarnings does not relay the geometry notes it is given`);
+    A46(deckWarnings(hero).indexOf("past the edge") < 0,
+      `46h deckWarnings measures geometry on its own — it must be given the notes, or generate.ts and validate.ts`
+      + ` import each other`);
+    // Four chains, four calls. A fifth chain added without this line would
+    // build decks nothing measures, and nothing else in this file would notice.
+    const provSrc = readFileSync(join(__dirname, "..", "lib/ai/providers.ts"), "utf8")
+      .replace(/^[ \t]*\/\*[\s\S]*?\*\//gm, "").replace(/(^|[ \t])\/\/[^\n]*/gm, "$1");
+    const wired = provSrc.split("deckWarnings(draft.slides, geometryNotes(built.geometry))").length - 1;
+    const built = provSrc.split("buildSlidesDraft(").length - 1;
+    A46(wired === 4 && built === 5,
+      `46h ${wired} of the chains pass the geometry notes to deckWarnings across ${built - 1} draft builds`);
+    A46(provSrc.indexOf("geometryRefusal(geometry)") >= 0 && provSrc.indexOf("validateDeck(slides, \"draft\")") >= 0,
+      `46h the build path does not run the validator before the preview is built`);
+    // AND THE RATE. The escalation decision documented in validate.ts needs a
+    // week of this line and nothing else; without it the seam would be flipped
+    // on somebody's impression of how often decks are wrong. Asserted twice —
+    // that the call is there, and that the line it writes carries the numbers —
+    // because a call left in place and emptied out reports exactly as much as
+    // no call at all.
+    A46(provSrc.indexOf("logDeckGeometry(geometry, \"draft\")") >= 0,
+      `46h the build path does not log the geometry rate, so nothing measures how often this fires`);
+    // AND THE CALL SITE IS GUARDED. This one is a source assertion and says so:
+    // buildSlidesDraft is module-private and reaches the image resolver, so it
+    // cannot be driven from here the way validateDeck is in 46m. What it pins
+    // is that the three calls sit inside a try — because a validator that
+    // throws on the build path is the validator blocking the build, which is
+    // the single thing this stage promises cannot happen.
+    const at = provSrc.indexOf("geometry = validateDeck(slides, \"draft\")");
+    const window = at < 0 ? "" : provSrc.slice(Math.max(0, at - 120), at + 420);
+    A46(at >= 0 && window.indexOf("try {") >= 0 && window.indexOf("} catch") >= 0,
+      `46h the validator runs unguarded on the build path — a throw inside it would take the deck with it`);
+    const logged: string[] = [];
+    const realLog = console.log;
+    console.log = ((...a: any[]) => { logged.push(a.join(" ")); }) as any;
+    try { logDeckGeometry(g, "draft"); } finally { console.log = realLog; }
+    A46(logged.length === 1 && logged[0].indexOf("[SlideGeometry] draft:") >= 0
+      && logged[0].indexOf("2 faults") >= 0 && logged[0].indexOf("off-canvas 1") >= 0
+      && logged[0].indexOf("worth reporting") >= 0 && logged[0].indexOf(GEOMETRY_SEVERITY) >= 0,
+      `46h the rate line does not carry the counts and the severity: ${JSON.stringify(logged)}`);
+  }
+
+  {
+    // (i) MEASURED IN THE FACE THE BOX IS DRAWN IN. faceAdvance falls back to
+    // an unnamed 0.55em worst case whose own comment records what it costs:
+    // Roboto over-measured by nearly a third, a bullet that draws on one line
+    // counted as two. Every box on a real deck names a face — Roboto 82%,
+    // Playfair 16%, Poppins 2% of 6,694 stored preview boxes — so the fallback
+    // fitted none of them, and 21 of the 29 overruns this reported on the
+    // stored decks were measured with a ruler nothing is drawn with.
+    //
+    // Both directions, on one box: 19 characters at 8pt in a 95pt column draw
+    // on ONE line in Roboto and are counted as TWO without the face.
+    const TIGHT = "Org + Report schema";
+    A46(estimateLines(TIGHT, 95, 8) === 2 && estimateLines(TIGHT, 95, 8, false, false, "Roboto") === 1,
+      `46i precondition: the two rulers agree on this fixture (${estimateLines(TIGHT, 95, 8)} lines unnamed,`
+      + ` ${estimateLines(TIGHT, 95, 8, false, false, "Roboto")} in Roboto), so it pins nothing`);
+    const caption = { kind: "text" as const, x: 40, y: 100, w: 95, h: 18, size: 8, text: TIGHT };
+    const under = { kind: "text" as const, x: 40, y: 120, w: 95, h: 18, size: 8, text: "The caption below it" };
+    const page = (el: any) => ({ background: "#FFFFFF", elements: [el, under] });
+    A46(overrunFaults(page({ ...caption, font: "Roboto" }) as any, { layout: "matrix" } as SlideInput, 0).faults.length === 0,
+      `46i a Roboto caption that draws on one line was reported as running onto the caption below it`);
+    A46(overrunFaults(page(caption) as any, { layout: "matrix" } as SlideInput, 0).faults.length === 1,
+      `46i the same caption measured with no face was NOT reported — the fixture no longer pins the face`);
+  }
+
+  {
+    // (j) THE LINE BOX ITSELF. INK_LEAD is the larger of the two levers in this
+    // measurement and the fixtures pinned neither: loosening it from 1.38 to
+    // 1.2 left every layout green while halving what the validator reports on
+    // real decks. This fixture straddles the two — four 10pt lines land 3.8pt
+    // into the box below at 1.38 and 3.4pt clear of it at 1.2 — so the lead is
+    // pinned from both sides rather than by a constant nobody drives.
+    const four = { kind: "text" as const, x: 40, y: 100, w: 200, h: 30, size: 10,
+      text: "One line\nTwo lines\nThree lines\nFour lines" };
+    const beneath = { kind: "text" as const, x: 40, y: 155, w: 200, h: 30, size: 10, text: "The box beneath it" };
+    const lands = inkBottom(four) - beneath.y;
+    A46(overrunFaults({ background: "#FFFFFF", elements: [four, beneath] } as any,
+      { layout: "content" } as SlideInput, 0).faults.length === 1,
+      `46j four lines of ink landing on the box below were not reported — the line box has been loosened`);
+    A46(lands > 0 && lands < 4 * 10 * 0.18,
+      `46j the fixture no longer straddles the line box (${lands.toFixed(1)}pt into the box below), so it pins`
+      + ` neither a looser lead nor a tighter one`);
+  }
+
+  {
+    // (k) THE BOXES OVERLAP AND THE GLYPHS DO NOT, which on real decks is most
+    // of what this reports: 110 of 130 stored pairs, and on fourteen decks it
+    // is every pair they have. The photo credit is a 432pt box drawn END-
+    // aligned and the footer a 671pt box drawn START-aligned on the same line,
+    // so they intersect across 375pt in which neither draws a glyph.
+    //
+    // The ASSERTION is unchanged and still reports the pair — that is the
+    // migration, and a latent collision that only holds while both strings stay
+    // short is worth a check failing on. What changes is whether it is worth a
+    // SENTENCE to somebody who cannot see it.
+    const asDeck = (faults: any[]): DeckGeometry => ({
+      faults, slidesChecked: 1, elementsChecked: 0, textBoxesChecked: 2, inkBoxesChecked: 2, unbuildable: 0, ms: 0,
+    });
+    const credit = (align: "start" | "end") => ({
+      kind: "text" as const, x: 24.5, y: 382, w: 432, h: 12, size: 7, font: "Roboto",
+      align, text: "Photo: Vitaly Gariev / Unsplash",
+    });
+    const footer = { kind: "text" as const, x: 24.5, y: 381, w: 671, h: 12, size: 8, font: "Roboto",
+      align: "start" as const, text: "The Content Engine" };
+    const apartPage = { background: "#FFFFFF", elements: [credit("end"), footer] };
+    const apart = overlapFaults(apartPage as any, { layout: "content" } as SlideInput, 0).faults;
+    A46(apart.length === 1, `46k precondition: the credit and the footer do not overlap as BOXES, so this pins nothing`);
+    A46(apart.length === 1 && apart[0].inkMeets === false,
+      `46k a credit 375pt clear of the footer is reported as text drawn on top of it`);
+    A46(relayableFaults(asDeck(apart)).length === 0 && geometryNotes(asDeck(apart)).length === 0,
+      `46k that pair reaches the model as a sentence about a slide with no overlapping text on it`);
+    A46(apart.length === 1 && apart[0].note.indexOf("does not meet") >= 0,
+      `46k the fault does not say what was actually measured: ${JSON.stringify(apart.length ? apart[0].note : "")}`);
+    // The other direction: the same two boxes, both drawn from the left, whose
+    // glyphs really are on top of each other.
+    const meetPage = { background: "#FFFFFF", elements: [credit("start"), footer] };
+    const meet = overlapFaults(meetPage as any, { layout: "content" } as SlideInput, 0).faults;
+    A46(meet.length === 1 && meet[0].inkMeets === true,
+      `46k two boxes whose text really is drawn over the same space were excused by the ink gate`);
+    A46(relayableFaults(asDeck(meet)).length === 1 && geometryNotes(asDeck(meet)).length === 1
+      && geometryNotes(asDeck(meet))[0].indexOf("both draw text where they meet") >= 0,
+      `46k a real collision does not reach the model: ${JSON.stringify(geometryNotes(asDeck(meet)))}`);
+  }
+
+  {
+    // (l) WHAT THE USER IS ACTUALLY TOLD. A deck whose layout has gone wrong
+    // produces the same fault on every slide, and forty sentences of it is how
+    // a warning stops being read — so the notes are capped and the tail is
+    // counted rather than dropped. Both halves are driven here: the cap can be
+    // turned down to one and the tail deleted without a single layout noticing.
+    const many: any[] = [];
+    for (let i = 0; i < 8; i++) {
+      many.push({ kind: "off-canvas", slide: i + 1, layout: "content", where: `w${i}`, overBy: 20 - i,
+        note: `slide ${i + 1}: something is ${20 - i}pt past the edge of the slide` });
+    }
+    const big: DeckGeometry = { faults: many, slidesChecked: 8, elementsChecked: 80, textBoxesChecked: 40,
+      inkBoxesChecked: 40, unbuildable: 0, ms: 1 };
+    const notes = geometryNotes(big);
+    A46(notes.length === 6, `46l eight faults on eight slides produced ${notes.length} notes, not five and a tail`);
+    A46(notes.length > 1 && notes[0].indexOf("slide 1:") === 0,
+      `46l the notes are not worst-first: ${JSON.stringify(notes[0] || "")}`);
+    A46(notes.length > 0 && notes[notes.length - 1].indexOf("and 3 more") === 0,
+      `46l the tail does not count what it is not saying: ${JSON.stringify(notes[notes.length - 1] || "")}`);
+  }
+
+  {
+    // (m) A SLIDE THAT CANNOT BE MEASURED IS COUNTED, and costs only itself.
+    // The count exists because a validator that silently measures nothing is
+    // the failure this repo has already paid for; a count nothing drives is the
+    // same failure one level up. `stats` as a string is a payload the builder
+    // rejects outright.
+    const mixed: SlideInput[] = [
+      { layout: "stat", title: "One number that earns the slide",
+        stats: [{ value: "64 GW", label: "Installed capacity" }],
+        body: "A paragraph beneath the figure, which this layout places below the bottom of the page." },
+      { layout: "stat", title: "A payload the builder rejects", stats: "12%" } as any,
+      { layout: "content", title: "A slide after it", body: "Measured all the same." },
+    ];
+    // Caught rather than allowed to propagate, because the failure being
+    // driven here is precisely a throw: without the guard inside validateDeck
+    // this line ends the whole script with a stack trace instead of a FAIL.
+    let g: DeckGeometry = { faults: [], slidesChecked: -1, elementsChecked: 0, textBoxesChecked: 0,
+      inkBoxesChecked: 0, unbuildable: -1, ms: 0 };
+    let blewUp = "";
+    try { g = validateDeck(mixed, "t46m"); } catch (e) { blewUp = e instanceof Error ? e.message : String(e); }
+    A46(blewUp === "",
+      `46m one unbuildable slide threw out of the validator and would have taken the deck with it: ${blewUp}`);
+    A46(g.unbuildable === 1 && g.slidesChecked === 2,
+      `46m a deck with one unbuildable slide measured ${g.slidesChecked} of 2 and counted ${g.unbuildable} unbuildable`);
+    A46(g.faults.length > 0, `46m the slides either side of it were not measured`);
+    // And an element the sweep cannot measure is skipped rather than thrown on.
+    // Nothing the builder emits today looks like this; the layouts in stages 2
+    // to 5 are where it stops being true.
+    let threw = "";
+    try {
+      offCanvasFaults([{ createShape: { objectId: "v_s0_x", elementProperties: { transform: { translateX: 0, translateY: 0 } } } }],
+        { layout: "content" } as SlideInput, 0);
+    } catch (e) { threw = e instanceof Error ? e.message : String(e); }
+    A46(threw === "", `46m an element with no size threw out of the sweep and would have taken the build with it: ${threw}`);
+  }
+
+  {
+    // (n) THE GLYPH TABLE FOR BOLD ROBOTO, which the mean under-measures now
+    // that the mean is the RIGHT mean. This branch used to be pinned by the
+    // fixtures — deleting it turned fourteen of them red — but that was against
+    // the unnamed 0.55em default, which over-measured everything; against
+    // Roboto's own 0.443 the battery no longer noticed, while four real
+    // overruns in the stored decks are still found only here. A branch nothing
+    // drives is a branch the next person deletes, so this fixture drives it:
+    // twenty characters of bold Roboto in a 110pt box measure ONE line at the
+    // mean and TWO glyph by glyph, and the second one lands on the box below.
+    const label = { kind: "text" as const, x: 40, y: 100, w: 110, h: 18, size: 10,
+      font: "Roboto", weight: 700, text: "MS Teams Integration" };
+    const under = { kind: "text" as const, x: 40, y: 125, w: 110, h: 18, size: 10,
+      font: "Roboto", weight: 400, text: "The node beneath it" };
+    const regular = { ...label, weight: 400 };
+    A46(estimateLines(label.text, label.w, label.size, false, false, "Roboto") === 1,
+      `46n precondition: the mean already counts this label as more than one line, so it pins nothing`);
+    A46(overrunFaults({ background: "#FFFFFF", elements: [label, under] } as any,
+      { layout: "hub" } as SlideInput, 0).faults.length === 1,
+      `46n a bold label that wraps in the face it is drawn in was measured at the mixed-case mean and missed`);
+    A46(overrunFaults({ background: "#FFFFFF", elements: [regular, under] } as any,
+      { layout: "hub" } as SlideInput, 0).faults.length === 0,
+      `46n the same words at regular weight, which really do fit one line, were reported as running over`);
+  }
+
+  if (failures === before46) {
+    pass(`the three assertions moved whole, measure ${GEOM_ALL.elementsChecked} elements and ${GEOM_ALL.textBoxesChecked}`
+      + ` boxes identically through both routes, catch a live off-canvas defect, and warn rather than block`);
+  }
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   // 2, not 1, when a self-test detector carried nothing (check 40 b): the
