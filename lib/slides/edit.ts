@@ -354,6 +354,76 @@ export function blankSlideFaults(slides: any[]): SlideFault[] {
   return scanBlank(slides).map((b) => b.fault);
 }
 
+/**
+ * Every slide carrying a TABLE that its layout will never draw.
+ *
+ * ── WHY THIS REFUSES RATHER THAN DRAWS ─────────────────────────────────────
+ *
+ * `content` silently ignores a `table` payload — every row, every column
+ * header, no note, no warning. That matters because `content` is the fallback
+ * the model reaches for when it believes `table` is unavailable, which it did
+ * for a fortnight: `table` was renderable and geometry-checked from 2026-08-31
+ * and absent from the tool's own layout enum until 2026-09-15. On 2026-08-31 a
+ * user asked twice, by name, for the table layout; the model read its enum,
+ * correctly answered that there was no layout called "table", and shipped
+ * `content` plus a table payload. Eleven rows and four column headers reached
+ * a client deck as nothing at all.
+ *
+ * Both answers were open. DRAWING it means teaching the prose branch a second
+ * table — its own width rules, its own size ladder, its own row-dropping
+ * declaration — which is the layout we already have, written twice. PROMOTING
+ * the slide to `table` reads well until the slide also carries a panel or a
+ * picture rail, which `table` does not draw: one silent loss traded for
+ * another. REFUSING costs a round trip and nothing else, and the round trip is
+ * now worth taking, because the enum check landing beside this means the model
+ * can finally see the layout it is being sent to. The message names the field
+ * and the one-call fix, and that call is a layout change on a single slide —
+ * so a deck already holding such a slide is not stuck: `editSlide:
+ * { slideNumber: N, layout: "table" }` passes this guard on the next call
+ * without resending anything.
+ *
+ * What is NOT defensible is what happens today, which is silence.
+ */
+export function undrawnTableSlides(slides: any[]): string[] {
+  return scanUndrawnTables(slides).map((b) => b.message);
+}
+
+/** The same faults as undrawnTableSlides, for a person. */
+export function undrawnTableFaults(slides: any[]): SlideFault[] {
+  return scanUndrawnTables(slides).map((b) => b.fault);
+}
+
+function scanUndrawnTables(slides: any[]): { message: string; fault: SlideFault }[] {
+  const out: { message: string; fault: SlideFault }[] = [];
+  for (let i = 0; i < slides.length; i++) {
+    const s = slides[i] || {};
+    const n = i + 1;
+    const layout = s.layout || (i === 0 ? "cover" : "content");
+    // Only the `table` layout draws one. Read off REQUIRED_PAYLOAD rather than
+    // written down again, so a second layout that learns to draw a table is
+    // covered the day it is added to that table and not the day someone
+    // remembers this one.
+    if (REQUIRED_PAYLOAD[layout] === "table") continue;
+    // Drawable, on the same terms the renderer uses: it needs both headings
+    // and at least one row with something in it, and draws nothing at all
+    // otherwise. A payload the `table` layout would itself draw as nothing is
+    // not a loss, and refusing over one would be noise.
+    const rows = (Array.isArray(s.table?.rows) ? s.table.rows : [])
+      .filter((r: any) => Array.isArray(r) && r.some((c: any) => String(c ?? "").trim() !== "")).length;
+    const cols = (Array.isArray(s.table?.columns) ? s.table.columns : []).length;
+    if (!rows || !cols) continue;
+    out.push({
+      message: `slide ${n} ("${s.title || "untitled"}") is a "${layout}" slide carrying a \`table\` payload`
+        + ` (${cols} column${cols === 1 ? "" : "s"}, ${rows} row${rows === 1 ? "" : "s"}), and "${layout}" never draws a table —`
+        + ` every row and heading would be missing from the slide with nothing said about it.`
+        + ` Set that slide's layout to "table", which draws the rows and sets commentary in \`body\` beneath them or in \`bodyRight\` beside them;`
+        + ` or drop the \`table\` payload and write the figures into \`body\` as text.`,
+      fault: { slide: n, title: plainTitle(s.title), layout, reason: `its table of ${rows} rows cannot be drawn on a "${layout}" slide` },
+    });
+  }
+  return out;
+}
+
 /** A person's reason a slide of this layout came out blank. */
 function blankReason(layout: string): string {
   return layout === "hub"

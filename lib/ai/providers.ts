@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { applyEditSlide, unrenderableSlides, normaliseSlide, textReadySlides, PAYLOAD_FIELDS, SlideCallRefusal, blankSlideFaults, type RefusalScope } from "@/lib/slides/edit";
+import { applyEditSlide, unrenderableSlides, undrawnTableSlides, undrawnTableFaults, normaliseSlide, textReadySlides, PAYLOAD_FIELDS, SlideCallRefusal, blankSlideFaults, type RefusalScope } from "@/lib/slides/edit";
 import { slidesFailure, parseSlidesArguments, type SlidesTurnState } from "@/lib/slides/failure";
 import { shouldRetryDeckClaim, unmadeDeckChangeNotice, DECK_CLAIM_NUDGE } from "@/lib/slides/claim";
 import { splitVolatile } from "@/lib/ai/prompt-cache";
@@ -10,7 +10,7 @@ import { fetchBlobContent } from "./blob-utils";
 import { anthropicCallParams, anthropicMaxTokens } from "./anthropic-params";
 import { supabase } from "@/lib/supabase";
 import { searchNotebook } from "@/lib/notebook/search";
-import { generateSlides, updateSlides, resolveDeckImages, splitOverflowingSlides, isVisualSlide, deckWarnings, stampFooter } from "@/lib/slides/generate";
+import { generateSlides, updateSlides, resolveDeckImages, splitOverflowingSlides, isVisualSlide, deckWarnings, stampFooter, undrawnTableBodies } from "@/lib/slides/generate";
 import { authorityOnEnabled } from "@/lib/authorityon/mcp";
 import { toolActivityEvent, dataSubject } from "@/lib/ai/tool-activity";
 import { createToolLoopGuard, repeatedCallNotice, overBudgetNotice, stallOutcome, slidesWritten, cutShortLookupNotice, DO_NOT_BLAME_THE_SOURCE, OUR_LIMIT_CUT_IT_SHORT, type ToolUsage } from "@/lib/ai/tool-loop-guard";
@@ -5055,6 +5055,30 @@ export async function prepareSlidesForBuild(
       throw new SlideCallRefusal(
         `This deck contains ${faults.length} slide${faults.length > 1 ? "s" : ""} that would be drawn blank. ${faults.join(" ")} Fix and send again — do NOT tell the user the slide is done.`,
         { scope, faults: blankSlideFaults(slides) }
+      );
+    }
+    // A PAYLOAD THE CHOSEN LAYOUT NEVER DRAWS. Not blank — the slide has a
+    // title, a standfirst and bullets, and looks finished — but a whole table
+    // of the user's figures is missing from it and nothing on the slide or in
+    // the reply says so. That is worse than blank, because blank is visible.
+    const tables = undrawnTableSlides(slides);
+    if (tables.length) {
+      throw new SlideCallRefusal(
+        `${tables.length} slide${tables.length > 1 ? "s carry" : " carries"} a table its layout cannot draw. ${tables.join(" ")} Nothing has been built or changed. Send the layout again — do NOT tell the user the table is in the deck.`,
+        { scope, faults: undrawnTableFaults(slides) }
+      );
+    }
+    // AND THE ONE LOSS THE GEOMETRY DECIDES. A `table` slide draws its `body`
+    // beneath the rows when both fit whole; when they cannot, the rows win and
+    // the prose is not drawn. Asked of the builder rather than re-derived here,
+    // so the refusal and the drawing can never disagree.
+    const bodies = undrawnTableBodies(slides);
+    if (bodies.length) {
+      throw new SlideCallRefusal(
+        `${bodies.length} table slide${bodies.length > 1 ? "s have" : " has"} a \`body\` that will not fit beneath the rows, so it would not be drawn at all: `
+        + bodies.map((b) => `slide ${b.slide} ("${b.title || "untitled"}")`).join(", ")
+        + `. Move that text to \`bodyRight\` — on the table layout it is drawn as a rail beside the rows, which is what it is for — or shorten it, or give the table fewer rows. Nothing has been built or changed, and do NOT tell the user that commentary is in the deck.`,
+        { scope, faults: bodies.map((b) => ({ slide: b.slide, title: b.title, layout: "table", reason: "the paragraph beside its figures has no room on the slide" })) }
       );
     }
     return slides;

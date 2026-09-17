@@ -3190,6 +3190,62 @@ export function droppedContent(slide: SlideInput, index: number, notes?: string[
   return missing;
 }
 
+/**
+ * Every `table` slide whose `body` the layout could not fit beneath its rows.
+ *
+ * The one loss on a table slide that no field rename by the builder can fix.
+ * The rows take the band first — a table cut to fit a paragraph is a worse
+ * slide than the paragraph moved — so a long body against a tall table has
+ * nowhere to go, and the honest outcome is to say so before the deck is built
+ * rather than to publish a slide missing its argument. `bodyRight` is the
+ * field for it: drawn today, as a rail beside the table, on this very layout.
+ *
+ * ASKED BY BUILDING, not by a table of which layout reads which field, for the
+ * reason droppedContent gives at length: the placement depends on the row
+ * count, the cell measure, the standfirst's height and the takeaway bar, so
+ * any restatement of the rule here would be a second answer to drift from the
+ * first. The slide is built and the box is looked for by name.
+ *
+ * AND NOT THROUGH droppedContent, which is the near miss worth recording.
+ * That function compares a five-word normalised PREFIX and ignores anything
+ * under eleven characters, both of which are right for an audit written to
+ * survive the transformations a builder legitimately makes — upper-casing,
+ * `fitCell`'s ellipsis, a wrapped label. They are wrong for a refusal. A body
+ * opening with the words of its own standfirst ("The single closest organic
+ * competitor to Amrize…", which is how an analyst writes) matches text drawn
+ * elsewhere on the slide and reads as present; a body of "Up 12% YoY" is nine
+ * characters normalised and is never compared at all. Both were measured
+ * against this very branch while the builder itself was recording that the
+ * body "is NOT drawn", and both built and shipped. Asking whether the BOX was
+ * emitted has no prefix and no floor, and an echo cannot fool it.
+ */
+export function undrawnTableBodies(slides: SlideInput[]): { slide: number; title: string; body: string }[] {
+  const out: { slide: number; title: string; body: string }[] = [];
+  for (let i = 0; i < slides.length; i++) {
+    const s = slides[i] || ({} as SlideInput);
+    if (layoutOf(s.layout, i) !== "table" || !s.table) continue;
+    const body = String(s.body || "").trim();
+    if (!body) continue;
+    let drawn = false;
+    try {
+      const reqs = buildSlideRequests(s, i, "guard") as any[];
+      for (let r = 0; r < reqs.length; r++) {
+        const o = reqs[r].createShape;
+        // The box the table branch draws a body into, found by the suffix its
+        // id is built from. Other layouts draw a `_body` of their own, which
+        // is why the lines above leave this function looking at nothing but a
+        // `table` slide carrying a table: on that slide the branch below is
+        // the only one that can emit it.
+        if (o && String(o.objectId || "").slice(-5) === "_body") { drawn = true; break; }
+      }
+    } catch {
+      continue;   // a slide that cannot build is a different report's problem
+    }
+    if (!drawn) out.push({ slide: i + 1, title: String(s.title || "").replace(/[{}`]/g, "").trim(), body });
+  }
+  return out;
+}
+
 /** A piece of slide text quoted in a note, clipped the one way everything that
  *  quotes it clips it — so droppedContent can recognise text a layout note
  *  has already named. */
@@ -5222,6 +5278,15 @@ export const TABLE_MAX_ROWS = 12;
  *  figure loses characters to the ellipsis, which is worse than no table. */
 export const TABLE_MIN_COL = 46;
 
+/** The air between the last row and the paragraph beneath it. The same step
+ *  the stat grid leaves between its figures and the bullets under them. */
+const TABLE_BODY_GAP = 10;
+
+/** The least band a table may be left with once the prose beneath it has taken
+ *  its room: a header band and one row. Below that there is no table to draw,
+ *  so the reserve is refused before it is measured rather than after. */
+const TABLE_MIN_BAND = 40;
+
 /**
  * Share the width between columns, narrow ones first.
  *
@@ -5302,6 +5367,23 @@ export function fitCell(text: string, boxWidth: number, size: number, lines = 1)
   return (space > budget * 0.6 ? cut.slice(0, space) : cut).trimEnd() + "…";
 }
 
+/** THE TABLE'S OWN WIDTH, in one place. With a rail beside it the table gives
+ *  up a third of the measure; without one it takes the whole content width.
+ *  The prose that now sits BENEATH the rows is set on the same measure, so
+ *  this has to be one number rather than two that happen to agree today. */
+function tableWidthFor(hasRail: boolean): number {
+  return hasRail ? Math.floor(GRID.contentWidth * 0.63) : GRID.contentWidth;
+}
+
+/** What the table reports back about the space it took.
+ *
+ *  `bottom` is where the rows end, so the takeaway bar — and now the body —
+ *  can follow them. `size` and `clipped` are what the branch above needs to
+ *  answer the only question worth asking about a body beneath a table: can
+ *  both be drawn whole, and if the type had to come down to manage it, did
+ *  anyone say so. */
+interface TableMeta { bottom: number; size?: number; clipped?: boolean }
+
 /** A data table: a header row and rows of cells, figures right-aligned. */
 /**
  * A data table, optionally with a commentary rail beside it.
@@ -5318,7 +5400,7 @@ function tableRequests(
   spec: NonNullable<SlideInput["table"]>, bandTop: number,
   rail?: string,
   bandBottom?: number,
-  opts: { onDark?: boolean; meta?: { bottom: number } } = {}
+  opts: { onDark?: boolean; meta?: TableMeta; hugRows?: boolean } = {}
 ): Req[] {
   const onDark = !!opts.onDark;
   const columns = (spec.columns || []).map((c) => String(c ?? "")).slice(0, TABLE_MAX_COLS);
@@ -5328,7 +5410,7 @@ function tableRequests(
   // which is the trade: a table that fills the slide while its argument sits in
   // the speaker notes is the failure this exists to fix.
   const hasRail = !!rail?.trim();
-  const tableW = hasRail ? Math.floor(GRID.contentWidth * 0.63) : GRID.contentWidth;
+  const tableW = tableWidthFor(hasRail);
   const rows = allRows.slice(0, TABLE_MAX_ROWS).map((r) => columns.map((_, j) => String(r[j] ?? "")));
 
   const out: Req[] = [];
@@ -5453,6 +5535,13 @@ function tableRequests(
       const k = availRows / total;
       plan.rowHs = plan.rowHs.map((h) => Math.max(11, h * k));
     }
+    // THE FLOOR IS A LOSS, AND IT IS NOW SAID OUT LOUD. Nothing above fitted,
+    // so the cells are cut to one line apiece by fitCell — which is the only
+    // place in this function where words disappear without a "Showing N of M"
+    // line to declare them. The branch above reads this to decide whether a
+    // body may take room from the rows: it may not, if the rows are already
+    // being cut.
+    if (opts.meta) opts.meta.clipped = true;
   } else {
     // Deal the slack back, bounded, so the table breathes instead of huddling.
     const availRows = bottomClear - top - plan.headH - 4;
@@ -5460,9 +5549,16 @@ function tableRequests(
     // Rows hug their words. The slack used to be dealt back up to 12pt a row,
     // which made a five-row table into five 60pt bands of tint with three
     // lines in each — "waiting for a line that never comes".
-    const extra = Math.min(3, Math.max(0, (availRows - total) / rows.length));
+    //
+    // With prose BENEATH the table the slack belongs to the prose, not to the
+    // rows: the rows hug their words and what is left falls below them, which
+    // is exactly what the stat grid does when bullets follow its figures. This
+    // gives nothing up — no row is dropped and no cell is cut — it only
+    // declines to pad.
+    const extra = opts.hugRows ? 0 : Math.min(3, Math.max(0, (availRows - total) / rows.length));
     plan.rowHs = plan.rowHs.map((h) => h + extra);
   }
+  if (opts.meta) opts.meta.size = plan.size;
   const { widths, xs, inner, heads, headH, rowHs, rowCaps } = plan;
   const cellStyle = { ...TYPE.cellText, size: plan.size };
   const headStyle = { ...TYPE.cellHead, size: plan.headSize };
@@ -6214,6 +6310,20 @@ export function buildSlideRequests(
     // entirely: the one slot for a takeaway line was discarded on exactly the
     // slides that carry evidence. When present it takes the top of the band and
     // the plot starts beneath it.
+    //
+    // `stat` IS STILL EXCLUDED HERE, AND THE DECISION TO CHANGE THAT IS TAKEN
+    // BUT NOT BUILT. Measured over the 39 decks built to 2026-09-16, 13 stat
+    // slides and 8 image-split slides carried a `subtitle` that this condition
+    // drops — the model keeps writing the field, which is evidence the slot is
+    // wanted, and droppedContent reports every one of them. Chris decided on
+    // 2026-09-17 (docs/PLAN-slides-creative-2026-09.md, Stage 0): DRAW it on
+    // `stat`, which has the room because its whole content is three short
+    // strings, and LEAVE `image-split` dropping it, because there the subtitle
+    // competes with the photograph for the same column — with deckWarnings
+    // saying so rather than the slide swallowing it. That ships immediately
+    // after the rest of Stage 0, deliberately after rather than inside it, so
+    // it is named here rather than done in passing. Do not widen the condition
+    // to image-split when you do it.
     let chartBandTop = GRID.bodyY;
     if (slide.subtitle?.trim() && layout !== "stat") {
       const standStyle = onDark ? TYPE.standfirstDark : TYPE.standfirst;
@@ -6297,9 +6407,105 @@ export function buildSlideRequests(
     else if (layout === "matrix" && slide.matrix) requests.push(...matrixRequests(page, id, slide.matrix, aTop, GRID.bodyY + band));
     else if (layout === "comparison" && slide.comparison) requests.push(...comparisonRequests(page, id, slide.comparison, aTop, GRID.bodyY + band));
     else if (layout === "table" && slide.table) {
-      const tableMeta = { bottom: 0 };
-      requests.push(...tableRequests(page, id, slide.table, aTop, slide.bodyRight, GRID.bodyY + band, { onDark, meta: tableMeta }));
-      if (tableMeta.bottom) contentBottom = tableMeta.bottom;
+      // THE TABLE DRAWS ITS `body`, BENEATH THE ROWS.
+      //
+      // It never did, at any row count: the gate here passed only `bodyRight`
+      // into tableRequests, so a `body` on a table slide was carried into the
+      // deck and drawn nowhere. Measured over the 39 decks built between
+      // 2026-08-18 and 2026-09-16 that is 17 shipped client slides and 963
+      // words of analyst copy — the "so what" beside the figures, which is
+      // usually the point of the slide. The tool's own guidance has told the
+      // model for weeks to put that commentary in `bodyRight`, and the model
+      // keeps writing `body`, which is the field every other layout reads.
+      //
+      // WHO GETS THE BAND. The rows do. A table cut to fit a paragraph is a
+      // worse slide than the paragraph moved elsewhere, and the cut is the one
+      // loss this function makes without declaring it (the single-line floor,
+      // where fitCell trims cells with no "Showing N of M" line to say so). So
+      // the prose is offered the room at 10pt, then 9, then 8 — the stat
+      // grid's own ladder — and the first reserve that still leaves every row
+      // and every cell WHOLE is the one taken. Rows hug their words while a
+      // body follows, so the slack falls below them rather than padding them.
+      // If no reserve does, the body is not drawn and the slide says so;
+      // prepareSlidesForBuild turns that into a refusal naming `bodyRight`,
+      // which is drawn today as a rail beside the table and exists for exactly
+      // this sentence.
+      const floor = GRID.bodyY + band;
+      const base = onDark ? TYPE.bodyDark : TYPE.body;
+      // On the SAME measure as the rows: full width, or the table's 63% when a
+      // rail already has the rest of the slide. A full-width paragraph under a
+      // 63% table would run straight under the rail, which is drawn to the
+      // foot of the slide.
+      const bodyW = tableWidthFor(!!slide.bodyRight?.trim());
+      const paras = String(slide.body || "").split("\n").map((l) => l.trim()).filter(Boolean);
+      const needAt = (size: number) => {
+        let lines = 0;
+        for (let i = 0; i < paras.length; i++) lines += Math.max(1, estimateLines(paras[i], bodyW, size, true));
+        return drawnTextHeight(lines, size, 4, paras.length);
+      };
+      // The baseline: the table with the whole band to itself, exactly as it
+      // has been drawn until now. It is what ships if the body cannot be
+      // placed, so a slide that built yesterday still builds today.
+      const baseMeta: TableMeta = { bottom: 0 };
+      let tableReqs = tableRequests(page, id, slide.table, aTop, slide.bodyRight, floor, { onDark, meta: baseMeta });
+      let meta = baseMeta;
+      let placed: { size: number; height: number } | null = null;
+      if (paras.length && !baseMeta.clipped) {
+        for (const size of [base.size, 9, 8]) {
+          const need = needAt(size);
+          if (floor - aTop - need - TABLE_BODY_GAP < TABLE_MIN_BAND) continue;
+          const tryMeta: TableMeta = { bottom: 0 };
+          const tryReqs = tableRequests(page, id, slide.table, aTop, slide.bodyRight,
+            floor - need - TABLE_BODY_GAP, { onDark, meta: tryMeta, hugRows: true });
+          if (tryMeta.clipped || !tryMeta.bottom) continue;
+          if (tryMeta.bottom + TABLE_BODY_GAP + need > floor + 0.5) continue;
+          tableReqs = tryReqs; meta = tryMeta; placed = { size, height: need };
+          break;
+        }
+      }
+      requests.push(...tableReqs);
+      if (placed) {
+        const bodyTop = meta.bottom + TABLE_BODY_GAP;
+        // What is measured is what is drawn: the blank lines between an
+        // analyst's paragraphs are dropped here rather than rendered as empty
+        // bullets that the measure above never counted. Bulleted, like the
+        // rail beside the table and like every other body in the deck.
+        requests.push(...textBox(id("body"), page, paras.join("\n"), { ...base, size: placed.size }, {
+          x: GRID.margin, y: bodyTop, width: bodyW, height: placed.height,
+        }, { bullets: true, spaceBelow: 4 }));
+        contentBottom = bodyTop + placed.height;
+        // SAID, NEVER SILENT — ON BOTH SIDES OF THE GAP. Nothing was dropped
+        // or cut, but the rows may be set smaller than they would have been on
+        // their own, and the paragraph may be set smaller than every other
+        // body in the deck. Both are changes the reader can see and the author
+        // did not ask for, and 8pt is `caption` size — two steps under body —
+        // so a paragraph placed there reads as a footnote rather than as the
+        // slide's argument. Whoever wrote it should be the one to decide
+        // whether that is acceptable or the text should come down instead.
+        if (baseMeta.size && meta.size && meta.size < baseMeta.size) {
+          shotNote(`the table is set at ${meta.size}pt rather than ${baseMeta.size}pt to leave room for the paragraph beneath it`);
+        }
+        if (placed.size < base.size) {
+          shotNote(`the paragraph beneath the table is set at ${placed.size}pt rather than ${base.size}pt so it fits under the rows`
+            + ` — shorten it, or give the table fewer rows, to read it at full size`);
+        }
+      } else {
+        if (meta.bottom) contentBottom = meta.bottom;
+        if (paras.length) {
+          // THE NOTE NAMES THE FIELD AND NOT THE TEXT, deliberately.
+          // droppedContent leaves a string alone when a layout note already
+          // quotes it, so quoting the paragraph here would silence the audit
+          // the user reads — deckWarnings, which passes the notes in — and
+          // make "nothing was dropped" true by suppression rather than by
+          // drawing. It would NOT blind the build-time refusal, which asks the
+          // builder whether the box was emitted and never looks at a note; the
+          // two are independent on purpose, and it is worth knowing which one
+          // this sentence is protecting. The words stay reported; the note
+          // says where to put them.
+          shotNote(`its \`body\` does not fit beneath ${(slide.table.rows || []).length} rows of table and is NOT drawn`
+            + ` — put it in \`bodyRight\`, which is drawn as a rail beside the table, or shorten it`);
+        }
+      }
     }
     else if (layout === "scatter" && slide.scatter) requests.push(...scatterRequests(page, id, slide.scatter, onDark, aTop, GRID.bodyY + band));
     else if (layout === "venn" && slide.venn) {

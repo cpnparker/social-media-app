@@ -14,12 +14,13 @@ import {
   buildSlideRequests, textBandsFor, splitOverflowingSlides, isoDate, isVisualSlide,
   estimateLines, drawnTextHeight, inheritContinuationImages, resolveDeckImages,
   niceTicks, isNumericColumn, fitCell, fitColumnWidths, parseAccents, parseBold, deckWarnings, cardGeometry, bandHeightFor,
+  undrawnTableBodies,
   CAPS_WIDEN, faceAdvance, stripImageMarkdown, drawnText, TEXT_INSET_X, TEXT_INSET_Y, pillWidth, droppedContent, fitHeading, FOOTER_Y, captionParagraphs, splitStageOwner, slideStyle,
   labelWidthPt, quoteClip, drawsRawScreenshot, isScreenshot, fitAspect, namesAPicture, hugHeight,
   type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel, readPath } from "../lib/slides/preview-model";
-import { applyEditSlide, unrenderableSlides, PAYLOAD_FIELDS, insertableLayout, normaliseSlide, SlideCallRefusal } from "../lib/slides/edit";
+import { applyEditSlide, unrenderableSlides, undrawnTableSlides, undrawnTableFaults, PAYLOAD_FIELDS, insertableLayout, normaliseSlide, SlideCallRefusal } from "../lib/slides/edit";
 import { slidesFailure, parseSlidesArguments, SLIDES_FAILED_FOR_USER, type SlidesTurnState } from "../lib/slides/failure";
 import {
   asksForDeckChange, deckChangeClaim, claimingRules, CLAIM_RULES, ASK_RULES, shouldRetryDeckClaim, unmadeDeckChangeNotice,
@@ -247,6 +248,36 @@ const STRESS: SlideInput[] = [
       rows: Array.from({ length: 20 }, (_, i) =>
         Array.from({ length: 8 }, (_, j) => (j === 0 ? `A first-column label that runs on, row ${i + 1}` : String((i + 1) * (j + 1) * 137)))),
       highlight: [0, 19] } },
+  // A TABLE AS THEY ACTUALLY ARRIVE. Rows whose cells wrap onto a second line,
+  // a standfirst, a takeaway bar, and the analyst paragraph beneath the rows
+  // that `table` never drew until check 44 — which also puts that new box in
+  // front of the off-canvas and overlap checks rather than only in front of
+  // its own. Every slide Stage 0 recovered has this shape, and none of them
+  // could be put in front of the geometry battery until check 2 stopped
+  // comparing row edges as exact floats: the rows are laid out by accumulating
+  // fractional heights and touch to within 2.8e-14pt, which read as eight
+  // collisions on one slide.
+  { layout: "table", eyebrow: "The programme", title: "Five rows, two-line cells, and the paragraph beneath them",
+    subtitle: "A standfirst above the table, long enough to wrap onto a second line.",
+    table: { columns: ["Workstream", "What it produces", "Owner", "When"],
+      rows: Array.from({ length: 5 }, (_, i) => [
+        `Workstream ${i + 1} on the brand transition programme`,
+        "A deliverable described at the length a real scorecard cell runs to",
+        "Communications", "Q3"]) },
+    body: "Amrize still ranks for holcim us, lafarge canada and dozens more legacy terms.\n"
+      + "The missing fact: no page on amrize.com states the June 2025 carve-out from Holcim as a machine-readable fact.",
+    note: "Why this matters: the former parent is still the closest competitor." },
+  // AND THE SAME ROWS WITH THE BAND TO THEMSELVES, which is the OTHER path
+  // through the row planner and the one that trips the float: with no prose
+  // beneath them the rows are dealt the band's slack back in fractions, and
+  // the row below starts 2.8e-14pt above where the row above ended. Compared
+  // exactly, that read as eight collisions on this one slide.
+  { layout: "table", title: "Six rows with the band to themselves",
+    table: { columns: ["Workstream", "What it produces", "Owner", "When"],
+      rows: Array.from({ length: 6 }, (_, i) => [
+        `Workstream ${i + 1} on the brand transition programme`,
+        "A deliverable described at the length a real scorecard cell runs to",
+        "Communications", "Q3"]) } },
   { layout: "logo-wall", title: "Clients whose marks we do not have",
     logos: [{ name: "Holcim", resolvedUrl: "logo.png" }, { name: "Siemens Energy" }, { name: "Hiscox" }] },
   { layout: "timeline", title: "Eight milestones in six slots",
@@ -528,7 +559,19 @@ deck.slides.forEach((page, i) => {
       // padding — two cells whose insets touch are not two texts that touch.
       const iy = SLIDES_TEXT_INSET.y;
       const py0 = p.y + iy, py1 = p.y + Math.max(0, p.h - iy), qy0 = q.y + iy, qy1 = q.y + Math.max(0, q.h - iy);
-      const apart = p.x + p.w <= q.x || q.x + q.w <= p.x || py1 <= qy0 || qy1 <= py0;
+      // AND NOT FLOAT-EXACT. A six-row table's rows are laid out by
+      // accumulating fractional heights, so the row below starts 2.8e-14pt
+      // above where the row above ended — and `py1 <= qy0` read that as two
+      // text boxes on top of each other, eight times on one slide. The
+      // tolerance is a millionth of a point: far below anything a reader or a
+      // renderer can resolve, and far above the arithmetic. Without it the
+      // fixture that matters most here — a realistic table, which is the shape
+      // of every slide check 44 recovered — cannot be added to the battery.
+      // MUTATION (2026-09-17): restoring the exact comparison turns the
+      // six-row fixture red four times over. Recorded here because this check
+      // predates the log convention and has no header to put it in.
+      const EPS = 1e-6;
+      const apart = p.x + p.w <= q.x + EPS || q.x + q.w <= p.x + EPS || py1 <= qy0 + EPS || qy1 <= py0 + EPS;
       if (!apart) fail(`${ALL[i].layout}: "${String(p.text).slice(0, 18)}" overlaps "${String(q.text).slice(0, 18)}"`);
     }
   }
@@ -7604,6 +7647,675 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     }
   }
   if (failures === before41) pass("screenshots are framed, pins point where they are told or say they moved, and the deck never claims a callout it did not draw");
+
+  /* 42. THE TOOL OFFERS EXACTLY THE LAYOUTS THE BUILDER CAN DRAW.
+   *
+   * Nothing asserted this, and it cost real work. For nearly the whole of
+   * 2026-08-18..2026-09-16 the `generate_slides` layout enum offered 25 of the
+   * 29 layouts in `LAYOUTS`: `table` (renderable from de2c75f, 2026-08-31),
+   * `statement` (2a008a2, 2026-09-01) and `layers` (1453cee, 2026-09-03) were
+   * geometry-checked, drawn correctly, and INVISIBLE TO THE MODEL for 15, 14
+   * and 12 days, until 38c9d10 on 2026-09-15.
+   *
+   * On 2026-08-31 a user asked twice, by name, for the table layout. The model
+   * read its enum, correctly replied that there was no layout literally called
+   * "table" in the slide tool, and shipped `content` with a table payload —
+   * which draws no table at all (check 44f). The model was accurate about its
+   * tool and wrong about the product.
+   *
+   * The nearest thing to a guard was a hand-written list of five names in
+   * check 20d, which is the hand-kept-list-that-drifts pattern CLAUDE.md
+   * already warns about. This compares the SETS, in BOTH directions, on every
+   * route that takes a layout — a layout offered but not drawable is the same
+   * fault seen from the other side, and sends the model to a name that falls
+   * through to prose.
+   *
+   * AGAINST LAYOUT_STYLE, NOT AGAINST `LAYOUTS`, and the difference is the
+   * whole defect. `LAYOUTS` is a plain `SlideLayout[]`, so the compiler only
+   * requires it to be a SUBSET of the union: a layout can be missing from it
+   * with tsc clean. Nothing at runtime reads it to decide what can be drawn —
+   * `buildSlideRequests` accepts a layout iff LAYOUT_STYLE has the key, and
+   * LAYOUT_STYLE is a `Record<SlideLayout, …>`, which the compiler DOES force
+   * to hold every member of the union. So the drawable set is LAYOUT_STYLE's
+   * keys, and `LAYOUTS` is a register of it that can itself drift — deleting
+   * "layers" from `LAYOUTS` and from both enums left this check green, and
+   * printing "both layout enums offer exactly the 28 layouts the builder
+   * draws" about a builder that still drew 29. (c) pins the register to the
+   * type so that stays impossible.
+   *
+   * MUTATION LOG (detached worktree, 2026-09-17, restored after):
+   *   KILLED  delete "table", "statement" and "layers" from the slides.items
+   *           enum — the tool's exact state for a fortnight → direction (a)
+   *           red, naming all three
+   *   KILLED  delete "hub" from the editSlide enum only → red on that route
+   *           alone, which is what proves each route is really read
+   *   KILLED  give insertSlides.items a hand-written schema offering 2 of the
+   *           29 layouts → that route's precondition AND direction (a) red,
+   *           and nothing else. It shares SLIDE_ITEM_PROPS today and so cannot
+   *           drift, which is exactly the assumption worth asserting: three
+   *           hand-kept copies of this schema drifted once already, which is
+   *           why leanSchema exists (providers.ts:1547)
+   *   KILLED  add "dashboard" to the slides.items enum → direction (b) red
+   *   KILLED  delete "layers" from LAYOUTS and from all three enums — tsc
+   *           clean, because LAYOUTS is a plain array — → FOUR red: each route
+   *           reports the layout hidden, and (c) reports the register short.
+   *           Against `LAYOUTS` this was the survivor that mattered: the check
+   *           compared the enums with the drifted register, agreed with
+   *           itself, and printed "exactly the 28 layouts the builder draws"
+   *           while buildSlideRequests still drew 29.
+   *   SURVIVOR  reordering any enum survives, deliberately: order is not
+   *             meaning here, and pinning it would fail on every honest edit.
+   */
+  const before42 = failures;
+  console.log(`\n42. The tool offers exactly the layouts the builder can draw`);
+  let routes42 = 0;
+  {
+    const A42 = (ok: boolean, msg: string) => { if (!ok) fail(msg); };
+    const params: any = (SLIDES_GEN_OPENAI_TOOL as any).function.parameters;
+    const at = (o: any, path: string[]) => {
+      let cur = o;
+      for (let i = 0; i < path.length && cur; i++) cur = cur[path[i]];
+      return cur;
+    };
+    // ALL THREE ROUTES THAT TAKE A LAYOUT. The third is the one the tool's own
+    // description calls "THIS IS HOW A LONG DECK IS BUILT": it shares
+    // SLIDE_ITEM_PROPS with the first today and therefore cannot drift, which
+    // is a property of the code as written and not a thing anyone asserted.
+    const ROUTES: [string, any][] = [
+      ["slides[].layout", at(params, ["properties", "slides", "items", "properties", "layout"])],
+      ["editSlide.layout", at(params, ["properties", "editSlide", "properties", "layout"])],
+      ["editSlide.insertSlides[].layout", at(params, ["properties", "editSlide", "properties", "insertSlides", "items", "properties", "layout"])],
+    ];
+    routes42 = ROUTES.length;
+    // WHAT THE BUILDER CAN DRAW, read off the one table the compiler forces to
+    // be complete. See the note above: `LAYOUTS` is a register of this and can
+    // drift from it, so it is compared against rather than trusted.
+    const drawable: string[] = Object.keys(LAYOUT_STYLE);
+    // PRECONDITIONS, because a comparison of two empty sets passes for ever.
+    A42(drawable.length > 20, `precondition: LAYOUT_STYLE holds ${drawable.length} layouts — the comparison below would be vacuous`);
+    for (let r = 0; r < ROUTES.length; r++) {
+      const route = ROUTES[r][0];
+      const schema = ROUTES[r][1];
+      const offered: string[] = (schema && Array.isArray(schema.enum) ? schema.enum : []).map((x: any) => String(x));
+      A42(offered.length > 20, `precondition: ${route} declares ${offered.length} layouts — there is no enum there to compare`);
+      if (!offered.length) continue;
+      // (a) EVERY LAYOUT THE BUILDER DRAWS IS OFFERED. The direction the
+      // fortnight of drift was in.
+      const hidden: string[] = [];
+      for (let i = 0; i < drawable.length; i++) if (offered.indexOf(drawable[i]) < 0) hidden.push(drawable[i]);
+      // (b) AND NOTHING ELSE IS.
+      const phantom: string[] = [];
+      for (let i = 0; i < offered.length; i++) if (drawable.indexOf(offered[i]) < 0) phantom.push(offered[i]);
+      // Each message names BOTH sets. This is the check most likely to go red
+      // on a colleague mid-change — anyone adding a layout trips it — so it
+      // says what to do rather than only what is wrong.
+      A42(hidden.length === 0,
+        `${route} hides ${hidden.length} layout(s) the builder can draw: ${hidden.join(", ")}.`
+        + ` The enum offers [${offered.join(", ")}]; LAYOUT_STYLE in lib/slides/brand.ts draws [${drawable.join(", ")}].`
+        + ` ADD the missing name(s) to that enum in lib/ai/providers.ts — a layout the enum does not name cannot be chosen,`
+        + ` however well it renders: table, statement and layers were invisible to the model for a fortnight exactly this way.`);
+      A42(phantom.length === 0,
+        `${route} offers ${phantom.length} layout(s) the builder cannot draw: ${phantom.join(", ")}.`
+        + ` The enum offers [${offered.join(", ")}]; LAYOUT_STYLE in lib/slides/brand.ts draws [${drawable.join(", ")}].`
+        + ` Either give the layout a LAYOUT_STYLE entry and a branch in buildSlideRequests, or REMOVE the name from that enum —`
+        + ` a name the builder does not know falls through to prose, and the user gets a bulleted slide they did not ask for.`);
+    }
+    // (c) AND THE REGISTER AGREES WITH THE TYPE. `LAYOUTS` is what everything
+    // human-facing iterates — the tool's own catalogue was generated from it —
+    // so a layout missing from it is invisible in a different way, and a name
+    // in it that the builder cannot draw sends a reader to a layout that does
+    // not exist. Same two directions, same house style: name both sets.
+    const unregistered: string[] = [];
+    for (let i = 0; i < drawable.length; i++) if ((LAYOUTS as string[]).indexOf(drawable[i]) < 0) unregistered.push(drawable[i]);
+    const undrawable: string[] = [];
+    for (let i = 0; i < LAYOUTS.length; i++) if (drawable.indexOf(LAYOUTS[i]) < 0) undrawable.push(LAYOUTS[i]);
+    A42(unregistered.length === 0,
+      `LAYOUTS in lib/slides/brand.ts is missing ${unregistered.length} layout(s) the builder can draw: ${unregistered.join(", ")}.`
+      + ` LAYOUTS holds [${LAYOUTS.join(", ")}]; LAYOUT_STYLE draws [${drawable.join(", ")}].`
+      + ` ADD the name to LAYOUTS: it is a plain array, so the compiler never notices the omission, and every catalogue built from it —`
+      + ` including the tool's — quietly stops mentioning a layout that renders perfectly well.`);
+    A42(undrawable.length === 0,
+      `LAYOUTS in lib/slides/brand.ts names ${undrawable.length} layout(s) the builder cannot draw: ${undrawable.join(", ")}.`
+      + ` LAYOUTS holds [${LAYOUTS.join(", ")}]; LAYOUT_STYLE draws [${drawable.join(", ")}].`
+      + ` REMOVE the name, or give it a LAYOUT_STYLE entry and a branch in buildSlideRequests.`);
+  }
+  if (failures === before42) pass(`all ${routes42} layout enums offer exactly the ${Object.keys(LAYOUT_STYLE).length} layouts the builder draws`);
+
+  /* 43. THE PREVIEW KNOWS EVERY SHAPE THE DECK DRAWS.
+   *
+   * Check 3 asserts that every REQUEST KIND the builder emits is handled by
+   * toPreviewModel. It says nothing about the `shapeType` values INSIDE
+   * createShape, and those fail differently: an unrecognised shape is not
+   * dropped, it is drawn as a plain rectangle. So a composer reaching for a
+   * DIAMOND, a CHEVRON or a PENTAGON gets the right shape in Drive and a grey
+   * rectangle in the chat preview AND in the PDF, which is built from the same
+   * model — the deck is right and the two things the user looks at before
+   * publishing are wrong. That is the dropped-scrim-alpha failure again, which
+   * is the one failure a preview may not have.
+   *
+   * RECTANGLE is the default arm, and is therefore recognised by accident: it
+   * is the ONE shape for which "anything I do not know is a rectangle" gives
+   * the right answer. It is named below for that reason and no other.
+   *
+   * Three halves — the word is wrong and the reason is worth the sentence.
+   * The EMITTED one sees what the battery actually draws, across all 29
+   * layouts plus the overloaded and screenshot fixtures. The SOURCE one sees a
+   * shape emitted on a branch no fixture takes, which the emitted one cannot.
+   * The RENDERER one sees the other end: recognising a shape in the preview
+   * MODEL is only half the journey, because the two things the user looks at
+   * before publishing — the chat preview and the PDF — each read that model
+   * separately. A flag the model sets and a renderer ignores is the same
+   * failure from the far side, and it is not hypothetical: deleting
+   * `el.rounded` from SlideDraftPreview previews every note bar, card, layer
+   * band and hub node with square corners, and survived this whole suite.
+   *
+   * MUTATION LOG (detached worktree, 2026-09-17, restored after):
+   *   KILLED  the table's header band emitted as a DIAMOND → the EMITTED half
+   *           red naming DIAMOND, AND the source scan's precondition red. The
+   *           second one is worth reading: that shape goes through filledShape,
+   *           whose call sites do not carry the word `shapeType`, so the source
+   *           half could not see it and said so rather than reporting agreement.
+   *   KILLED  DIAMOND added to filledShape's type union and used nowhere →
+   *           the SOURCE half red alone, which is the half that exists for it
+   *   KILLED  "ELLIPSE" removed from preview-model's createShape branch → both
+   *           halves red, naming ELLIPSE
+   *   KILLED  point the source scan at a file with no shapeType in it → the
+   *           precondition fires rather than reporting agreement
+   *   KILLED  SlideDraftPreview's borderRadius stops reading `el.rounded` →
+   *           the RENDERER half red on that file alone. This is the mutation
+   *           that used to be recorded here as a survivor, and the entry was
+   *           wrong about which mutation it was: renaming the `rounded` FIELD
+   *           in preview-model is killed by `tsc --noEmit`, item one of the
+   *           suite, because both renderers read it by name. It is a renderer
+   *           that silently IGNORES the flag that nothing caught.
+   *   SURVIVOR  a renderer that reads the flag and draws the wrong thing with
+   *             it — `borderRadius: el.rounded ? 1 : 0` — survives, and always
+   *             will here: this check is about whether the distinction
+   *             SURVIVES the journey, not about what is drawn at the end of it.
+   *             Pinning the radius would need a rendered-pixel comparison,
+   *             which is a different check than this one.
+   */
+  const before43 = failures;
+  console.log(`\n43. The preview knows every shape the deck draws`);
+  {
+    const A43 = (ok: boolean, msg: string) => { if (!ok) fail(msg); };
+    const bare = (src: string) => src.replace(/^[ \t]*\/\*[\s\S]*?\*\//gm, "").replace(/(^|[ \t])\/\/[^\n]*/gm, "$1");
+    // WHAT THE PREVIEW RECOGNISES, read out of its createShape branch rather
+    // than written down here — a list in this file would be the same
+    // hand-kept list that made check 20d's five names useless.
+    const previewSrc = bare(readFileSync(join(__dirname, "..", "lib/slides/preview-model.ts"), "utf8"));
+    const start = previewSrc.indexOf(`kind === "createShape"`);
+    const end = previewSrc.indexOf(`kind === "createImage"`, start);
+    A43(start >= 0 && end > start, `precondition: preview-model.ts has no createShape branch to read (${start}, ${end})`);
+    const branch = start >= 0 && end > start ? previewSrc.slice(start, end) : "";
+    const recognised: string[] = ["RECTANGLE"];   // the default arm; see above
+    const lit = /shapeType === "([A-Z][A-Z_]{2,})"/g;
+    for (let m = lit.exec(branch); m; m = lit.exec(branch)) {
+      if (recognised.indexOf(m[1]) < 0) recognised.push(m[1]);
+    }
+    A43(recognised.length >= 4, `precondition: only ${recognised.length} shape(s) read out of the createShape branch — the scan found nothing to compare against`);
+
+    // (a) EMITTED: every shape the battery actually draws.
+    const emitted43: string[] = [];
+    for (let i = 0; i < ALL.length; i++) {
+      const reqs = buildSlideRequests(ALL[i], i, "sh") as any[];
+      for (let r = 0; r < reqs.length; r++) {
+        const st = reqs[r].createShape && reqs[r].createShape.shapeType;
+        if (st && emitted43.indexOf(String(st)) < 0) emitted43.push(String(st));
+      }
+    }
+    A43(emitted43.indexOf("TEXT_BOX") >= 0 && emitted43.indexOf("RECTANGLE") >= 0,
+      `precondition: the battery emitted ${emitted43.length} shape type(s) (${emitted43.join(", ")}) — it is not drawing anything`);
+    const strangers: string[] = [];
+    for (let i = 0; i < emitted43.length; i++) if (recognised.indexOf(emitted43[i]) < 0) strangers.push(emitted43[i]);
+    A43(strangers.length === 0,
+      `the deck draws ${strangers.join(", ")} and toPreviewModel does not recognise ${strangers.length === 1 ? "it" : "them"}:`
+      + ` correct in Drive, a plain grey rectangle in the chat preview and in the PDF.`
+      + ` The preview knows [${recognised.join(", ")}]; the builder emits [${emitted43.join(", ")}].`
+      + ` ADD an arm for ${strangers.join(", ")} to the createShape branch of lib/slides/preview-model.ts and to the renderer that reads it,`
+      + ` or draw the shape with one of the kinds the preview already knows.`);
+
+    // (b) SOURCE: a shape emitted on a branch no fixture takes is invisible to
+    // (a), and the fixtures are the thing most likely to fall behind a new
+    // layout. Every UPPER_CASE literal on a line that mentions shapeType,
+    // which is both the direct createShape calls and filledShape's own
+    // vocabulary — its type union is where a new shape is declared first.
+    const genSrc = bare(readFileSync(join(__dirname, "..", "lib/slides/generate.ts"), "utf8"));
+    const written: string[] = [];
+    const genLines = genSrc.split("\n");
+    for (let i = 0; i < genLines.length; i++) {
+      if (genLines[i].indexOf("shapeType") < 0) continue;
+      const names = /"([A-Z][A-Z_]{2,})"/g;
+      for (let m = names.exec(genLines[i]); m; m = names.exec(genLines[i])) {
+        if (written.indexOf(m[1]) < 0) written.push(m[1]);
+      }
+    }
+    A43(written.length >= emitted43.length,
+      `precondition: the source scan found ${written.length} shape name(s) (${written.join(", ")}) against ${emitted43.length} actually emitted — it is not reading the builder`);
+    const unknownWritten: string[] = [];
+    for (let i = 0; i < written.length; i++) if (recognised.indexOf(written[i]) < 0) unknownWritten.push(written[i]);
+    A43(unknownWritten.length === 0,
+      `lib/slides/generate.ts names the shape type(s) ${unknownWritten.join(", ")} and toPreviewModel recognises none of them,`
+      + ` so any slide reaching that branch previews and prints as a grey rectangle while Drive is correct.`
+      + ` The preview knows [${recognised.join(", ")}]. Give the createShape branch of lib/slides/preview-model.ts an arm for each.`);
+
+    // (c) RENDERERS: every distinction the model draws OUT of a shapeType has
+    // to survive into both things the user looks at. The model turns a
+    // shapeType into a flag (`rounded`, `arrow`, `arrowDown`, `arrowUp`) or
+    // into a `kind` ("ellipse"); a renderer that never reads one draws the
+    // shape as a plain rectangle, which is the exact failure this check exists
+    // to prevent, arriving one file later. Read out of the branch's own source
+    // for the same reason `recognised` is: a list written here is the
+    // hand-kept list again.
+    const flags43: string[] = [];
+    const flagRe = /([a-z][A-Za-z]*): body\.shapeType === "[A-Z][A-Z_]{2,}",/g;
+    for (let m = flagRe.exec(branch); m; m = flagRe.exec(branch)) {
+      if (flags43.indexOf(m[1]) < 0) flags43.push(m[1]);
+    }
+    const kinds43: string[] = [];
+    const kindRe = /kind: body\.shapeType === "[A-Z][A-Z_]{2,}" \? "([a-z]+)"/g;
+    for (let m = kindRe.exec(branch); m; m = kindRe.exec(branch)) {
+      if (kinds43.indexOf(m[1]) < 0) kinds43.push(m[1]);
+    }
+    A43(flags43.length >= 4 && kinds43.length >= 1,
+      `precondition: the createShape branch yielded ${flags43.length} flag(s) (${flags43.join(", ")}) and ${kinds43.length} kind(s) (${kinds43.join(", ")})`
+      + ` — the scan is not reading the branch, so the assertions below would hold over nothing`);
+    const RENDERERS43: [string, string][] = [
+      ["lib/slides/pdf-html.ts", bare(readFileSync(join(__dirname, "..", "lib/slides/pdf-html.ts"), "utf8"))],
+      ["components/ai-writer/SlideDraftPreview.tsx", bare(readFileSync(join(__dirname, "..", "components/ai-writer/SlideDraftPreview.tsx"), "utf8"))],
+    ];
+    for (let r = 0; r < RENDERERS43.length; r++) {
+      const file = RENDERERS43[r][0];
+      const text = RENDERERS43[r][1];
+      A43(text.indexOf("PreviewElement") >= 0 || text.indexOf("el.kind") >= 0,
+        `precondition: ${file} does not look like a renderer of the preview model — the assertions below would hold over the wrong file`);
+      for (let f = 0; f < flags43.length; f++) {
+        // Word-bounded, or `.arrow` would be satisfied by `.arrowDown`.
+        A43(new RegExp("\\." + flags43[f] + "\\b").test(text),
+          `toPreviewModel sets \`${flags43[f]}\` from a shapeType and ${file} never reads it,`
+          + ` so that shape renders there as a plain rectangle while Drive and the other renderer are right.`
+          + ` The branch sets [${flags43.join(", ")}]. Read the flag in ${file}, or stop setting it in lib/slides/preview-model.ts.`);
+      }
+      for (let k = 0; k < kinds43.length; k++) {
+        A43(text.indexOf(`"${kinds43[k]}"`) >= 0,
+          `toPreviewModel gives a shape the kind "${kinds43[k]}" and ${file} never mentions it,`
+          + ` so it is drawn there as whatever the default arm draws. Handle "${kinds43[k]}" in ${file},`
+          + ` or stop distinguishing it in lib/slides/preview-model.ts.`);
+      }
+    }
+  }
+  if (failures === before43) pass(`every shape the builder draws is one the preview recognises, and both renderers read every distinction it makes`);
+
+  /* 44. A TABLE SLIDE DRAWS ITS COMMENTARY, AND A TABLE NO LAYOUT DRAWS IS REFUSED.
+   *
+   * Two live defects, both measured over the 39 decks built between 2026-08-18
+   * and 2026-09-16 with the product's own `droppedContent`:
+   *
+   *   - `table` NEVER drew `body`, at any row count: the gate passed only
+   *     `bodyRight` into tableRequests. 17 shipped client slides carried 963
+   *     words of analyst copy the deck did not contain — the "so what" beside
+   *     the figures, which is usually the point of the slide.
+   *   - `content` silently ignored a `table` payload, every row and every
+   *     heading. That is how 11 rows and 4 column headings reached a client
+   *     deck as nothing at all, on the day the enum did not offer `table`
+   *     (check 42).
+   *
+   * The rows take the band first: a table cut to fit a paragraph is a worse
+   * slide than the paragraph moved, and the single-line floor is the one place
+   * tableRequests loses words with no "Showing N of M" line to declare them.
+   * So the assertions run in BOTH directions — a body that fits is drawn, a
+   * body that cannot fit is named and refused rather than clipped — because a
+   * rule that only ever draws is satisfied by drawing through the footer, and
+   * a rule that only ever refuses is satisfied by refusing everything.
+   *
+   * MUTATION LOG (detached worktree, 2026-09-17, restored after):
+   *   KILLED  reintroduce the gate — `bodyRight` into tableRequests and no body
+   *           box at all, which is exactly how it shipped → THIRTEEN
+   *           assertions red across 44a, 44b, 44c, 44d, 44e, 44f, 44h, 44i and
+   *           44g, with droppedContent naming the paragraph and
+   *           prepareSlidesForBuild refusing the deck it used to build in
+   *           silence
+   *   KILLED  draw the body regardless of what fits (no ladder, no refusal) →
+   *           nine red: the paragraph is drawn on a slide with no room
+   *   KILLED  drop the `hugRows` arm, so the rows keep padding themselves →
+   *           44c red
+   *   KILLED  undrawnTableSlides returning [] → 44f red: a content+table deck
+   *           passes in silence
+   *   KILLED  the guard in prepareSlidesForBuild stops asking undrawnTableSlides
+   *           → 44g red; and again for undrawnTableBodies → 44g red. The
+   *           predicates on their own prove nothing about what is refused.
+   *   KILLED  let the "does not fit" note QUOTE the paragraph, in quoteClip's
+   *           own form → 44e red, once. Worth reading for what it does NOT
+   *           prove: droppedContent leaves text a layout note already quotes
+   *           to that note, so quoting here makes "nothing was dropped" true
+   *           by suppression rather than by drawing — in the AUDIT the user
+   *           reads, which is deckWarnings, which passes the notes in. The
+   *           build-time refusal stayed green and should have: it asks the
+   *           builder whether the box was emitted and never looks at a note.
+   *           (The mutation only reproduces in quoteClip's form. Appending the
+   *           raw paragraph survives, because its newlines are not the clip's.)
+   *   KILLED  the guard asks droppedContent again, as it first did → 44e red
+   *           twice, on the echoed standfirst and the nine-character body.
+   *           Its five-word prefix and ten-character floor are right for an
+   *           audit and wrong for a refusal.
+   *   KILLED  collapse tableWidthFor to GRID.contentWidth → 44h red: 227pt of
+   *           paragraph printed across the commentary rail. Before 44h existed
+   *           this survived the entire suite.
+   *   KILLED  silence either type step-down — the table's or the paragraph's,
+   *           `if (false && …)` → 44i red, separately for each. Before 44i
+   *           both could be deleted with the suite green, on the path that
+   *           fires on most of the slides Stage 0 recovered.
+   *   SURVIVOR  TABLE_BODY_GAP 10 → 8 survives: these assertions are about
+   *             words reaching the slide, not about the air above them.
+   *   SURVIVOR  two earlier forms of 44c, both recorded rather than deleted.
+   *             `rowsBottom(with body) <= rowsBottom(without)` survives the
+   *             hugRows mutation because the slack deal-back is capped at 3pt
+   *             a row and both cases reach the cap — the numbers come out
+   *             identical, and `<=` cannot tell identical from hugged. So does
+   *             comparing a one-line body against a three-paragraph one, for
+   *             the same reason. Only the STRICT form kills it.
+   */
+  const before44 = failures;
+  console.log(`\n44. A table slide draws its commentary, and a table no layout draws is refused`);
+  {
+    const A44 = (ok: boolean, msg: string) => { if (!ok) fail(msg); };
+    const TSPEC = {
+      columns: ["Domain competing for Amrize queries", "Shared KW", "Their traffic", "DR"],
+      rows: [
+        ["holcim.com - legacy parent", "108", "8,853", "76"],
+        ["holcimgroup.com - legacy parent", "30", "493", "47"],
+        ["holcim.co.uk - a UK site on US queries", "25", "2,981", "65"],
+        ["holcimalpenaconnect.com - orphaned plant site", "19", "49", "0.9"],
+      ],
+    };
+    const ANALYSIS =
+      "Amrize still ranks for holcim us, lafarge canada and dozens more legacy terms.\n"
+      + "The missing fact: no page on amrize.com states the June 2025 carve-out from Holcim as a machine-readable fact.\n"
+      + "Source: Ahrefs Site Explorer and Keywords Explorer, 20 August 2026.";
+    const drawnTextOf = (s: SlideInput, i: number, run: string) =>
+      (buildSlideRequests(s, i, run) as any[]).filter((r) => r.insertText).map((r) => r.insertText.text).join(" | ");
+    const rowsBottom = (s: SlideInput, i: number, run: string) => {
+      let bottom = 0;
+      const reqs = buildSlideRequests(s, i, run) as any[];
+      for (let r = 0; r < reqs.length; r++) {
+        const o = reqs[r].createShape;
+        if (!o || !/_(tz\d|trb\d|trr\d|tc\d)/.test(String(o.objectId))) continue;
+        bottom = Math.max(bottom, o.elementProperties.transform.translateY + o.elementProperties.size.height.magnitude);
+      }
+      return bottom;
+    };
+    const shapeOf = (reqs: any[], suffix: string) => {
+      for (let r = 0; r < reqs.length; r++) {
+        const o = reqs[r].createShape;
+        if (o && String(o.objectId).slice(-suffix.length) === suffix) {
+          return {
+            x: o.elementProperties.transform.translateX, y: o.elementProperties.transform.translateY,
+            w: o.elementProperties.size.width.magnitude, h: o.elementProperties.size.height.magnitude,
+          };
+        }
+      }
+      return null;
+    };
+
+    // 44a THE BODY IS DRAWN — this is the exact shape of a slide that shipped.
+    {
+      const s: SlideInput = { layout: "table", eyebrow: "THE PICTURE TODAY",
+        title: "The brand transition is visibly incomplete in search",
+        subtitle: "The single closest organic competitor to Amrize is its own former parent.",
+        table: TSPEC, body: ANALYSIS };
+      const drawn = drawnTextOf(s, 0, "t44a");
+      A44(drawn.indexOf("The missing fact") >= 0,
+        `a table slide's body is not drawn at all — this is the gate that lost 963 words across 17 shipped slides (${drawn.slice(0, 140)})`);
+      A44(drawn.indexOf("holcimgroup.com") >= 0, `drawing the body cost the table its rows (${drawn.slice(0, 140)})`);
+      // 44b …AND THE AUDIT AGREES. Drawn and still reported would mean the
+      // slide and the warning disagree, which is worse than either alone.
+      const lost = droppedContent(s, 0);
+      A44(lost.length === 0, `the deck is told it carries text this table slide never draws: ${JSON.stringify(lost)}`);
+    }
+
+    // 44c THE ROWS HUG THEIR WORDS WHEN A BODY FOLLOWS, so the slack falls
+    // BELOW the prose rather than inside the table — check 27's rule, and the
+    // stat grid's, where the figures top-align the moment anything follows
+    // them. Four short rows are dealt the band's slack back when they are
+    // alone; with a paragraph beneath them they must not be.
+    //
+    // STRICTLY LOWER, and the strictness is the whole assertion. Written as
+    // `hugged <= padded` it survived the mutation that removed the hug
+    // outright, because the deal-back is capped at 3pt a row and a table with
+    // a body reaches the same cap inside its shortened band: the two numbers
+    // came out identical and a `<=` cannot tell identical from hugged.
+    {
+      const padded = rowsBottom({ layout: "table", title: "Rows alone", table: TSPEC }, 0, "t44c1");
+      const hugged = rowsBottom({ layout: "table", title: "Rows and prose", table: TSPEC, body: ANALYSIS }, 1, "t44c2");
+      A44(padded > 0 && hugged > 0, `precondition: no table rows were found to measure (${padded}, ${hugged})`);
+      A44(padded - hugged > 3,
+        `four short rows end at ${hugged.toFixed(1)}pt with a paragraph beneath them and ${padded.toFixed(1)}pt with the band to themselves —`
+        + ` the rows are being padded either way, so the slack sits inside the table rather than under the prose`);
+      // And hugging pays for itself out of padding, never out of content.
+      A44(drawnTextOf({ layout: "table", title: "Rows and prose", table: TSPEC, body: ANALYSIS }, 1, "t44c3").indexOf("holcimalpenaconnect") >= 0,
+        `the last row went missing once a body was added — the rows are paying for the prose`);
+    }
+
+    // 44d NOTHING OVERRUNS: the paragraph stays inside the bottom margin, and
+    // above the takeaway bar, which is drawn last and over everything.
+    {
+      const s: SlideInput = { layout: "table", title: "Rows, prose and a takeaway", table: TSPEC, body: ANALYSIS,
+        note: "Why this matters: the former parent is the closest competitor." };
+      const reqs = buildSlideRequests(s, 0, "t44d") as any[];
+      const box = shapeOf(reqs, "_body");
+      const bar = shapeOf(reqs, "_noteBar");
+      A44(!!box, `a table slide with a takeaway drew no body at all`);
+      if (box) {
+        A44(box.y + box.h <= CANVAS.height - GRID.margin + 0.6,
+          `the body runs to ${(box.y + box.h).toFixed(1)}pt, past the bottom margin at ${(CANVAS.height - GRID.margin).toFixed(1)}`);
+        if (bar) {
+          A44(box.y + box.h <= bar.y + 0.6,
+            `the body ends at ${(box.y + box.h).toFixed(1)}pt and the takeaway bar starts at ${bar.y.toFixed(1)} — the bar is drawn over the prose`);
+        }
+      }
+    }
+
+    // 44e A BODY THAT CANNOT FIT IS NOT CLIPPED, AND IS REPORTED. Nine rows of
+    // long cells and a takeaway leave no room for a paragraph; the honest
+    // outcome is that the words are named rather than half-drawn.
+    {
+      const big = { columns: ["Workstream", "What it produces", "Owner", "When"],
+        rows: Array.from({ length: 9 }, (_, i) => [
+          `Workstream ${i + 1} with a name long enough to wrap onto a second line`,
+          "A deliverable described at the length a real scorecard cell runs to",
+          "Communications", "Q3"]) };
+      const s: SlideInput = { layout: "table", title: "Everything at once", table: big as any, body: ANALYSIS,
+        note: "Why this matters: the programme is bigger than one quarter." };
+      const notes: string[] = [];
+      const drawn = (buildSlideRequests(s, 0, "t44e", notes) as any[]).filter((r) => r.insertText).map((r) => r.insertText.text).join(" | ");
+      A44(drawn.indexOf("The missing fact") < 0,
+        `a paragraph with no room beneath nine rows was drawn anyway — it can only be running through something`);
+      A44(notes.some((n) => n.indexOf("`bodyRight`") >= 0),
+        `nothing named the field the paragraph should move to: ${JSON.stringify(notes)}`);
+      // The words stay REPORTED. droppedContent leaves text a layout note
+      // already quotes to that note, so a note that quoted the paragraph would
+      // silence the audit — and "nothing was dropped" would be true by
+      // suppression rather than by drawing.
+      A44(droppedContent(s, 0, notes).length > 0, `the paragraph was neither drawn nor reported — it is simply gone`);
+      // AND THE CALL IS REFUSED, so no deck is ever built with it missing.
+      const refused = undrawnTableBodies([s]);
+      A44(refused.length === 1 && refused[0].slide === 1,
+        `the guard cannot see a table slide whose body will not be drawn (${JSON.stringify(refused)})`);
+      // The control, or the guard refuses every table slide with prose on it.
+      A44(undrawnTableBodies([{ layout: "table", title: "Fits", table: TSPEC, body: ANALYSIS }]).length === 0,
+        `the guard refuses a table slide whose body fits perfectly well`);
+
+      // AND IT ASKS THE BUILDER, NOT THE AUDIT. The first version of this
+      // guard asked droppedContent, which compares a five-word normalised
+      // PREFIX and ignores anything under eleven characters — both right for
+      // an audit meant to survive upper-casing and fitCell's ellipsis, both
+      // wrong for a refusal. Two bodies slipped through it while the builder
+      // itself was recording that they were NOT drawn: one opening with the
+      // words of its own standfirst, which is how an analyst writes a slide,
+      // and one of nine normalised characters, which was never compared at
+      // all. Each was undrawn, unreported and unrefused — the silent loss
+      // this whole check exists to close, reached by a different door.
+      const ECHOES: [string, SlideInput][] = [
+        ["a body that opens with its own standfirst", { layout: "table", title: "Everything at once",
+          subtitle: "The single closest organic competitor to Amrize is its own former parent.",
+          table: big as any, note: "Why this matters: the programme is bigger than one quarter.",
+          body: "The single closest organic competitor to Amrize is its own former parent, and no page on the site says the carve-out happened." }],
+        ["a body shorter than the audit's floor", { layout: "table", title: "Everything at once",
+          table: big as any, note: "Why this matters: the programme is bigger than one quarter.",
+          body: "Up 12% YoY" }],
+      ];
+      for (let e = 0; e < ECHOES.length; e++) {
+        const what = ECHOES[e][0];
+        const slide = ECHOES[e][1];
+        // The precondition IS the finding: if the builder starts drawing these
+        // the assertion below is about nothing, and should be rewritten rather
+        // than left to pass.
+        A44(!shapeOf(buildSlideRequests(slide, 0, `t44e${e}`) as any[], "_body"),
+          `precondition: ${what} is now drawn beneath nine rows, so this assertion no longer tests the guard`);
+        A44(undrawnTableBodies([slide]).length === 1,
+          `${what} is not drawn and the guard cannot see it — the deck builds and ships without the paragraph,`
+          + ` which is the silent loss this check exists to close`);
+      }
+      // The control for both: the same short body with the room to be drawn.
+      A44(undrawnTableBodies([{ layout: "table", title: "Everything at once", table: big as any, body: "Up 12% YoY" }]).length === 0,
+        `the guard refuses a short body that the slide has room for`);
+    }
+
+    // 44f A TABLE ON A LAYOUT THAT NEVER DRAWS ONE IS REFUSED, naming the
+    // field and the fix. This is conv 5cc58f2c's slide 1, as it shipped.
+    {
+      const s: any = { layout: "content", title: "The brand transition is visibly incomplete in search",
+        subtitle: "The closest organic competitor is its own former parent.", body: ANALYSIS, table: TSPEC };
+      A44(drawnTextOf(s, 0, "t44f").indexOf("holcimgroup.com") < 0,
+        `precondition: content now draws a table, so this section is about a defect that no longer exists — rewrite it`);
+      const said = undrawnTableSlides([s]);
+      A44(said.length === 1, `a content slide carrying a four-row table is accepted in silence (${JSON.stringify(said)})`);
+      if (said.length) {
+        A44(said[0].indexOf("`table`") >= 0 && said[0].indexOf(`"table"`) >= 0,
+          `the refusal names neither the field carried nor the layout to move to: ${said[0]}`);
+      }
+      const faults = undrawnTableFaults([s]);
+      A44(faults.length === 1 && faults[0].slide === 1 && faults[0].reason.indexOf("`") < 0,
+        `the person's version of the fault is missing, or written in field names: ${JSON.stringify(faults)}`);
+      // BOTH DIRECTIONS, or the guard refuses every table slide in the product.
+      A44(undrawnTableSlides([{ layout: "table", title: "T", table: TSPEC }]).length === 0,
+        `the guard refuses a table payload on the table layout itself`);
+      // An empty payload is not a loss: the table layout would draw nothing
+      // from it either, so refusing over one would be noise.
+      A44(undrawnTableSlides([{ layout: "content", title: "T", body: "x", table: { columns: [], rows: [] } }]).length === 0,
+        `an empty table payload on a content slide is refused, which is noise`);
+    }
+
+    // 44h THE PROSE AND THE RAIL DO NOT SHARE A COLUMN. A table slide may
+    // carry both — `bodyRight` beside the rows and `body` beneath them — and
+    // this is the shape of the shipped slides Stage 0 recovered. The table
+    // gives up a third of the measure to the rail, so the paragraph beneath it
+    // must take the SAME measure and not the full content width; the rail is
+    // drawn to the foot of the slide, so a full-width paragraph prints
+    // straight across it. Both boxes come out of one width helper for exactly
+    // this reason, and collapsing that helper to `GRID.contentWidth` survived
+    // every other assertion in this file: 227pt of paragraph across the rail's
+    // column, silently, on the layout this check exists to fix.
+    {
+      const s: SlideInput = { layout: "table", title: "Legacy domains", table: TSPEC, body: ANALYSIS,
+        bodyRight: "The former parent still outranks Amrize on its own name, two quarters after the carve-out." };
+      const reqs = buildSlideRequests(s, 0, "t44h") as any[];
+      const box = shapeOf(reqs, "_body");
+      const rail = shapeOf(reqs, "_trail");
+      A44(!!box, `a table slide carrying both a rail and a paragraph drew no paragraph at all`);
+      A44(!!rail, `a table slide carrying both a rail and a paragraph drew no rail at all`);
+      if (box && rail) {
+        A44(box.x + box.w <= rail.x + 0.6,
+          `the paragraph runs from ${box.x.toFixed(1)} to ${(box.x + box.w).toFixed(1)}pt and the commentary rail starts at ${rail.x.toFixed(1)}pt —`
+          + ` the body is printed across the rail, which is drawn to the foot of the slide`);
+      }
+      // BOTH WAYS ROUND, or "narrower than the slide" is satisfied by a
+      // paragraph that is always narrow and never on the rows' measure.
+      const alone = shapeOf(buildSlideRequests({ layout: "table", title: "Legacy domains", table: TSPEC, body: ANALYSIS }, 0, "t44h2") as any[], "_body");
+      A44(!!alone && !!box && alone.w > box.w + 100,
+        `the paragraph is set on the same measure with a rail beside the table (${box ? box.w.toFixed(1) : "none"}pt)`
+        + ` as without one (${alone ? alone.w.toFixed(1) : "none"}pt) — one of the two is on the wrong measure`);
+      A44(!!alone && alone.w >= GRID.contentWidth - 0.6,
+        `with no rail the paragraph is ${alone ? alone.w.toFixed(1) : "none"}pt wide against a content width of ${GRID.contentWidth.toFixed(1)}pt —`
+        + ` it should take the same measure as the rows, which take all of it`);
+      // And the words are all there, which is what the width is in aid of.
+      A44(droppedContent(s, 0).length === 0, `a table slide with a rail AND a paragraph loses text: ${JSON.stringify(droppedContent(s, 0))}`);
+    }
+
+    // 44i AND A TYPE STEP DOWN IS DECLARED — BOTH OF THEM. Stage 0's rule was
+    // "do not shrink the table to make room without saying so", and the same
+    // argument covers the prose: 8pt is `caption` size, two steps under body,
+    // so a paragraph placed there reads as a footnote rather than as the
+    // slide's argument. Neither declaration was asserted anywhere, and both
+    // could be deleted with this whole suite green — on the path that fires on
+    // most of the slides Stage 0 recovered.
+    {
+      const long = { columns: ["Workstream", "What it produces", "Owner", "When"],
+        rows: Array.from({ length: 8 }, (_, i) => [
+          `Workstream ${i + 1} on the transition programme`,
+          "A deliverable described at the length a real scorecard cell runs to",
+          "Communications", "Q3"]) };
+      const s: SlideInput = { layout: "table", title: "Everything at once", table: long as any,
+        body: "The missing fact: no page on amrize.com states the June 2025 carve-out from Holcim as a machine-readable fact.",
+        note: "Why this matters: the programme is bigger than one quarter." };
+      const notes: string[] = [];
+      const reqs = buildSlideRequests(s, 0, "t44i", notes) as any[];
+      A44(!!shapeOf(reqs, "_body"),
+        `precondition: the slide this section is about no longer draws its body, so it is measuring the wrong branch`);
+      // Anchored at the start, because "the paragraph beneath the table is set
+      // at…" CONTAINS "the table is set at…" and a substring match counted the
+      // paragraph's declaration as the table's.
+      const says = (what: string, where: string) => {
+        const hit = notes.filter((n) => n.indexOf(where) === 0 && n.indexOf("rather than") >= 0 && n.indexOf("pt") >= 0);
+        A44(hit.length === 1,
+          `${what} was set smaller to make room and nothing says so — the author asked for neither.`
+          + ` The slide's notes were ${JSON.stringify(notes)}`);
+      };
+      says("the table", "the table is set at");
+      says("the paragraph", "the paragraph beneath the table is set at");
+      // THE CONTROL. A slide that shrank nothing says nothing, or the note is
+      // noise on every table slide in the deck and stops being read.
+      const quiet: string[] = [];
+      buildSlideRequests({ layout: "table", title: "Legacy domains", table: TSPEC, body: ANALYSIS }, 0, "t44i2", quiet);
+      A44(quiet.filter((n) => n.indexOf("rather than") >= 0).length === 0,
+        `a table slide that gave up no type step still announces one: ${JSON.stringify(quiet)}`);
+    }
+
+    // 44g THE GUARD USES THEM, which is the assertion that matters. Two of the
+    // three faults this repo has closed on the strength of a line merely
+    // EXISTING were found this way: a function that reports a fault and a
+    // call path that never asks it are indistinguishable from silence. So
+    // these run through prepareSlidesForBuild itself — the seam both routes
+    // pass through — rather than through the predicates alone.
+    {
+      const conv = `verify44-${process.pid}-${failures}`;
+      const cover = { layout: "cover", title: "Amrize" };
+      const said = async (input: any, id: string | null) => {
+        try { await prepareSlidesForBuild(input, id); return ""; }
+        catch (e: any) { return `${e instanceof SlideCallRefusal ? "" : "NOT-A-REFUSAL: "}${String(e && e.message || e)}`; }
+      };
+      const tabled = await said({ title: "Amrize", slides: [cover,
+        { layout: "content", title: "Legacy domains", body: ANALYSIS, table: TSPEC }] }, conv);
+      A44(tabled.indexOf("cannot draw") >= 0 && tabled.indexOf("NOT-A-REFUSAL") < 0,
+        `a deck with a content slide carrying a table is BUILT — the guard never asks: ${JSON.stringify(tabled.slice(0, 160))}`);
+      const bigTable = { columns: ["Workstream", "What it produces", "Owner", "When"],
+        rows: Array.from({ length: 9 }, (_, i) => [
+          `Workstream ${i + 1} with a name long enough to wrap onto a second line`,
+          "A deliverable described at the length a real scorecard cell runs to",
+          "Communications", "Q3"]) };
+      const overrun = await said({ title: "Amrize", slides: [cover,
+        { layout: "table", title: "Everything at once", table: bigTable, body: ANALYSIS,
+          note: "Why this matters: the programme is bigger than one quarter." }] }, conv);
+      A44(overrun.indexOf("`bodyRight`") >= 0 && overrun.indexOf("NOT-A-REFUSAL") < 0,
+        `a deck whose table body cannot be drawn is BUILT, and the user is told it says something it does not: ${JSON.stringify(overrun.slice(0, 160))}`);
+      // THE CONTROL. A table slide whose body fits is built, or these two
+      // refusals have simply turned the layout off.
+      const fine = await said({ title: "Amrize", slides: [cover,
+        { layout: "table", title: "Legacy domains", table: TSPEC, body: ANALYSIS }] }, conv);
+      A44(fine === "", `a table slide whose body fits beneath its rows is refused: ${JSON.stringify(fine.slice(0, 160))}`);
+    }
+  }
+  if (failures === before44) pass("a table slide's commentary is drawn beneath its rows or named and refused, and a table no layout draws never passes in silence");
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   // 2, not 1, when a self-test detector carried nothing (check 40 b): the
