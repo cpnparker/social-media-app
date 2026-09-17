@@ -591,8 +591,16 @@ async function seamChecks() {
   const AEM_SOFT_404 = `<!DOCTYPE HTML>\n<html lang="en"><head><title>Page Not Found | Temasek</title></head>\n<body><nav><a href="/en">Home</a></nav><main><h1>We can't find that page</h1></main></body></html>`;
   const LLMS_WITH_HTML = "# Example Corp\n\nEmbed with:\n\n    <script src=\"https://example.com/w.js\"></script>\n\n## Docs\n- [Guide](https://example.com/guide)\n";
   const PAGE_URL = "https://www.temasek.com.sg/en/news-and-resources/stories/future/alt-assets";
+  const PAGE_URL_ORIGIN = "https://www.temasek.com.sg";
+  // The seam's reader now hands back where the request landed and why there is
+  // no body, as well as the body — see lib/optimizer/site-files.ts. A fixture
+  // that only knows about bodies says so by leaving the other two empty.
   const serve = (files: { [path: string]: string | null }) =>
-    async (path: string) => (path in files ? files[path] : null);
+    async (path: string) => ({
+      text: path in files ? files[path] : null,
+      finalUrl: `${PAGE_URL_ORIGIN}${path}`,
+      refusal: null,
+    });
 
   // The live case. Both addresses answer 200 with a web page.
   const soft = await fetchSiteFiles(PAGE_URL, { read: serve({ "/robots.txt": AEM_SOFT_404, "/llms.txt": AEM_SOFT_404 }) });

@@ -30,6 +30,7 @@
 
 import type { RenderOutcome } from "./render";
 import { crawlerAccess, notRobotsReason } from "./crawler-access";
+import { hostOf, registrableDomain, sameSite, type SiteRefusal } from "./site-reach";
 
 export type AuditStatus = "pass" | "warn" | "fail" | "info";
 
@@ -43,6 +44,23 @@ export interface AuditCheck {
   detail: string;
   /** What to do about it, when the status is not pass. */
   remedy?: string;
+  /**
+   * For an INFO row: is this a thing the audit FOUND, or a thing it could not
+   * look at?
+   *
+   * The two are opposites and they read identically in a list of names, which
+   * is how "The site refuses non-browser clients" ended up printed on the chat
+   * card under "Not measured", attributed to a browser render that has nothing
+   * to do with it. A surface that only has room for names needs to know which
+   * kind it is holding; the studio report, which prints the detail beside the
+   * name, already says "Noted, not counted" over the lot.
+   *
+   * Set only by the rows that state a measured fact. Absent keeps the older
+   * reading — an INFO row a surface may treat as not-measured — because the
+   * rows that predate this field were written for that bucket and reclassifying
+   * them is a separate question from the one this field was added to answer.
+   */
+  measured?: boolean;
 }
 
 export interface PageAuditInput {
@@ -50,7 +68,17 @@ export interface PageAuditInput {
   page: string;
   finalUrl: string;
   httpStatus: number;
-  redirectedFrom?: string | null;
+  /**
+   * The address the audit was ASKED for, before any redirect.
+   *
+   * Kept apart from finalUrl because the gap between them is a finding in its
+   * own right — three client sites in the 2026-09-17 survey have moved, and
+   * every measurement on the page describes whoever lives at the new address.
+   * The comparison is made here rather than at each seam: two callers deciding
+   * "did this redirect" separately is how the two audits used to print
+   * different sentences about the same site.
+   */
+  requestedUrl?: string | null;
   /** Brand / entity names, from the session canon, for title and schema checks. */
   brandNames?: string[];
   targetQueries?: string[];
@@ -69,6 +97,18 @@ export interface PageAuditInput {
   robotsTxt?: string | null;
   /** The site's llms.txt, or null when it was not read. */
   llmsTxt?: string | null;
+  /** Where the /robots.txt request actually landed, after redirects. */
+  robotsFinalUrl?: string | null;
+  /**
+   * Fetches that were REFUSED rather than answered — the page, the site's
+   * robots.txt, or both. Nulls are allowed so a caller can hand over what it
+   * has without filtering; sorting them out is this module's job, not two
+   * callers' separately.
+   *
+   * Classified at the seams because it needs headers and a status, and this
+   * module never touches the network.
+   */
+  refusals?: (SiteRefusal | null | undefined)[];
 }
 
 export interface PageAuditResult {
@@ -169,6 +209,197 @@ function regionWords(html: string): number {
   return text ? text.split(" ").filter(Boolean).length : 0;
 }
 
+/** Two addresses compared as addresses: scheme and host fold, one trailing
+ *  slash and a fragment are noise, everything else is significant. */
+function normAddress(u: string): string {
+  try {
+    const p = new URL(String(u || ""));
+    p.hash = "";
+    let out = `${p.protocol.toLowerCase()}//${p.host.toLowerCase()}${p.pathname}${p.search}`;
+    if (out.charAt(out.length - 1) === "/" && p.pathname !== "/") out = out.slice(0, -1);
+    return out;
+  } catch {
+    return String(u || "").toLowerCase().replace(/\/+$/, "");
+  }
+}
+
+/**
+ * THE AUDITED URL LANDS ON ANOTHER SITE.
+ *
+ * Reported before everything else because it is not a finding about the page —
+ * it is a finding about which page the rest of this audit is about. Three of
+ * the 77 client hosts measured on 2026-09-17 had moved outright
+ * (cyberpeaceinstitute.org to protect.ngo, www.myovant.com to
+ * www.us.sumitomo-pharma.com, holcimmaqer.com to holcimmaqerventures.com), and
+ * in each the HOMEPAGE redirects too, not just /robots.txt: every title, every
+ * heading, every schema verdict below would have described a different
+ * organisation's site under the client's name.
+ *
+ * REGISTRABLE DOMAIN, NOT HOST, and that is the difference between a finding
+ * and a nuisance. www→apex, apex→www and m.→apex are the most ordinary
+ * redirects on the web; a row that shouted about them would be ignored within a
+ * day and would take the two rows beside it down with it.
+ *
+ * res.url rather than a guess: safeFetch follows redirects by hand, so the
+ * response knows where it ended up and nothing here has to infer it from a
+ * Location header it never saw.
+ *
+ * AND A COUNTRY SITE IS NOT A MOVE, which is the one shape the 77-host survey
+ * could not test: it measured /robots.txt on each host as given, so no page in
+ * it ever crossed a ccTLD. A .com that routes a European visitor to .co.uk or
+ * .de has not moved anywhere — the .com is the canonical address, the landing
+ * depends on where this server happens to sit, and a row saying "every other
+ * finding describes a different site" would fire on every run of a perfectly
+ * healthy multinational site. Several of these clients are exactly that.
+ *
+ * So the landed page is asked whether it still claims the address we asked for.
+ * A canonical or an hreflang alternate naming the requested site is the page
+ * saying "this is one of my locales", and that answer comes from the page
+ * itself rather than from a list of country codes maintained here.
+ */
+function alternateHosts(page: string, base: string): string[] {
+  const out: string[] = [];
+  const tags = String(page || "").replace(/<!--[\s\S]*?-->/g, " ").match(/<link\b[^>]*>/gi) || [];
+  for (let i = 0; i < tags.length; i++) {
+    const rel = attr(tags[i], "rel").toLowerCase();
+    // rel=alternate also carries RSS feeds and stylesheets; only a locale
+    // alternate is a claim about which sites are the same site.
+    if (rel !== "canonical" && !(rel === "alternate" && attr(tags[i], "hreflang"))) continue;
+    const href = attr(tags[i], "href");
+    if (!href) continue;
+    try { out.push(new URL(href, base).hostname.toLowerCase()); } catch { /* an unresolvable href claims nothing */ }
+  }
+  return out;
+}
+
+function crossSiteRedirect(input: PageAuditInput): AuditCheck | null {
+  const asked = input.requestedUrl || "";
+  const landed = input.finalUrl || "";
+  const pageMoved = !!hostOf(asked) && !!hostOf(landed) && !sameSite(hostOf(asked), hostOf(landed));
+
+  // The robots request is made against the page's OWN origin, so the address it
+  // started from is where the page ended up. Only asked when the page itself
+  // stayed put: when the whole site has moved this is the same fact twice.
+  const robotsFrom = hostOf(landed);
+  const robotsTo = hostOf(input.robotsFinalUrl || "");
+  const robotsMoved = !pageMoved && !!robotsFrom && !!robotsTo && !sameSite(robotsFrom, robotsTo);
+  if (!pageMoved && !robotsMoved) return null;
+
+  const from = registrableDomain(pageMoved ? hostOf(asked) : robotsFrom);
+  const to = registrableDomain(pageMoved ? hostOf(landed) : robotsTo);
+
+  // The landed page's own claim about the address we asked for. Only on the
+  // page arm: a /robots.txt has no canonical and nothing to declare.
+  const claimed = pageMoved && alternateHosts(input.page, landed).some((h) => sameSite(h, hostOf(asked)));
+  if (claimed) {
+    return {
+      id: "site-redirect",
+      section: "indexability",
+      name: "This address routes to a regional site",
+      // INFO, and that is the whole point of asking. A locale redirect is
+      // working as designed, it will fire on every run for as long as the site
+      // exists, and a warning that never goes away is a warning nobody reads.
+      status: "info",
+      measured: true,
+      detail:
+        `${asked} redirects to ${landed} — ${to}, not ${from} — but the page there names ${from} in its own canonical or hreflang. ` +
+        `That is a locale routing to wherever this server sits, not a site that has moved. The findings below describe the ${to} page, which is the one this address served us.`,
+      remedy:
+        `Nothing to fix if that is intended. If you meant to measure the ${from} page, import it from an address that does not route away — from here, ${asked} is ${to}.`,
+    };
+  }
+
+  return {
+    id: "site-redirect",
+    section: "indexability",
+    name: "This address lands on a different site",
+    // Flagged, not failed. Nothing here is broken in the sense the fail column
+    // means — the redirect may be exactly what the client intended. What it
+    // costs is the meaning of everything below it.
+    status: "warn",
+    measured: true,
+    detail: pageMoved
+      ? `${asked} redirects to ${landed} — ${to}, not ${from}. Every other finding on this page describes what is served at ${to}, under the wrong name.`
+      : `The page answered on ${from}, but its /robots.txt comes back from ${input.robotsFinalUrl} — ${to}, not ${from}. Crawlers do follow that redirect, so the rules still apply; what it usually means is that the site has moved and this is the old address.`,
+    remedy: pageMoved
+      ? `Re-import this piece from ${landed} so the audit measures the page that exists. If the move was not intended, the redirect is itself the finding — every link, citation and answer this URL has earned now resolves to ${to}.`
+      : `Check which domain this content is meant to live on, and re-import from ${to} if the site has moved. The findings below are about the page still being served at the old address.`,
+  };
+}
+
+/**
+ * THE SITE REFUSES NON-BROWSER HTTP CLIENTS.
+ *
+ * Five of the 77 client hosts refuse a plain HTTP client outright with 403 —
+ * www.iso.org, hydrogencouncil.com, www.holcim.com, orsted.com, www.bp.com —
+ * and two more refuse behind a success status, which is the part worth writing
+ * down: www.zurich.com answers /robots.txt 200 with 212 bytes of Imperva
+ * challenge, www.ieee.org answers it 202 with nothing at all. A block is not
+ * always a 4xx, so this row keys on what came back, not on the number in front
+ * of it.
+ *
+ * WHY IT IS WORTH PRINTING AT ALL: it sits UPSTREAM of robots.txt. The loudest
+ * row on this panel asks whether robots.txt lets GPTBot in, and no robots rule
+ * can grant access the edge has already refused. A site can have a perfect
+ * robots.txt and still be unreadable by every assistant on the market.
+ *
+ * AND WHY THE CAVEAT IS IN THE FINDING RATHER THAN UNDER IT. Being refused from
+ * here does not prove GPTBot is blocked: Akamai and Cloudflare both let a
+ * customer allow-list named AI crawlers by user-agent plus reverse-DNS
+ * verification, and that allow-list is invisible from outside unless you
+ * impersonate those crawlers — which this product will not do, and which is why
+ * there is no retry and no crawler user-agent anywhere in the fetch path. A
+ * remedy that ASSERTED a block would send a communications team to their
+ * infrastructure team with a false premise. So the remedy is a question.
+ */
+function edgeRefusal(input: PageAuditInput): AuditCheck | null {
+  const seen: SiteRefusal[] = [];
+  const list = input.refusals || [];
+  for (let i = 0; i < list.length; i++) { const r = list[i]; if (r) seen.push(r); }
+  if (seen.length === 0) return null;
+
+  const describe = (r: SiteRefusal) => {
+    const who = r.where === "page" ? "The page itself" : "The site's /robots.txt";
+    if (r.kind === "status") {
+      return r.cdn
+        ? `${who} was refused with HTTP ${r.status} by ${r.cdn}'s bot management (${r.url}).`
+        : `${who} was refused with HTTP ${r.status} (${r.url}) — nothing in the response says who refused it.`;
+    }
+    if (r.kind === "challenge") {
+      // The vendor's name never sits behind an article: "a Imperva challenge
+      // page" is the sentence that fires for zurich.com, one of the two hosts
+      // this row was built for, and it prints in the client's own report.
+      return `${who} answered ${r.status}, a success status, with a challenge page from ${r.cdn || "the site's bot management"} instead of the thing asked for (${r.url}).`;
+    }
+    // NO CAUSE CLAIMED. The evidence here is "a 2xx that is not 200, with no
+    // body" and nothing more — which is equally consistent with a misconfigured
+    // edge rule, the reason a 405 from a load balancer is deliberately not in
+    // this row at all. The fact is enough: what was asked for did not arrive.
+    return `${who} answered ${r.status} with a completely empty body (${r.url}) — a success status carrying no file. A GET of a static file that is accepted and then not answered is not a robots.txt, whatever produced it.`;
+  };
+
+  const lines: string[] = [];
+  for (let i = 0; i < seen.length; i++) lines.push(describe(seen[i]));
+
+  return {
+    id: "edge-refusal",
+    section: "indexability",
+    name: "The site refuses non-browser clients",
+    status: "info",
+    // INFO because we cannot prove what a named crawler was told — but MEASURED,
+    // and the difference matters on a surface with room for the name only. This
+    // was found; the JavaScript gap was not looked at. Both were landing in the
+    // same "not measured" line on the chat card.
+    measured: true,
+    detail:
+      lines.join(" ") +
+      " AI crawlers are HTTP clients, not browsers, and this sits UPSTREAM of robots.txt — no robots rule can grant access the edge has already refused." +
+      " Being refused from here does NOT prove GPTBot is blocked: Akamai and Cloudflare both let a customer allow-list named AI crawlers by user-agent plus reverse-DNS verification, and that allow-list cannot be seen from outside without impersonating those crawlers, which this audit will not do.",
+    remedy:
+      "One question for whoever runs the CDN: are the AI crawler categories allowed through bot management? Ask it as a question — the answer is not visible from here, and it decides whether anything else on this page can be cited at all.",
+  };
+}
+
 export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
   const { page, finalUrl } = input;
   const checks: AuditCheck[] = [];
@@ -196,11 +427,35 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
   // title. Machines reading the page strip these; the audit must too.
   const dom = live.replace(/<(script|noscript|template|style|svg)\b[\s\S]*?<\/\1\s*>/gi, " ");
 
+  // ── Did we reach this site at all, and was it this site? ────────────────
+  //
+  // Three rows that are not about the page's content, pushed FIRST because
+  // they change what every row below is a finding ABOUT. All three were
+  // measured on 2026-09-17 across the 77 hosts in the client book, and all
+  // three are keyed on evidence this audit can actually see from outside.
+  //
+  // None of them is a FAIL, deliberately. The panel's own rule, written into
+  // crawler-access.ts, is that telling someone they are blocked when they are
+  // not sends them to their infrastructure team for nothing — and from out
+  // here we can prove that WE were refused, never that a named AI crawler was.
+  const redirect = crossSiteRedirect(input);
+  if (redirect) push(redirect);
+  const refusal = edgeRefusal(input);
+  if (refusal) push(refusal);
+
   // ── Indexability — everything else is moot if this fails ────────────────
+  const movedFrom = (() => {
+    const from = input.requestedUrl || "";
+    if (!from) return "";
+    // Only when it MOVED. Comparing whole strings would report "redirected
+    // from" on a trailing slash the server added, which is noise dressed as a
+    // finding; the row above handles the case where the move mattered.
+    return normAddress(from) !== normAddress(finalUrl) ? from : "";
+  })();
   push({
     id: "http-status", section: "indexability", name: "Responds 200 over HTTPS",
     status: input.httpStatus === 200 && /^https:/i.test(finalUrl) ? "pass" : "fail",
-    detail: `HTTP ${input.httpStatus}, ${/^https:/i.test(finalUrl) ? "https" : "NOT https"}${input.redirectedFrom ? `, redirected from ${input.redirectedFrom}` : ""}`,
+    detail: `HTTP ${input.httpStatus}, ${/^https:/i.test(finalUrl) ? "https" : "NOT https"}${movedFrom ? `, redirected from ${movedFrom}` : ""}`,
     remedy: input.httpStatus !== 200 ? "A page that does not answer 200 cannot be crawled, cited or ranked." : undefined,
   });
 
@@ -263,6 +518,15 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
   // going to look and a reader shrugging. Same predicate the parser refused on,
   // so the sentence and the verdict cannot disagree.
   const notFile = typeof rawRobots === "string" ? notRobotsReason(rawRobots) : null;
+  // WHICH of the refusals, if any, was the robots fetch. It changes both
+  // sentences below: "could not be read" is true of a refusal but says the
+  // least useful true thing about it, and a body that never arrived cannot be
+  // evidence that the site has no robots.txt.
+  const robotsRefused = (() => {
+    const list = input.refusals || [];
+    for (let i = 0; i < list.length; i++) { const r = list[i]; if (r && r.where === "robots") return r; }
+    return null;
+  })();
   const verdicts = crawlerAccess(rawRobots, crawlerPath);
   if (!verdicts) {
     push({
@@ -270,10 +534,14 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
       status: "info",
       detail: notFile
         ? `Not checked — ${robotsOrigin}/robots.txt answered with ${notFile === "markup" ? "a web page" : "a body with no robots directives in it"}, not a robots file. That is not the same as being open to AI crawlers.`
-        : "Not checked — this site's robots.txt could not be read. That is not the same as being open to AI crawlers.",
+        : robotsRefused
+          ? `Not checked — ${robotsOrigin}/robots.txt refused this request rather than answering it, so there is no file to read. That is not the same as being open to AI crawlers, and it is not evidence that the site has no robots.txt either.`
+          : "Not checked — this site's robots.txt could not be read. That is not the same as being open to AI crawlers.",
       remedy: notFile
         ? `Open ${robotsOrigin}/robots.txt yourself. A site with no robots.txt does leave crawlers unrestricted — but a page served at that address is not evidence of that, and a CDN refusing automated clients serves one too.`
-        : "Fetch https://<domain>/robots.txt by hand and look for GPTBot, ClaudeBot, PerplexityBot, Google-Extended, OAI-SearchBot and CCBot.",
+        : robotsRefused
+          ? `Open ${robotsOrigin}/robots.txt in a browser — it will very likely load. What is refused is the automated request, which is the finding above.`
+          : "Fetch https://<domain>/robots.txt by hand and look for GPTBot, ClaudeBot, PerplexityBot, Google-Extended, OAI-SearchBot and CCBot.",
     });
   } else {
     const blocked = verdicts.filter((v) => !v.allowed);
@@ -286,6 +554,72 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
       remedy: blocked.length === 0
         ? undefined
         : "Everything else on this page is worth nothing to those assistants until this changes. Allow them in robots.txt, or accept that this page cannot be cited there.",
+    });
+  }
+
+  // ── THERE IS PROBABLY NO ROBOTS.TXT ON THIS SITE ────────────────────────
+  //
+  // A row of its own rather than more words on the one above, for three
+  // reasons. It has a DIFFERENT REMEDY — publish a file — and a remedy hung on
+  // a row called "AI crawlers allowed" reads as instructions for unblocking
+  // GPTBot. It has DIFFERENT PRECONDITIONS: when the edge refused us, or when
+  // the address crossed to another site, "AI crawlers allowed: not checked" is
+  // still a finding and "you have no robots.txt" is not one at all. And the
+  // client report lists INFO rows by NAME, where "AI crawlers allowed" tells a
+  // communications team nothing and "The site publishes no robots.txt" tells
+  // them the one thing on this panel they can fix before lunch.
+  //
+  // THE HONEST ASYMMETRY, which is the whole reason this is INFO and not a
+  // warning: having no robots.txt genuinely does leave crawlers unrestricted.
+  // Nobody is blocked. What is missing is the ability to TELL — and the place
+  // to say yes or no on purpose when somebody eventually wants to.
+  //
+  // It fires on the narrowest evidence that supports it: the address resolved
+  // on this site's OWN host and answered with a real page rather than a file.
+  // A 404 is deliberately not this row — a clean 404 is the site saying "no
+  // such file" in the correct way, and it is already reported as not-read
+  // above. What a PAGE at that address means is that the CMS has no idea the
+  // address is special, which is what a site with no robots.txt looks like.
+  //
+  // ── AND IT STAYS QUIET WHENEVER THE PANEL IS ALREADY SAYING WE DID NOT
+  //    REACH THE SITE PROPERLY ───────────────────────────────────────────────
+  //
+  // ANY refusal, not just a refused robots fetch. Temasek is the case, and it
+  // is the one host in the 77 that fires this row: its article page is refused
+  // outright by Akamai and its /robots.txt is a genuine soft-404, so the panel
+  // was printing "the page was refused by Akamai's bot management" and "nothing
+  // redirected and nothing refused" two rows apart, about the same site, in the
+  // same run. A site whose edge is turning this server away is a site we cannot
+  // draw conclusions about from an absence.
+  //
+  // And any cross-site redirect, for the same reason in the other direction: if
+  // the address landed somewhere else, a missing robots.txt is somebody else's
+  // missing robots.txt, reported under this client's name.
+  const anyRefusal = (() => {
+    const list = input.refusals || [];
+    for (let i = 0; i < list.length; i++) if (list[i]) return true;
+    return false;
+  })();
+  if (notFile && !anyRefusal && !redirect) {
+    push({
+      id: "robots-txt-present", section: "indexability",
+      // Named for the state that is missing, like the two rows beside it. The
+      // client report lists these by name alone, where "The site publishes a
+      // robots.txt" read as the reassurance it is the opposite of.
+      name: "The site publishes no robots.txt",
+      status: "info",
+      measured: true,
+      detail:
+        `${robotsOrigin}/robots.txt answered ${notFile === "markup" ? "with an ordinary web page" : "with a body carrying no robots directives"} rather than a file, and that request was neither redirected nor refused. ` +
+        // HEDGED ON PURPOSE, and it is the same hedge the row above carries. A
+        // page where a file should be is what a CMS serves at an address it has
+        // never heard of — and it is also what an edge serves a client it does
+        // not like, without saying so. We cannot tell those apart from here,
+        // and the remedy below opens with the check rather than the fix.
+        "That is what a CMS serves at an address it has never heard of, so the likeliest reading is that this site has no robots.txt at all — though an edge quietly serving automated clients something else looks the same from out here. " +
+        "Either way nobody is blocked by it: a site with no robots.txt leaves every crawler unrestricted. What it costs is the ability to say otherwise — and the ability to check.",
+      remedy:
+        `Open ${robotsOrigin}/robots.txt in a browser first. If a real file loads, the finding is that it is served to people and not to machines. If it does not, publish one: a few lines of plain text, and the only place a site can name GPTBot, ClaudeBot, PerplexityBot, Google-Extended, OAI-SearchBot or CCBot on purpose — until it exists the row above can never be answered either way.`,
     });
   }
 

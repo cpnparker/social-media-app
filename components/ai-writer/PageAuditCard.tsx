@@ -14,6 +14,13 @@
  * check reads as a pass everywhere it is not stated, and the JavaScript-gap
  * comparison is absent here on purpose: it needs a browser render, which the
  * studio runs and a chat turn should not.
+ *
+ * The strip above it is a different claim and was for a while the same one. A
+ * measured finding that is deliberately unscored — the site refusing automated
+ * clients, the missing robots.txt — is not a gap in the audit, and it was being
+ * listed by name among the gaps, under a sentence about the browser render. It
+ * now prints with its detail, because these are the findings whose value is the
+ * caveat that travels with them.
  */
 
 import { Globe, AlertTriangle, AlertCircle, ArrowUpRight } from "lucide-react";
@@ -29,7 +36,11 @@ export interface PageAuditData {
   findings: { id: string; section: string; name: string; detail: string; remedy: string; status: "fail" | "warn" }[];
   moreFails: number;
   moreWarns: number;
-  notMeasured: { name: string; detail: string }[];
+  notMeasured: { id?: string; name: string; detail: string }[];
+  /** Measured, deliberately unscored — printed WITH its detail, because these
+   *  are the rows whose whole value is the caveat attached to them. Optional:
+   *  a card drawn before this existed is still rendered. */
+  noted?: { id?: string; name: string; detail: string; remedy?: string }[];
   fetchedAt: string;
 }
 
@@ -47,6 +58,11 @@ function pathOf(u: string): string {
 
 export default function PageAuditCard({ data }: { data: PageAuditData }) {
   const more = data.moreFails + data.moreWarns;
+  const noted = data.noted || [];
+  // The render explains the JavaScript gap and nothing else. Printed beside a
+  // measured finding it blamed that finding on a render that was never the
+  // reason — so the sentence appears only when a render row is in this list.
+  const renderMissing = data.notMeasured.some((n) => n.id === "js-dependency" || n.id === "render-ran");
 
   return (
     <div className="rounded-xl border overflow-hidden max-w-[42rem] bg-background">
@@ -104,8 +120,18 @@ export default function PageAuditCard({ data }: { data: PageAuditData }) {
         ))}
       </div>
 
-      {(more > 0 || data.notMeasured.length > 0) && (
+      {(more > 0 || data.notMeasured.length > 0 || noted.length > 0) && (
         <div className="px-3.5 py-2 border-t bg-muted/20 flex flex-col gap-1">
+          {/* Measured, not counted — WITH the detail. A name on its own ("The
+              site refuses non-browser clients") is the bare assertion these
+              rows are worded to avoid making, and it was landing in the "not
+              measured" line below, blamed on a render. */}
+          {noted.map((n) => (
+            <p key={n.name} className="text-[11.5px] text-muted-foreground leading-snug">
+              <span className="text-foreground font-medium">{n.name}.</span> {n.detail}
+              {n.remedy && <span className="text-foreground/80"> {n.remedy}</span>}
+            </p>
+          ))}
           {more > 0 && (
             <p className="text-[11.5px] text-muted-foreground">
               {data.moreFails > 0 && `${data.moreFails} more failing`}
@@ -117,8 +143,13 @@ export default function PageAuditCard({ data }: { data: PageAuditData }) {
           {/* Not a footnote. An unstated check reads as a passing one. */}
           {data.notMeasured.length > 0 && (
             <p className={cn("text-[11.5px] text-muted-foreground")}>
-              Not measured: {data.notMeasured.map((n) => n.name).join(", ")}. The JavaScript-gap
-              comparison needs a browser render, which the studio&rsquo;s audit runs and this one does not.
+              Not measured: {data.notMeasured.map((n) => n.name).join(", ")}.
+              {renderMissing && (
+                <>
+                  {" "}The JavaScript-gap comparison needs a browser render, which the studio&rsquo;s
+                  audit runs and this one does not.
+                </>
+              )}
             </p>
           )}
         </div>

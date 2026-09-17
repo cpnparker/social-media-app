@@ -81,7 +81,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // same site differently — see lib/optimizer/site-files.ts for what it decides
   // (the robots body goes through as fetched; a web page at /llms.txt is
   // dropped) and why that used to be twenty duplicated lines here.
-  const { robotsTxt, llmsTxt } = await fetchSiteFiles(fetched.finalUrl, { timeoutMs: 8000 });
+  const { robotsTxt, llmsTxt, robotsFinalUrl, robotsRefusal } = await fetchSiteFiles(fetched.finalUrl, { timeoutMs: 8000 });
 
   const canon = session.config_canon || {};
   const brief = session.config_brief || {};
@@ -91,12 +91,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     {
       page: fetched.page,
       finalUrl: fetched.finalUrl,
+      // The stored source ref is what the session claims to be about. Where
+      // the fetch LANDED can be a different site entirely — three client hosts
+      // have moved — and the audit says so before it says anything else.
+      requestedUrl: session.document_source_ref,
       httpStatus: fetched.httpStatus,
       brandNames,
       targetQueries: brief.targetQueries || [],
       render,
       robotsTxt,
       llmsTxt,
+      robotsFinalUrl,
+      // Both refusals, unfiltered — page-audit sorts out which arrived.
+      refusals: [fetched.refusal, robotsRefusal],
     },
     new Date()
   );

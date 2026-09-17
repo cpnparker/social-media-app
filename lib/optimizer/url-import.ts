@@ -19,6 +19,8 @@
 
 import { safeFetch } from "@/lib/net/safe-fetch";
 import { toEditorHtml } from "./import-html";
+import { botWallVendor, challengeVendor, type SiteRefusal } from "./site-reach";
+import { notRobotsReason } from "./crawler-access";
 
 const MAX_HTML_BYTES = 3_000_000;
 
@@ -65,6 +67,19 @@ export interface UrlImportResult {
 export interface FetchRefusal {
   /** The CDN that signed the refusal, when one signed it. */
   cdn: string | null;
+  /**
+   * WHICH of the three tiers below answered, as a value rather than as a
+   * sentence to be read back.
+   *
+   * The audit needs to tell a bot wall from a credentials wall — the first is
+   * an AI-visibility finding and the second is a login page — and the only
+   * thing that knew the difference was the wording. Re-deriving it with a regex
+   * over `diagnosis` is precisely the failure this repo keeps paying for: a
+   * check that a LINE exists, standing in for what the line evaluates to. So
+   * the classifier says which tier it took, and the two callers agree because
+   * they are reading the same field.
+   */
+  kind: "cdn" | "rate-limit" | "sign-in" | "unattributed";
   /** What happened, in the product's voice, with no advice attached. */
   diagnosis: string;
 }
@@ -114,25 +129,24 @@ type HeaderBag = { get(name: string): string | null } | null | undefined;
 export function cdnBlockVendor(headers: HeaderBag, body: string): string | null {
   const h = (name: string) => String((headers && headers.get(name)) || "");
   const server = h("server").toLowerCase();
-  // ENTITY-DECODED FIRST, because the real page is entity-encoded and a matcher
-  // written against a tidied-up copy of it finds nothing. Akamai's Access
-  // Denied writes its own URL and reference id as numeric entities —
-  // `Reference&#32;&#35;18.5d4c…`, `https&#58;&#47;&#47;errors&#46;edgesuite…`
-  // — so /errors\.edgesuite\.net/ never fires on the body it was written for.
-  // Found by putting the measured 491 bytes in the fixture rather than a
-  // paraphrase of them.
-  const b = String(body || "")
-    .slice(0, 4000)
-    .replace(/&#(\d{1,4});/g, (m, d) => { const n = parseInt(d, 10); return n > 0 && n < 128 ? String.fromCharCode(n) : m; })
-    .replace(/&#x([0-9a-f]{1,3});/gi, (m, x) => { const n = parseInt(x, 16); return n > 0 && n < 128 ? String.fromCharCode(n) : m; });
 
   if (server.indexOf("akamaighost") >= 0) return "Akamai";
   if (h("cf-mitigated")) return "Cloudflare";
 
-  if (/errors\.edgesuite\.net/i.test(b)) return "Akamai";
-  if (/access denied/i.test(b) && /reference\s*(&#35;|#)/i.test(b)) return "Akamai";
-  if (/cdn-cgi\/|error\s*10\d\d|attention required|just a moment/i.test(b)) return "Cloudflare";
-  if (/incapsula incident id|powered by imperva/i.test(b)) return "Imperva";
+  // THE BODY MARKS LIVE IN ONE PLACE, lib/optimizer/site-reach.ts, because the
+  // audit now asks the same question of a 200 and two copies of "which vendor
+  // wrote this page" would drift the first time a vendor changed its wording.
+  // That shared half is deliberately the NARROW one — machine artefacts only,
+  // including the entity decode Akamai's page needs.
+  const shared = botWallVendor(body);
+  if (shared) return shared;
+
+  // And these are the ones only THIS caller may use, because only this caller
+  // has a refusing status behind it. "Just a moment" is a sentence a person
+  // could write and `/cdn-cgi/` is a directory a robots.txt routinely names —
+  // both are fine as corroboration of a 403 and neither is evidence on its own.
+  const b = String(body || "").slice(0, 4000);
+  if (/cdn-cgi\/|attention required|just a moment/i.test(b)) return "Cloudflare";
   return null;
 }
 
@@ -155,6 +169,7 @@ export function classifyFetchRefusal(status: number, headers: HeaderBag, body: s
   if (status === 429) {
     return {
       cdn,
+      kind: "rate-limit",
       diagnosis: cdn
         ? `That site is rate-limiting automated requests — its CDN (${cdn}) answered 429. Nothing here will retry it.`
         // Unbranded: it may be the site's own per-account or per-IP limiter, so
@@ -166,6 +181,7 @@ export function classifyFetchRefusal(status: number, headers: HeaderBag, body: s
   if (cdn) {
     return {
       cdn,
+      kind: "cdn",
       diagnosis:
         `That site refuses automated requests. Its CDN (${cdn}) answered ${status} before the page itself was reached — ` +
         "the address is not the problem, and no setting on this side changes it.",
@@ -177,12 +193,13 @@ export function classifyFetchRefusal(status: number, headers: HeaderBag, body: s
   // and answering it with the browser-versus-server story sends the reader off
   // to test a theory the server already ruled out.
   if (status === 401 && h401(headers)) {
-    return { cdn: null, diagnosis: "That page needs a sign-in — the site asked for credentials (HTTP 401)." };
+    return { cdn: null, kind: "sign-in", diagnosis: "That page needs a sign-in — the site asked for credentials (HTTP 401)." };
   }
   // 503 with nothing to point at is an origin having a bad day, not a refusal.
   if (status === 503) return null;
   return {
     cdn: null,
+    kind: "unattributed",
     diagnosis:
       `That site refused the request (HTTP ${status}). Plenty of sites serve a page to a browser and refuse a server ` +
       "asking for the same thing.",
@@ -192,6 +209,98 @@ export function classifyFetchRefusal(status: number, headers: HeaderBag, body: s
 /** The credentials challenge, read through the same bag as everything else. */
 function h401(headers: HeaderBag): boolean {
   return !!(headers && headers.get("www-authenticate"));
+}
+
+/**
+ * The AUDIT's version of the same question, which has to answer it for a 200.
+ *
+ * classifyFetchRefusal above serves the importer, where the status has already
+ * failed and the only question left is who refused and what to tell the writer.
+ * The audit asks something harder: a block is NOT ALWAYS A 4xx. Measured across
+ * 77 client sites on 2026-09-17, two answer /robots.txt with a success status
+ * and no file —
+ *
+ *   www.zurich.com  200, text/html, 212 bytes of Imperva challenge carrying a
+ *                   META robots noindex,nofollow and an _Incapsula_Resource
+ *                   script;
+ *   www.ieee.org    202 Accepted with a ZERO-BYTE body, from CloudFront.
+ *
+ * The second is the one that was live: readSiteFile accepted the 202, handed
+ * the empty string on, and an empty robots.txt is a REAL AND OPEN robots file —
+ * so the panel printed "robots.txt allows all 6 AI crawlers checked on this
+ * path" about a site that had served it nothing at all.
+ *
+ * ── THE THREE DISCRIMINATIONS, EACH OF WHICH IS A MEASUREMENT ───────────────
+ *
+ * 202-WITH-NOTHING versus 200-WITH-NOTHING. www.ifpma.org answers /robots.txt
+ * 200, text/plain, zero bytes: a genuinely empty robots.txt, which really does
+ * allow everything, and condemning it would invent a block nobody wrote. The
+ * discriminator is not the empty body — both are empty — it is the status. A
+ * 200 with nothing in it is a file with nothing in it; a 202 is a request
+ * accepted and a file not sent, which is not a robots.txt whatever produced it.
+ * 204 goes with the 200: "no content" is what a 204 is FOR, and reading the
+ * spec's own way of saying "there is nothing here" as a wall would be inventing
+ * a block out of a correct answer.
+ *
+ * A ROBOTS FILE IS NEVER A CHALLENGE, whatever strings are in it. Shopify's
+ * robots.txt contains `Disallow: /cdn-cgi/challenge-platform*`. So on the
+ * robots path the body is offered to notRobotsReason FIRST, and a body that
+ * parses as directives is a file and the question stops there. One judge, one
+ * rule — the same predicate the crawler check refuses on.
+ *
+ * A CREDENTIALS WALL IS NOT BOT MANAGEMENT. A 401 that asks for a password is
+ * a staging site or a members area; saying "this site refuses AI crawlers" of
+ * it, and sending the reader to their CDN team, would be wrong in the exact
+ * direction this panel's own rule forbids. It is dropped here rather than
+ * reported, and the tier comes off `kind` rather than out of the sentence.
+ *
+ * ── AND ONLY 401 AND 403, WHICH IS NARROWER THAN THE IMPORTER'S LIST ────────
+ *
+ * The importer explains whatever went wrong to somebody who is standing there
+ * watching it go wrong, so a 429 and a 503 belong in its list: "it is rate
+ * limiting us" and "that origin is having a bad day" are the two most useful
+ * things it can say in the moment. The audit is doing something else — writing
+ * a standing sentence into a report a client reads next week — and neither of
+ * those survives the trip.
+ *
+ *   A 429 IS A MOMENT, NOT A POSTURE. It clears on the next run, and the
+ *   classifier above already knows an unbranded one may be the site's own
+ *   per-account limiter. Printing "this site refuses non-browser clients" off
+ *   it, and sending a comms team to their CDN team about it, describes a
+ *   condition that no longer exists by the time anyone reads the sentence.
+ *
+ *   AND A 503 IS AN OUTAGE. Worse, it is the one status where the vendor marks
+ *   actively mislead: any Cloudflare-proxied origin's own maintenance page
+ *   links `/cdn-cgi/` assets, so "We'll be back shortly" behind Cloudflare gets
+ *   attributed to bot management by a rule whose real discriminator is whether
+ *   the site uses Cloudflare at all.
+ */
+export function auditRefusal(
+  where: "page" | "robots",
+  url: string,
+  status: number,
+  headers: HeaderBag,
+  body: string
+): SiteRefusal | null {
+  if (status >= 200 && status < 300) {
+    const b = String(body || "");
+    // 204 IS THE ONE 2xx THAT MEANS "NOTHING TO SEND", and it means it in the
+    // spec rather than by accident — so an empty 204 is an empty file, exactly
+    // as an empty 200 is, and an empty robots.txt leaves every crawler
+    // unrestricted. www.ieee.org's 202-with-nothing is the shape this rule is
+    // for: a success status that accepted the request and answered no file.
+    if (status !== 200 && status !== 204 && !b.trim()) return { where, url, status, cdn: null, kind: "empty" };
+    if (where === "robots" && notRobotsReason(b) === null) return null;
+    // The NARROW read — see challengeVendor. A 2xx body has no failing status
+    // standing behind it, and the page it might wrongly condemn is one the
+    // audit is scoring in the same breath.
+    const vendor = challengeVendor(b);
+    return vendor ? { where, url, status, cdn: vendor, kind: "challenge" } : null;
+  }
+  if (status !== 401 && status !== 403) return null;
+  const refusal = classifyFetchRefusal(status, headers, body);
+  if (!refusal || refusal.kind === "sign-in") return null;
+  return { where, url, status, cdn: refusal.cdn, kind: "status" };
 }
 
 /**
@@ -362,7 +471,8 @@ function decodeTitle(s: string): string {
 /** The raw page plus fetch metadata, for the live-page audit. Same safeFetch,
  *  same UA — the audit must see the page a crawler sees, unsanitised. */
 export async function fetchPageForAudit(rawUrl: string): Promise<
-  { ok: true; page: string; finalUrl: string; httpStatus: number } | { ok: false; error: string }
+  { ok: true; page: string; finalUrl: string; httpStatus: number; refusal: SiteRefusal | null }
+  | { ok: false; error: string }
 > {
   const url = (rawUrl || "").trim();
   if (!/^https?:\/\//i.test(url)) return { ok: false, error: "Not a web address." };
@@ -391,13 +501,19 @@ export async function fetchPageForAudit(rawUrl: string): Promise<
     // and every check downstream then measures that denial page: no title, no
     // H1, no schema — a page of findings about a page nobody has seen.
     //
-    // The evidence to do better is right here: classifyFetchRefusal(res.status,
-    // res.headers, page) names Akamai from this response. What the AUDIT should
-    // SAY about a CDN-blocked page — a refusal, or a finding in its own right,
-    // since a page no automated client can fetch is a real AI-visibility fact —
-    // is a product decision Chris is taking separately. The seam is left here,
-    // named, rather than guessed at.
-    return { ok: true, page, finalUrl: res.url || url, httpStatus: res.status };
+    // WHAT CHANGED: the seam left named here is now wired. The refusal is
+    // classified and threaded to the audit as DATA, and what the audit RETURNS
+    // is untouched — a blocked page still comes back as the page, so nothing
+    // downstream of this line behaves differently. A page no automated client
+    // can fetch is a real AI-visibility fact, and page-audit says so in a
+    // finding of its own rather than this function refusing the URL.
+    return {
+      ok: true,
+      page,
+      finalUrl: res.url || url,
+      httpStatus: res.status,
+      refusal: auditRefusal("page", res.url || url, res.status, res.headers, page),
+    };
   } catch (e: any) {
     // NO RESPONSE AT ALL — a timeout, a reset, a refused connection. There is no
     // status and no body to classify, so there is nothing to diagnose: naming a

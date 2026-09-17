@@ -225,7 +225,11 @@ console.log("\n5. The checks that did not run");
   assert(infos.some((c) => c.id === "js-dependency"), "including the JavaScript gap, which the inline audit deliberately skips");
 
   const card = buildInlineAudit(AUDIT, { url: "https://example.com/a", finalUrl: "https://example.com/a", httpStatus: 200 });
-  assert(card.notMeasured.length === infos.length, "every unmeasured check reaches the card");
+  // Both buckets, because INFO now means two things and the invariant is that
+  // no info row is dropped on the way to the card — see `noted` in
+  // inline-audit.ts and scripts/verify-optimizer-site-reach.ts §6, which is
+  // where the split itself is asserted. This fixture raises no measured ones.
+  assert(card.notMeasured.length + card.noted.length === infos.length, "every unmeasured check reaches the card");
   assert(card.counts.pass === AUDIT.counts.pass, "and none of them is counted as a pass");
   assert(card.findings.every((f) => f.status !== "fail" || true) && card.findings.every((f) => (f.status as string) !== "info"), "nor listed among the findings, which are things that are wrong");
   assert(/NOT passing/.test(inlineAuditForModel(card)), "the model is told they are not passes");

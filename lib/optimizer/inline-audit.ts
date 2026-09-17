@@ -62,7 +62,19 @@ export interface InlineAuditCard {
   moreWarns: number;
   /** Checks that could not be run, and why. Reported, never counted as passes —
    *  not looking and finding nothing are different claims. */
-  notMeasured: { name: string; detail: string }[];
+  notMeasured: { id: string; name: string; detail: string }[];
+  /**
+   * Findings that WERE measured and are deliberately not scored.
+   *
+   * A separate list because the card and the model prompt only had room for
+   * names, and a name is exactly where these two kinds become
+   * indistinguishable: "The site refuses non-browser clients" was being printed
+   * under "Not measured", beside a sentence blaming a browser render, when it
+   * is a measured fact with a caveat attached that must travel with it. The
+   * caveat is the finding — being refused from here does not prove GPTBot was —
+   * so these carry their detail and their remedy, not just their name.
+   */
+  noted: { id: string; name: string; detail: string; remedy: string }[];
   fetchedAt: string;
 }
 
@@ -163,9 +175,16 @@ export function pickAuditUrl(
 }
 
 /** fail before warn; within a status, the audit's own section order, which runs
- *  from what stops a crawler cold to what merely costs a citation. */
+ *  from what stops a crawler cold to what merely costs a citation.
+ *
+ *  WITH ONE EXCEPTION, and it is the only thing that can outrank a failure: a
+ *  page whose address redirects to another site. The card shows four findings,
+ *  and every other one of them would be a true statement about somebody else's
+ *  page — so "this is a different site" has to arrive first or the card is a
+ *  confident report on the wrong thing. It is a WARN, so worst-first would
+ *  otherwise bury it behind fails that only exist because of it. */
 function worstFirst(checks: AuditCheck[]): AuditCheck[] {
-  const rank = (c: AuditCheck) => (c.status === "fail" ? 0 : 1);
+  const rank = (c: AuditCheck) => (c.id === "site-redirect" ? -1 : c.status === "fail" ? 0 : 1);
   return checks
     .filter((c) => c.status === "fail" || c.status === "warn")
     .map((c, i) => ({ c, i }))
@@ -201,11 +220,14 @@ export function buildInlineAudit(
     })),
     moreFails: rest.filter((c) => c.status === "fail").length,
     moreWarns: rest.filter((c) => c.status === "warn").length,
-    // INFO is the audit's way of saying "not looked at". Carrying it separately
-    // keeps it out of the counts, where it would read as a pass.
+    // INFO is kept out of the counts either way, where it would read as a pass.
+    // The split is between the two things INFO means — see `noted` above.
     notMeasured: audit.checks
-      .filter((c) => c.status === "info")
-      .map((c) => ({ name: c.name, detail: c.detail })),
+      .filter((c) => c.status === "info" && !c.measured)
+      .map((c) => ({ id: c.id, name: c.name, detail: c.detail })),
+    noted: audit.checks
+      .filter((c) => c.status === "info" && c.measured)
+      .map((c) => ({ id: c.id, name: c.name, detail: c.detail, remedy: c.remedy || "" })),
     fetchedAt: audit.fetchedAt,
   };
 }
@@ -235,18 +257,25 @@ export async function runInlineAudit(
   // files fail to NULL, never to "allowed": a 404, a timeout or a refusal all
   // mean we did not look. A shorter timeout here because this one runs inside a
   // chat turn.
-  const { robotsTxt, llmsTxt } = await fetchSiteFiles(fetched.finalUrl, { timeoutMs: 6000 });
+  const { robotsTxt, llmsTxt, robotsFinalUrl, robotsRefusal } = await fetchSiteFiles(fetched.finalUrl, { timeoutMs: 6000 });
 
   const audit = auditPage(
     {
       page: fetched.page,
       finalUrl: fetched.finalUrl,
+      // The user's own string, which is what pickAuditUrl guarantees reached
+      // the network. Comparing it against where the request landed is how the
+      // audit notices it has been measuring somebody else's site.
+      requestedUrl: url,
       httpStatus: fetched.httpStatus,
       brandNames: opts?.brandNames || [],
       targetQueries: [],
       render: null,
       robotsTxt,
       llmsTxt,
+      robotsFinalUrl,
+      // Both refusals, unfiltered — page-audit sorts out which arrived.
+      refusals: [fetched.refusal, robotsRefusal],
     },
     new Date()
   );
@@ -276,8 +305,25 @@ export function inlineAuditForModel(card: InlineAuditCard | InlineAuditRefusal):
       ? `\nNot shown on the card: ${card.moreFails} further failure(s) and ${card.moreWarns} further warning(s).`
       : "";
 
+  // THE RENDER SENTENCE ONLY WHEN THE RENDER IS WHY. It was unconditional, so
+  // a list that happened to contain a measured finding blamed that finding on
+  // a browser render — which is both false and the kind of false a model will
+  // cheerfully repeat in its own words.
+  const renderMissing = card.notMeasured.some((n) => n.id === "js-dependency" || n.id === "render-ran");
   const unmeasured = card.notMeasured.length
-    ? `\nNot measured (and therefore NOT passing): ${card.notMeasured.map((n) => n.name).join(", ")}. The JavaScript-gap comparison needs a browser render, which the studio's own audit runs and this one does not.`
+    ? `\nNot measured (and therefore NOT passing): ${card.notMeasured.map((n) => n.name).join(", ")}.` +
+      (renderMissing ? " The JavaScript-gap comparison needs a browser render, which the studio's own audit runs and this one does not." : "")
+    : "";
+
+  // MEASURED, NOT SCORED — with the detail, because these are the rows whose
+  // whole value is a caveat. "The site refuses non-browser clients" on its own
+  // is the assertion the finding exists to avoid making.
+  const noted = card.noted.length
+    ? "\n" +
+      card.noted
+        .map((n) => `MEASURED BUT NOT SCORED — ${n.name}: ${n.detail}${n.remedy ? ` Next: ${n.remedy}` : ""}`)
+        .join("\n") +
+      "\nThose are findings, not gaps in the audit. State them as carefully as they are worded here — the caveats in them are the reason they are not failures."
     : "";
 
   return [
@@ -286,6 +332,7 @@ export function inlineAuditForModel(card: InlineAuditCard | InlineAuditRefusal):
     "",
     findings || "No failures or warnings.",
     more,
+    noted,
     unmeasured,
     "",
     "THERE IS NO OVERALL SCORE FOR A PAGE AUDIT AND YOU MUST NOT INVENT ONE — no percentage, no 'X out of Y', no letter grade. These checks are not weighted against each other, so a total would carry a precision the evidence does not have.",
