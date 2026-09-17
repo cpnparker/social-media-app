@@ -36,6 +36,16 @@
  * contract, and the source-level assertions are counts across four chains that
  * any single-site edit breaks.
  *
+ * Two more on 2026-09-17, when the site-file fetch moved out of this module
+ * into lib/optimizer/site-files.ts and §8 followed the code:
+ *
+ *   KILLED  the shared seam reaching the network with a bare fetch        → §8
+ *   KILLED  this module fetching /robots.txt itself again                 → §8
+ *
+ * The move is why §8 no longer asks whether THIS file calls safeFetch: it asks
+ * that neither this file nor the seam it calls has an unguarded fetch, which is
+ * the property that was ever worth asserting.
+ *
  * The URL rule, from six directions:
  *   KILLED  pickAuditUrl returning the MODEL's string instead of the user's  → 2
  *   KILLED  normaliseForMatch stripping the query string                     → 1
@@ -82,8 +92,18 @@ const fail = (m: string) => { failures++; console.log(`  ✗ ${m}`); };
 const pass = (m: string) => console.log(`  ✓ ${m}`);
 const assert = (ok: boolean, m: string) => (ok ? pass(m) : fail(m));
 
+/**
+ * The opener is LINE-ANCHORED, and this is not fussiness. The obvious
+ * /\/\*[\s\S]*?\*\// is fooled by a `/*` inside a string literal — an Accept
+ * header ending "…application/pdf,*&#47;*;q=0.8" is enough — and it then
+ * deletes whichever code sits between there and the next `*&#47;`. In the
+ * sibling url check that mangling reported a correct, present refusal path as
+ * unwired; phrased the other way round, as an assertion that something is
+ * ABSENT, it would have passed silently over deleted code. §8 now reads
+ * lib/optimizer/site-files.ts through this, so it is worth being right.
+ */
 const stripComments = (src: string) =>
-  src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  src.replace(/^[ \t]*\/\*[\s\S]*?\*\/[ \t]*$/gm, "").replace(/^\s*\/\/.*$/gm, "");
 
 const turn = (role: string, content: string) => ({ role, content });
 
@@ -257,7 +277,18 @@ console.log("\n8. How the page is fetched");
 {
   const mod = stripComments(read("lib/optimizer/inline-audit.ts"));
   assert(/fetchPageForAudit\(url\)/.test(mod), "the page comes through the shared audit fetch");
-  assert(/safeFetch\(/.test(mod), "and the site files through safeFetch");
+  // THE SITE FILES MOVED OUT OF THIS MODULE, and the assertion followed the
+  // code rather than the file. robots.txt and llms.txt used to be fetched by a
+  // local helper here, in a line-for-line copy of the studio route's; both now
+  // call lib/optimizer/site-files.ts, because two copies of a seam is how the
+  // two audits ended up able to say different things about the same site. What
+  // has to stay true is unchanged: no unguarded fetch on this path, here or in
+  // the seam it calls.
+  assert(/fetchSiteFiles\(/.test(mod) && !/[^a-zA-Z]fetch\(/.test(mod),
+    "and the site files through the shared seam, with no fetch of its own");
+  const seam = stripComments(read("lib/optimizer/site-files.ts"));
+  assert(/safeFetch\(/.test(seam) && !/[^a-zA-Z]fetch\(/.test(seam.replace(/safeFetch\(/g, "")),
+    "which reaches the network only through safeFetch — the host comes from a caller-supplied URL");
   // Any bare fetch() is a second SSRF surface, and only the first is covered by
   // the check that guards it.
   assert(!/[^a-zA-Z.]fetch\(/.test(mod.replace(/safeFetch\(/g, "SAFE(").replace(/fetchPageForAudit\(/g, "FPA(")), "there is no unguarded fetch in the module");

@@ -32,6 +32,195 @@ export interface UrlImportResult {
   error?: string;
 }
 
+/**
+ * A REFUSAL, told apart from a failure.
+ *
+ * "That page answered 403." is true and useless. It reads as a broken link, so
+ * the writer checks the address, pastes it again, gets the same sentence and
+ * concludes the product cannot read their client's site.
+ *
+ * What actually happened to the Temasek page is a different thing entirely and
+ * it is knowable from the response we already hold. Akamai Bot Manager refused
+ * it: `server: AkamaiGHost`, a 491-byte Access Denied body carrying an
+ * edgesuite reference id. Measured, not assumed — the same 403 came back for
+ * curl's default user agent, for a Chrome user agent, and for a Chrome user
+ * agent with full Accept and Accept-Language headers, while a real browser on
+ * the same network loaded the page fine. The refusal is on the client's
+ * fingerprint, the whole origin does it (/, the article and /robots.txt alike),
+ * and the site is entitled to do it.
+ *
+ * So the product's job is to SAY so: that the site refuses automated requests,
+ * that this is the site's CDN and not a wrong address, and what to do instead.
+ * Nothing here tries to get around a block — no impersonation, no named-crawler
+ * user agent, and explicitly no retry, because retrying a bot block is how a
+ * blocked origin gets hammered by a product that has already been told no.
+ *
+ * Pure, so the check can drive it from fixtures: everything comes in as data,
+ * including the headers. This half carries the DIAGNOSIS alone — what to do
+ * next differs by surface, and refusalMessage below puts the two together, so
+ * that the sentence a person actually reads is itself a pure value a fixture
+ * can assert. A diagnosis with no way out of it is the same dead end as "That
+ * page answered 403." in better prose.
+ */
+export interface FetchRefusal {
+  /** The CDN that signed the refusal, when one signed it. */
+  cdn: string | null;
+  /** What happened, in the product's voice, with no advice attached. */
+  diagnosis: string;
+}
+
+/**
+ * Statuses a refusal actually arrives as.
+ *
+ * 503 is legacy Cloudflare's, and it only ever reaches the branded wording:
+ * an unbranded 503 is an origin having a bad day, which classifyFetchRefusal
+ * says in as many words.
+ */
+const REFUSAL_STATUSES = [401, 403, 429, 503];
+
+type HeaderBag = { get(name: string): string | null } | null | undefined;
+
+/**
+ * Which CDN's bot protection SIGNED this refusal — not which CDN is in front
+ * of the site.
+ *
+ * That distinction is the whole function, and getting it wrong produces a
+ * confident false claim rather than a vague one. `server: cloudflare`, `cf-ray`,
+ * `x-iinfo` and `x-akamai-request-id` are stamped on EVERY response those
+ * networks proxy, not on blocks: measured 2026-09-17, `curl -sIL
+ * https://www.cloudflare.com/this-page-does-not-exist-abc123` answers an
+ * ordinary 404 — and a 301 before it — carrying `server: cloudflare` and a
+ * `cf-ray`, and carrying no `cf-mitigated`, which is the discriminator. Read as
+ * evidence, they turn every paywall, members-only page, app permissions error
+ * and staging Basic-auth wall behind those networks into "that site refuses
+ * automated requests… no setting on this side changes it" — three claims that
+ * are all false of a paywall, where signing in is exactly what changes it.
+ *
+ * So this asks only for marks the EDGE writes when the edge itself refuses:
+ *
+ *   - Akamai: `server: AkamaiGHost`, which is the edge generating the response
+ *     rather than passing one through; or the Access Denied body, which carries
+ *     a reference id and an errors.edgesuite.net URL.
+ *   - Cloudflare: `cf-mitigated`, set when Cloudflare's own rules act; or the
+ *     challenge and block pages — the cdn-cgi challenge script, "Just a
+ *     moment", "Attention Required", an Error 10xx code. Not a bare Ray ID:
+ *     Cloudflare's ORIGIN-error pages (502, 522, 523) carry one too.
+ *   - Imperva: the Incapsula incident body its block page prints.
+ *
+ * With none of those the caller falls through to wording that names no vendor
+ * and claims nothing about why — which is honest about a 403 whose cause we
+ * genuinely cannot see from here.
+ */
+export function cdnBlockVendor(headers: HeaderBag, body: string): string | null {
+  const h = (name: string) => String((headers && headers.get(name)) || "");
+  const server = h("server").toLowerCase();
+  // ENTITY-DECODED FIRST, because the real page is entity-encoded and a matcher
+  // written against a tidied-up copy of it finds nothing. Akamai's Access
+  // Denied writes its own URL and reference id as numeric entities —
+  // `Reference&#32;&#35;18.5d4c…`, `https&#58;&#47;&#47;errors&#46;edgesuite…`
+  // — so /errors\.edgesuite\.net/ never fires on the body it was written for.
+  // Found by putting the measured 491 bytes in the fixture rather than a
+  // paraphrase of them.
+  const b = String(body || "")
+    .slice(0, 4000)
+    .replace(/&#(\d{1,4});/g, (m, d) => { const n = parseInt(d, 10); return n > 0 && n < 128 ? String.fromCharCode(n) : m; })
+    .replace(/&#x([0-9a-f]{1,3});/gi, (m, x) => { const n = parseInt(x, 16); return n > 0 && n < 128 ? String.fromCharCode(n) : m; });
+
+  if (server.indexOf("akamaighost") >= 0) return "Akamai";
+  if (h("cf-mitigated")) return "Cloudflare";
+
+  if (/errors\.edgesuite\.net/i.test(b)) return "Akamai";
+  if (/access denied/i.test(b) && /reference\s*(&#35;|#)/i.test(b)) return "Akamai";
+  if (/cdn-cgi\/|error\s*10\d\d|attention required|just a moment/i.test(b)) return "Cloudflare";
+  if (/incapsula incident id|powered by imperva/i.test(b)) return "Imperva";
+  return null;
+}
+
+/**
+ * Is this failed response a refusal worth explaining, and what is it?
+ *
+ * Returns null for an ordinary failure — a 404, a 500, a wrong address — where
+ * "answered 404" is exactly the right thing to say and dressing it up as a bot
+ * block would be a guess presented as a diagnosis.
+ *
+ * Three tiers, deliberately, because a classifier that turns every 4xx into a
+ * CDN story cries wolf: a signed block gets the bot-block wording; a 401 whose
+ * response ASKS FOR CREDENTIALS gets the sign-in wording; an unbranded 401/403
+ * gets the hedge that stays true whichever of the three it was.
+ */
+export function classifyFetchRefusal(status: number, headers: HeaderBag, body: string): FetchRefusal | null {
+  if (REFUSAL_STATUSES.indexOf(status) < 0) return null;
+  const cdn = cdnBlockVendor(headers, body);
+
+  if (status === 429) {
+    return {
+      cdn,
+      diagnosis: cdn
+        ? `That site is rate-limiting automated requests — its CDN (${cdn}) answered 429. Nothing here will retry it.`
+        // Unbranded: it may be the site's own per-account or per-IP limiter, so
+        // "automated requests" would be a guess. What is certain is that it was
+        // this server asking, and that nothing here will ask again.
+        : "That site is rate-limiting requests from this server — it answered 429. Nothing here will retry it.",
+    };
+  }
+  if (cdn) {
+    return {
+      cdn,
+      diagnosis:
+        `That site refuses automated requests. Its CDN (${cdn}) answered ${status} before the page itself was reached — ` +
+        "the address is not the problem, and no setting on this side changes it.",
+    };
+  }
+  // A 401 CARRYING WWW-Authenticate IS NOT A GUESS. "May need a sign-in" was
+  // dropped from the wording below because it was exactly that on a bare 403 —
+  // but a challenge header is the response's own statement of what it wants,
+  // and answering it with the browser-versus-server story sends the reader off
+  // to test a theory the server already ruled out.
+  if (status === 401 && h401(headers)) {
+    return { cdn: null, diagnosis: "That page needs a sign-in — the site asked for credentials (HTTP 401)." };
+  }
+  // 503 with nothing to point at is an origin having a bad day, not a refusal.
+  if (status === 503) return null;
+  return {
+    cdn: null,
+    diagnosis:
+      `That site refused the request (HTTP ${status}). Plenty of sites serve a page to a browser and refuse a server ` +
+      "asking for the same thing.",
+  };
+}
+
+/** The credentials challenge, read through the same bag as everything else. */
+function h401(headers: HeaderBag): boolean {
+  return !!(headers && headers.get("www-authenticate"));
+}
+
+/**
+ * The whole sentence a person reads, diagnosis and way through.
+ *
+ * Composed here rather than at each call site so the check can assert the
+ * STRING — the diagnosis is only half the fix, and a diagnosis with no way
+ * through is the same dead end as "That page answered 403." in better prose.
+ * The tabs are named, because "import it another way" is advice a writer
+ * cannot act on: the importer's screen offers Paste it and Upload a file, and
+ * a background source is attached with File.
+ *
+ * Returns null for an ordinary failure, where the caller's own wording is right.
+ */
+export function refusalMessage(
+  status: number,
+  headers: HeaderBag,
+  body: string,
+  surface: "import" | "source"
+): string | null {
+  const refusal = classifyFetchRefusal(status, headers, body);
+  if (!refusal) return null;
+  const instead =
+    surface === "import"
+      ? "Open the page in your browser and bring the article in with Paste it — or save the page and use Upload a file."
+      : "Open the link yourself, save the file, and attach it with File.";
+  return `${refusal.diagnosis} ${instead}`;
+}
+
 /** Cut the region most likely to be the article out of a full page. */
 export function extractArticleRegion(page: string): string {
   // Kill the wrappers whose CONTENT must not survive even as text, before any
@@ -194,8 +383,27 @@ export async function fetchPageForAudit(rawUrl: string): Promise<
     });
     const page = await res.text();
     if (page.length > MAX_HTML_BYTES) return { ok: false, error: "That page is too large to read." };
+    // A NON-200 STILL COMES BACK AS A PAGE, ON PURPOSE AND FOR NOW.
+    //
+    // This is the audit's fetch, not the importer's, and the audit's contract
+    // is to report what is at the address rather than to refuse it. So a CDN
+    // block arrives here as httpStatus 403 and a 491-byte Access Denied body,
+    // and every check downstream then measures that denial page: no title, no
+    // H1, no schema — a page of findings about a page nobody has seen.
+    //
+    // The evidence to do better is right here: classifyFetchRefusal(res.status,
+    // res.headers, page) names Akamai from this response. What the AUDIT should
+    // SAY about a CDN-blocked page — a refusal, or a finding in its own right,
+    // since a page no automated client can fetch is a real AI-visibility fact —
+    // is a product decision Chris is taking separately. The seam is left here,
+    // named, rather than guessed at.
     return { ok: true, page, finalUrl: res.url || url, httpStatus: res.status };
   } catch (e: any) {
+    // NO RESPONSE AT ALL — a timeout, a reset, a refused connection. There is no
+    // status and no body to classify, so there is nothing to diagnose: naming a
+    // bot block here would be a guess, and the audit needs the live page, so
+    // Paste it / Upload a file is not the alternative it is on the import
+    // screen. The two honest sentences are the ones already here.
     return { ok: false, error: String(e?.message || "").indexOf("not a public address") >= 0 ? "That address is not reachable from here." : "Could not reach that page." };
   }
 }
@@ -230,7 +438,15 @@ export async function importFromUrl(rawUrl: string): Promise<UrlImportResult> {
     }
     return { ok: false, error: "Could not reach that page." };
   }
-  if (!res.ok) return { ok: false, error: `That page answered ${res.status}.` };
+  if (!res.ok) {
+    // The body of the refusal is evidence, and we already have the response —
+    // reading it is not a second request, and there is deliberately no retry.
+    const refusedBody = await res.text().catch(() => "");
+    const refused = refusalMessage(res.status, res.headers, refusedBody, "import");
+    if (refused) return { ok: false, error: refused };
+    if (res.status === 404) return { ok: false, error: "That page answered 404 — check the address, or the page may have moved." };
+    return { ok: false, error: `That page answered ${res.status}.` };
+  }
 
   const ctype = (res.headers.get("content-type") || "").toLowerCase();
   if (ctype && ctype.indexOf("html") < 0) {
@@ -311,13 +527,14 @@ export async function fetchSourceFromUrl(
     // server — no header combination changed it. Telling them to download and
     // attach it is the actual way through; "may need a sign-in" was a guess
     // dressed as a diagnosis.
-    if (res.status === 401 || res.status === 403) {
-      return {
-        ok: false,
-        error:
-          "That site refused the request. Some sites block servers while serving the same file to a browser — open the link yourself, save the file, and attach it with File.",
-      };
-    }
+    //
+    // Which vendor refused is now named when the response says so, through the
+    // same classifier the importer uses — the advice below was already right
+    // for this surface, and "its CDN (Akamai) answered 403" is the sentence
+    // that stops the writer re-pasting the link to see if it takes this time.
+    const refusedBody = await res.text().catch(() => "");
+    const refused = refusalMessage(res.status, res.headers, refusedBody, "source");
+    if (refused) return { ok: false, error: refused };
     if (res.status === 404) {
       return { ok: false, error: "That address answered 404 — the link may have expired." };
     }

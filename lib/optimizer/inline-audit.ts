@@ -226,28 +226,16 @@ export async function runInlineAudit(
 ): Promise<InlineAuditCard | InlineAuditRefusal> {
   const { fetchPageForAudit } = await import("./url-import");
   const { auditPage } = await import("./page-audit");
-  const { safeFetch } = await import("@/lib/net/safe-fetch");
+  const { fetchSiteFiles } = await import("./site-files");
 
   const fetched = await fetchPageForAudit(url);
   if (!fetched.ok) return { ok: false, reason: fetched.error };
 
-  // Both fail to NULL, never to "allowed": a 404, a timeout or a refusal all
-  // mean we did not look. Through safeFetch like every other outbound request —
-  // a second unguarded fetch path is a second SSRF surface, and only one of
-  // them would be covered by the check that guards the first.
-  const siteFile = async (path: string): Promise<string | null> => {
-    try {
-      const u = new URL(fetched.finalUrl);
-      const res = await safeFetch(`${u.protocol}//${u.host}${path}`, { timeoutMs: 6000 });
-      if (!res.ok) return null;
-      const text = await res.text();
-      if (/<html|<!doctype/i.test(text.slice(0, 400))) return null;
-      return text.slice(0, 100_000);
-    } catch {
-      return null;
-    }
-  };
-  const [robotsTxt, llmsTxt] = await Promise.all([siteFile("/robots.txt"), siteFile("/llms.txt")]);
+  // One seam, shared with the studio route — lib/optimizer/site-files.ts. Both
+  // files fail to NULL, never to "allowed": a 404, a timeout or a refusal all
+  // mean we did not look. A shorter timeout here because this one runs inside a
+  // chat turn.
+  const { robotsTxt, llmsTxt } = await fetchSiteFiles(fetched.finalUrl, { timeoutMs: 6000 });
 
   const audit = auditPage(
     {

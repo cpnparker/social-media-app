@@ -29,7 +29,7 @@
  */
 
 import type { RenderOutcome } from "./render";
-import { crawlerAccess } from "./crawler-access";
+import { crawlerAccess, notRobotsReason } from "./crawler-access";
 
 export type AuditStatus = "pass" | "warn" | "fail" | "info";
 
@@ -249,13 +249,31 @@ export function auditPage(input: PageAuditInput, now: Date): PageAuditResult {
   const crawlerPath = (() => {
     try { return new URL(finalUrl).pathname || "/"; } catch { return "/"; }
   })();
-  const verdicts = crawlerAccess(input.robotsTxt === undefined ? null : input.robotsTxt, crawlerPath);
+  const robotsOrigin = (() => {
+    try { const u = new URL(finalUrl); return `${u.protocol}//${u.host}`; } catch { return "https://<domain>"; }
+  })();
+  const rawRobots = input.robotsTxt === undefined ? null : input.robotsTxt;
+  // A 200 THAT IS NOT A ROBOTS FILE GETS ITS OWN SENTENCE.
+  //
+  // Not the "could not be read" one below, because the two are different
+  // situations with different next steps: one means we never saw the address
+  // answer, the other means it answered with something that is not a robots
+  // file — an AEM soft-404 page, a CDN's denial page, a JSON error. Both stop
+  // short of a verdict, and saying WHICH is the difference between a reader
+  // going to look and a reader shrugging. Same predicate the parser refused on,
+  // so the sentence and the verdict cannot disagree.
+  const notFile = typeof rawRobots === "string" ? notRobotsReason(rawRobots) : null;
+  const verdicts = crawlerAccess(rawRobots, crawlerPath);
   if (!verdicts) {
     push({
       id: "ai-crawler-access", section: "indexability", name: "AI crawlers allowed",
       status: "info",
-      detail: "Not checked — this site's robots.txt could not be read. That is not the same as being open to AI crawlers.",
-      remedy: "Fetch https://<domain>/robots.txt by hand and look for GPTBot, ClaudeBot, PerplexityBot, Google-Extended, OAI-SearchBot and CCBot.",
+      detail: notFile
+        ? `Not checked — ${robotsOrigin}/robots.txt answered with ${notFile === "markup" ? "a web page" : "a body with no robots directives in it"}, not a robots file. That is not the same as being open to AI crawlers.`
+        : "Not checked — this site's robots.txt could not be read. That is not the same as being open to AI crawlers.",
+      remedy: notFile
+        ? `Open ${robotsOrigin}/robots.txt yourself. A site with no robots.txt does leave crawlers unrestricted — but a page served at that address is not evidence of that, and a CDN refusing automated clients serves one too.`
+        : "Fetch https://<domain>/robots.txt by hand and look for GPTBot, ClaudeBot, PerplexityBot, Google-Extended, OAI-SearchBot and CCBot.",
     });
   } else {
     const blocked = verdicts.filter((v) => !v.allowed);
