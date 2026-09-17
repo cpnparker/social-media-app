@@ -584,6 +584,33 @@ console.log("\n13. Every chain is wired to the filter and the notice — per cha
       ? pass(`${file.split("/").slice(-2).join("/")} persists the streamed copy nowhere`)
       : fail(`${file} still saves fullText — the narration goes back into the transcript, and into every later turn's history`);
   }
+
+  // THE THIRD CONSUMER, and the one this list did not have. The narration fix
+  // landed on the two chat routes and missed lib/scheduled/runner.ts, where
+  // the text is not only persisted but EMAILED — eleven of forty-eight
+  // scheduled answers went out opening with the model's plan for the round.
+  // It was invisible twice over: this list named two files, and the runner
+  // re-declared the completion shape by hand and read it through `as any`, so
+  // keptText being a REQUIRED field of StreamResult proved nothing about it.
+  //
+  // Asserted on BEHAVIOUR rather than on a spelling: the runner names its own
+  // variable `deliverText`, so counting "document_message: keptText" would go
+  // green on a file that never reads keptText at all.
+  {
+    const runner = uncommented(readFileSync("lib/scheduled/runner.ts", "utf8"));
+    /^\s*import\s*\{[^}]*\btype StreamResult\b/m.test(runner) || /completion:\s*StreamResult/.test(runner)
+      ? pass("the scheduled runner takes its completion shape FROM StreamResult")
+      : fail("lib/scheduled/runner.ts re-declares the completion shape by hand — keptText being required proves nothing about a consumer that describes the result in its own words");
+    /\bkeptText\b/.test(runner)
+      ? pass("the scheduled runner reads keptText")
+      : fail("lib/scheduled/runner.ts never mentions keptText — its thread and its EMAIL still carry the model's plan paragraphs");
+    /let\s+deliverText\s*=\s*keptText/.test(runner)
+      ? pass("and what it delivers starts from the filtered copy")
+      : fail("lib/scheduled/runner.ts does not start deliverText from keptText — the email opens with the narration");
+    /extractMonitorState\(fullText\)/.test(runner)
+      ? pass("while the monitor's state block is still read from the whole text, so a baseline in a tool round is not filtered away")
+      : fail("lib/scheduled/runner.ts reads the monitor state from the filtered copy — a state block written in a tool round would be lost and the next run would have no baseline");
+  }
   // AND EVERY READER OF data_tools UNDERSTANDS THE NEW NAMES. Splitting
   // `blocked` into two was written up as safe because nothing read it; one
   // thing did, and it is the instrument review 2 was written from. The cast

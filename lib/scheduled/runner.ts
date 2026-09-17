@@ -12,7 +12,7 @@
 import { Resend } from "resend";
 import { supabase } from "@/lib/supabase";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
-import { createStreamingResponse, type AIMessage } from "@/lib/ai/providers";
+import { createStreamingResponse, type AIMessage, type StreamResult } from "@/lib/ai/providers";
 import { buildSystemPrompt, normalizeContextConfig } from "@/lib/ai/system-prompts";
 import { routeQuery } from "@/lib/ai/query-router";
 import { routeModel } from "@/lib/ai/auto-router";
@@ -197,9 +197,14 @@ export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunR
     const messages: AIMessage[] = [{ role: "user", content: task.document_prompt }];
 
     // Drain the stream server-side; capture the completion via onComplete.
-    let completion:
-      | { fullText: string; inputTokens: number; outputTokens: number; modelUsed: string; cacheReadTokens?: number; cacheWriteTokens?: number }
-      | null = null;
+    // TYPED FROM THE SOURCE, not re-declared. This shape used to be written
+    // out by hand and read through `as any`, and that is precisely how the
+    // narration filter missed this file: `keptText` shipped as a REQUIRED
+    // field of StreamResult so that a chain which forgets it fails to compile,
+    // but a consumer that describes the result in its own words is outside
+    // that guarantee, and tsc stayed green while scheduled briefs kept saving
+    // — and emailing — the model's plan paragraphs.
+    let completion: StreamResult | null = null;
     const done = new Promise<void>((resolve) => {
       const stream = createStreamingResponse(
         messages,
@@ -232,9 +237,22 @@ export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunR
     });
     await done;
 
-    const fullText = completion ? (completion as any).fullText?.trim() || "" : "";
-    const inputTokens = completion ? (completion as any).inputTokens || 0 : 0;
-    const outputTokens = completion ? (completion as any).outputTokens || 0 : 0;
+    // THE FILTERED COPY, for the same reason the chat routes save it: a round
+    // that ends in tool calls writes the model's plan for that round ("I'll
+    // pull the live forecast workbook…"), and here it does not merely sit in a
+    // transcript — it is the first line of the email that goes out. `fullText`
+    // is still what the empty-output throw and the usage log measure, because
+    // those are about what the model PRODUCED, not about what a person reads.
+    // ONE CAST, AND TO THE REAL TYPE. TypeScript narrows `completion` to
+    // `never` here because it cannot see that the callback above ran, and the
+    // previous code answered that with `as any` on every read — which is what
+    // let this file drift from StreamResult in the first place. Casting once to
+    // StreamResult keeps every field below type-checked.
+    const result = completion as StreamResult | null;
+    const fullText = result?.fullText?.trim() || "";
+    const keptText = result?.keptText?.trim() || fullText;
+    const inputTokens = result?.inputTokens || 0;
+    const outputTokens = result?.outputTokens || 0;
 
     // LOGGED BEFORE THE EMPTY-OUTPUT THROW. A headless run that consumed its
     // whole prompt and every tool round and then returned nothing is the most
@@ -248,12 +266,12 @@ export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunR
     logAiUsage({
       workspaceId: task.id_workspace,
       userId: task.user_created,
-      model: (completion as any)?.modelUsed || model,
+      model: result?.modelUsed || model,
       source: "scheduled-prompt",
       inputTokens,
       outputTokens,
-      cacheReadTokens: (completion as any)?.cacheReadTokens || 0,
-      cacheWriteTokens: (completion as any)?.cacheWriteTokens || 0,
+      cacheReadTokens: result?.cacheReadTokens || 0,
+      cacheWriteTokens: result?.cacheWriteTokens || 0,
     });
 
     if (!fullText) throw new Error("Run produced no output");
@@ -261,16 +279,23 @@ export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunR
     // Monitor gate: compare this run's state block against the stored snapshot
     // and stay QUIET when nothing changed (the whole point of a monitor).
     // Threshold semantics re-arm: condition_met fires only on false→true.
-    let deliverText = fullText;
+    let deliverText = keptText;
     let changedSummary: string | null = null;
     if (task.type_task === "monitor") {
-      const { state, cleanText } = extractMonitorState(fullText);
+      // TWO READS, AND THEY ARE ASKING DIFFERENT QUESTIONS. The state block is
+      // the monitor's memory, so it is taken from everything the model wrote —
+      // a block emitted in a round that ended in tool calls would otherwise be
+      // filtered away and the next run would lose its baseline. The delivered
+      // prose is taken from the filtered copy, because that is what a person
+      // reads in the email.
+      const { state } = extractMonitorState(fullText);
+      const { cleanText } = extractMonitorState(keptText);
       // Never deliver the raw machine block: if the model wrote nothing but the
       // block, fall back to the changed_summary as the body.
       deliverText = cleanText
         || (state && typeof state.changed_summary === "string" && state.changed_summary
               ? `**${task.name_title}** — ${state.changed_summary}`
-              : fullText);
+              : keptText);
       const hasCondition = !!state && typeof state.condition_met === "boolean";
       const factsUsable = !!state && !!state.facts && typeof state.facts === "object" && Object.keys(state.facts).length > 0;
       if (state && (factsUsable || hasCondition)) {
