@@ -133,6 +133,10 @@
  *    heading on the slide reads as running onto the title above it.
  *  - KILLED: inkBottom measuring from the top of the PAGE rather than the top
  *    of the box (`el.y +` dropped).
+ *  - KILLED (46j, RE-RUN 2026-09-17 after inkBottom MOVED to generate.ts so
+ *    that the builder and this file cannot end up with two rulers): INK_LEAD
+ *    loosened from 1.38 to 1.2. Still red, and still from this file's own
+ *    fixture — the move changed where the code lives and nothing else.
  *  - KILLED (46n): the bold/semibold glyph branch of inkBottom deleted, so
  *    every box is measured at the mean. THIS ONE CHANGED ITS ANSWER. Against
  *    the old unnamed 0.55em it killed 14 fixtures; against Roboto's own 0.443
@@ -185,7 +189,7 @@
 import { CANVAS } from "@/lib/slides/brand";
 import { SLIDES_TEXT_INSET } from "@/lib/slides/preview-style";
 import {
-  buildSlideRequests, estimateLines, faceAdvance, labelWidthPt, TEXT_INSET_X, type SlideInput,
+  buildSlideRequests, faceAdvance, inkBottom, labelWidthPt, TEXT_INSET_X, type SlideInput,
 } from "@/lib/slides/generate";
 import { previewSlideFrom, type PreviewElement, type PreviewSlide } from "@/lib/slides/preview-model";
 
@@ -400,48 +404,25 @@ export function overlapFaults(
 
 /* ── ink overrun ────────────────────────────────────────────────────────── */
 
-/** The real line box, rather than the splitter's deliberately generous one.
- *  This is measuring a collision, not deciding whether to split. */
-const INK_LEAD = 1.38;
-/** Slides' own gap between bulleted paragraphs. */
-const BULLET_GAP = 6;
 /** A point of slack on every comparison: the same reason as EDGE_TOLERANCE,
  *  at the scale a line box is measured to. */
 const INK_TOLERANCE = 1;
 
-/** Where the last line's ink lands, measured from the top of the box. */
-export function inkBottom(el: PreviewElement): number {
-  const size = el.size || 10;
-  const paras = String(el.text || "").split("\n");
-  let lines = 0;
-  // A semibold or bold Roboto box is measured glyph by glyph, with the same
-  // primitive the layouts size those boxes with. Counted at the mixed-case
-  // mean instead, a hub label sized to its own measured width — one line, with
-  // 6% to spare — reads as two lines running onto the node below, and a mean
-  // that cries wolf here is one nobody believes when it is right. The sizing
-  // margin is divided back out: this is the real ink, like the line box below.
-  const bold = el.font === "Roboto" && (el.weight || 400) >= 600 && !el.bullets;
-  for (let i = 0; i < paras.length; i++) {
-    const para = paras[i];
-    lines += bold
-      ? Math.max(1, Math.ceil(labelWidthPt(para, size) / 1.06 / Math.max(1, el.w - TEXT_INSET_X) - 1e-9))
-      // MEASURED IN THE FACE THE BOX IS DRAWN IN, which the branch above
-      // already does and this one did not. faceAdvance falls back to the
-      // unnamed 0.55em worst case, and its own comment says what that costs:
-      // it over-measures ROBOTO — the face 82% of the boxes on a real deck are
-      // drawn in — by nearly a third, so "a bullet that draws on one line was
-      // counted as two". Every text box in the preview carries a face (Roboto,
-      // Playfair Display, Poppins), so the unnamed default fitted none of them
-      // and 21 of the 29 overruns this reported on the stored decks were
-      // measured with a ruler no box on the deck is drawn with. The caps flag
-      // travels with it for the same reason: a caps style draws every glyph at
-      // its widest, and the preview's text is already upper-cased when it does.
-      : Math.max(1, estimateLines(para, el.w, size, el.bullets, !!el.caps, el.font));
-  }
-  // One inset — the top. The box's own y is the top of the box, not of the ink.
-  return el.y + SLIDES_TEXT_INSET.y + lines * size * INK_LEAD
-    + Math.max(0, paras.length - 1) * (el.bullets ? BULLET_GAP : 0);
-}
+/** Where the last line's ink lands, measured from the top of the box.
+ *
+ *  MEASURED IN generate.ts NOW, and re-exported here under the name everything
+ *  already imports. It moved because the BUILDER has to ask the same question
+ *  at build time: the deck frame's hairlines are full-bleed rects, and this
+ *  sweep compares text with text, so a rule drawn along the baseline of a
+ *  chart's source line is invisible to it — which is exactly what shipped on
+ *  ten of the 618 stored slides before the frame learned to measure. Two
+ *  rulers would have made the frame's decision and this file's verdict
+ *  disagree, and the disagreement would have been the bug. The line box, the
+ *  bold branch and the face it measures in are all unchanged; the comment that
+ *  explains them travels with the code.
+ *
+ *  It is typed structurally there, so a PreviewElement still satisfies it. */
+export { inkBottom };
 
 export function overrunFaults(
   page: PreviewSlide, slide: SlideInput, index: number

@@ -174,7 +174,21 @@ export function previewSlideFrom(slide: SlideInput, requests: any[]): PreviewSli
     const [kind, body] = Object.entries(req)[0] as [string, any];
 
     if (kind === "updatePageProperties") {
-      current.background = hex(body.pageProperties?.pageBackgroundFill?.solidFill?.color?.rgbColor);
+      // ONLY A SOLID FILL SETS THE PREVIEW'S GROUND. The deck frame lays a
+      // stretched picture fill — the paper texture — over the solid one in a
+      // second request on the same page, and hex() of an absent rgbColor is
+      // #000000, so reading that request would have turned every light slide
+      // in the preview black while the deck itself was fine.
+      //
+      // The grain is NOT drawn here, and that is the honest trade rather than
+      // an oversight: the preview's ground stays the colour the paper sits on.
+      // Measured pixel by pixel, the sheet's luminance is 205-255 with a mean
+      // of 247.3 — grain on near-white, below what the preview resolves at the
+      // size it is shown at. Drawing it properly would need PreviewSlide's
+      // `background` to stop being a colour, which every consumer of it reads
+      // as one.
+      const solid = body.pageProperties?.pageBackgroundFill?.solidFill?.color?.rgbColor;
+      if (solid) current.background = hex(solid);
     } else if (kind === "createShape") {
       const el: PreviewElement = {
         kind: body.shapeType === "ELLIPSE" ? "ellipse" : "rect",

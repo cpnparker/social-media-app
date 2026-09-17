@@ -17,6 +17,7 @@ import {
   undrawnTableBodies,
   CAPS_WIDEN, faceAdvance, stripImageMarkdown, drawnText, TEXT_INSET_X, TEXT_INSET_Y, pillWidth, droppedContent, fitHeading, FOOTER_Y, captionParagraphs, splitStageOwner, slideStyle,
   labelWidthPt, quoteClip, drawsRawScreenshot, isScreenshot, fitAspect, namesAPicture, hugHeight,
+  densityOf, footerLineWidth, hairlineSpan, hairline, crossingHairlines, hungDot, ctaPill, HUNG_DOT, PILL,
   type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel, readPath } from "../lib/slides/preview-model";
@@ -41,7 +42,9 @@ import { readFileSync } from "fs";
 import { createServer } from "http";
 import { join } from "path";
 import { gradientProfileFor, CONTRAST } from "../lib/slides/images";
-import { CANVAS, LAYOUT_STYLE, COLOR, GRID, LAYOUTS, NOTE, SECTION, TYPE, PROCESS, SHOT, IMAGE, FEATURE_SHOT_STYLE, LOGO_PLACEMENT } from "../lib/slides/brand";
+import { CANVAS, LAYOUT_STYLE, COLOR, GRID, LAYOUTS, NOTE, SECTION, TYPE, PROCESS, SHOT, IMAGE, FEATURE_SHOT_STYLE, LOGO_PLACEMENT,
+  DENSITY, DEFAULT_DENSITY, FRAME, BAND_BOTTOM, TIMELINE, TIMELINE_PARALLEL, LOGO_WALL, withDensity, assetUrl, textOn,
+  type Density, type SlideLayout } from "../lib/slides/brand";
 
 const TYPE_STAT_CAP = 54;   // the multi-stat value cap; a hero must exceed it
 let failures = 0;
@@ -1955,9 +1958,16 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     const c5 = buildSlideRequests({ layout: "content", title: "T", body: "x" } as SlideInput, 4, "n");
     const c5texts = (c5 as any[]).filter((r) => r.insertText).map((r) => r.insertText.text);
     assertBrand(c5texts.some((t: string) => t.indexOf("The Content Engine") === 0), "the footer names the house");
-    // NO page number. It was static text, so it lied the moment the user
-    // merged two slides by hand, and they removed it from every page.
-    assertBrand(c5texts.indexOf("5") < 0, "and carries no page number — a static number is wrong after the first manual edit");
+    // AND A PAGE NUMBER, which used to be asserted ABSENT here.
+    //
+    // The objection was right about what it saw: the number was static text a
+    // caller wrote, so it lied the moment two slides were merged by hand. The
+    // deck frame answers it rather than repeating it — the number is `index +
+    // 1` computed by the builder, and every route that draws a deck rebuilds
+    // every slide through buildSlideRequests, so an insert renumbers. Check 47
+    // (e) drives the insert; this pins that the builder's own index is what
+    // reaches the page, which is the half that made the old version wrong.
+    assertBrand(c5texts.indexOf("5") >= 0, "and the page number is the builder's own index, not a caller's");
     // The deck's title joins the footer once the builder stamps it.
     const stamped = buildSlideRequests({ layout: "content", title: "T", body: "x", footer: "The Content Engine · Building Authority on AI" } as SlideInput, 4, "n");
     const stampedTexts = (stamped as any[]).filter((r) => r.insertText).map((r) => r.insertText.text);
@@ -2266,7 +2276,15 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     // No content may be drawn inside the bar's own band.
     for (const r of nr) {
       const oid = r.createShape?.objectId || "";
-      if (!oid || /_(noteBar|noteTxt|ftl|ftn|logo)$/.test(oid)) continue;
+      // THE FRAME'S RULES ARE FURNITURE, and join the footer, the folio and the
+      // lockup in this list for the same reason: they are builder-owned, they
+      // belong to the page rather than to the slide, and they are drawn in the
+      // margins the takeaway bar's band does not own. That they land in bands
+      // nothing writes in is not taken on trust here — check 47 (d) measures
+      // the INK of every box on all 29 layouts at both presets against them,
+      // which is a stronger question than this one and the only one that can
+      // be asked of a rect.
+      if (!oid || /_(noteBar|noteTxt|ftl|ftn|frTop|frBot|logo)$/.test(oid)) continue;
       const t = r.createShape.elementProperties;
       assertD(t.transform.translateY + t.size.height.magnitude <= barTop + 1,
         `${oid.split("_").pop()} stops above the takeaway bar`);
@@ -2585,7 +2603,7 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       if (name !== "venn" && Math.abs(bar.w - GRID.contentWidth) > 0.6) fail(`${name}: the takeaway bar is ${bar.w.toFixed(1)}pt wide, not the full measure — the 2-D rule below must not hide a shrunken bar`);
       for (const r of reqs) {
         const oid = r.createShape?.objectId || "";
-        if (!oid || /_(noteBar|noteHead|noteTxt|ftl|ftn|logo)$/.test(oid)) continue;
+        if (!oid || /_(noteBar|noteHead|noteTxt|ftl|ftn|frTop|frBot|logo)$/.test(oid)) continue;   // see the note on the same list above
         const t = r.createShape.elementProperties;
         if (t.transform.scaleX !== 1 || t.transform.scaleY !== 1) continue;
         const x = t.transform.translateX, y = t.transform.translateY;
@@ -9130,7 +9148,14 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       if (heroNotes[i].indexOf("past the edge") >= 0) saysOff = true;
       if (heroNotes[i].indexOf("overlap") >= 0) saysOverlap = true;
     }
-    A46(g.faults.length === 2 && saysOff && saysOverlap,
+    // THREE, not two, since the deck frame landed. The third is the same
+    // off-canvas body box: it runs down to y=414 on a 405pt page, so it also
+    // crosses the folio's box on the footer line, where their ink does not
+    // meet. That is the only place in the 618 stored slides where the frame
+    // meets a pre-existing fault, and it is a box overlap on a slide that is
+    // already reported broken rather than a new fault on a sound one — which
+    // is why the count moved by exactly one and relayableFaults did not.
+    A46(g.faults.length === 3 && saysOff && saysOverlap,
       `46f the slide carries ${g.faults.length} faults of two kinds and relays ${heroNotes.length}:`
       + ` ${JSON.stringify(heroNotes)}`);
 
@@ -9188,7 +9213,7 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     console.log = ((...a: any[]) => { logged.push(a.join(" ")); }) as any;
     try { logDeckGeometry(g, "draft"); } finally { console.log = realLog; }
     A46(logged.length === 1 && logged[0].indexOf("[SlideGeometry] draft:") >= 0
-      && logged[0].indexOf("2 faults") >= 0 && logged[0].indexOf("off-canvas 1") >= 0
+      && logged[0].indexOf("3 faults") >= 0 && logged[0].indexOf("off-canvas 1") >= 0
       && logged[0].indexOf("worth reporting") >= 0 && logged[0].indexOf(GEOMETRY_SEVERITY) >= 0,
       `46h the rate line does not carry the counts and the severity: ${JSON.stringify(logged)}`);
   }
@@ -9361,6 +9386,1100 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   if (failures === before46) {
     pass(`the three assertions moved whole, measure ${GEOM_ALL.elementsChecked} elements and ${GEOM_ALL.textBoxesChecked}`
       + ` boxes identically through both routes, catch a live off-canvas defect, and warn rather than block`);
+  }
+
+  /* 47. THE DECK FRAME, THE DENSITY PRESET AND THE THREE PRIMITIVES.
+   *
+   * Stage 2 of docs/PLAN-slides-creative-2026-09.md. What makes this section
+   * worth its length is that most of what it asserts is invisible to every
+   * other check in this file AND to lib/slides/validate.ts:
+   *
+   *  - A FRAME RULE IS A RECT, so the overlap sweep never compares it with
+   *    anything: it compares text with text. A hairline drawn straight through
+   *    a title would be reported by nothing at all. (d) measures the ink.
+   *  - A PRESET IS A LOOKUP, so a wrong number in it is not a wrong line of
+   *    code. (a) states the two constraints the rhythm was solved on, as
+   *    arithmetic over the repo's own drawnTextHeight, rather than restating
+   *    158.40 in a second place where it can agree with itself and be wrong.
+   *  - THE SECOND PRESET HAS NO PRODUCTION CALLER YET, which is exactly the
+   *    condition under which a thing rots. (i) builds all 29 layouts at it.
+   *  - A BAND THAT LOSES A FIFTH OF ITS HEIGHT breaks the blocks that were
+   *    measured in absolute points against the old one, and it breaks them at
+   *    the CAP rather than in the middle. (j) drives the two that were found
+   *    that way, at the cap, at both presets.
+   *
+   * THE FIXTURE IS PART OF THE ASSERTION, and that is the lesson this section
+   * cost. Its first version wrote seven of the twenty-nine layouts in payload
+   * shapes SlideInput does not declare, so those slides drew nothing but the
+   * shared chrome and every sweep over them measured a blank page — while the
+   * bottom rule was, on live decks, drawn along the baseline of the chart
+   * source credit the fixture had no way to produce. Every sweep below now
+   * asserts that the slide it is about to measure drew its own LAYOUT first.
+   *
+   * And the regression bar for the whole stage is in (b): read is the default,
+   * every deck ever built is a read deck, and the 618 stored slides are how it
+   * is proved. What the corpus cannot be asked in a script with no network is
+   * asserted here on the same numbers the corpus run measured.
+   *
+   * MUTATION LOG (detached worktree, 2026-09-17). Two rounds. The first is
+   * Stage 2's own, twenty-one mutations with twenty killed; the second is this
+   * one, after review found that three of those assertions were passing over a
+   * live defect. Every entry from the first round was re-run against the
+   * rewritten checks and all seven that touch them still die; they are kept
+   * below because the reasons are still the reasons.
+   *
+   * ROUND TWO — the review, and the three entries that matter most are the
+   * ones where a GREEN CHECK WAS THE BUG.
+   *  - KILLED (47d): frameRequests stops measuring the page before it draws a
+   *    rule (bandIsClear made unconditionally true). Eleven boxes struck across
+   *    the two presets, including both charts' source lines and `feature`'s
+   *    body. THIS IS THE DEFECT THAT SHIPPED: at the default density the bottom
+   *    rule was drawn along the baseline of the chart source credit on ten of
+   *    the 618 stored slides in nine of thirty-seven decks, all real client
+   *    work, and the check written to prevent exactly that passed — because it
+   *    asserted the rule's BAND was empty and drove the claim with a fixture
+   *    that drew no chart.
+   *  - KILLED (47d, the same defect from the other end): textBox stops writing
+   *    to the ink ledger, so the frame has nothing to measure.
+   *  - KILLED (47d): the fixture reverted to the payload shapes the builder
+   *    does not read — `chart.categories`/`series[].values`, `venn.sets[].name`.
+   *    Four layouts immediately report drawing nothing but the shared chrome.
+   *    The previous fixture wrote seven layouts that way and nothing noticed,
+   *    which is the "check that silently tests NOTHING" this repo already has
+   *    a memory note about.
+   *  - KILLED (47d): hairlineInk ignores the ground, so every rule on a dark
+   *    slide is #707070 on navy at 2.69:1. The TOKEN assertion below always
+   *    caught a wrong token; nothing caught the token being right and the
+   *    drawing not using it until the ink was read off the emitted requests.
+   *  - KILLED (47d): the folio loses its dark-ground ink — brand blue on navy
+   *    at 2.39:1, and on a section divider blue on blue at 1.00:1, on 95 of the
+   *    618 stored slides. Same asymmetry, same fix.
+   *  - KILLED (47d): the section divider given its hairlines back. Its ground
+   *    is brand blue, where the dark-ground rule reads 2.06:1 — and no alpha
+   *    fixes it, because fully opaque the same grey is 4.68:1 on blue. Found by
+   *    the ink read-back on its first run, not by reasoning.
+   *  - KILLED (47d): only the TOP rule stops measuring. Reached by a
+   *    90-character eyebrow, which wraps onto `present`'s top rule.
+   *  - KILLED (47j): the layers ladder loses its terminal band drop. Five bands
+   *    of cells then run 22pt off the bottom of the page at `present`, taking
+   *    the "omitted to fit" line with them — the admission that content was
+   *    lost is itself the content that cannot be read.
+   *  - KILLED (47j): the layers admission stops naming the bands it dropped.
+   *    Asserted on the string, because a note-free build passes every geometric
+   *    check there is.
+   *  - KILLED (47j, ON THE SECOND ATTEMPT): the cards strip stops being bounded
+   *    by the band. The first fixture used a two-line standfirst and the
+   *    mutation SURVIVED: the strip only leaves the page once cardsH's 80pt
+   *    floor wins, and the floor only wins once the card row starts low enough,
+   *    which at `present` takes three lines of 14pt standfirst. A capacity
+   *    cliff needs a fixture that reaches the cliff.
+   *  - KILLED (check 46, not 47): INK_LEAD loosened from 1.38 to 1.2, re-run
+   *    because the ink measurement MOVED into generate.ts so that the builder
+   *    and the validator cannot own two rulers. Check 46's own coverage of it
+   *    is intact.
+   *  - SURVIVED (47d): the ink ledger's `caps` flag falsified. Provably
+   *    unreachable rather than untested: every caps style in TYPE that can
+   *    appear on a framed page is BOLD, and the bold branch measures the
+   *    already-upper-cased string glyph by glyph, so the flag decides nothing.
+   *    The only two non-bold caps styles are the cover and closing kickers, and
+   *    neither of those pages carries a frame. The flag stays as the correct
+   *    input for the day that changes.
+   *
+   * ROUND ONE — Stage 2's own, all re-verified against the rewritten checks.
+   *  - KILLED (47d): read given a top hairline at the lockup's edge. Read's
+   *    title box reaches y=45.60, above the rule. Now caught by the assertion
+   *    that read has no top rule at all rather than by the ink sweep — with the
+   *    rules yielding, a rule that would strike a title is simply not drawn,
+   *    which is the fix working rather than the check weakening.
+   *  - KILLED (checks 1 and 2, not 47): footerLineWidth made the identity, so
+   *    the folio is laid over the running head and the photo credit. 137
+   *    failures; 46 new box overlaps on the 618 stored slides.
+   *  - KILLED (47b): read given the rung set [20, 18, 16, 14], which reads like
+   *    "today's behaviour written down" and is not — 48 of 499 stored titles
+   *    land on 19, 17 or 15.
+   *  - KILLED (47a): present's bodyY set to 151.80 and to 160.80, the two
+   *    values either side of the solve. One loses the twelve-line band, the
+   *    other loses the two-line title, and the assertions name which.
+   *  - KILLED (47c, ON THE SECOND ATTEMPT): fitHeading's rung branch deleted.
+   *    The first version asserted on ONE title, and chose one so long it hit
+   *    the FLOOR — where the rung ladder and the one-point step agree — so the
+   *    mutation survived. A sweep across title lengths lands on 29, 28 and 27.
+   *    A ladder assertion has to sample the ladder, not one rung of it.
+   *  - KILLED (47f): the preview reading any page-properties request as its
+   *    ground. hex() of an absent rgbColor is #000000, so every light slide in
+   *    the chat preview and the PDF goes black while the deck itself is fine.
+   *  - KILLED (47f): the paper sheet laid under every ground, including navy.
+   *  - KILLED (47h and 47i): onBand stopped scaling. The image grid's first row
+   *    is then drawn 13.2pt over the foot of the title box at present and
+   *    STAGE 1'S VALIDATOR REPORTS NOTHING, because those cells are createImage.
+   *  - KILLED (47e, and check 20g): the folio stamped as a constant rather than
+   *    counted from the builder's index — which is the exact defect that had
+   *    the page number removed in the first place.
+   *  - KILLED (47g): the hung dot's offset zeroed, so it is drawn on the glyph
+   *    it marks instead of hanging into the gutter.
+   *  - KILLED (47g, ON THE SECOND ATTEMPT): the pill's label changed to the
+   *    source deck's #FFD966. The first version computed textOn(PILL.fill)
+   *    here and compared THAT — asserting the rule was written, not that the
+   *    pill uses it — and stayed green. It now reads the ink off the emitted
+   *    box. This is the repo's own recorded failure mode and it reappeared in
+   *    new code within the hour.
+   *  - KILLED (47c2, ON THE SECOND ATTEMPT): the shared title call reverted to
+   *    its own ceiling and TITLE_MIN_SIZE. fitHeading anchors the BOTTOM of the
+   *    block, so a title that fits does not move when the ceiling changes — the
+   *    short fixture saw nothing. It takes a title long enough to fill the
+   *    block, and then the floor shows up as an 18pt title over a 14pt
+   *    standfirst.
+   *  - KILLED (47c2): withDensity's finally removed, and separately the whole
+   *    withDensity wrapper removed from buildSlideRequests. The first leaks the
+   *    preset into every deck built after a throw; the second means the preset
+   *    is never applied at all.
+   *  - KILLED (47a, 47c2, 47i and check 46): present's body size, its title
+   *    colour and the frame itself removed.
+   *  - SURVIVED (47b): onBand's read identity short-circuit deleted. It is
+   *    PROVABLY undetectable: searched over 400,000 probes across the band
+   *    there is no y for which bodyY + (y − bodyY) differs from y, and there
+   *    cannot be — y and bodyY are within a factor of two, so the subtraction
+   *    is exact and the addition recovers it. The branch is kept as the
+   *    statement of the guarantee the regression proof rests on, not as a fix
+   *    for a float that was ever observed to move; its header says so.
+   */
+  const before47 = failures;
+  console.log(`\n47. The deck frame, the density preset, and the three primitives`);
+  const A47 = (ok: boolean, m: string) => { if (!ok) fail(m); };
+  {
+    const lum = (hex: string) => {
+      const h = hex.replace("#", "");
+      const f = (c: number) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+      const v = [0, 2, 4].map((i) => f(parseInt(h.substr(i, 2), 16) / 255));
+      return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+    };
+    const ratio = (a: string, b: string) => {
+      const x = lum(a), y = lum(b);
+      return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+    };
+    const R = DENSITY.read, P = DENSITY.present;
+
+    // (a) THE RHYTHM IS A SOLVE, AND THIS IS THE SOLVE RATHER THAN THE ANSWER.
+    //
+    // 158.40 is not a taste. It is the only bodyY that satisfies both of the
+    // constraints below at once, and they pull in opposite directions: the
+    // title wants it LOW and the body wants it HIGH. Asserting the number
+    // would pin a copy of it; asserting the constraints fails the day either
+    // end of the scale moves and the number stops being the answer.
+    //
+    // Measured with the builder's own drawnTextHeight, not a second estimator.
+    A47(Math.abs(P.bandHeight - drawnTextHeight(12, P.type.body)) < 1e-9,
+      `47a the present band is ${P.bandHeight.toFixed(2)}pt, which is not twelve lines of ${P.type.body}pt body` +
+      ` (${drawnTextHeight(12, P.type.body).toFixed(2)}pt) — bodyY has been moved without re-solving it`);
+    const presentRoom = P.bodyY - 12 - P.titleMinTop;      // TITLE_GAP is 12
+    const twoLines = drawnTextHeight(2, P.type.slideTitle);
+    A47(presentRoom >= twoLines,
+      `47a a two-line ${P.type.slideTitle}pt title needs ${twoLines.toFixed(2)}pt and the present title block has` +
+      ` ${presentRoom.toFixed(2)}pt — 56% of real titles wrap at this size, so the ladder would demote the majority case`);
+    // And the cushion is deliberate: at exactly equal the comparison is a
+    // floating-point equality, and the corpus run that discovered this watched
+    // two-line titles at 30pt fall from 430 to 205 on the same 472 titles.
+    A47(presentRoom > twoLines,
+      `47a the present title block is EXACTLY two lines with no cushion, which is a float equality the ladder loses`);
+    A47(Math.abs(P.titleHeight - drawnTextHeight(1, P.type.slideTitle)) < 1e-9,
+      `47a present.titleHeight ${P.titleHeight} is not drawnTextHeight(1, ${P.type.slideTitle}) =` +
+      ` ${drawnTextHeight(1, P.type.slideTitle).toFixed(2)}`);
+    // The band's FLOOR is pinned by the takeaway bar and the footer, so every
+    // point bodyY gains comes out of the band one for one. A preset that moved
+    // the floor would be a preset that draws over the footer.
+    A47(R.bodyY + R.bandHeight === P.bodyY + P.bandHeight && R.bodyY + R.bandHeight === BAND_BOTTOM,
+      `47a the two presets do not share a band floor: read ends at ${(R.bodyY + R.bandHeight).toFixed(2)},` +
+      ` present at ${(P.bodyY + P.bandHeight).toFixed(2)}, BAND_BOTTOM is ${BAND_BOTTOM.toFixed(2)}`);
+    A47(P.bodyY > R.bodyY && P.bandHeight < R.bandHeight,
+      `47a the present preset does not actually cost the band anything, which means it is not the denser one`);
+
+    // (b) READ IS THE DEFAULT, AND UNCHANGED.
+    //
+    // The floats, not values that round to them: these numbers reach the
+    // emitted request, and the whole regression proof for this stage is that
+    // 618 stored slides rebuild to the same stream.
+    A47(DEFAULT_DENSITY === "read", `47b the default density is ${DEFAULT_DENSITY}, and every stored deck is a read deck`);
+    A47(densityOf(undefined) === "read" && densityOf({} as SlideInput) === "read"
+      && densityOf({ density: "nonsense" } as any) === "read",
+      `47b a slide with no density, or one this build does not know, is not built at read`);
+    withDensity("read", () => {
+      A47(GRID.bodyY === 1.44 * 72 && GRID.bandHeight === 3.76 * 72 && GRID.titleHeight === 0.63 * 72,
+        `47b read's rhythm moved: bodyY ${GRID.bodyY}, band ${GRID.bandHeight}, titleHeight ${GRID.titleHeight}`);
+      A47(TYPE.body.size === 10 && TYPE.standfirst.size === 11.5 && TYPE.slideTitle.size === 20
+        && TYPE.slideTitle.color === COLOR.navy,
+        `47b read's type moved: body ${TYPE.body.size}, standfirst ${TYPE.standfirst.size},` +
+        ` title ${TYPE.slideTitle.size}/${TYPE.slideTitle.color}`);
+      // The four blocks that fix their geometry in absolute points are the
+      // IDENTITY at read, not merely close to it — see onBand's header.
+      A47(TIMELINE.dateY === 2.25 * 72 && TIMELINE.detailY === 3.52 * 72 && TIMELINE.detailHeight === 0.95 * 72
+        && TIMELINE_PARALLEL.bandY === 2.46 * 72 && IMAGE.gridY === 1.85 * 72 && LOGO_WALL.y === 1.9 * 72,
+        `47b a block that scales onto the band no longer returns read's own float at read`);
+    });
+    // READ'S LADDER STEPS BY ONE POINT, and must keep doing so. Rungs of
+    // [20, 18, 16, 14] would read as "today's behaviour written down" and are
+    // not: driven over the 499 stored titles that reach the shared title
+    // block, 48 of them land on 19, 17 or 15. This drives the seam directly.
+    A47(R.titleRungs === undefined,
+      `47b read has been given a rung set, which moves 48 of 499 stored titles onto a different size`);
+    withDensity("read", () => {
+      const odd = fitHeading("A title that is long enough to need exactly one step down here", TYPE.slideTitle,
+        GRID.proseWidth, { bottom: GRID.bodyY - 12, minTop: R.titleMinTop, minHeight: GRID.titleHeight });
+      A47(odd.style.size % 2 === 1 || odd.style.size === 20,
+        `47b precondition: this title lands on ${odd.style.size}pt, an even size, so it pins nothing about the step`);
+    });
+
+    // (c) THE LADDER AT PRESENT: four visible sizes, and a floor above the
+    // standfirst.
+    //
+    // The floor is the assertion that matters. TITLE_MIN_SIZE is 14, which at
+    // this preset IS the standfirst — so a title that stepped to the default
+    // floor would be drawn SMALLER than the line beneath it, and nothing
+    // anywhere would say so. Forty-one of 472 titles did exactly that in the
+    // measurement that produced this preset.
+    const rungs = P.titleRungs || [];
+    A47(rungs.length >= 2, `47c the present preset has no rung set`);
+    A47(rungs[0] === P.type.slideTitle,
+      `47c the ladder starts at ${rungs[0]}pt but the title token is ${P.type.slideTitle}pt`);
+    A47(rungs[rungs.length - 1] === P.titleMinSize,
+      `47c the last rung is ${rungs[rungs.length - 1]} but the floor is ${P.titleMinSize}`);
+    let descending = true;
+    for (let i = 1; i < rungs.length; i++) if (rungs[i] >= rungs[i - 1]) descending = false;
+    A47(descending, `47c the rungs are not strictly descending: ${rungs.join(", ")}`);
+    A47(P.titleMinSize > P.type.standfirst,
+      `47c a present title may shrink to ${P.titleMinSize}pt, which is not above its own ${P.type.standfirst}pt standfirst`);
+    A47(P.titleMinSize >= DENSITY.read.type.slideTitle,
+      `47c present's worst title (${P.titleMinSize}pt) is smaller than read's best (${DENSITY.read.type.slideTitle}pt)`);
+    // Every rung has to FIT, or it is a rung the ladder steps onto and still
+    // overruns from.
+    withDensity("present", () => {
+      const room = Math.max(GRID.titleHeight, GRID.bodyY - 12 - P.titleMinTop);
+      for (let i = 0; i < rungs.length; i++) {
+        A47(drawnTextHeight(1, rungs[i]) <= room,
+          `47c rung ${rungs[i]}pt needs ${drawnTextHeight(1, rungs[i]).toFixed(2)}pt on one line and the block has ${room.toFixed(2)}`);
+      }
+      // AND THE LADDER ACTUALLY STOPS ON THEM. Swept across title lengths
+      // rather than asserted on one, because one title is not enough: the
+      // first version of this used a title so long it hit the FLOOR, where the
+      // rung ladder and the one-point step agree, and deleting the rungs
+      // branch in fitHeading left it green. A sweep lands on every rung and on
+      // the sizes between them, and 29, 28 and 27 are not rungs.
+      const seen: Record<number, number> = {};
+      for (let n = 24; n <= 170; n += 2) {
+        const t = "Where the programme goes next and what it costs to run it now ".repeat(4).slice(0, n);
+        const h = fitHeading(t, TYPE.slideTitle, GRID.proseNarrow,
+          { bottom: GRID.bodyY - 12, minTop: P.titleMinTop, minHeight: GRID.titleHeight,
+            minSize: P.titleMinSize, rungs: P.titleRungs });
+        seen[h.style.size] = (seen[h.style.size] || 0) + 1;
+      }
+      const landed = Object.keys(seen).map(Number).sort((a, b) => b - a);
+      A47(landed.length >= 3,
+        `47c precondition: the sweep only ever reached ${landed.join("/")}pt, so it pins nothing about the rungs`);
+      for (let i = 0; i < landed.length; i++) {
+        A47(rungs.indexOf(landed[i]) >= 0,
+          `47c a title landed on ${landed[i]}pt, which is not one of the rungs (${rungs.join(", ")})` +
+          ` — the ladder is stepping a point at a time, which is eleven sizes nobody can tell apart`);
+      }
+    });
+
+    // (c2) AND THE PRESET'S TYPE REACHES THE PAGE.
+    //
+    // Read back off the emitted boxes, not off the token: a preset is a lookup
+    // table, and a lookup table nothing looks up is a table that can hold any
+    // value at all and never be wrong. Six of the seven tokens are driven here.
+    // The seventh, `caption`, has no reader anywhere in the builder — the
+    // caption-shaped tokens in use are gridCaption, stageCaption and source —
+    // so it is carried in the preset for completeness and asserted absent
+    // rather than pretended to be wired.
+    {
+      const drawnType = (name: Density, layout: SlideLayout) => {
+        const s: SlideInput = { layout, title: "A title", subtitle: "A standfirst.", body: "One\nTwo", density: name };
+        const els = previewSlideFrom(s, buildSlideRequests(s, 2, `c47${name}`) as any[]).elements;
+        const pick = (t: string) => els.filter((e) => e.kind === "text" && String(e.text || "").indexOf(t) === 0)[0];
+        return { title: pick("A title"), stand: pick("A standfirst"), body: pick("One") };
+      };
+      const presets2: Density[] = ["read", "present"];
+      for (let i = 0; i < presets2.length; i++) {
+        const name = presets2[i], d = DENSITY[name];
+        const light = drawnType(name, "content"), dark = drawnType(name, "dark-index");
+        A47(!!light.title && !!light.stand && !!light.body && !!dark.title && !!dark.body,
+          `47c2 ${name}: precondition — a box this asserts on was not drawn at all`);
+        A47(light.title.size === d.type.slideTitle && light.stand.size === d.type.standfirst
+          && light.body.size === d.type.body,
+          `47c2 ${name} on a light ground draws ${light.title.size}/${light.stand.size}/${light.body.size}pt` +
+          ` where the preset says ${d.type.slideTitle}/${d.type.standfirst}/${d.type.body}`);
+        A47(dark.title.size === d.type.slideTitleDark && dark.body.size === d.type.bodyDark,
+          `47c2 ${name} on a dark ground draws ${dark.title.size}/${dark.body.size}pt` +
+          ` where the preset says ${d.type.slideTitleDark}/${d.type.bodyDark}`);
+        // THE TITLE'S INK. Every title in the handover deck is brand blue, and
+        // brand.ts's navy came from three other TCE decks — so the colour is
+        // this deck's rather than the brand's, which makes it a preset value.
+        // Read off the drawn box so that a preset holding a colour nothing
+        // uses cannot pass.
+        A47(String(light.title.color || "").replace("#", "").toUpperCase() === d.titleColor.toUpperCase(),
+          `47c2 ${name} draws its title in ${light.title.color} where the preset says #${d.titleColor}`);
+        A47(ratio(d.titleColor, COLOR.offWhite) >= 4.5,
+          `47c2 ${name}'s title ink is ${ratio(d.titleColor, COLOR.offWhite).toFixed(2)}:1 on off-white`);
+        // A dark ground's title is white at BOTH presets: that is a contrast
+        // decision, not a density one.
+        A47(String(dark.title.color || "").replace("#", "").toUpperCase() === COLOR.white,
+          `47c2 ${name} draws its dark-ground title in ${dark.title.color} rather than white`);
+      }
+      A47(DENSITY.present.titleColor !== DENSITY.read.titleColor,
+        `47c2 the two presets set their titles in the same ink, so the blue title is not actually shipping`);
+
+      // AND THE TITLE BLOCK'S OWN CEILING AND FLOOR, driven through the
+      // builder rather than through fitHeading, because the preset has to
+      // reach the CALL SITE and not merely exist.
+      //
+      // fitHeading anchors the BOTTOM of the block, so a title that fits does
+      // not move when the ceiling changes: only a title long enough to fill
+      // the block can see the difference. That is what this one is for, and it
+      // is why the short title above cannot stand in for it — the first
+      // version of this section asserted only on a short title and stayed
+      // green with the call site reading its own ceiling and TITLE_MIN_SIZE.
+      const huge = "Where the programme goes next, what it costs to run, who owns each part of it," +
+        " and what the board is being asked to decide before the end of the quarter";
+      const tall: SlideInput = { layout: "content", title: huge, body: "One\nTwo",
+        image: { query: "a picture that narrows the measure" }, density: "present" };
+      const tallEl = previewSlideFrom(tall, buildSlideRequests(tall, 2, "c47t") as any[])
+        .elements.filter((e) => e.kind === "text" && String(e.text || "").indexOf("Where the programme") === 0)[0];
+      A47(!!tallEl, `47c2 precondition: the long title was not drawn, so its ceiling and floor are untested`);
+      A47(!!tallEl && tallEl.y >= (FRAME.topRuleY as number) + FRAME.thickness - 1e-9,
+        `47c2 a full-height present title starts at ${tallEl ? tallEl.y.toFixed(2) : "?"},` +
+        ` on top of the frame's own top rule at ${FRAME.topRuleY}`);
+      A47(!!tallEl && (tallEl.size || 0) >= DENSITY.present.titleMinSize,
+        `47c2 a long present title was drawn at ${tallEl ? tallEl.size : "?"}pt, below the preset's` +
+        ` ${DENSITY.present.titleMinSize}pt floor — and its own standfirst is ${DENSITY.present.type.standfirst}pt`);
+
+      // THE PRESET IS SCOPED TO ONE BUILD. Module state set around a
+      // synchronous build is only safe if it is put back, and a leak shows up
+      // as the NEXT deck being drawn at the wrong density — which nothing else
+      // here would notice, because every other assertion sets its own.
+      const afterPresent = drawnType("read", "content");
+      A47(afterPresent.body.size === DENSITY.read.type.body
+        && afterPresent.title.size === DENSITY.read.type.slideTitle,
+        `47c2 a read slide built after a present one came out at ${afterPresent.title.size}/${afterPresent.body.size}pt` +
+        ` — the density leaked out of the build that set it`);
+      let threw = false;
+      try { withDensity("present", () => { throw new Error("x"); }); } catch { threw = true; }
+      A47(threw && TYPE.body.size === DENSITY.read.type.body,
+        `47c2 a build that threw left the density set to present for everything after it`);
+    }
+
+    // (d) THE FRAME'S RULES LAND IN BANDS NOTHING WRITES IN — measured as INK,
+    //     which is the only way to ask the question.
+    //
+    // A rule is a rect, so lib/slides/validate.ts will never compare it with a
+    // text box: the overlap sweep compares text with text and would stay green
+    // with a hairline drawn through every title in the deck. This is the one
+    // assertion standing between the frame and that.
+    //
+    // The exclusion is narrow and self-describing: ink that has ALREADY left
+    // its own box is ink the overrun check is reporting, and those are the two
+    // pre-existing faults this stage is explicitly not fixing (the hero stat
+    // that 9aa9c10 named, and `feature`'s body). Excluding by "the validator
+    // already complains about this slide" rather than by layout name is what
+    // keeps a NEW layout that writes into the band from inheriting the excuse.
+    // THE FIXTURE EVERY SWEEP BELOW DRIVES, and it is deliberately RICH.
+    //
+    // Its first version was written from memory of the field names rather than
+    // from SlideInput, and seven of the twenty-nine layouts — including all
+    // three charts — quietly drew nothing but the shared chrome, because the
+    // payload shapes were ones the builder does not read: `chart.categories`
+    // with `series[].values` where SlideInput declares `series[].points[]`,
+    // `layers[].name/detail` where layersRequests filters on `title`/`cells`,
+    // `venn.sets[].name` for `.label`, `hub.centre/nodes` for `.title/.groups`.
+    // A sweep that builds a page and measures nothing on it is the failure this
+    // repo already has a memory note about, and it is what let the bottom rule
+    // ship drawn through the chart source line on ten real slides.
+    //
+    // So: every field in the shape the builder actually reads, every layout at
+    // or near what it will really be handed, and a `chart.source` long enough
+    // to reach the foot of the page, because that one string is the box the
+    // bottom rule strikes on live traffic. The precondition under `ownIds`
+    // below is what stops it silently rotting again.
+    const CHART_POINTS = (scale: number) => {
+      const months = ["January", "February", "March", "April", "May", "June", "July", "August"];
+      const out: { label: string; value: number }[] = [];
+      for (let i = 0; i < months.length; i++) out.push({ label: months[i], value: 10 + i * 7 * scale });
+      return out;
+    };
+    const FRAME_FIX = (layout: SlideLayout): SlideInput => ({
+      // A divider draws its index numeral only from a NUMERIC eyebrow, which
+      // is the one field on this fixture that has to differ by layout.
+      layout, eyebrow: layout === "section" ? "3" : "Eyebrow", title: LONG,
+      subtitle: "A standfirst that also runs long enough to wrap onto a second line here.",
+      body: "One point that runs on\nTwo points that run on\nThree points that run on",
+      bodyRight: "Alpha runs on too\nBeta runs on too\nGamma runs on too",
+      note: "Why this matters: the figures only move once the audience is the unit of planning.",
+      columns: { left: "Today", right: "After" },
+      tones: ["coral", "teal"],
+      stats: [{ value: "64%", label: "Installed capacity", detail: "of the estate" },
+        { value: "3.1x", label: "Answer share", detail: "against the field" },
+        { value: "18", label: "Prompts tracked", tone: "teal" },
+        { value: "7", label: "Publishers cited", tone: "grey" }],
+      cards: [{ marker: "01", tone: "blue", title: "Move one", body: "What happens here, and what it changes." },
+        { marker: "02", tone: "teal", title: "Move two", body: "What happens here, and what it changes." },
+        { marker: "03", tone: "coral", title: "Move three", body: "What happens here, and what it changes." }],
+      strip: { title: "In detail", items: [{ title: "First", text: "A short gloss." },
+        { title: "Second", text: "A short gloss." }, { title: "Third", text: "A short gloss." }] },
+      milestones: [{ date: "Q1 26", title: "Setup", detail: "Baseline collection begins." },
+        { date: "Q2 26", title: "Run", detail: "Ongoing through the quarter." },
+        { date: "Q3 26", title: "Review", detail: "The board sees the first read." }],
+      table: { columns: ["Workstream", "Owner", "Status"], rows: [["Measurement", "TCE", "Running"],
+        ["Publishing", "Client", "Running"], ["Distribution", "TCE", "Planned"],
+        ["Review", "Client", "Planned"], ["Handover", "TCE", "Not started"], ["Close", "Client", "Not started"]] },
+      chart: {
+        series: [{ name: "Answer share", points: CHART_POINTS(1) },
+          { name: "Field average", points: CHART_POINTS(0.6) }],
+        source: "Ahrefs Site Explorer AI responses count, 20 August 2026, against the tracked prompt set",
+      },
+      logos: [{ name: "Siemens" }, { name: "Amrize" }, { name: "Holcim" }],
+      images: [{ query: "one", caption: "The first" }, { query: "two", caption: "The second" },
+        { query: "three", caption: "The third" }],
+      resolvedImages: [{ url: "a.jpg", caption: "The first" }, { url: "b.jpg", caption: "The second" },
+        { url: "c.jpg", caption: "The third" }],
+      image: { query: "a photograph that narrows the measure" },
+      resolvedImage: PHOTO_PALE,
+      quote: { text: "A sentence worth repeating twice, and long enough to wrap.", name: "A Person", role: "A Role" },
+      stages: [{ name: "Stage one", caption: "What happens here." },
+        { name: "Stage two", caption: "And here." }, { name: "Stage three", caption: "And then here." }],
+      layers: [{ title: "Channels", caption: "Where the audience already is.",
+          cells: [{ title: "Search", text: "Organic and paid." }, { title: "Social", text: "Owned and earned." }] },
+        { title: "Content", caption: "What is published into them.",
+          cells: [{ title: "Research", text: "The programme." }, { title: "Editorial", text: "The cadence." }] },
+        { title: "Assistants", caption: "What reads it back to the buyer.", arrow: "up" },
+        { title: "Measurement", caption: "What says whether any of it worked." }],
+      swot: { strengths: ["A strength that runs on"], weaknesses: ["A weakness that runs on"],
+        opportunities: ["An opening that runs on"], threats: ["A threat that runs on"] },
+      matrix: { xAxis: ["Low", "High"], yAxis: ["Low", "High"], quadrants: ["Later", "Do now", "Never", "Maybe"],
+        items: [{ label: "One", x: 0.3, y: 0.7 }, { label: "Two", x: 0.7, y: 0.3, highlight: true },
+          { label: "Three", x: 0.6, y: 0.8 }] },
+      comparison: { columns: ["Today", "After"], rows: [{ label: "Cost", cells: ["yes", "no"] },
+        { label: "Speed", cells: ["no", "yes"] }, { label: "Reach", cells: ["Limited", "Whole estate"] }] },
+      scatter: { xAxis: "Reach", yAxis: "Depth", points: [{ x: 1, y: 2, label: "One", group: "Us" },
+        { x: 3, y: 4, label: "Two", group: "Them" }, { x: 5, y: 1, label: "Three", group: "Us" },
+        { x: 2, y: 5, label: "Four", group: "Them" }] },
+      venn: { sets: [{ label: "Search" }, { label: "Answers" }, { label: "Brand" }], overlap: "Authority" },
+      hub: { title: "The hub", caption: "What it is wired to.", groups: [
+        { name: "Sources", tone: "blue", items: [{ title: "CRM" }, { title: "Analytics" }, { title: "Search" }] },
+        { name: "Surfaces", tone: "teal", items: [{ title: "Site" }, { title: "Assistants" }, { title: "Sales" }] }] },
+      tracks: [{ name: "Measurement", phases: [{ start: "2026-01-01", end: "2026-03-01", label: "Baseline" },
+          { start: "2026-03-01", end: "2026-06-01", label: "Monitor" }] },
+        { name: "Publishing", phases: [{ start: "2026-02-01", end: "2026-05-01", label: "Programme" }] }],
+      panel: { title: "The Content Engine is a combination of", items: [{ title: "Research", text: "Original data." },
+        { title: "Editorial", text: "A house voice." }, { title: "Distribution", text: "Where it lands." }] },
+    } as any);
+
+    /** Content sized for the TIGHTER preset — a short title, one line of
+     *  standfirst, two or three of everything, no takeaway bar. The rich
+     *  fixture above is `read` copy, and pushing `read` copy through a rhythm
+     *  that is 20% shorter and 50% larger is meant to overflow; it says nothing
+     *  about whether the two presets are one geometry. This one does. */
+    const FITS_BOTH = (layout: SlideLayout): SlideInput => ({
+      layout, eyebrow: layout === "section" ? "3" : "Now", title: "The shape of it",
+      subtitle: "One line.", body: "One\nTwo\nThree", bodyRight: "Alpha\nBeta",
+      columns: { left: "Today", right: "After" },
+      stats: [{ value: "64%", label: "Capacity" }, { value: "3x", label: "Share" }],
+      cards: [{ marker: "01", title: "One", body: "Short." }, { marker: "02", title: "Two", body: "Short." }],
+      milestones: [{ date: "Q1", title: "Setup" }, { date: "Q2", title: "Run" }],
+      table: { columns: ["Task", "Owner"], rows: [["One", "TCE"], ["Two", "Client"]] },
+      chart: { series: [{ name: "Share", points: [{ label: "Jan", value: 10 },
+        { label: "Feb", value: 20 }, { label: "Mar", value: 14 }] }] },
+      logos: [{ name: "Siemens" }, { name: "Amrize" }],
+      images: [{ query: "one" }, { query: "two" }],
+      resolvedImages: [{ url: "a.jpg" }, { url: "b.jpg" }],
+      image: { query: "a picture" }, resolvedImage: PHOTO_PALE,
+      quote: { text: "Worth repeating.", name: "A Person" },
+      stages: [{ name: "One" }, { name: "Two" }],
+      layers: [{ title: "Channels" }, { title: "Content" }, { title: "Assistants" }],
+      swot: { strengths: ["A"], weaknesses: ["B"], opportunities: ["C"], threats: ["D"] },
+      matrix: { xAxis: ["Low", "High"], yAxis: ["Low", "High"], items: [{ label: "One", x: 0.3, y: 0.7 }] },
+      comparison: { columns: ["Today", "After"], rows: [{ label: "Cost", cells: ["yes", "no"] }] },
+      scatter: { xAxis: "Reach", yAxis: "Depth", points: [{ x: 1, y: 2, label: "One" }, { x: 3, y: 4, label: "Two" }] },
+      venn: { sets: [{ label: "A" }, { label: "B" }] },
+      hub: { title: "Hub", groups: [{ items: [{ title: "One" }, { title: "Two" }] }] },
+      tracks: [{ name: "Track", phases: [{ start: "2026-01-01", end: "2026-03-01", label: "Phase" }] }],
+      panel: { title: "Panel", items: [{ title: "One", text: "Short." }] },
+    } as any);
+
+    /** The object ids the shared header, footer and frame draw on every page.
+     *  Everything else on a slide belongs to its layout. */
+    const CHROME = ["eyebrow", "title", "sub", "noteBar", "noteTxt", "logo", "ftl", "frTop", "frBot", "ftn"];
+    const ownIds = (reqs: any[]): string[] => {
+      const out: string[] = [];
+      for (let i = 0; i < reqs.length; i++) {
+        const c = reqs[i].createShape || reqs[i].createImage || reqs[i].createTable;
+        if (!c) continue;
+        const raw = String(c.objectId);
+        const suffix = raw.slice(raw.lastIndexOf("_") + 1);
+        if (CHROME.indexOf(suffix) < 0 && CHROME.indexOf(suffix.replace(/[0-9]+$/, "")) < 0) out.push(suffix);
+      }
+      return out;
+    };
+    const hexOf = (c: any): string => {
+      const two = (v: number | undefined) => {
+        const h = Math.round(Math.max(0, Math.min(1, v || 0)) * 255).toString(16).toUpperCase();
+        return h.length < 2 ? `0${h}` : h;
+      };
+      return `${two(c && c.red)}${two(c && c.green)}${two(c && c.blue)}`;
+    };
+    /** `fg` at `alpha` over `bg`, so a rule's contrast is measured at the
+     *  strength it is actually drawn at rather than at full opacity. */
+    const blend = (fg: string, bg: string, alpha: number): string => {
+      const f = fg.replace("#", ""), b = bg.replace("#", "");
+      let out = "";
+      for (let i = 0; i < 3; i++) {
+        const v = Math.round(alpha * parseInt(f.substr(i * 2, 2), 16) + (1 - alpha) * parseInt(b.substr(i * 2, 2), 16));
+        const h = v.toString(16).toUpperCase();
+        out += h.length < 2 ? `0${h}` : h;
+      }
+      return out;
+    };
+    /** The frame's own ink, read back off the emitted requests. */
+    const frameInk = (reqs: any[]) => {
+      const rules: { id: string; y: number; fill: string; alpha: number }[] = [];
+      const at: { [id: string]: number } = {};
+      let folio: { color: string; size: number } | null = null;
+      for (let i = 0; i < reqs.length; i++) {
+        const c = reqs[i].createShape;
+        if (c && /_(frTop|frBot)$/.test(String(c.objectId))) at[String(c.objectId)] = c.elementProperties.transform.translateY;
+        const u = reqs[i].updateShapeProperties;
+        if (u && /_(frTop|frBot)$/.test(String(u.objectId))) {
+          const f = u.shapeProperties?.shapeBackgroundFill?.solidFill;
+          rules.push({
+            id: String(u.objectId).slice(String(u.objectId).lastIndexOf("_") + 1),
+            y: at[String(u.objectId)], fill: hexOf(f?.color?.rgbColor),
+            alpha: typeof f?.alpha === "number" ? f.alpha : 1,
+          });
+        }
+        const t = reqs[i].updateTextStyle;
+        if (t && /_ftn$/.test(String(t.objectId))) {
+          folio = { color: hexOf(t.style?.foregroundColor?.opaqueColor?.rgbColor), size: t.style?.fontSize?.magnitude };
+        }
+      }
+      return { rules, folio };
+    };
+
+    // (d) THE FRAME'S RULES NEVER STRIKE A LINE OF TYPE, measured as INK on the
+    //     rules the builder ACTUALLY DREW.
+    //
+    // A rule is a rect, so lib/slides/validate.ts will never compare it with a
+    // text box: the overlap sweep compares text with text and would stay green
+    // with a hairline drawn through every title in the deck. This is the one
+    // assertion standing between the frame and that.
+    //
+    // THE FIRST VERSION OF THIS PASSED WHILE THE DEFECT WAS LIVE, and why is
+    // worth more than the assertion. It asserted that the rules' BANDS were
+    // empty — which the bottom one is not: a chart's source line is placed from
+    // where its own plot ends, so it reaches 378.3 and the rule at 376 is drawn
+    // along its baseline. The sweep did not see it because the fixture's chart
+    // was written in a shape the builder does not read and had no `source` at
+    // all. Ten of the 618 stored slides shipped that way, in nine of the
+    // thirty-seven decks, at the DEFAULT density.
+    //
+    // So the builder measures the page before it draws a rule, and this
+    // measures what it drew. The band is no longer assumed anywhere.
+    const PRESETS: Density[] = ["read", "present"];
+    for (let pi = 0; pi < PRESETS.length; pi++) {
+      const name = PRESETS[pi];
+      let crossings = 0, drew = 0, yielded = 0;
+      for (let li = 0; li < LAYOUTS.length; li++) {
+        const layout = LAYOUTS[li];
+        const slide = FRAME_FIX(layout);
+        slide.density = name;
+        const reqs = buildSlideRequests(slide, 3, "f47") as any[];
+        const page = previewSlideFrom(slide, reqs);
+        // THE PRECONDITION THAT WOULD HAVE CAUGHT THE INERT FIXTURE: this slide
+        // has to have drawn its LAYOUT, not just a page with chrome on it.
+        A47(ownIds(reqs).length > 0,
+          `47d ${name}/${layout}: the fixture drew nothing but the shared chrome, so every sweep` +
+          ` over it measures a blank page — check the payload shape against SlideInput`);
+        const ink = frameInk(reqs);
+        const bars: number[] = [];
+        for (let r = 0; r < ink.rules.length; r++) bars.push(ink.rules[r].y);
+        if (ink.rules.some((r) => r.id === "frBot")) drew++; else yielded++;
+        for (let e = 0; e < page.elements.length; e++) {
+          const el = page.elements[e];
+          if (el.kind !== "text" || !el.text) continue;
+          const bottom = inkBottom(el);
+          for (let b = 0; b < bars.length; b++) {
+            if (el.y >= bars[b] + FRAME.thickness || bottom <= bars[b]) continue;
+            crossings++;
+            fail(`47d ${name}/${layout}: the frame's rule at y=${bars[b]} is drawn through ink at`
+              + ` ${el.y.toFixed(1)}..${bottom.toFixed(1)} — "${String(el.text).slice(0, 26)}"`);
+          }
+        }
+        // AND THE FRAME'S OWN INK READS, on the ground it is drawn on and at
+        // the strength it is drawn at. The token assertions below catch a
+        // wrong token; these catch the token being right and the drawing not
+        // using it, which is this repo's own recorded failure mode and which
+        // every one of them survived until it was asked this way.
+        const style = slideStyle(slide, 3);
+        const ground = style.background || (style.onDark ? COLOR.navy : COLOR.offWhite);
+        if (style.background !== null) {
+          for (let r = 0; r < ink.rules.length; r++) {
+            const shown = blend(ink.rules[r].fill, ground, ink.rules[r].alpha);
+            A47(ratio(shown, ground) >= 3,
+              `47d ${name}/${layout}: the ${ink.rules[r].id} rule draws #${ink.rules[r].fill} at alpha` +
+              ` ${ink.rules[r].alpha} on #${ground}, which reads ${ratio(shown, ground).toFixed(2)}:1`);
+          }
+          if (ink.folio) {
+            A47(ratio(ink.folio.color, ground) >= 4.5,
+              `47d ${name}/${layout}: the page number draws #${ink.folio.color} on #${ground}, which is` +
+              ` ${ratio(ink.folio.color, ground).toFixed(2)}:1 at ${ink.folio.size}pt`);
+          }
+        }
+      }
+      A47(crossings === 0, `47d ${name}: ${crossings} boxes are struck by a frame rule`);
+      // BOTH HALVES OF THE YIELD ARE EXERCISED. A sweep that came back clean
+      // because no rule was ever drawn would prove nothing at all, and a sweep
+      // in which none ever yielded would not be reaching the case the whole
+      // mechanism exists for.
+      A47(drew > 0, `47d ${name}: precondition — not one layout drew a bottom rule, so nothing was measured`);
+      A47(yielded > 0,
+        `47d ${name}: precondition — no layout yielded its bottom rule, so the yield is untested;` +
+        ` the chart fixture's source line is what is meant to reach it`);
+    }
+    // AND THE YIELD IS DRIVEN DIRECTLY, on the one box that caused it: the same
+    // chart with and without its source credit.
+    {
+      const withSource: SlideInput = { layout: "bar-chart", title: "Where the answers come from",
+        chart: { series: [{ name: "Answer share", points: CHART_POINTS(1) }],
+          source: "Ahrefs Site Explorer AI responses count, 20 August 2026, against the tracked prompt set" } };
+      const bare: SlideInput = { layout: "bar-chart", title: "Where the answers come from",
+        chart: { series: [{ name: "Answer share", points: CHART_POINTS(1) }] } };
+      const ruleOn = (s: SlideInput) => frameInk(buildSlideRequests(s, 2, "y47") as any[])
+        .rules.some((r) => r.id === "frBot");
+      const srcInk = (s: SlideInput) => {
+        const els = previewSlideFrom(s, buildSlideRequests(s, 2, "y47") as any[]).elements
+          .filter((e) => e.kind === "text" && String(e.text || "").indexOf("Ahrefs") === 0);
+        return els.length ? inkBottom(els[0]) : 0;
+      };
+      A47(srcInk(withSource) > FRAME.bottomRuleY,
+        `47d precondition: the chart's source line reaches ${srcInk(withSource).toFixed(1)}, which does not` +
+        ` reach the rule at ${FRAME.bottomRuleY} — this fixture no longer tests the yield`);
+      A47(!ruleOn(withSource),
+        `47d a chart whose source line runs to ${srcInk(withSource).toFixed(1)} was given a rule at ${FRAME.bottomRuleY} anyway`);
+      A47(ruleOn(bare),
+        `47d the same chart without a source line was denied its rule, so the frame is yielding to nothing`);
+
+      // AND THE TOP RULE YIELDS TOO, which nothing else here reaches: at
+      // `present` it is the only rule above the content, and the only box that
+      // can grow into it is the eyebrow. A 90-character one wraps to two lines
+      // and its second line lands on the rule — measured in the weight and
+      // face it is DRAWN in, which for a bold Roboto caps label means glyph by
+      // glyph rather than at any average.
+      //
+      // (This is also why the ledger's own `caps` flag is unreachable and
+      // survives being falsified: every caps style that can appear on a framed
+      // page is bold, and the bold branch measures the already-upper-cased
+      // string's real advances. The two non-bold caps styles in TYPE are the
+      // cover and closing kickers, and neither of those pages carries a
+      // frame. The flag stays for the day that stops being true.)
+      const shouty: SlideInput = { layout: "content", density: "present",
+        eyebrow: "Programme measurement, reporting and governance across the whole estate for the year ahead",
+        title: "A title", body: "One\nTwo" };
+      const shoutyReqs = buildSlideRequests(shouty, 2, "k47") as any[];
+      const shoutyInk = previewSlideFrom(shouty, shoutyReqs).elements
+        .filter((e) => e.kind === "text" && String(e.text || "").indexOf("PROGRAMME") === 0)
+        .map((e) => inkBottom(e))[0] || 0;
+      A47(shoutyInk > (DENSITY.present.topRuleY as number),
+        `47d precondition: the two-line eyebrow reaches ${shoutyInk.toFixed(1)}, which does not reach the top` +
+        ` rule at ${DENSITY.present.topRuleY} — this fixture no longer tests the caps measure`);
+      A47(!frameInk(shoutyReqs).rules.some((r) => r.id === "frTop"),
+        `47d an eyebrow wrapping to ${shoutyInk.toFixed(1)} was given a top rule at` +
+        ` ${DENSITY.present.topRuleY} — the top rule is not yielding to anything`);
+    }
+    // And the rules are in the canvas and in the gaps they were measured into.
+    A47(FRAME.bottomRuleY > NOTE.bottom && FRAME.bottomRuleY + FRAME.thickness < FOOTER_Y,
+      `47d the bottom rule at ${FRAME.bottomRuleY} is not between the takeaway bar's floor (${NOTE.bottom})` +
+      ` and the footer's box (${FOOTER_Y})`);
+    A47(FRAME.topRuleY >= LOGO_PLACEMENT.content.y + LOGO_PLACEMENT.content.height,
+      `47d the top rule at ${FRAME.topRuleY} is drawn through the lockup, which ends at` +
+      ` ${LOGO_PLACEMENT.content.y + LOGO_PLACEMENT.content.height}`);
+    A47(DENSITY.present.titleMinTop >= FRAME.topRuleY + FRAME.thickness,
+      `47d the present title block starts at ${DENSITY.present.titleMinTop}, on top of its own top rule`);
+    A47(DENSITY.read.topRuleY === null,
+      `47d read draws a top rule, and a read title box reaches ${DENSITY.read.titleMinTop} — above the rule`);
+    A47(ratio(FRAME.rule, COLOR.offWhite) >= 3,
+      `47d the hairline is ${ratio(FRAME.rule, COLOR.offWhite).toFixed(2)}:1 on off-white`);
+    A47(ratio(blend(FRAME.ruleOnDark, COLOR.navy, FRAME.ruleOnDarkAlpha), COLOR.navy) >= 3,
+      `47d the dark-ground hairline reads` +
+      ` ${ratio(blend(FRAME.ruleOnDark, COLOR.navy, FRAME.ruleOnDarkAlpha), COLOR.navy).toFixed(2)}:1 on navy` +
+      ` at alpha ${FRAME.ruleOnDarkAlpha}`);
+
+    // (e) THE FOLIO HAS ITS OWN SLOT, CUT OUT OF THE LINE RATHER THAN LAID
+    //     OVER IT.
+    //
+    // Three things are drawn on the footer line and two of them are END-aligned
+    // or full-width. Without footerLineWidth the number is drawn on top of the
+    // photo credit on every photo slide: 46 new box overlaps on the 618 stored
+    // slides, 45 of them with the ink really meeting.
+    {
+      const folioLeft = GRID.margin + GRID.contentWidth - FRAME.numberWidth;
+      A47(footerLineWidth(GRID.margin, GRID.contentWidth) + GRID.margin <= folioLeft - FRAME.numberGap + 1e-9,
+        `47e the running head's measure runs into the folio's slot`);
+      A47(footerLineWidth(GRID.margin, GRID.proseNarrow) === GRID.proseNarrow,
+        `47e a credit under a picture rail, which ends well left of the folio, was narrowed anyway`);
+      A47(folioLeft + FRAME.numberWidth === GRID.margin + GRID.contentWidth,
+        `47e the folio does not end on the right margin`);
+      const deck: SlideInput[] = [
+        { layout: "content", title: "One", body: "A" },
+        { layout: "content", title: "Two", body: "B" },
+        { layout: "content", title: "Three", body: "C" },
+      ];
+      const folios = (d: SlideInput[]) => {
+        const out: string[] = [];
+        for (let i = 0; i < d.length; i++) {
+          const reqs = buildSlideRequests(d[i], i, "e47") as any[];
+          for (let r = 0; r < reqs.length; r++) {
+            const t = reqs[r].insertText;
+            if (t && /_ftn$/.test(String(t.objectId))) out.push(String(t.text));
+          }
+        }
+        return out.join(",");
+      };
+      A47(folios(deck) === "1,2,3", `47e the folios read ${folios(deck)} rather than 1,2,3`);
+      // AN INSERT RENUMBERS. This is the whole answer to the objection that
+      // removed the page number in the first place — a static number that lies
+      // after an edit — and it holds because the builder owns the number and
+      // every route rebuilds every slide.
+      const inserted = deck.slice(0, 1).concat([{ layout: "content", title: "New", body: "N" }], deck.slice(1));
+      A47(folios(inserted) === "1,2,3,4", `47e after an insert the folios read ${folios(inserted)}`);
+      // The cover and the closing carry no folio, for the same reason they
+      // carry no footer: they are not pages of the argument.
+      A47(folios([{ layout: "cover", title: "A deck" }, { layout: "closing", title: "Thank you" }]) === "",
+        `47e the cover or the closing was given a page number`);
+
+      // AND NOTHING ELSE RUNS INTO THE SLOT — asserted over every layout at
+      // both presets rather than over footerLineWidth's two current callers.
+      //
+      // The first version of this asserted the RULE (the running head yields,
+      // a credit under a picture rail does not) and called that the contract.
+      // It is not: the contract is about the slot, and two other boxes could
+      // reach it — the layers diagram's "omitted to fit" admission, when its
+      // stack overran the band, and the cards strip's last cell, when the band
+      // could no longer hold the strip. Both are fixed where they belong, in
+      // the geometry that let them leave the band at all, and this is what
+      // says so for every layout at once.
+      //
+      // A box whose INK has already left it is excused: that is an overrun the
+      // validator is separately reporting, and the folio is not the reason a
+      // slide is broken. The hero stat 9aa9c10 named is the one live instance.
+      let intruders = 0, excused = 0;
+      for (let pi = 0; pi < PRESETS.length; pi++) {
+        for (let li = 0; li < LAYOUTS.length; li++) {
+          const slide = FRAME_FIX(LAYOUTS[li]);
+          slide.density = PRESETS[pi];
+          const reqs = buildSlideRequests(slide, 3, "e47") as any[];
+          const page = previewSlideFrom(slide, reqs);
+          const ids: string[] = [];
+          for (let r = 0; r < reqs.length; r++) {
+            const c = reqs[r].createShape || reqs[r].createImage;
+            if (c) ids.push(String(c.objectId));
+          }
+          for (let e = 0; e < page.elements.length; e++) {
+            const el = page.elements[e];
+            if (el.kind !== "text" || !el.text || /_ftn$/.test(ids[e] || "")) continue;
+            if (el.x + el.w <= folioLeft || el.x >= folioLeft + FRAME.numberWidth) continue;
+            if (el.y >= FOOTER_Y + 12 || el.y + el.h <= FOOTER_Y) continue;
+            if (inkBottom(el) > el.y + el.h + 1) { excused++; continue; }
+            intruders++;
+            fail(`47e ${PRESETS[pi]}/${LAYOUTS[li]}: "${String(el.text).slice(0, 24)}" is drawn in the folio's` +
+              ` slot (${el.x.toFixed(1)}..${(el.x + el.w).toFixed(1)} x ${el.y.toFixed(1)}..${(el.y + el.h).toFixed(1)})`);
+          }
+        }
+      }
+      A47(intruders === 0, `47e ${intruders} boxes share the folio's slot`);
+    }
+
+    // (f) THE PAPER IS A PAGE BACKGROUND, AND THE PREVIEW KEEPS ITS GROUND.
+    //
+    // hex() of an absent rgbColor is #000000, so a preview that read the frame's
+    // second updatePageProperties would turn every light slide black while the
+    // deck itself was fine. Driven rather than reasoned about.
+    {
+      const paperOf = (s: SlideInput) => {
+        const reqs = buildSlideRequests(s, 1, "p47") as any[];
+        let paper = 0, solid = 0;
+        for (let i = 0; i < reqs.length; i++) {
+          const u = reqs[i].updatePageProperties;
+          if (!u) continue;
+          if (u.pageProperties?.pageBackgroundFill?.stretchedPictureFill) paper++;
+          if (u.pageProperties?.pageBackgroundFill?.solidFill) solid++;
+        }
+        return { paper, solid, reqs };
+      };
+      const light: SlideInput = { layout: "content", title: "A light page", body: "One\nTwo" };
+      const dark: SlideInput = { layout: "dark-index", title: "A dark page", body: "One\nTwo" };
+      const photo: SlideInput = { layout: "cover", title: "A photograph", resolvedImage: PHOTO_DARK };
+      const L = paperOf(light), D = paperOf(dark), P2 = paperOf(photo);
+      A47(L.paper === 1 && L.solid === 1, `47f a light page carries ${L.paper} paper fills and ${L.solid} solid ones`);
+      A47(D.paper === 0, `47f the paper sheet — a near-white texture — was laid under a dark ground`);
+      A47(P2.paper === 0, `47f the paper sheet was laid under a photograph that covers the page`);
+      A47(String(L.reqs.map((r: any) => r.updatePageProperties?.pageProperties?.pageBackgroundFill
+        ?.stretchedPictureFill?.contentUrl).filter(Boolean)[0]) === assetUrl(FRAME.paperPath),
+        `47f the paper is not fetched from the public asset origin, so Slides cannot reach it`);
+      const preview = previewSlideFrom(light, L.reqs);
+      A47(preview.background.toUpperCase() === `#${COLOR.offWhite}`,
+        `47f the preview's ground is ${preview.background} rather than the off-white the deck draws` +
+        ` — the frame's picture fill has been read as a colour`);
+      // And it adds NO ELEMENT: that is the whole argument for a background
+      // over a full-bleed image, and it is what keeps validate.ts's sweeps,
+      // pathOf and droppedContent counting what they counted before. Measured
+      // as "no element covers the page" rather than "no images at all", because
+      // the lockup is a createImage and always was.
+      let bleeds = 0;
+      for (let i = 0; i < L.reqs.length; i++) {
+        const c = L.reqs[i].createImage;
+        if (c && c.elementProperties?.size?.width?.magnitude >= CANVAS.width - 1) bleeds++;
+      }
+      A47(bleeds === 0, `47f the paper was drawn as a full-bleed element, not as a page background`);
+      A47(previewSlideFrom(light, L.reqs).elements.length
+        === previewSlideFrom(light, L.reqs.filter((r: any) => !r.updatePageProperties)).elements.length,
+        `47f the page background adds an element to the preview`);
+    }
+
+    // (g) THE THREE PRIMITIVES.
+    //
+    // None of them has a production caller beyond the frame's own rule yet —
+    // Stage 3's stepper and Stage 4's layouts are what use them — so this is
+    // the only thing driving them, and it drives them rather than asserting
+    // they were written.
+    {
+      const bleed = hairlineSpan("bleed"), content = hairlineSpan("content");
+      A47(bleed.x === 0 && bleed.length === CANVAS.width, `47g the full-bleed reach does not bleed`);
+      A47(content.x === GRID.margin && content.length === GRID.contentWidth,
+        `47g the content reach is not the content measure`);
+      const fig = hairlineSpan({ from: 300 });
+      A47(fig.x === 300 && Math.abs(fig.x + fig.length - (GRID.margin + GRID.contentWidth)) < 1e-9,
+        `47g a rule from a figure's edge does not end on the right margin`);
+      A47(hairlineSpan({ from: -50 }).x === 0 && hairlineSpan({ from: 5000 }).length === 0,
+        `47g a rule from an x off the slide is not clamped onto it`);
+      // And a clamped-to-nothing rule draws NOTHING rather than a zero-width
+      // shape: Slides rejects those, and it rejects the whole batchUpdate with
+      // them, so a figure that happens to fill the measure would take the deck
+      // down over a hairline.
+      A47(hairline("gz", "pg", { from: 5000 }, 200, false).length === 0,
+        `47g a rule with no measure to run across still emits a zero-width shape`);
+      // Every primitive stays on the canvas and emits only kinds the preview
+      // knows — check 43's set, which is what keeps a new shape from drawing
+      // correctly in Drive and as a grey rectangle in the chat and the PDF.
+      const bits: any[] = ([] as any[]).concat(
+        hairline("g1", "pg", "bleed", FRAME.bottomRuleY, false),
+        crossingHairlines("g2", "pg", { x: 360, y: 200 }, 40, false),
+        hungDot("g3", "pg", { x: GRID.margin, y: 200 }, 12),
+        ctaPill("g4", "pg", "Book a session", { x: GRID.margin, y: 300 }, false),
+      );
+      const pv = previewSlideFrom({ layout: "content" } as SlideInput, bits as any[]);
+      for (let i = 0; i < bits.length; i++) {
+        A47(HANDLED.has(Object.keys(bits[i])[0]),
+          `47g a primitive emits ${Object.keys(bits[i])[0]}, which the preview does not handle`);
+      }
+      for (let i = 0; i < pv.elements.length; i++) {
+        const e = pv.elements[i];
+        A47(e.x >= -1e-9 && e.y >= -1e-9 && e.x + e.w <= CANVAS.width + 1e-9 && e.y + e.h <= CANVAS.height + 1e-9,
+          `47g a primitive draws off the canvas: ${e.x.toFixed(1)},${e.y.toFixed(1)} ${e.w.toFixed(1)}x${e.h.toFixed(1)}`);
+      }
+      // THE HUNG DOT HANGS. If it does not sit left of the first glyph it is
+      // not a hung bullet, it is a disc in the middle of a sentence — and the
+      // gutter floor a composition needs is derived from exactly this offset.
+      const dot = previewSlideFrom({ layout: "content" } as SlideInput,
+        hungDot("gd", "pg", { x: 200, y: 150 }, 12) as any[]).elements[0];
+      A47(dot.x + dot.w <= 200 + SLIDES_TEXT_INSET.x,
+        `47g the hung dot ends at ${(dot.x + dot.w).toFixed(2)}, inside the first glyph at` +
+        ` ${(200 + SLIDES_TEXT_INSET.x).toFixed(2)}`);
+      A47(dot.y >= 150 + SLIDES_TEXT_INSET.y - 1e-9
+        && dot.y + dot.h <= 150 + SLIDES_TEXT_INSET.y + 12 * 1.45 + 1e-9,
+        `47g the hung dot is not level with the first line of its paragraph`);
+      A47(HUNG_DOT.offsetX > HUNG_DOT.diameter,
+        `47g the dot's offset is inside its own diameter, so it overlaps the glyph it marks`);
+      // THE PILL'S LABEL READS, AND IS NOT THE SOURCE DECK'S HYPERLINK YELLOW.
+      const pillEls = previewSlideFrom({ layout: "content" } as SlideInput,
+        ctaPill("gp", "pg", "Book a session", { x: 40, y: 300 }, false) as any[]).elements;
+      const body = pillEls[0], label = pillEls[1];
+      A47(pillEls.length === 2 && body.kind === "rect" && !!body.rounded && label.kind === "text",
+        `47g a pill is not a rounded rect with a label in it`);
+      // MEASURED ON THE INK THE PILL ACTUALLY EMITS, read back out of the
+      // preview, rather than on textOn(PILL.fill) recomputed here. Recomputing
+      // it asserts that the RULE was written; the first version of this did
+      // exactly that and stayed green while the label was changed to the source
+      // deck's #FFD966 — which is the defect this assertion exists to refuse.
+      const labelInk = String(label.color || "").replace("#", "");
+      const pillFill = String(body.fill || "").replace("#", "");
+      A47(!!labelInk && !!pillFill && ratio(labelInk, pillFill) >= 4.5,
+        `47g the pill draws #${labelInk} on #${pillFill}, which is ${ratio(labelInk || "000000", pillFill || "FFFFFF").toFixed(2)}:1`);
+      A47(ratio("FFD966", PILL.fill) < 4.5,
+        `47g precondition: the source deck's hyperlink yellow would have passed, so this asserts nothing`);
+      A47(labelInk.toUpperCase() !== "FFD966",
+        `47g the pill's label is the source deck's theme hyperlink colour, which is a defect in the source`);
+      A47(labelWidthPt("BOOK A SESSION", PILL.fontSize) <= body.w,
+        `47g the pill's label (${labelWidthPt("BOOK A SESSION", PILL.fontSize).toFixed(1)}pt) is wider than the pill (${body.w.toFixed(1)}pt)`);
+      A47(ctaPill("ge", "pg", "   ", { x: 40, y: 300 }, false).length === 0,
+        `47g an empty pill draws an empty capsule rather than nothing`);
+    }
+
+    // (h) THE FOUR ABSOLUTE BLOCKS FOLLOW THE RHYTHM.
+    //
+    // They are the layouts the preset would otherwise break silently: the
+    // image grid's cells are createImage, so the overlap sweep — which
+    // compares text with text — reports NOTHING while the title is drawn
+    // 13.2pt over the first row.
+    withDensity("present", () => {
+      const floor = GRID.bodyY + GRID.bandHeight;
+      const titleBottom = GRID.bodyY - 12;
+      const blocks: [string, number, number][] = [
+        ["timeline", TIMELINE.dateY, TIMELINE.detailY + TIMELINE.detailHeight],
+        ["timeline-parallel", TIMELINE_PARALLEL.bandY, TIMELINE_PARALLEL.bandY],
+        ["image-grid", IMAGE.gridY, IMAGE.gridY + IMAGE.gridHeight],
+        ["logo-wall", LOGO_WALL.y, LOGO_WALL.y + LOGO_WALL.height],
+      ];
+      for (let i = 0; i < blocks.length; i++) {
+        const [nm, top, bottom] = blocks[i];
+        A47(top >= titleBottom,
+          `47h at present the ${nm} block starts at ${top.toFixed(2)}, above the foot of the title box (${titleBottom.toFixed(2)})`);
+        A47(bottom <= floor + 1e-9,
+          `47h at present the ${nm} block ends at ${bottom.toFixed(2)}, past the band floor (${floor.toFixed(2)})`);
+      }
+    });
+
+    // (i) AND ALL 29 LAYOUTS ARE BUILT AT BOTH PRESETS AND MEASURED.
+    //
+    // The preset has no production caller yet, which is the condition under
+    // which a second code path rots quietly. Nothing off the canvas is the
+    // assertion: a slide that OVERFLOWS at present is content the validator is
+    // meant to report, and a slide drawn past the edge of the page is geometry
+    // that is simply wrong — and it is the failure the caller never sees,
+    // because the admission that content was dropped goes over the edge with
+    // the content.
+    for (let pi = 0; pi < PRESETS.length; pi++) {
+      const deck: SlideInput[] = [];
+      for (let li = 0; li < LAYOUTS.length; li++) {
+        const s2 = FRAME_FIX(LAYOUTS[li]);
+        s2.density = PRESETS[pi];
+        deck.push(s2);
+      }
+      const g = validateDeck(deck, `d47${pi}`);
+      A47(g.slidesChecked === LAYOUTS.length && g.unbuildable === 0,
+        `47i ${PRESETS[pi]}: ${g.unbuildable} of ${LAYOUTS.length} layouts could not be built at all`);
+      const counts = faultCounts(g);
+      A47(counts["off-canvas"] === 0,
+        `47i ${PRESETS[pi]}: ${counts["off-canvas"]} elements are drawn off the canvas` +
+        ` — ${g.faults.filter((f) => f.kind === "off-canvas").map((f) => f.note).join("; ").slice(0, 300)}`);
+    }
+    // THE TWO PRESETS ARE ONE GEOMETRY, and this is how that becomes a
+    // measurement rather than a claim: the same 29 layouts, content sized for
+    // the tighter of the two, the same verdict.
+    //
+    // MEASURED ON `FITS_BOTH` AND NOT ON THE RICH FIXTURE, deliberately. The
+    // rich one is `read` copy — a two-line title, a wrapping standfirst, six
+    // table rows, four stats — and pushing that through a rhythm that is a
+    // fifth shorter and half again larger is MEANT to overflow. Asserting the
+    // same verdict there would only be satisfiable by a fixture small enough
+    // to say nothing, which is the trap the whole of (d) is about. The honest
+    // pair is: off the canvas, never, on content that is far too big; the same
+    // fault by fault, on content that fits.
+    const verdict = (name: Density) => {
+      const deck: SlideInput[] = [];
+      for (let li = 0; li < LAYOUTS.length; li++) { const s2 = FITS_BOTH(LAYOUTS[li]); s2.density = name; deck.push(s2); }
+      return JSON.stringify(faultCounts(validateDeck(deck, `v47${name}`)));
+    };
+    A47(verdict("read") === verdict("present"),
+      `47i the same 29 layouts measure differently at the two presets: read ${verdict("read")}, present ${verdict("present")}`);
+
+    // (j) THE TWO BLOCKS THAT RAN OFF THE PAGE WHEN THE BAND GOT SHORTER.
+    //
+    // `layers` and the cards `strip` both size themselves in absolute points
+    // against a band that `present` shortens by 54.72pt, and neither had a
+    // terminal admission. The layer ladder ended unconditionally at its fifth
+    // rung and drew whatever that measured — five bands of cells ran 22pt past
+    // the bottom of the page, carrying the "omitted to fit" line with them, so
+    // the one sentence saying content had been lost was the content that could
+    // not be read. The strip was drawn wherever the cards ended, and the cards
+    // have an 80pt floor that wins on a short band.
+    //
+    // DRIVEN AT THE CAP, at both presets, because both were clean at `read` and
+    // both broke at `present`: a capacity cliff is invisible to a fixture that
+    // does not reach the cap.
+    {
+      const stack = (bands: number, cells: number, big: boolean): SlideInput => {
+        const ls: any[] = [];
+        for (let i = 0; i < bands; i++) {
+          const cs: any[] = [];
+          for (let c = 0; c < cells; c++) cs.push({ title: `Cell ${c + 1}`, text: "What sits here, at some length." });
+          ls.push({ title: `Layer number ${i + 1}`, caption: "A sentence inside the band that runs on.",
+            cells: cs.length ? cs : undefined });
+        }
+        return { layout: "layers", title: big ? LONG : "Layers",
+          subtitle: big ? "A standfirst that runs on and explains the stack beneath it." : undefined,
+          note: "Why this matters: the stack is the argument.", layers: ls } as any;
+      };
+      // THE STANDFIRST IS THE INGREDIENT, and it took a sweep to find out. The
+      // strip only leaves the page once `cardsH`'s 80pt floor wins, and the
+      // floor only wins once the card row starts low enough — which at present
+      // means a standfirst of three lines at 14pt. A two-line one leaves the
+      // reservation intact and the fixture proves nothing: driven without the
+      // bound in place, the first version of this passed.
+      const row = (n: number, strip: number): SlideInput => {
+        const cards: any[] = [], items: any[] = [];
+        for (let i = 0; i < n; i++) cards.push({ marker: `0${i + 1}`, tone: "blue", title: `Move ${i + 1}`,
+          body: "What happens here, and what it changes for the team that owns it, and why the board" +
+            " should care about it before the quarter closes." });
+        for (let i = 0; i < strip; i++) items.push({ title: `Item ${i + 1}`, text: "A short gloss." });
+        return { layout: "cards", title: LONG,
+          subtitle: "A standfirst that runs on and on and explains the row of cards beneath it in enough" +
+            " detail to take three whole lines of the measure.",
+          note: "Why this matters: the figures only move once the audience is the unit of planning.",
+          cards, strip: { title: "In detail", items } } as any;
+      };
+      const worst: [string, SlideInput][] = [
+        ["layers 5x8 at the cap", stack(5, 8, true)],
+        ["layers 5x2", stack(5, 2, false)],
+        ["cards 6 + a 6-item strip", row(6, 6)],
+        ["cards 5 + a 1-item strip", row(5, 1)],
+        ["cards 5 + a 3-item strip", row(5, 3)],
+      ];
+      for (let pi = 0; pi < PRESETS.length; pi++) {
+        for (let w = 0; w < worst.length; w++) {
+          const s2 = { ...worst[w][1], density: PRESETS[pi] } as SlideInput;
+          const g = validateDeck([s2], `j47${pi}${w}`);
+          A47(faultCounts(g)["off-canvas"] === 0,
+            `47j ${PRESETS[pi]}: ${worst[w][0]} draws ${faultCounts(g)["off-canvas"]} elements off the canvas` +
+            ` — ${g.faults.filter((f) => f.kind === "off-canvas").map((f) => f.note).join("; ").slice(0, 180)}`);
+        }
+      }
+      // AND THE LAYER DIAGRAM SAYS WHAT IT DROPPED. A note-free build passes
+      // every geometric check there is, which is exactly why this is asserted
+      // on the string.
+      const tight = { ...stack(5, 8, true), density: "present" } as SlideInput;
+      const said = (buildSlideRequests(tight, 1, "j47") as any[])
+        .map((r: any) => String(r.insertText?.text || "")).filter((t: string) => t.indexOf("Showing") === 0);
+      const shownBands = (buildSlideRequests(tight, 1, "j47") as any[])
+        .filter((r: any) => /_ly[0-9]+$/.test(String(r.createShape?.objectId || ""))).length;
+      A47(shownBands < 5,
+        `47j precondition: all five bands fitted at present, so the terminal drop is untested`);
+      A47(said.length === 1 && /Showing [0-9]+ of 5 layers/.test(said[0]),
+        `47j a layer diagram dropped bands to fit and said "${said.join(" / ") || "nothing"}"`);
+      // AND THE DROP IS A SAFETY NET, NOT A SECOND OPINION ABOUT THE LAYOUT.
+      // A five-band stack that read draws legibly today — past the band floor,
+      // into the 7pt gap a chart's source line already borrows, but clear of
+      // the footer — keeps all five bands and the admission it always had.
+      // Measured against `room` instead, this fixture loses a layer of its
+      // argument at the default preset to save seven points, which is the
+      // wrong trade and the reason the terminal step reads FOOTER_Y.
+      const easy = { ...stack(5, 2, false), density: "read" } as SlideInput;
+      const easyReqs = buildSlideRequests(easy, 1, "j47r") as any[];
+      A47(easyReqs.filter((r: any) => /_ly[0-9]+$/.test(String(r.createShape?.objectId || ""))).length === 5,
+        `47j a five-band stack that read draws today lost a band to the terminal drop`);
+      A47(easyReqs.map((r: any) => String(r.insertText?.text || ""))
+        .some((t: string) => t.indexOf("Showing names only - ") === 0),
+        `47j the read admission is no longer the sentence read decks already carry`);
+    }
+  }
+  if (failures === before47) {
+    pass(`the frame lands in empty bands at both presets, the folio renumbers, read is untouched,` +
+      ` and the present rhythm is the solve rather than a number`);
   }
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);

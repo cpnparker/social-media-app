@@ -17,8 +17,8 @@
 import {
   COLOR, GRID, CANVAS, TYPE, NOTE, STAT_MAX, STAT_GRID_MIN, STAT_GRID, TIMELINE, TIMELINE_PARALLEL, TRACK_COLORS, IMAGE, CHART,
   SERIES_LIGHT, SERIES_DARK, CARDS, QUOTE, PROCESS, LOGO_WALL, RULE, LAYOUT_STYLE, LOGO_PLACEMENT, SECTION, VENN,
-  SHOT, FEATURE_SHOT_STYLE,
-  rgb, logoUrl, textOn, type SlideLayout, type TypeStyle, type LayoutStyle,
+  SHOT, FEATURE_SHOT_STYLE, FRAME, DENSITY, DEFAULT_DENSITY, density, withDensity,
+  rgb, logoUrl, textOn, assetUrl, type SlideLayout, type TypeStyle, type LayoutStyle, type Density,
 } from "@/lib/slides/brand";
 import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "@/lib/slides/token";
 import { captureThumbnails } from "@/lib/slides/preview";
@@ -61,6 +61,12 @@ export interface Track {
 
 export interface SlideInput {
   layout?: SlideLayout;
+  /** WHICH DENSITY THIS DECK IS SET AT, stamped onto every slide by
+   *  stampDensity the way the footer is stamped by stampFooter. It is a
+   *  DECK-level decision — a deck with two densities in it is two decks — and
+   *  it is per-slide only because buildSlideRequests is handed one slide at a
+   *  time. Absent means `read`, which is what every deck built so far is. */
+  density?: Density;
   title?: string;
   subtitle?: string;
   eyebrow?: string;
@@ -463,6 +469,25 @@ export function stampFooter(slides: SlideInput[], title: string | undefined): Sl
   return slides;
 }
 
+/** The deck's density, put on every slide in it — the same shape as the footer
+ *  above, and for the same reason: buildSlideRequests is handed one slide at a
+ *  time, so a deck-wide decision has to travel on each of them. Stamping
+ *  rather than defaulting is what keeps a deck from being half one density. */
+export function stampDensity(slides: SlideInput[], name: Density | undefined): SlideInput[] {
+  const d: Density = name && DENSITY[name] ? name : DEFAULT_DENSITY;
+  for (const s of slides) if (s) s.density = d;
+  return slides;
+}
+
+/** What this slide is built at. An unknown value is read, not a throw: the
+ *  stored specs of every deck ever built are replayed through here, and one
+ *  that arrives with a density this build does not know is a deck to draw,
+ *  not a deck to lose. */
+export function densityOf(slide: Pick<SlideInput, "density"> | undefined): Density {
+  const d = slide && slide.density;
+  return d && DENSITY[d] ? d : DEFAULT_DENSITY;
+}
+
 export function bandHeightFor(slide: Pick<SlideInput, "note">, noteWidth: number = GRID.contentWidth): number {
   const h = noteHeight(slide.note, noteWidth);
   if (!h) return GRID.bandHeight;
@@ -625,6 +650,22 @@ function textBox(
     const pb = parseBold(rendered);
     rendered = pb.text;
     boldRanges = pb.ranges;
+  }
+
+  // WRITTEN DOWN AS IT GOES PAST. See SLIDE_INK: the deck frame draws rects
+  // into bands it believes are empty, and this is the only record of what is
+  // actually there. Measured on `rendered` — the string Slides receives, after
+  // upper-casing and after the markup this pipeline strips — because that is
+  // the text whose lines are counted.
+  if (SLIDE_INK) {
+    SLIDE_INK.push({
+      top: box.y,
+      bottom: inkBottom({
+        y: box.y, w: box.width, text: rendered, size: style.size, font: style.font,
+        weight: style.weight ?? (style.bold ? 700 : 400),
+        bullets: !!options.bullets, caps: !!style.caps,
+      }),
+    });
   }
 
   const requests: Req[] = [
@@ -855,6 +896,295 @@ function segment(
       },
     },
   ];
+}
+
+/* ─────────────── Three primitives ─────────────── */
+
+/**
+ * The hairline, the hung dot and the CTA pill: the three things the handover
+ * deck builds its pages out of that no layout here can draw.
+ *
+ * They are PRIMITIVES rather than layouts on purpose. What makes seven slides
+ * of one layout in that deck read as seven different pages is furniture that
+ * belongs to every layout — a rule that says where the title ends, a dot that
+ * hangs a bullet off the measure, a pill that makes an action look like an
+ * action. A thirtieth archetype would give one slide all three and the other
+ * twenty-nine none of them.
+ *
+ * All three compose out of `filledShape` and `textBox`, so the request stream
+ * stays the contract boundary and the preview, the PDF, the splitter's probe
+ * and validate.ts all read them for free. Nothing here emits a shape kind the
+ * preview does not already know — check 43 is what would catch it if it did.
+ */
+
+/** How far a rule runs.
+ *
+ *  `bleed` is the master's own: edge to edge, which is what makes it read as
+ *  the page's furniture rather than as part of the slide. `content` is the
+ *  measure, for a rule that belongs to the words. `{ from: x }` starts at an
+ *  x and runs to the right margin — the handover deck's slide 3 rule begins at
+ *  the photograph's right edge rather than at the margin, and slide 5's, with
+ *  no photograph, runs the full measure. One reach, two slides, no branch. */
+export type HairlineReach = "bleed" | "content" | { from: number };
+
+export function hairlineSpan(reach: HairlineReach): { x: number; length: number } {
+  if (reach === "bleed") return { x: 0, length: CANVAS.width };
+  if (reach === "content") return { x: GRID.margin, length: GRID.contentWidth };
+  const from = Math.max(0, Math.min(reach.from, GRID.margin + GRID.contentWidth));
+  return { x: from, length: GRID.margin + GRID.contentWidth - from };
+}
+
+/** The ink a rule takes on the ground it is drawn on.
+ *
+ *  #707070 is the deck's own, and it is 4.66:1 on off-white — comfortable for
+ *  a rule and good enough for text, which is not true of the #B7B7B7 the same
+ *  deck uses for its inactive stepper numerals. On navy the same grey is a
+ *  rule nobody can see, so the dark ground gets the light grey at under half
+ *  strength: at full strength #EBEBEB on navy is a stripe, not a hairline. */
+export function hairlineInk(onDark: boolean): { color: string; alpha?: number } {
+  return onDark ? { color: FRAME.ruleOnDark, alpha: FRAME.ruleOnDarkAlpha } : { color: FRAME.rule };
+}
+
+export function hairline(
+  objectId: string, page: string, reach: HairlineReach, y: number, onDark: boolean,
+  thickness: number = FRAME.thickness
+): Req[] {
+  const span = hairlineSpan(reach);
+  // A rule with nothing to run across is NOT DRAWN. `{ from: x }` clamps to
+  // the right margin, so a figure that fills the measure leaves a zero-length
+  // span — and Slides rejects a zero-width shape, which fails the whole
+  // batchUpdate and takes the deck with it over a hairline.
+  if (span.length <= 0) return [];
+  const ink = hairlineInk(onDark);
+  return filledShape(objectId, page, "RECTANGLE", ink.color,
+    { x: span.x, y, width: span.length, height: thickness }, ink.alpha);
+}
+
+/** THE CROSSING PAIR: the full-bleed rule, and a vertical arm through it.
+ *
+ *  A plain rect for the vertical arm rather than the source's hairline asset
+ *  rotated 90 degrees. They are identical on screen and the rect keeps the
+ *  preview affine-free — the one rotated element this builder draws, the line
+ *  chart's segment, is also the one element whose bounding box check 1 has to
+ *  sample at four corners rather than read off its size. */
+export function crossingHairlines(
+  idBase: string, page: string, at: { x: number; y: number }, arm: number, onDark: boolean,
+  thickness: number = FRAME.thickness
+): Req[] {
+  const ink = hairlineInk(onDark);
+  const top = Math.max(0, at.y - arm);
+  const bottom = Math.min(CANVAS.height, at.y + thickness + arm);
+  return [
+    ...hairline(`${idBase}h`, page, "bleed", at.y, onDark, thickness),
+    ...filledShape(`${idBase}v`, page, "RECTANGLE", ink.color,
+      { x: at.x, y: top, width: thickness, height: bottom - top }, ink.alpha),
+  ];
+}
+
+/** The hung dot: a small disc sitting OUTSIDE the measure, level with the first
+ *  line of the paragraph it marks.
+ *
+ *  Not a Slides bullet. Slides' level-0 disc preset draws its glyph at the text
+ *  inset and indents the wrapped lines under the words, so the marker sits
+ *  inside the column and every line of prose starts where no line of prose
+ *  begins. The deck hangs it into the gutter, which is why its columns read as
+ *  columns. That is also why a composition's gutter floor has to be at least
+ *  HUNG_DOT.offsetX plus the disc — a dot hung into a 12pt gutter is a dot
+ *  drawn on the column to its left.
+ *
+ *  Vertically it is centred on the first LINE BOX, not on the box: the box
+ *  carries Slides' 3.6pt top inset before any ink at all. */
+export const HUNG_DOT = {
+  diameter: 5,
+  /** From the left edge of the text box to the left edge of the disc. The
+   *  deck's dot sits 11.4pt left of its first glyph, and the glyph itself is
+   *  SLIDES_TEXT_INSET.x inside the box. */
+  offsetX: 11.4,
+  color: COLOR.blue,
+} as const;
+
+export function hungDot(
+  objectId: string, page: string,
+  box: { x: number; y: number }, fontSize: number,
+  color: string = HUNG_DOT.color, diameter: number = HUNG_DOT.diameter
+): Req[] {
+  const lineTop = box.y + SLIDES_TEXT_INSET.y;
+  return filledShape(objectId, page, "ELLIPSE", color, {
+    x: box.x + SLIDES_TEXT_INSET.x - HUNG_DOT.offsetX,
+    y: lineTop + (fontSize * LINE_LEAD - diameter) / 2,
+    width: diameter, height: diameter,
+  });
+}
+
+/** The CTA pill: a label in a filled capsule — "Book a session", "Read the
+ *  report" — the one device on a closing slide that looks like something to do.
+ *
+ *  A SOFTER CORNER THAN THE SOURCE, deliberately. createShape exposes no
+ *  geometry adjustments, so ROUND_RECTANGLE renders at Slides' default radius
+ *  and the source's adj=50000 true capsule is unreachable. Composing one from
+ *  a rect and two ellipses would reach it at three shapes per pill, for a
+ *  radius nobody will measure and three more objects for the preview, the PDF
+ *  and the overlap sweep to agree about. The corner is the right thing to give
+ *  up.
+ *
+ *  THE LABEL IS WHITE, not the source's #FFD966. That colour is the theme's
+ *  hyperlink colour leaking onto a hyperlinked label — 4.08:1 on brand blue
+ *  against white's 5.58:1 — which makes it a defect in the source rather than
+ *  a design choice, and copying a defect because it is in the reference is not
+ *  fidelity. */
+export const PILL = {
+  height: 26,
+  padX: 14,
+  fontSize: 10,
+  fill: COLOR.blue,
+  fillOnDark: COLOR.lime,
+} as const;
+
+export function ctaPill(
+  idBase: string, page: string, label: string,
+  at: { x: number; y: number }, onDark: boolean
+): Req[] {
+  const text = String(label || "").trim();
+  if (!text) return [];
+  const fill = onDark ? PILL.fillOnDark : PILL.fill;
+  const width = pillWidth(text, PILL.fontSize) + PILL.padX * 2;
+  return [
+    ...filledShape(`${idBase}bg`, page, "ROUND_RECTANGLE", fill,
+      { x: at.x, y: at.y, width, height: PILL.height }),
+    // textOn, not a written-down colour: the fill differs by ground and the
+    // ink has to follow it rather than be remembered alongside it.
+    ...textBox(`${idBase}tx`, page, text,
+      { font: "Roboto", size: PILL.fontSize, bold: true, color: textOn(fill), caps: true },
+      { x: at.x, y: at.y, width, height: PILL.height },
+      { align: "CENTER", vCenter: true }),
+  ];
+}
+
+/* ─────────────── The deck frame ─────────────── */
+
+/**
+ * The page's own furniture, stamped once per slide after the content.
+ *
+ * `stampFooter` is the precedent: a deck-wide element the BUILDER owns, not
+ * the model. Nothing here is on the slide spec, nothing here can be asked for
+ * per slide, and nothing here moves when a layout changes.
+ *
+ * DRAWN LAST, AND EVERY RULE MEASURES THE PAGE BEFORE IT IS DRAWN.
+ *
+ * The first version of this asserted its way to the bands instead: the top rule
+ * between the lockup and the title floor, the bottom one between the takeaway
+ * bar's floor (374.4) and the footer's box (381), "in a gap that already
+ * existed". THE BOTTOM GAP DOES NOT EXIST. A chart's source line is placed from
+ * where its own plot ends rather than from the band floor — `lsrc` at the
+ * band's bottom plus two, `csrc` under the last bar — so on a chart with enough
+ * rows its 7pt line runs to 378.3, and the rule at 376 is drawn along the
+ * baseline and through every descender. Over the 618 stored slides that is ten
+ * of them, in nine of the thirty-seven decks, all of them real client work, at
+ * the DEFAULT density. Nothing would have said so: a rule is a rect, so the
+ * overlap sweep never compares it with the line it strikes.
+ *
+ * So the rule yields. Furniture that strikes a sentence is worse than furniture
+ * that is absent, and yielding is also the only version of this that survives a
+ * layout nobody has written yet. The alternative — moving the source line up
+ * two points — moves type on decks that have already gone to clients, which is
+ * the one thing this stage promised not to do.
+ *
+ * IT IS RARE, WHICH IS WHY A MISSING RULE IS THE RIGHT PRICE. Of the 558 stored
+ * slides that carry the chrome, 506 draw the bottom rule, 39 are section
+ * dividers that take none by design, and 13 yield: ten to a chart's source
+ * credit and three to a body box the validator is already reporting as an
+ * overrun. A tested-by-box-instead-of-ink version of this yields on 47, mostly
+ * to table cells that deliberately overhang their row and never reach the rule.
+ *
+ * The page number does NOT yield, and the asymmetry is the point: a missing
+ * hairline is furniture nobody counts, and a missing page number is a hole in a
+ * sequence. Its slot is cut out of the footer's own line instead.
+ *
+ * The paper is a page BACKGROUND rather than an element, so it needs no
+ * z-order, cannot be selected in Drive, and adds nothing for the overlap
+ * sweep, pathOf or droppedContent to walk.
+ */
+/** Is the strip of page a full-bleed rule would occupy free of type?
+ *
+ *  The same comparison check 47(d) makes on the drawn slide, and deliberately
+ *  the same shape: a box that starts below the rule is under it, ink that stops
+ *  above the rule is over it, and anything else is a line with a rule through
+ *  it. Ink that has already left its own box counts — the reader sees the
+ *  strike whether or not the validator is separately reporting the overrun. */
+function bandIsClear(
+  ink: { top: number; bottom: number }[], y: number, thickness: number = FRAME.thickness
+): boolean {
+  for (let i = 0; i < ink.length; i++) {
+    if (ink[i].top < y + thickness && ink[i].bottom > y) return false;
+  }
+  return true;
+}
+
+function frameRequests(
+  page: string, id: (s: string) => string, style: LayoutStyle, index: number,
+  /** False on a SECTION DIVIDER, which takes the ground and the folio and
+   *  neither hairline.
+   *
+   *  The top one because there is no lockup and no title block there to
+   *  separate, and because the divider's 100pt index numeral runs from
+   *  GRID.eyebrowY straight through where that rule lands — a rect struck
+   *  through a numeral, which the overlap sweep would not report.
+   *
+   *  The bottom one because of the ground. A divider is drawn on brand blue,
+   *  and the rule's dark-ground ink — #EBEBEB at 0.45, which reads 3.44:1 on
+   *  navy — reads 2.06:1 on blue, under the 3:1 floor this file holds even
+   *  large text to. There is no strength that fixes it: fully opaque, #EBEBEB
+   *  on blue is 4.68:1, so the alpha that clears 3:1 is 0.7 and a 0.7 rule on
+   *  navy is a stripe rather than a hairline. The hairline is designed for two
+   *  grounds, off-white and navy, and the divider is neither; its own colour
+   *  is the separation. Check 47(d) states this as the general rule — a rule
+   *  that is drawn must read on the ground it is drawn on — so a third ground
+   *  arriving with a layout fails the check instead of shipping invisible. */
+  rules: boolean,
+  /** Every text box already drawn on this page, as top-of-box to bottom-of-ink.
+   *  See SLIDE_INK. */
+  ink: { top: number; bottom: number }[]
+): Req[] {
+  const out: Req[] = [];
+  const onDark = style.onDark;
+  // A photo-led slide sets no ground of its own (background === null) and the
+  // backdrop covers the page; a dark slide's ground is the point of it. The
+  // paper sheet is near-white, so it belongs to the light grounds and nowhere
+  // else — under navy it is not a texture, it is a missing background.
+  if (!onDark && style.background != null) {
+    out.push({
+      updatePageProperties: {
+        objectId: page,
+        pageProperties: {
+          pageBackgroundFill: {
+            stretchedPictureFill: { contentUrl: assetUrl(FRAME.paperPath) },
+          },
+        },
+        fields: "pageBackgroundFill.stretchedPictureFill",
+      },
+    });
+  }
+  // The top rule only exists at a density whose title floor leaves room for
+  // it. At `read` there is none to leave: see DENSITY.read.topRuleY.
+  const topY = density().topRuleY;
+  if (rules && topY !== null && bandIsClear(ink, topY)) {
+    out.push(...hairline(id("frTop"), page, "bleed", topY, onDark));
+  }
+  if (rules && bandIsClear(ink, FRAME.bottomRuleY)) {
+    out.push(...hairline(id("frBot"), page, "bleed", FRAME.bottomRuleY, onDark));
+  }
+  // The number is the BUILDER'S, from the index it was handed, and every route
+  // that draws a deck rebuilds every slide through here — so it renumbers on
+  // an insert rather than fossilising the way a model-written number would.
+  out.push(
+    ...textBox(id("ftn"), page, String(index + 1),
+      onDark ? { ...TYPE.footerNumber, color: COLOR.lime } : TYPE.footerNumber,
+      {
+        x: GRID.margin + GRID.contentWidth - FRAME.numberWidth, y: FOOTER_Y,
+        width: FRAME.numberWidth, height: 12,
+      }, { align: "END" }),
+  );
+  return out;
 }
 
 /** A real horizontal timeline: one axis, evenly spaced markers, labels above
@@ -1370,12 +1700,26 @@ function backdropRequests(
  *  full-bleed path ever drew one, so half the stock pictures in a deck went out
  *  uncredited. textBox returns [] for an empty string, so owned, supplied and
  *  generated images still draw nothing. */
+/** The measure a box on the footer line may use.
+ *
+ *  THE FOLIO OWNS THE RIGHT END OF THAT LINE. Three things are drawn on it —
+ *  the running head, a photograph's credit, and now the page number — and the
+ *  first two are END-aligned or full-width, so without a rule about who yields
+ *  the number is drawn on top of a credit on every photo slide in the deck.
+ *  A box that would run into the slot gives it up; one that already ends left
+ *  of it — a credit under a picture rail, which belongs under the picture and
+ *  not at the margin — keeps its full measure and is not moved at all. */
+export function footerLineWidth(x: number, width: number): number {
+  const folioLeft = GRID.margin + GRID.contentWidth - FRAME.numberWidth - FRAME.numberGap;
+  return x + width > folioLeft ? Math.max(0, folioLeft - x) : width;
+}
+
 function creditRequests(
   objectId: string, page: string, credit: string | undefined,
   box: { x: number; width: number }, onDark: boolean
 ): Req[] {
   return textBox(objectId, page, credit, onDark ? TYPE.credit : TYPE.creditOnLight, {
-    x: box.x, y: IMAGE.creditY, width: box.width, height: IMAGE.creditHeight,
+    x: box.x, y: IMAGE.creditY, width: footerLineWidth(box.x, box.width), height: IMAGE.creditHeight,
   }, { align: "END" });
 }
 
@@ -2212,7 +2556,16 @@ export function fitHeading(
   text: string | undefined,
   style: TypeStyle,
   width: number,
-  opts: { bottom: number; minTop: number; minHeight: number; minSize?: number; lineSpacing?: number }
+  opts: {
+    bottom: number; minTop: number; minHeight: number; minSize?: number; lineSpacing?: number;
+    /** The sizes the ladder may stop at, largest first — the density preset's
+     *  own rungs. Absent, the ladder steps down a point at a time, which is
+     *  what every caller did before there was a preset and what `read` still
+     *  does. See DENSITY.titleRungs for why `present` does not: an eleven-step
+     *  ladder draws titles at 30/29/28/27/26, which is four differences nobody
+     *  can see and one deck that stops reading as one system. */
+    rungs?: readonly number[];
+  }
 ): { style: TypeStyle; y: number; height: number } {
   const floor = opts.minSize ?? TITLE_MIN_SIZE;
   const room = Math.max(opts.minHeight, opts.bottom - opts.minTop);
@@ -2224,9 +2577,19 @@ export function fitHeading(
     drawnTextHeight(Math.max(1, estimateLines(text, width, at)), at, 0, 1, opts.lineSpacing);
   let size = style.size;
   let need = measure(size);
-  while (need > room && size > floor) {
-    size -= 1;
-    need = measure(size);
+  if (opts.rungs && opts.rungs.length) {
+    // Indexed loop: tsconfig sets no target, so iterating an array's iterator
+    // needs downlevelIteration and fails the production build.
+    for (let i = 0; i < opts.rungs.length; i++) {
+      size = Math.max(floor, opts.rungs[i]);
+      need = measure(size);
+      if (need <= room) break;
+    }
+  } else {
+    while (need > room && size > floor) {
+      size -= 1;
+      need = measure(size);
+    }
   }
   const height = Math.min(Math.max(need, opts.minHeight), room);
   return { style: size === style.size ? style : { ...style, size }, y: opts.bottom - height, height };
@@ -2488,6 +2851,90 @@ export function drawnTextHeight(
   const lead = lineSpacing ? 1.26 * lineSpacing : LINE_LEAD;
   return TEXT_INSET_Y + lines * size * lead + Math.max(0, paragraphs - 1) * spaceBelow;
 }
+
+/** The real line box, rather than the splitter's deliberately generous one.
+ *  This is measuring a collision, not deciding whether to split. */
+const INK_LEAD = 1.38;
+/** Slides' own gap between bulleted paragraphs. */
+const BULLET_GAP = 6;
+
+/** WHERE A TEXT BOX'S LAST LINE OF INK ACTUALLY LANDS, from the top of the box.
+ *
+ *  THIS LIVES HERE, AND NOT IN validate.ts WHERE IT WAS WRITTEN, because the
+ *  builder now has to ask the same question at build time: the deck frame's
+ *  hairlines are full-bleed rects, and a rect drawn through a line of type is
+ *  reported by nothing — validate.ts's overlap sweep compares text with text,
+ *  and it would stay green with a rule struck through every title in the deck.
+ *  So frameRequests measures the ink already on the page before it draws a
+ *  rule, and it must measure it with the SAME ruler the validator and the
+ *  check script use, or the two disagree and the disagreement is the bug.
+ *  validate.ts re-exports this under its own name, so nothing that imported it
+ *  from there had to change.
+ *
+ *  A semibold or bold Roboto box is measured glyph by glyph, with the same
+ *  primitive the layouts size those boxes with. Counted at the mixed-case mean
+ *  instead, a hub label sized to its own measured width — one line, with 6% to
+ *  spare — reads as two lines running onto the node below, and a mean that
+ *  cries wolf here is one nobody believes when it is right. The sizing margin
+ *  is divided back out: this is the real ink, like the line box below. */
+export function inkBottom(el: {
+  y: number; w: number; text?: string; size?: number;
+  font?: string; weight?: number; bullets?: boolean; caps?: boolean;
+}): number {
+  const size = el.size || 10;
+  const paras = String(el.text || "").split("\n");
+  let lines = 0;
+  const bold = el.font === "Roboto" && (el.weight || 400) >= 600 && !el.bullets;
+  for (let i = 0; i < paras.length; i++) {
+    const para = paras[i];
+    lines += bold
+      ? Math.max(1, Math.ceil(labelWidthPt(para, size) / 1.06 / Math.max(1, el.w - TEXT_INSET_X) - 1e-9))
+      // MEASURED IN THE FACE THE BOX IS DRAWN IN, which the branch above
+      // already does and this one did not. faceAdvance falls back to the
+      // unnamed 0.55em worst case, and its own comment says what that costs:
+      // it over-measures ROBOTO — the face 82% of the boxes on a real deck are
+      // drawn in — by nearly a third, so "a bullet that draws on one line was
+      // counted as two". Every text box in the preview carries a face (Roboto,
+      // Playfair Display, Poppins), so the unnamed default fitted none of them
+      // and 21 of the 29 overruns this reported on the stored decks were
+      // measured with a ruler no box on the deck is drawn with. The caps flag
+      // travels with it for the same reason: a caps style draws every glyph at
+      // its widest, and the preview's text is already upper-cased when it does.
+      : Math.max(1, estimateLines(para, el.w, size, el.bullets, !!el.caps, el.font));
+  }
+  // One inset — the top. The box's own y is the top of the box, not of the ink.
+  return el.y + SLIDES_TEXT_INSET.y + lines * size * INK_LEAD
+    + Math.max(0, paras.length - 1) * (el.bullets ? BULLET_GAP : 0);
+}
+
+/* ── What this slide has drawn so far ───────────────────────────────────── */
+
+/**
+ * The ink of every text box drawn on the slide being built, for the one caller
+ * that has to know: the deck frame, which draws furniture into bands nothing
+ * is supposed to be in and has no other way to find out that something is.
+ *
+ * A LEDGER RATHER THAN A SECOND PASS OVER THE REQUESTS. Reconstructing a box's
+ * text, face, weight and caps out of the emitted stream is re-implementing
+ * preview-model.ts inside the builder, and generate.ts cannot import it —
+ * preview-model imports FROM here, so the dependency only runs one way. textBox
+ * is the single funnel every line of type on every slide goes through, so the
+ * cheapest honest answer is to write the measurement down as it goes past.
+ *
+ * Module state, scoped to one synchronous build and restored in a finally, for
+ * the same reason PROBING and the density preset are: nothing in the build path
+ * awaits, so no second build can interleave. Nested builds — the splitter's
+ * body probe calls straight back into buildSlideRequests — get their own array
+ * and hand the outer one back untouched, which is what keeps a probe's boxes
+ * off the slide that asked for it.
+ *
+ * `caps` is taken from the STYLE here and from a comparison with the spec in
+ * preview-model, which sets it only on a box it can trace back to a field. The
+ * difference is deliberate and it runs one way: this measures a caps box as at
+ * least as tall as the preview does, so the frame can only ever yield where the
+ * check would not, never draw where the check says it must not.
+ */
+let SLIDE_INK: { top: number; bottom: number }[] | null = null;
 
 /** How many rows a chart may draw, and how tall each may be.
  *
@@ -3799,6 +4246,11 @@ function cardsRequests(
  * elaborating a part of ONE card above. The device that turns three discipline
  * cards plus six sub-disciplines into one slide instead of two.
  */
+/** The shortest strip whose cells still sit inside their own panel: 10pt of
+ *  pad, a 16pt title line, the cells' own 24pt floor and the pad again. Below
+ *  this the panel is not drawn short, it is not drawn. */
+const STRIP_MIN_H = 60;
+
 function stripRequests(
   page: string, id: (s: string) => string,
   strip: NonNullable<SlideInput["strip"]>, top: number, height: number
@@ -3939,24 +4391,30 @@ function layersRequests(
     lines.reduce((w, l) => Math.max(w, l.trim().length * size * PER_CHAR), 0);
   const styles = shown.map((l) => LAYER_STYLE[String(l.style || "").toLowerCase()] || LAYER_STYLE.lav);
 
-  const plan = (m: LayerMetrics, bonus: number) => {
+  /** `keep` is how many bands from the top this plan draws. It is `shown.length`
+   *  on every rung of the ladder; only the terminal step below ever lowers it,
+   *  and a prefix is safe to take because `styles`, `heads`, `paras` and
+   *  `widths` are all indexed the same way the stack is. */
+  const plan = (m: LayerMetrics, bonus: number, keep: number = shown.length) => {
+    const list = keep >= shown.length ? shown : shown.slice(0, Math.max(1, keep));
+    const cut = shown.length - list.length;
     const out: Req[] = [];
     const heads = styles.map((st) => Math.max(8, Math.round(st.head * m.headScale * 2) / 2));
-    const paras = shown.map((l) => (cellsOf(l).length || !m.secondary) ? [] : captionParagraphs(l.caption));
+    const paras = list.map((l) => (cellsOf(l).length || !m.secondary) ? [] : captionParagraphs(l.caption));
     // Widths from the words: the widest line plus the side inset, floored per
     // style, never past the content width. A band whose connector points UP
     // into the band above adopts that band's width when its own is narrower.
-    const widths = shown.map((l, i) => {
+    const widths = list.map((l, i) => {
       const need = Math.max(inkW([l.title || ""], heads[i]), inkW(paras[i], m.caption)) + PADX * 2;
       return Math.min(GRID.contentWidth, Math.max(styles[i].minW * GRID.contentWidth, need));
     });
-    for (let i = 1; i < shown.length; i++) {
-      if (layerArrow(shown[i - 1].arrow) === "up") widths[i] = Math.max(widths[i], widths[i - 1]);
+    for (let i = 1; i < list.length; i++) {
+      if (layerArrow(list[i - 1].arrow) === "up") widths[i] = Math.max(widths[i], widths[i - 1]);
     }
     let y = top;
     let gaps = 0;
     let dropped = 0;
-    shown.forEach((layer, li) => {
+    list.forEach((layer, li) => {
       const st = styles[li];
       const head = heads[li];
       const W = widths[li];
@@ -4075,11 +4533,19 @@ function layersRequests(
         }
       }
     });
-    if (dropped) {
+    if (dropped || cut) {
       // The last rung SAYS what it dropped, right-aligned under the stack in
       // the slot the other layouts use for "Showing N of M" — at 7.5pt, not
       // the 7pt axis style, because nothing on this layout goes below the floor.
-      const text = `Showing names only - ${dropped} description${dropped > 1 ? "s" : ""} omitted to fit`;
+      //
+      // A DROPPED BAND IS NAMED FIRST. Losing a whole layer is a bigger loss
+      // than losing the sentences inside one, and the two can happen together:
+      // the terminal step below runs on the last rung, which has already given
+      // up every caption it had.
+      const said: string[] = [];
+      if (cut) said.push(`Showing ${list.length} of ${shown.length} layers`);
+      if (dropped) said.push(`${cut ? "" : "showing names only - "}${dropped} description${dropped > 1 ? "s" : ""} omitted`);
+      const text = `${said.join(", ")} to fit`.replace(/^s/, "S");
       const w = Math.min(GRID.contentWidth, text.length * 7.5 * PER_CHAR + TEXT_INSET_X + 4);
       out.push(...textBox(id("lydrop"), page, text,
         { font: "Roboto", size: 7.5, weight: 300, color: COLOR.ink }, {
@@ -4092,10 +4558,41 @@ function layersRequests(
 
   let chosen = plan(LAYER_RUNGS[0], 0);
   for (let r = 1; r < LAYER_RUNGS.length && chosen.bottom - top > room; r++) chosen = plan(LAYER_RUNGS[r], 0);
+  // AND WHEN THE LAST RUNG STILL RUNS PAST THE FOOTER, BANDS GO — from the
+  // bottom, one at a time, until the stack is clear of it.
+  //
+  // The ladder used to end unconditionally: five rungs, and whatever the fifth
+  // measured was drawn. That was survivable while the band was always read's
+  // 270pt, and it stopped being survivable at `present`, where the band gives
+  // up a fifth and five bands of cells run 22pt off the bottom of the PAGE —
+  // taking the "omitted to fit" line with them, so the one sentence saying
+  // content had been lost was itself the content that could not be read.
+  // `layers` is excluded from splitOverflowingSlides, so nothing downstream
+  // rescues it either.
+  //
+  // MEASURED AGAINST THE FOOTER, NOT AGAINST `room`, and the two numbers are
+  // doing different jobs. `room` is the band — the design intent, what the
+  // five rungs above are solving for — and a stack that misses it by a few
+  // points borrows the same 7pt gap between the band floor and the footer that
+  // a chart's source line already borrows. Dropping a whole layer of an
+  // argument to save that is much the worse trade: driven at read, the band
+  // floor would cut a band off a five-by-two stack that is drawn perfectly
+  // legibly today. FOOTER_Y is the hard floor — below it is the page's own
+  // furniture and then the edge of the paper — so this is a safety net rather
+  // than a second opinion about the layout.
+  //
+  // Never below one: a layer diagram of nothing is not a smaller diagram, it is
+  // an empty slide, and the words are not lost in any case — droppedContent
+  // walks the spec and reports every string the build did not draw.
+  let keep = shown.length;
+  while (chosen.bottom > FOOTER_Y && keep > 1) {
+    keep -= 1;
+    chosen = plan(LAYER_RUNGS[LAYER_RUNGS.length - 1], 0, keep);
+  }
   // Leftover room goes into the GAPS, up to 12pt each; the rest is left at
   // the foot, which is where the reference leaves it. A band never grows.
   const slack = room - (chosen.bottom - top);
-  if (slack > 0 && chosen.gaps > 0) chosen = plan(chosen.metrics, Math.min(12, slack / chosen.gaps));
+  if (slack > 0 && chosen.gaps > 0) chosen = plan(chosen.metrics, Math.min(12, slack / chosen.gaps), keep);
   return { requests: chosen.out, bottom: chosen.bottom };
 }
 
@@ -5956,10 +6453,35 @@ function panelRequests(
 
 /** One slide → its full request list. Exported so the layout geometry can be
  *  exercised without a Google round-trip; nothing else should call it. */
+/**
+ * Every request for one slide, built at the deck's own density.
+ *
+ * The preset is fixed for the duration of this ONE call and put back in a
+ * finally. Module state rather than a parameter for the reason withDensity's
+ * own comment gives — 81 readers of GRID.bodyY — and safe for the reason
+ * PROBING below is safe: nothing in here awaits, so no second build can
+ * interleave with this one. The wrapper is where the scope lives, so that
+ * every return path out of a 1,300-line function is inside it.
+ */
 export function buildSlideRequests(
   slide: SlideInput, index: number, run = "r0",
   /** Collects what a layout could not do, for deckWarnings. Only the hub
    *  writes to it today; every other caller leaves it out. */
+  notes?: string[]
+): Req[] {
+  // The ink ledger is scoped exactly as the density is, and for the same
+  // reason. A nested build — the splitter's body probe reaches straight back
+  // in here — gets its own array, so the boxes it draws to answer a question
+  // are not counted as boxes on the slide that asked it.
+  const outerInk = SLIDE_INK;
+  SLIDE_INK = [];
+  try {
+    return withDensity(densityOf(slide), () => buildSlideRequestsAt(slide, index, run, notes));
+  } finally { SLIDE_INK = outerInk; }
+}
+
+function buildSlideRequestsAt(
+  slide: SlideInput, index: number, run: string,
   notes?: string[]
 ): Req[] {
   // READ-TOLERANT, from the first line. The preview, PDF and publish routes
@@ -6076,10 +6598,16 @@ export function buildSlideRequests(
   // Its body starts under the title rather than at a fixed y, so the extra
   // room costs nothing.
   const split = layout === "image-split";
+  // THE LADDER IS THE PRESET'S, not this call site's. At `read` every one of
+  // these four is what it has always been — the floor is TITLE_MIN_SIZE, the
+  // ceiling is six points under the eyebrow's box, and with no rungs the
+  // ladder still steps down a point at a time.
   const heading = fitHeading(slide.title, onDark ? TYPE.slideTitleDark : TYPE.slideTitle, titleWidth, {
     bottom: GRID.bodyY - TITLE_GAP + (split ? 34 : 0),
-    minTop: GRID.eyebrowY + GRID.eyebrowHeight + 6,
+    minTop: density().titleMinTop,
     minHeight: GRID.titleHeight,
+    minSize: density().titleMinSize,
+    rungs: density().titleRungs,
   });
   const titleStyle = heading.style;
   const titleBox = { y: heading.y, height: heading.height };
@@ -6335,8 +6863,31 @@ export function buildSlideRequests(
     if (cardsMeta.bottom) contentBottom = cardsMeta.bottom;
     if (stripH && slide.strip) {
       const stripTop = (cardsMeta.bottom || cardsTop + cardsH) + 10;
-      requests.push(...stripRequests(page, id, slide.strip, stripTop, stripH));
-      contentBottom = stripTop + stripH;
+      // THE STRIP IS BOUNDED BY THE BAND, not by the room the cards left over.
+      //
+      // The reservation above is honest until `cardsH`'s own 80pt floor wins —
+      // a row of cards shorter than that is not a row of cards — and then the
+      // cards end wherever they end and the strip is drawn under them. The
+      // floor only wins on a band short enough, and the standfirst is what
+      // decides that: at read's 270pt band it never happens, and at `present`
+      // three lines of 14pt standfirst over five tinted cards put the strip's
+      // whole panel 18pt past the bottom of the page and its last cell into
+      // the folio's slot.
+      //
+      // Half a point of slack, so a strip that fits keeps the float it already
+      // had: the reservation and this subtraction are the same arithmetic in
+      // the opposite order, and an ulp between them would rewrite the height of
+      // every strip in the corpus.
+      const room = bandBottom - stripTop;
+      const drawnH = room >= stripH - 0.5 ? stripH : room;
+      // Under its own minimum the strip is NOT DRAWN SHORTER — its cells are
+      // floored at 24pt and would hang out of the panel they sit in, which is a
+      // worse slide than no strip. The words are not lost: droppedContent walks
+      // the spec and reports every string this build did not draw.
+      if (drawnH >= STRIP_MIN_H) {
+        requests.push(...stripRequests(page, id, slide.strip, stripTop, drawnH));
+        contentBottom = stripTop + drawnH;
+      }
     }
   } else if (layout === "layers") {
     requests.push(
@@ -7404,7 +7955,7 @@ export function buildSlideRequests(
   // builder's own — index is authoritative here in a way a model-supplied
   // number never is.
   if (layout !== "cover" && layout !== "closing") {
-    // ONE discreet line, and no page number.
+    // ONE DISCREET LINE WITH TWO ENDS: the running head, and the folio.
     //
     // The footer used to sit 1.5pt from the bottom edge — inside the overscan
     // of most projectors, so on the room's screen it was either cropped or
@@ -7413,14 +7964,34 @@ export function buildSlideRequests(
     // removed both from every page. The reference deck's credit line sits
     // ~15pt clear of the edge and names the programme; this does the same,
     // with the deck's title stamped by the builder rather than typed per
-    // slide. Slides has no automatic page number the API can insert, so
-    // rather than a number that lies after any edit, there is none.
+    // slide.
+    //
+    // THE NUMBER IS BACK, and the objection that removed it is answered rather
+    // than forgotten. What went wrong was a number the MODEL wrote into a spec
+    // that then outlived the edit; this one is `index + 1` computed by the
+    // builder, and every route that draws a deck — draft, preview, PDF,
+    // publish, and every edit through applyEditSlide — rebuilds all of its
+    // slides through this function with fresh indices, so an insert renumbers
+    // the pages after it. It can only be wrong if somebody edits in Drive,
+    // which is exactly as true of the deck title sitting beside it.
+    //
+    // The running head gives up a slot at its right end rather than having the
+    // number laid over it: this box spans the whole content measure, so a
+    // number box on the same line would overlap it on every slide in the deck,
+    // and 618 box overlaps the geometry check is right to report is a check
+    // nobody reads any more.
     const inkLeft = onDark ? { ...TYPE.footerLeft, color: COLOR.greyLight } : TYPE.footerLeft;
     requests.push(
       ...textBox(id("ftl"), page, slide.footer || "The Content Engine", inkLeft, {
-        x: GRID.margin, y: FOOTER_Y, width: GRID.contentWidth, height: 12,
+        x: GRID.margin, y: FOOTER_Y,
+        width: footerLineWidth(GRID.margin, GRID.contentWidth), height: 12,
       }),
     );
+    // THE FRAME, last, and only on the pages that carry the chrome. A section
+    // divider is punctuation rather than a page: it carries no lockup either
+    // (LOGO_PLACEMENT has no entry for it), and it takes the ground and the
+    // folio without either hairline — see frameRequests' `rules`.
+    requests.push(...frameRequests(page, id, style, index, layout !== "section", SLIDE_INK || []));
   }
   return requests;
 }

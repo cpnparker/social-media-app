@@ -20,7 +20,16 @@
 
 /** Canonical brand colours. Present identically in all three decks checked.
  *  Do NOT add #3B39FF or #203659 here — both are copy-paste drift that appears
- *  in the source deck but in none of the themes. */
+ *  in the source deck but in none of the themes.
+ *
+ *  AND DO NOT ADD #052539 (decided 2026-09-17). It is the body ink on every
+ *  content run of the September handover deck, which makes it tempting, and it
+ *  is 14.87:1 on off-white against COLOR.navy's 12.56:1 — a difference nobody
+ *  can see, on a palette whose recorded failure mode is exactly a near-duplicate
+ *  hex nobody could tell from the one above it. Body ink at BOTH densities
+ *  stays COLOR.navy. The reason is written here rather than in a commit message
+ *  so that the next person reading the handover deck's XML does not have to
+ *  work it out again. */
 export const COLOR = {
   navy: "023250",        // primary dark; text on light, dark backgrounds, logo colour
   blue: "3950FF",        // primary brand; divider backgrounds, headings, emphasis
@@ -158,6 +167,234 @@ export const NOTE = {
   lineHeight: 11,
 } as const;
 
+/* ─────────────── Density ─────────────── */
+
+/**
+ * ONE geometry, two densities.
+ *
+ * `read` is this file as it has always been, measured from proposal decks that
+ * are READ — a document at arm's length, 10pt body, a 20pt title. `present` is
+ * the same brand at the handover deck's scale: a 30pt title in brand blue, 12pt
+ * body, a 14pt standfirst. Same margins, same measure, same colours, same
+ * layouts. Half the words and one and a half times the type.
+ *
+ * A SECOND SET OF LAYOUTS WOULD FORK THIS FILE, and a fork is two files that
+ * agree until the day somebody fixes one of them. A preset cannot drift from
+ * itself: every layout below reads GRID and TYPE, and the preset is what those
+ * two answer with.
+ *
+ * THE PRESET HAS THREE LIVE VERTICAL NUMBERS, not seven. `GRID.titleY`,
+ * `GRID.bodyHeight` and `GRID.columnHeight` have no readers anywhere in lib/,
+ * app/ or scripts/ — they are read's rhythm written down twice — so they are
+ * left as the fixed constants they are rather than carried in here, where four
+ * more values could drift from the three that decide anything.
+ *
+ * WHY 30pt NEEDS A NEW RHYTHM AND NOT A NEW NUMBER. fitHeading never overflows
+ * a title; it shrinks until one line fits. So raising the title token on read's
+ * rhythm does not overrun anything — it SILENTLY DEMOTES. Driven over the 472
+ * corpus titles that use the shared title block, a 30pt base in read's 46.08pt
+ * of room draws not one of them at 30: the median lands at 26 and forty-one hit
+ * the floor, two points UNDER this preset's own standfirst. The reason is
+ * vertical: 267 of those 472 need two lines at 30pt in the column their layout
+ * draws them in, and two lines at 30pt need 94.20pt.
+ *
+ * So `present.bodyY` is solved, not chosen, and it is exact on both binding
+ * constraints at once — see the two assertions in check 47, which state them
+ * rather than restating the number:
+ *
+ *   158.40 is the LARGEST bodyY that still holds twelve lines of 12pt body
+ *          (the band is then drawnTextHeight(12, 12) to the last bit), and
+ *   158.40 is the SMALLEST that clears two lines of a 30pt title above a
+ *          title floor set by the frame's top hairline.
+ *
+ * It costs the band 54.72pt — a fifth — which takes a slide carrying a title, a
+ * standfirst and a takeaway bar from thirteen lines of 10pt body to seven of
+ * 12pt. That is the "half the words" of the brief, arrived at by measurement.
+ */
+export type Density = "read" | "present";
+
+/** The foot of the content band, which does NOT move between presets: it is
+ *  pinned by NOTE.bottom and the footer, and every point bodyY gains comes out
+ *  of the band one for one. Written as the sum rather than as 5.2 * IN because
+ *  those are different floats and the difference reaches the request stream. */
+export const BAND_BOTTOM = 1.44 * IN + 3.76 * IN;   // 374.4
+
+export interface DensityPreset {
+  /** Top of the content band. */
+  bodyY: number;
+  /** Its height. Derived for `present`; written as read's own expression for
+   *  `read`, because the float has to be the one the deck already ships. */
+  bandHeight: number;
+  /** fitHeading's `minHeight` for the shared title block. It never BINDS at
+   *  `present` — height is min(max(need, minHeight), room) and a 30pt line
+   *  needs more than this — so it is a clarity value, not a correctness one.
+   *  Said out loud anyway, or the next reader finds read's 45.36 in a 30pt
+   *  deck and concludes the box is short. */
+  titleHeight: number;
+  /** The highest the title block may rise. */
+  titleMinTop: number;
+  /** The floor of the title ladder. At `present` this is read's full
+   *  slideTitle, so present's worst title is read's best — and, more to the
+   *  point, never the 14pt that IS present's standfirst. */
+  titleMinSize: number;
+  /** The sizes the title ladder may stop at, largest first, the last being the
+   *  floor. Absent, fitHeading steps down a point at a time, which is what
+   *  `read` has always done and must keep doing.
+   *
+   *  `present` gets rungs because an eleven-step ladder from 30 to 20 produces
+   *  a deck of titles at 30/29/28/27/26 — differences nobody can see that stop
+   *  the deck reading as one system. Measured over the same 472 titles at
+   *  room 94.40, [30, 26, 22, 20] and the 1pt step both overrun nothing and
+   *  both draw 430 titles at 30; the rungs spend the other 42 on four visible
+   *  sizes instead of eleven invisible ones. This file already ladders this
+   *  way — STAT_GRID.rungs, VENN_NAME_SIZES, the table body's 10/9/8. */
+  titleRungs?: readonly number[];
+  /** The type sizes the preset moves. Everything else in TYPE is shared. */
+  type: {
+    slideTitle: number; slideTitleDark: number;
+    body: number; bodyDark: number;
+    standfirst: number; standfirstDark: number;
+    caption: number;
+  };
+  /** The slide title's ink on a light ground. The handover deck sets every one
+   *  of its titles in brand blue; brand.ts's navy was measured from three other
+   *  TCE decks, so this is per-deck rather than per-brand and belongs to the
+   *  preset that came from that deck. #3950FF is 5.25:1 on off-white. */
+  titleColor: string;
+  /** Where the frame's top hairline lands, or null for a preset that has no
+   *  room for one. See FRAME. */
+  topRuleY: number | null;
+}
+
+export const DENSITY: Record<Density, DensityPreset> = {
+  read: {
+    bodyY: 1.44 * IN,
+    bandHeight: 3.76 * IN,
+    titleHeight: 0.63 * IN,
+    /** The expression the shared title call has always used, moved here
+     *  unchanged: six points under the eyebrow's box. Not the literal 45.6,
+     *  so that it still tracks the eyebrow if the eyebrow ever moves. */
+    get titleMinTop() { return GRID.eyebrowY + GRID.eyebrowHeight + 6; },
+    titleMinSize: 14,
+    type: {
+      slideTitle: 20, slideTitleDark: 20,
+      body: 10, bodyDark: 10,
+      standfirst: 11.5, standfirstDark: 11.5,
+      caption: 8,
+    },
+    titleColor: COLOR.navy,
+    /** NO TOP HAIRLINE ON A READ DECK, and this is arithmetic rather than
+     *  taste. A read title box bottoms out at 91.68 and may be as tall as its
+     *  room, so its top edge reaches 45.60 — above the logo's own bottom edge
+     *  at 46.80, which is the lowest a full-bleed rule could sit and the
+     *  highest it could go without striking the lockup. There is no band for
+     *  it. The room the top rule needs is bought by `present`'s rhythm, and
+     *  read's rhythm may not move: the 618 stored slides are the bar.
+     *  Putting it above the logo at y≈12 instead would read as a trim mark
+     *  rather than as the rule that closes the chrome band, which is the one
+     *  job it has. */
+    topRuleY: null,
+  },
+  present: {
+    bodyY: 158.40,
+    bandHeight: BAND_BOTTOM - 158.40,
+    titleHeight: 50.7,          // drawnTextHeight(1, 30)
+    /** Set by the frame's top hairline, not by the eyebrow: the rule lands on
+     *  the logo's bottom edge and the title starts a clear 5.2pt beneath it.
+     *  IT IS FREE. The same room at read's 45.60 floor needs bodyY 151.80 and
+     *  a band of 222.60 — still twelve lines, because twelve lines needs
+     *  216.00 whatever is above them. The hairline spends 6.6pt of slack and
+     *  not one line of body. */
+    get titleMinTop() { return (FRAME.topRuleY as number) + FRAME.topRuleClear; },
+    titleMinSize: 20,
+    titleRungs: [30, 26, 22, 20],
+    type: {
+      slideTitle: 30, slideTitleDark: 30,
+      body: 12, bodyDark: 12,
+      standfirst: 14, standfirstDark: 14,
+      /** TYPE.caption has no reader today — the caption-shaped tokens in use
+       *  are gridCaption, stageCaption and source. It is carried here so the
+       *  preset is the whole scale rather than the part of it that happens to
+       *  be wired, and it changes nothing until something draws with it. */
+      caption: 9.5,
+    },
+    titleColor: COLOR.blue,
+    get topRuleY() { return FRAME.topRuleY; },
+  },
+};
+
+/** The preset in force for the build running right now.
+ *
+ *  Module state, set for the duration of ONE synchronous build and restored in
+ *  a finally — the same shape as this file's sibling PROBING flag in
+ *  generate.ts, and safe for the same reason: buildSlideRequests awaits
+ *  nothing, so no second build can interleave with it. A preset threaded as a
+ *  parameter instead would have to reach all 81 readers of GRID.bodyY, which is
+ *  a change to every layout in the file to deliver a change to none of them. */
+let ACTIVE: Density = "read";
+
+/** READ IS THE DEFAULT AND STAYS THE DEFAULT in this change. Every deck built
+ *  before today was built at these numbers, and every deck built after it is
+ *  too unless its spec says otherwise. */
+export const DEFAULT_DENSITY: Density = "read";
+
+export function density(): DensityPreset { return DENSITY[ACTIVE]; }
+export function densityName(): Density { return ACTIVE; }
+
+/** Run `fn` at a density, and put the previous one back whatever happens. */
+export function withDensity<T>(name: Density, fn: () => T): T {
+  const previous = ACTIVE;
+  ACTIVE = DENSITY[name] ? name : DEFAULT_DENSITY;
+  try { return fn(); } finally { ACTIVE = previous; }
+}
+
+/** A y inside the content band, measured against READ's band and moved onto the
+ *  band of the density in force.
+ *
+ *  Four layouts fix their geometry in absolute points rather than reading
+ *  GRID.bodyY: the two timelines, the image grid and the logo wall. Those
+ *  numbers were measured off read's rhythm, so at `present` — where bodyY moves
+ *  down 54.72pt and the band gives up a fifth — a timeline's date row stays
+ *  where it was and a 14pt standfirst is drawn 24pt through it, while the image
+ *  grid's first row of cells sits 13pt ABOVE the foot of the title box and
+ *  NOTHING REPORTS IT, because those cells are createImage and the overlap
+ *  sweep compares text with text.
+ *
+ *  Shifting the blocks bodily by the delta does not work — the timeline then
+ *  ends 2.16pt past the band floor and the image grid 13.32pt off the canvas.
+ *  Scaling them ONTO the band does, and it is also the more honest description
+ *  of what they are: proportions of the space between the title and the
+ *  takeaway bar, which is exactly what they were measured as.
+ *
+ *  AT READ THIS IS THE IDENTITY, and returns the same float rather than an
+ *  equal one, because these numbers reach the emitted request and the whole
+ *  regression proof for this stage is that 618 stored slides rebuild to the
+ *  same stream.
+ *
+ *  AND THE SHORT-CIRCUIT IS PROVABLY UNNECESSARY FOR EVERY VALUE THAT USES IT,
+ *  which is a finding rather than a reason to delete it. Deleting it was a
+ *  mutation and it SURVIVED: searched over 400,000 probes across the band,
+ *  there is no y for which bodyY + (y − bodyY) differs from y. It cannot be
+ *  otherwise — y and bodyY are within a factor of two, so the subtraction is
+ *  exact (Sterbenz) and the addition recovers it. The branch stays because it
+ *  states the guarantee the regression proof rests on at the point the
+ *  guarantee is made, and costs one comparison; it is not there because a
+ *  float was ever observed to move. */
+export function onBand(y: number): number {
+  const d = density();
+  if (d.bodyY === DENSITY.read.bodyY && d.bandHeight === DENSITY.read.bandHeight) return y;
+  return d.bodyY + (y - DENSITY.read.bodyY) * (d.bandHeight / DENSITY.read.bandHeight);
+}
+
+/** The same for a height that is a CONTAINER — a grid of pictures, a band of
+ *  detail — rather than a line box. A box holding one line of 9pt type may not
+ *  be scaled: the band shrinks and the type does not. */
+export function bandScaled(h: number): number {
+  const d = density();
+  if (d.bandHeight === DENSITY.read.bandHeight) return h;
+  return h * (d.bandHeight / DENSITY.read.bandHeight);
+}
+
 export const GRID = {
   margin: 0.34 * IN,          // 24.48 — left and right
   contentWidth: 9.32 * IN,    // 671.04
@@ -174,16 +411,29 @@ export const GRID = {
    * Tightened to start content at ~26% down, which is the source's own
    * proportion. bandHeight grows by the same amount so the band still ends
    * where it did, clear of the footer and the takeaway bar. */
+  /** NO READERS, anywhere in lib/, app/ or scripts/ — checked, not assumed.
+   *  Left as read's own constants rather than carried into the density preset:
+   *  a value nothing reads cannot be wrong, but a preset copy of it can
+   *  disagree with the three values that decide the rhythm. */
   titleY: 0.8 * IN,           // 57.6
-  titleHeight: 0.63 * IN,     // 45.36
-  bodyY: 1.44 * IN,           // 103.68
   bodyHeight: 3.22 * IN,      // 231.84 — grown by what bodyY gave back
+
+  /* ── THE THREE NUMBERS THE DENSITY PRESET MOVES ──────────────────────────
+   *
+   * Accessors, not constants, so that all 81 readers of GRID.bodyY below and
+   * throughout generate.ts go on reading `GRID.bodyY` and get the rhythm of
+   * the deck being built. At the default preset they answer exactly what they
+   * answered before — read's `bandHeight` is still literally `3.76 * IN`,
+   * because the sum 1.44 * IN + 3.76 * IN and 5.2 * IN are different floats
+   * and the difference reaches the emitted request. */
+  get titleHeight() { return density().titleHeight; },     // read 45.36
+  get bodyY() { return density().bodyY; },                 // read 103.68
   /** Foot of the title to the bottom margin. Self-contained blocks — stats, a
    *  bar plot — are centred in this, so five bars sit balanced and eight fill
    *  it. Prose is NOT: bullets centred in the band float away from the title
    *  they belong to, which rendering made obvious and reasoning had not. A
    *  three-bullet slide with dead space wants a picture, not a lower margin. */
-  bandHeight: 3.76 * IN,      // 270.7 — band bottom unchanged at ~374
+  get bandHeight() { return density().bandHeight; },       // read 270.72
 
   /** Stops short of the top-right logo (which starts at 8.69in) so a long
    *  eyebrow cannot run underneath it. */
@@ -224,7 +474,7 @@ export const GRID = {
   /** Columns start below the title band (1.22 + 0.63 = 1.85in). The source
    *  layout's own 1.26in assumes a title higher up the page than ours. */
   columnWidth: 4.37 * IN,     // 314.64
-  columnY: 1.44 * IN,         // tracks bodyY
+  get columnY() { return density().bodyY; },   // tracks bodyY, and now says so
   columnHeight: 3.22 * IN,
   columnLeftX: 0.34 * IN,
   columnRightX: 5.28 * IN,
@@ -338,19 +588,31 @@ export const TYPE: Record<string, TypeStyle> = {
    *  baked gradient's foot, so it is only drawn from a numeric eyebrow where the
    *  divider is the deck's own structural marker. */
   sectionNumeral:{ font: "Playfair Display", size: 64, color: COLOR.lime },
-  slideTitle:    { font: "Playfair Display", size: 20, color: COLOR.navy },
-  slideTitleDark:{ font: "Playfair Display", size: 20, color: COLOR.white },
+  /* ── THE SEVEN TOKENS THE DENSITY PRESET MOVES ───────────────────────────
+   *
+   * Accessors for the same reason GRID's three are: every layout goes on
+   * reading TYPE.body, and gets the body of the deck being built. At the
+   * default preset each one answers exactly the object it always did.
+   *
+   * The title's COLOUR moves with its size on the light ground only. Every
+   * title in the handover deck is brand blue and brand.ts's navy was measured
+   * from three other TCE decks, so the blue is this deck's rather than the
+   * brand's — which makes it a preset value and not a token change. On a dark
+   * ground the title stays white in both presets: that is a contrast decision,
+   * not a density one. */
+  get slideTitle()     { return { font: "Playfair Display", size: density().type.slideTitle, color: density().titleColor }; },
+  get slideTitleDark() { return { font: "Playfair Display", size: density().type.slideTitleDark, color: COLOR.white }; },
   cardHeading:   { font: "Playfair Display", size: 11, color: COLOR.blue },
   eyebrow:       { font: "Roboto", size: 11, bold: true, color: COLOR.navy, caps: true },
   eyebrowDark:   { font: "Roboto", size: 11, bold: true, color: COLOR.white, caps: true },
   label:         { font: "Roboto", size: 10, bold: true, color: COLOR.blue, caps: true },
-  body:          { font: "Roboto", size: 10, weight: 300, color: COLOR.navy },
-  bodyDark:      { font: "Roboto", size: 10, color: COLOR.white },
-  caption:       { font: "Roboto", size: 8, weight: 300, color: COLOR.ink },
+  get body()     { return { font: "Roboto", size: density().type.body, weight: 300, color: COLOR.navy }; },
+  get bodyDark() { return { font: "Roboto", size: density().type.bodyDark, color: COLOR.white }; },
+  get caption()  { return { font: "Roboto", size: density().type.caption, weight: 300, color: COLOR.ink }; },
   /** The line under the title that says what the slide argues, before the
    *  bullets say how. Two type sizes 2x apart is not a hierarchy — it is a
    *  heading and a footnote. This is the middle step. */
-  standfirst:    { font: "Roboto", size: 11.5, weight: 300, color: COLOR.navy },
+  get standfirst() { return { font: "Roboto", size: density().type.standfirst, weight: 300, color: COLOR.navy }; },
   /** A two-column comparison header — "Before"/"After", over an accent rule. */
   columnHeader:  { font: "Playfair Display", size: 14, color: COLOR.navy },
   quadHeader:    { font: "Roboto", size: 11, bold: true, color: COLOR.navy, caps: true },
@@ -379,7 +641,7 @@ export const TYPE: Record<string, TypeStyle> = {
   statementTitle:{ font: "Playfair Display", size: 25, color: COLOR.navy },
   statementLead: { font: "Roboto", size: 10, weight: 300, color: COLOR.ink },
   cellHead:      { font: "Roboto", size: 9, bold: true, color: COLOR.white },
-  standfirstDark:{ font: "Roboto", size: 11.5, weight: 300, color: COLOR.greyLight },
+  get standfirstDark() { return { font: "Roboto", size: density().type.standfirstDark, weight: 300, color: COLOR.greyLight }; },
   statistic:     { font: "Poppins", size: 30, color: COLOR.white },
   source:        { font: "Roboto", size: 7, color: COLOR.ink },
   milestoneDate: { font: "Roboto", size: 9, bold: true, color: COLOR.blue, caps: true },
@@ -469,6 +731,97 @@ export const LOGO_PLACEMENT = {
   closing: { x: 4.32 * IN, y: 4.47 * IN, width: 1.47 * IN, height: 0.57 * IN },
 } as const;
 
+/* ─────────────── The deck frame ─────────────── */
+
+/**
+ * The furniture that belongs to every page rather than to one layout.
+ *
+ * `slideMaster1.xml` in the handover deck puts four things on every slide and
+ * no slide turns them off: a paper-texture picture bled to the page, two
+ * full-bleed hairlines, a running head and a page number. We drew a flat
+ * off-white and one footer line. This is the difference, and it is most of why
+ * seven slides of one layout in that deck do not read as seven of the same
+ * slide.
+ *
+ * THE HAIRLINE IS A RECT, NOT AN ASSET (decided 2026-09-17). The deck's own
+ * hairline is a 1920x101 PNG with exactly one opaque row of flat #707070 — a
+ * rectangle drawn the long way round, because PowerPoint made that easy.
+ * A filled rect is identical on screen, costs no fetch, and keeps preview
+ * parity free: preview-model.ts already knows rects, while every image is one
+ * more thing to get right. (The ARC of stage 4 stays an image: Slides has an
+ * ARC shape, the preview knows four kinds, and an arc is not one of them.)
+ *
+ * THE RUNNING HEAD IS ALREADY DRAWN. stampFooter writes "The Content Engine ·
+ * <deck title>" onto every slide and the footer prints it at FOOTER_Y. Moving
+ * it to the source deck's position at the TOP of the page would push the
+ * eyebrow down with it and take the title floor to ~66, which costs another
+ * ~14pt of band and a bullet on every prose slide in the deck. It stays at the
+ * foot; the frame adds the number at the other end of the same line.
+ */
+export const FRAME = {
+  /** The hairline's ink on a light ground — the deck's own #707070, 4.66:1 on
+   *  off-white, which is fine for a rule and would also be fine for text. */
+  rule: "707070",
+  /** And on a dark one, where #707070 on navy is a rule you cannot see. */
+  ruleOnDark: COLOR.greyLight,
+  /** Alpha for the dark-ground rule: at full strength #EBEBEB on navy is a
+   *  stripe rather than a hairline. */
+  ruleOnDarkAlpha: 0.45,
+  thickness: 1,
+
+  /** THE TOP RULE SITS ON THE LOGO'S OWN BOTTOM EDGE, which is the highest a
+   *  full-bleed rule can go without striking the lockup. Derived rather than
+   *  written down as 46.8, so it follows the lockup if the lockup moves.
+   *
+   *  The source deck puts its top rule at y=28.9. That is unreachable here:
+   *  the lockup occupies 13.68 to 46.80 and the eyebrow's ink reaches 44.75,
+   *  and both of those are ours rather than theirs. */
+  get topRuleY() { return LOGO_PLACEMENT.content.y + LOGO_PLACEMENT.content.height; },
+  /** Air between the rule and the top of the title block. This is what sets
+   *  DENSITY.present.titleMinTop, and it is the whole reason present's rhythm
+   *  is solved at 158.40 rather than at 151.80. */
+  topRuleClear: 5.2,
+
+  /** The bottom rule, at the source deck's own glyph position: 1.6pt below the
+   *  takeaway bar's floor (NOTE.bottom, 374), 5pt above the footer's box
+   *  (FOOTER_Y, 381), in a gap that already existed at BOTH presets. It costs
+   *  the rhythm nothing, which is why both presets carry it and only `present`
+   *  carries the top one. */
+  bottomRuleY: 376,
+
+  /** The paper ground, as a stretched picture fill on the page rather than as
+   *  an element: a background cannot be selected, nudged or reordered in
+   *  Drive, and it adds nothing for validate.ts, pathOf or droppedContent to
+   *  walk. Light grounds only — the sheet is near-white, and a near-white
+   *  texture under navy is not a texture, it is a missing background.
+   *
+   *  1024px at q68 and 47KB (decided 2026-09-17). Measured pixel by pixel on
+   *  the shipped file: luminance 205-255, mean 247.3 — grain on near-white —
+   *  so the 1.8MB source PNG is 1.8MB of nothing anyone can see, and this is a
+   *  background on EVERY slide, which makes weight the thing that matters. */
+  paperPath: "/assets/deck_paper_ground.jpg",
+
+  /** THE PAGE NUMBER, and the slot the footer line gives up for it.
+   *
+   *  generate.ts deliberately drew no number, on the grounds that a static
+   *  number lies the moment somebody merges two slides by hand. That objection
+   *  is answered the same way the plan answers it for the stepper, and the
+   *  footer already lives under the same contract: the number is the BUILDER's
+   *  (`index + 1`), never the model's, and every route — draft, preview, PDF,
+   *  publish, and every edit through applyEditSlide — rebuilds the whole deck
+   *  through buildSlideRequests with fresh indices, so it renumbers. It can
+   *  only be wrong if somebody edits in Drive, which is exactly what is true
+   *  of the deck title beside it.
+   *
+   *  The slot is TAKEN OUT OF THE FOOTER'S BOX rather than laid over it. The
+   *  footer box spans the whole content width, so a number box on the same
+   *  line would overlap it on every slide in the deck — 618 box overlaps that
+   *  the geometry check would be right to report and that nobody should have
+   *  to learn to ignore. Two ends of one line, each with its own box. */
+  numberWidth: 24,
+  numberGap: 8,
+} as const;
+
 const PUBLIC_ORIGIN = "https://ai.thecontentengine.com";
 
 /** createImage needs a publicly fetchable raster URL — Google fetches it from
@@ -478,11 +831,15 @@ const PUBLIC_ORIGIN = "https://ai.thecontentengine.com";
  *  batchUpdate with "Localhost image URLs are invalid" — which fails the entire
  *  deck over the logo. Any non-public origin therefore falls back to production,
  *  where these assets are served from `public/assets`. */
-export function logoUrl(variant: "white" | "navy"): string {
+export function assetUrl(path: string): string {
   const configured = (process.env.NEXTAUTH_URL || "").replace(/\/$/, "");
   const isPublic = /^https:\/\//.test(configured) && !/localhost|127\.0\.0\.1|0\.0\.0\.0/.test(configured);
   const base = isPublic ? configured : PUBLIC_ORIGIN;
-  return `${base}${variant === "white" ? LOGO.whitePath : LOGO.navyPath}`;
+  return `${base}${path}`;
+}
+
+export function logoUrl(variant: "white" | "navy"): string {
+  return assetUrl(variant === "white" ? LOGO.whitePath : LOGO.navyPath);
 }
 
 /* ─────────────── Layout archetypes ─────────────── */
@@ -528,16 +885,23 @@ export const LAYOUTS: SlideLayout[] = [
  *  text-only layouts could not express one, so the model described a visual it
  *  had no way to produce. */
 export const TIMELINE = {
-  axisY: 2.85 * IN,
+  /* THE WHOLE STACK IS A PROPORTION OF THE BAND, not a set of absolute points.
+   * It always was — these numbers were measured off a slide whose band ran
+   * 103.68 to 374.40 — and writing them down as inches hid it until a second
+   * density asked the question. Only the row POSITIONS and the detail
+   * CONTAINER scale; the three label heights hold one line each of type the
+   * preset does not move, so scaling them would shrink the box under its own
+   * ink. */
+  get axisY() { return onBand(2.85 * IN); },
   axisThickness: 2,
   markerSize: 13,
   markerSizeHighlight: 19,
-  dateY: 2.25 * IN,      // above the axis
+  get dateY() { return onBand(2.25 * IN); },      // above the axis
   dateHeight: 0.28 * IN,
-  titleY: 3.15 * IN,     // below the axis
+  get titleY() { return onBand(3.15 * IN); },     // below the axis
   titleHeight: 0.34 * IN,
-  detailY: 3.52 * IN,
-  detailHeight: 0.95 * IN,
+  get detailY() { return onBand(3.52 * IN); },
+  get detailHeight() { return bandScaled(0.95 * IN); },
   /** Gutter between adjacent milestone columns, so labels cannot collide. */
   slotGutter: 10,
   /** At six the column is 111.8pt and the label box 101.8pt — about fourteen
@@ -564,7 +928,7 @@ export const TIMELINE_PARALLEL = {
   /** Below the standfirst, with room for the "Today" label above the band.
    *  At 2.15in the band's label collided with both the title and the subtitle
    *  boxes — invisible with a one-line title, a collision with two. */
-  bandY: 2.46 * IN,
+  get bandY() { return onBand(2.46 * IN); },
   /** One sub-row: a bar plus the breathing room under it. Tracks grow downward
    *  as overlapping phases are packed onto extra rows. */
   rowHeight: 30,
@@ -605,8 +969,8 @@ export const IMAGE = {
   creditY: 5.3 * IN,
   creditHeight: 0.18 * IN,
   /** Grid of examples — the format galleries. */
-  gridY: 1.85 * IN,
-  gridHeight: 3.2 * IN,
+  get gridY() { return onBand(1.85 * IN); },
+  get gridHeight() { return bandScaled(3.2 * IN); },
   gridGap: 0.12 * IN,
   gridCaptionHeight: 0.22 * IN,
 } as const;
@@ -747,8 +1111,8 @@ export const PROCESS = {
 /** Client marks on a clean ground. Never cropped — a cropped logo is a
  *  misused trademark, not a design choice. */
 export const LOGO_WALL = {
-  y: 1.9 * IN,
-  height: 3.0 * IN,
+  get y() { return onBand(1.9 * IN); },
+  get height() { return bandScaled(3.0 * IN); },
   gap: 0.3 * IN,
   /** Each mark is fitted inside its cell with room around it. */
   inset: 0.12 * IN,
