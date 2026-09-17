@@ -301,6 +301,30 @@ const STRESS: SlideInput[] = [
       { name: "Events", points: [{ label: "Holcim", value: 5 }, { label: "Siemens", value: 30 }] } ] } },
   { layout: "process", title: "Seven stages in five boxes", stages: Array.from({ length: 7 }, (_, i) => ({
       name: `Stage ${i + 1}`, caption: "What happens at this point in the work." })) },
+  // THE STAT STANDFIRST, on the two branches where it is tightest, so the
+  // canvas, overlap and ink sweeps see a re-split band rather than only
+  // check 45's own assertions. Held here for the same reason the screenshots
+  // are: a fixture in the shared deck is measured by every sweep in the file.
+  //
+  // The figures are TOP-ALIGNED under the line because bullets follow them, so
+  // this is the fixture on which drawing the standfirst without re-splitting
+  // the band prints it straight through the numbers — the centred branches
+  // hide that collision behind their own slack.
+  { layout: "stat", eyebrow: "The picture today", title: LONG,
+    subtitle: "A standfirst long enough to wrap onto a second line under the title, because the finding is written out rather than abbreviated.",
+    stats: [
+      { value: "64 GW", label: "Global capacity", detail: "Installed by end of 2023." },
+      { value: "70%", label: "Cost fall since 2010", detail: "Competitive with fossil." },
+      { value: "380 GW", label: "IEA projection", detail: "Under current policies." } ],
+    body: "Foundations are in place.\nAlmost everything that earns visibility is absent.\nThe gap is content surface, not authority." },
+  // And on the GRID, whose rung ladder has to step down into the room the
+  // standfirst actually leaves rather than the room it would have had — with a
+  // takeaway bar underneath, so the band is short at both ends at once.
+  { layout: "stat", eyebrow: "Context", title: LONG,
+    subtitle: "A standfirst long enough to wrap onto a second line under the title, because the model writes the finding out in full rather than in a phrase.",
+    note: "Why this matters: the second row is the point, and this sentence runs long enough to take three lines of the takeaway bar beneath the cards.",
+    stats: Array.from({ length: 7 }, (_, i) => ({
+      value: `${10 + i}%`, label: `A label for figure number ${i + 1} that runs to some length`, detail: `Source ${i + 1}, 2026` })) },
 ];
 
 /** SCREENSHOTS AND THEIR CALLOUTS.
@@ -8316,6 +8340,604 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     }
   }
   if (failures === before44) pass("a table slide's commentary is drawn beneath its rows or named and refused, and a table no layout draws never passes in silence");
+
+  /* 45. THE FIGURES GET THEIR LINE OF CONTEXT, OR THE DECK SAYS THEY COULD NOT.
+   *
+   * Measured over the 39 decks built between 2026-08-18 and 2026-09-16 with
+   * the product's own `droppedContent`: thirteen stat slides carried a
+   * `subtitle` that the layout drew nowhere, because the standfirst was gated
+   * on `layout !== "stat"`. The model kept writing the field, which is what
+   * made it a decision rather than a bug — and Chris took it on 2026-09-17:
+   * DRAW it on `stat`, LEAVE `image-split` dropping it.
+   *
+   * WHY THIS IS NOT ONE ASSERTION THAT THE SUBTITLE IS DRAWN. Because the
+   * version of this change that draws it is the wrong one. `stat` does not use
+   * `chartBandTop`: it hands the WHOLE band to statRequests, so deleting the
+   * exclusion prints the line of type at the top of a band the figures still
+   * believe they own — straight through the numbers on every top-aligned
+   * slide, and through the hero's 131pt figure on every single-stat one. The
+   * centred branches hide it, which is exactly why 45b runs the hero, the
+   * top-aligned row and the grid rather than the comfortable case.
+   *
+   * And the figures must not PAY for it. The block's ladder will always make
+   * room if it is asked to: five rungs, then the source lines, then the
+   * figures themselves — each declared on the slide in 7pt, so a standfirst
+   * bought that way is a slide that traded a number for a sentence and
+   * admitted it in the smallest type on the page. 45d and 45e are the two
+   * halves of that, and each runs BOTH ways round: a refusal that refuses
+   * everything is as useless as a rule that always draws.
+   *
+   * AND THE QUIET HALF, WHICH IS WHERE THIS CHECK WAS FIRST FOUND WANTING.
+   * Everything above is a collision, a dropped figure or a word that never
+   * reached the slide, and the file was already full of sweeps that catch
+   * those. The re-split can also go wrong without producing any of them: a
+   * block that is ALONE in its band is centred rather than top-aligned, so
+   * centring it in the whole band after the top of it has been given away
+   * simply slides the figures 16pt down the slide — no overlap, nothing off
+   * the canvas, every figure present, every word drawn. Eight of the twelve
+   * slides this change recovers are exactly that shape, and the entire suite
+   * stayed green under it. 45i is that rule; 45j is its sibling on the hero,
+   * whose REPORTED height is what places the bullets; 45k is the one case
+   * where centring legitimately pushes a block through the floor of the band.
+   *
+   * MUTATION LOG (detached worktree at e111314 carrying the two changed files,
+   * 2026-09-17, restored after; the shared tree was never mutated — it
+   * deploys, and a deliberate break has reached production from it once
+   * already). Counts are FAIL lines across the whole file, not check 45 alone.
+   *
+   *   THE DECISION ITSELF
+   *   KILLED  reintroduce the exclusion — `lib/slides/generate.ts` restored to
+   *           e111314 wholesale, which is exactly how it shipped → 17 red
+   *           across 45a, 45b, 45c, 45d, 45e, 45f, 45i and 45j, with
+   *           droppedContent naming the standfirst on the slide that used to
+   *           carry it
+   *   KILLED  "just delete the exclusion": drop `&& layout !== "stat"` from
+   *           the chart-band condition at e111314 and leave statRequests the
+   *           whole band → 22 red. Check 2 on the shared fixtures is the
+   *           standfirst printed through "64 GW", "70%", "380 GW" and four of
+   *           the grid's cards; 45i is the other end of the same mistake, the
+   *           self-contained row and grid each moving 0.0pt for 33.4pt of
+   *           extra type. It PASSES 45a, which is why 45a is not the
+   *           assertion.
+   *   KILLED  widen the decision to `image-split` — the standfirst drawn into
+   *           the text column beside the photograph → 45g red three times. The
+   *           asymmetry is deliberate and nothing else in this file holds it.
+   *
+   *   THE BAND TOP, THREADED (each half of this was mutated ON ITS OWN, after
+   *   a verifier showed that the composite entry this replaces — "the row
+   *   placed from GRID.bodyY and centred in the full band" — was crediting a
+   *   collision with covering a silent 16pt slide. The two halves are now
+   *   separate lines because they fail in completely different ways.)
+   *   KILLED  the two-or-three row PLACED from `GRID.bodyY` (`top = GRID.bodyY
+   *           + …`, room kept) → 10 red, three of them check 2's overlaps:
+   *           "A standfirst long " over "64 GW", "70%", "380 GW"
+   *   KILLED  the two-or-three row CENTRED in the full band (`(band - groupH)
+   *           / 2`, bandTop kept) → 1 red, and 45i is the only thing in the
+   *           file that says it: the row moves 33.3pt for 33.4pt of type
+   *           where it should move half. Before 45i existed this scored ZERO.
+   *   KILLED  the grid CENTRED in the full band (`(band - plan.height) / 2`)
+   *           → 2 red. Before 45i existed this scored 1, and that one was
+   *           45d's both-ways-round control firing incidentally.
+   *   KILLED  statGridRequests measuring its rungs against the full band
+   *           (`room = band`) → 3 red: the ladder holds rung 24 and the block
+   *           then fails its own affordability probe, so the grid silently
+   *           stops offering the line at all
+   *   KILLED  heroStat solved from `band` rather than the room under `bandTop`
+   *           → 3 red, the hero staying at 131pt
+   *   KILLED  the hero's REPORTED height, `height: room, bottom: bandTop +
+   *           room` → `height: band, bottom: bandTop + band` → 1 red. Before
+   *           45j existed this scored zero: no fixture anywhere in this file
+   *           carried a stat slide with one figure AND a body, which is the
+   *           only shape that reads it.
+   *   KILLED  the bullets placed from `GRID.bodyY + stat.height` instead of
+   *           `bandTop + …` → 7 red: check 2 drawing the prose through the
+   *           labels and the source lines, and 45j moving the scorecard under
+   *           the hero 31.9pt up the slide
+   *
+   *   WHAT THE LINE IS ALLOWED TO COST
+   *   KILLED  afford the standfirst unconditionally (drop the whole probe
+   *           comparison) → 4 red, the bullets dropping to 8pt to buy a
+   *           sentence and the refusal note vanishing with them
+   *   KILLED  afford it whenever the FIGURES are unchanged, ignoring the prose
+   *           → 4 red, same shape
+   *   KILLED  drop the PROSE SIZE arm (`was.style.size === now.style.size`)
+   *           → 1 red on 45e's one-rung fixture: two bullets that fit at 10pt
+   *           without the line and at 9pt with it, drawn without a word said.
+   *           Before that fixture existed this arm did no work on any fixture
+   *           in the file and survived being deleted.
+   *   KILLED  drop the INK arm (`after.ink <= the band floor`) → 2 red on 45k.
+   *           Recorded as a survivor when this check was written, because no
+   *           fixture then filled a centred band; the fixture that reaches it
+   *           is three figures whose labels wrap and whose source lines wrap
+   *           twice, leaving 11pt of slack — enough for the block, not enough
+   *           for half a standfirst.
+   *   KILLED  drop the DRAWN-TEXT arm (`after.drawn === asIs.drawn`) → 7 red:
+   *           a figure dropped and declared in 7pt, the block moved under a
+   *           refusal, and droppedContent falling silent
+   *   KILLED  drop the MOVED-BOTTOM arm (`after.bottom <= asIs.bottom`), so
+   *           prose that already overruns buys the line however far down the
+   *           slide it is pushed → 1 red on 45f's both-ways-round control
+   *   KILLED  `return now.fits …` — the absolute-fit rule this shipped with,
+   *           restored → 1 red on 45j's precondition. It refuses a standfirst
+   *           that is provably free on prose that was ALREADY overrunning,
+   *           which is conversation df7700f1's slide 15: every box on that
+   *           slide is byte-identical with the line and without it.
+   *   KILLED  the body ladder `[base.size, 9, 8]` → `[base.size, 9]`, so a
+   *           body that does not fit at 9pt is drawn at 9pt straight through
+   *           the takeaway bar → 1 red on 45e's floor pair
+   *   KILLED  STAT_BODY_GAP 10 → 24, and 10 → 4 → 1 red each on 45h. The
+   *           constant was newly named by this change and nothing measured it;
+   *           45h states it against the body's own type size rather than
+   *           against the number, so it is a rule and not a second copy.
+   *
+   *   THE REFUSAL
+   *   KILLED  let the refusal QUOTE the subtitle, in quoteClip's own form →
+   *           3 red. Worth reading for what the second one proves:
+   *           droppedContent leaves text a layout note already quotes to that
+   *           note, so quoting here makes "nothing was dropped" true by
+   *           suppression rather than by drawing, in the audit the user reads.
+   *   KILLED  the remedy unconditional again — "move it to `note`" on a slide
+   *           whose `note` is a four-line takeaway → 1 red. The advice was
+   *           wrong on most of the slides that get it: a takeaway is usually
+   *           WHY the band ran out, since bandHeightFor takes the bar out of
+   *           it, so the model was being told to overwrite the one field it
+   *           could see was full.
+   *   KILLED  drop the note entirely → 3 red, including 45f's both-ways-round
+   *           control on a slide whose takeaway bar IS free
+   *
+   *   SURVIVORS — findings about the fixture set, not omissions to tidy away
+   *   SURVIVOR  STANDFIRST_GAP 8 → 6 survives everything here. These
+   *             assertions are about words reaching the slide and boxes not
+   *             sitting on each other, not about the air between them; 45b
+   *             reads the gap out of the builder rather than asserting a
+   *             number, deliberately, because pinning 8 here would be a second
+   *             copy of a constant rather than a check. (Its sibling
+   *             STAT_BODY_GAP is NOT in the same position: it is pinned by
+   *             45h, because moving that one moves the bullets on real slides
+   *             — seven of the 39-deck corpus — while moving this one moves
+   *             nothing there at all.)
+   *   SURVIVOR  drop the FIT-OUTCOME arm (`was.fits === now.fits`) and nothing
+   *             goes red, on this file or on the corpus. It is unreachable
+   *             rather than untested: the two fits are read out of a room
+   *             derived from the block's own reported bottom, so they can only
+   *             differ when that bottom MOVES — and when it moves and the
+   *             prose stops fitting, the arm beside it (`after.bottom <=
+   *             asIs.bottom`) has already refused. Kept because it is the
+   *             plain statement of the rule the comment above it makes, and
+   *             because it is the arm that would start doing work the day the
+   *             hero's reported height is made honest.
+   */
+  const before45 = failures;
+  console.log(`\n45. The figures get their line of context, or the deck says they could not`);
+  {
+    const A45 = (ok: boolean, msg: string) => { if (!ok) fail(msg); };
+    // The shape of ten of the thirteen: three figures and a sentence of
+    // provenance under the title.
+    const SUB = "Audit run, 2 September 2026. PromptStage over 61 prompts. Not weekly monitoring.";
+    const WRAPPING = "A standfirst long enough to wrap onto a second line under the title, because the model writes"
+      + " the finding out in full rather than in a phrase, and the band has to pay for every line of it somehow.";
+    const THREE = [
+      { value: "64 GW", label: "Global capacity", detail: "Installed by end of 2023." },
+      { value: "70%", label: "Cost fall since 2010", detail: "Competitive with fossil." },
+      { value: "380 GW", label: "IEA projection", detail: "Under current policies." }];
+    const GRID7 = Array.from({ length: 7 }, (_, i) => ({
+      value: `${10 + i}%`, label: `A label for figure number ${i + 1} that runs to some length`, detail: `Source ${i + 1}, 2026` }));
+    const GRID8 = Array.from({ length: 8 }, (_, i) => ({
+      value: `${10 + i}%`,
+      label: `A label for figure number ${i + 1} that runs long enough to wrap onto three lines inside its own card`,
+      detail: `Source ${i + 1}, a citation long enough to wrap, 2026` }));
+    const NOTE3 = "Why this matters: the second row is the point, and this sentence runs long enough to take"
+      + " three lines of the takeaway bar beneath the cards.";
+    const NOTE4 = "Why this matters: the second row is the point, and this sentence runs long enough to take four"
+      + " full lines of the takeaway bar beneath the cards, which is the most the bar will ever carry before it clips.";
+    const BODY = "Foundations are in place.\nAlmost everything that earns visibility is absent.\nThe gap is content surface, not authority.";
+    const LONG_BODY = "Foundations are in place and the crawl is clean.\nAlmost everything that earns visibility in an"
+      + " AI answer is absent from the site today.\nThe gap is content surface rather than authority, which is the"
+      + " cheaper of the two to close.\nThe next quarter should spend on pages, not on links.";
+    // A THREE-LINE standfirst, for the pair comparisons: a block that centres
+    // in the room gives up HALF of what the line takes, so the assertion is
+    // only sharp when the two subtitles differ by a visible amount of type.
+    const WRAPPING3 = "A standfirst long enough to wrap onto a third line under the title, because the model writes the"
+      + " finding out in full rather than in a phrase, and every line of it has to be paid for out of the band the"
+      + " figures were given.";
+    const GRID6 = Array.from({ length: 6 }, (_, i) => ({
+      value: `${10 + i}%`, label: `Figure ${i + 1}`, detail: `Source ${i + 1}, 2026` }));
+    // The shape of conversation df7700f1's slide 15: ONE figure, drawn as the
+    // hero, with the scorecard beneath it.
+    const HERO1 = [{ value: "62", label: "Composite score", detail: "Out of 100." }];
+    const SCORECARD = "1. Technical foundations: 13/20 — Sound core, but no Canadian English tree and no llms.txt"
+      + "\n2. On-page SEO: 8/20 — Generic title tags, very thin product pages, no specifications"
+      + "\n3. AEO, answer engines: 5/20 — No FAQ anywhere, no schema anywhere, headings written as slogans"
+      + "\n4. GEO, generative engines: 6/20 — 26 AI citations, no AI Overview citations, no Wikipedia, no Wikidata"
+      + "\n5. EEAT and trust: 9/20 — Strong governance pages; no authors, no dates, no certifications surfaced";
+    const PARA = (n: number) => `Point number ${n}: a bullet written out at the length the model actually writes them,`
+      + ` which is a clause and then a consequence.`;
+    const BULLETS = (n: number) => Array.from({ length: n }, (_, i) => PARA(i + 1)).join("\n");
+
+    /** Everything about one built stat slide that these assertions read. */
+    const drawOf = (s: SlideInput, run: string) => {
+      const notes: string[] = [];
+      const reqs = buildSlideRequests(s, 0, run, notes) as any[];
+      let sub: { y: number; h: number } | null = null;
+      let figuresTop = Infinity, figuresInk = 0, valueSize = 0, bodySize = 0, bodyTop = 0;
+      const text: string[] = [];
+      for (let r = 0; r < reqs.length; r++) {
+        const o = reqs[r].createShape;
+        if (o) {
+          const oid = String(o.objectId);
+          const y = o.elementProperties.transform.translateY;
+          const h = o.elementProperties.size.height.magnitude;
+          // Every box the stat block draws: the cards, the figures, the
+          // labels, the per-card sources and its own declaration line.
+          if (/_(sc\d+|sv\d+|sl\d+|sd\d+|sdrop)$/.test(oid)) {
+            figuresTop = Math.min(figuresTop, y);
+            figuresInk = Math.max(figuresInk, y + h);
+          }
+          if (/_sub$/.test(oid)) sub = { y, h };
+          if (/_body$/.test(oid)) bodyTop = y;
+        }
+        const u = reqs[r].updateTextStyle;
+        if (u && u.style?.fontSize) {
+          if (/_sv0$/.test(String(u.objectId))) valueSize = u.style.fontSize.magnitude;
+          if (/_body$/.test(String(u.objectId))) bodySize = u.style.fontSize.magnitude;
+        }
+        if (reqs[r].insertText) text.push(String(reqs[r].insertText.text));
+      }
+      return { sub, figuresTop, figuresInk, valueSize, bodySize, bodyTop, notes,
+        text: text.join(" | "), floor: GRID.bodyY + bandHeightFor(s) };
+    };
+    const without = (s: SlideInput): SlideInput => { const c: any = { ...s }; delete c.subtitle; return c; };
+
+    // 45a THE LINE IS DRAWN, AND THE AUDIT AGREES. Drawn and still reported
+    // would mean the slide and the warning disagree, which is worse than
+    // either alone.
+    {
+      const s: SlideInput = { layout: "stat", eyebrow: "THE PICTURE TODAY", title: "Two rates, two populations",
+        subtitle: SUB, stats: THREE };
+      const d = drawOf(s, "t45a");
+      A45(!!d.sub, `a stat slide's standfirst is drawn nowhere — this is the exclusion that lost it on 13 shipped slides`);
+      A45(d.text.indexOf("PromptStage over 61 prompts") >= 0, `the standfirst box is drawn empty (${d.text.slice(0, 120)})`);
+      A45(droppedContent(s, 0).length === 0,
+        `the deck is told it carries text this stat slide never draws: ${JSON.stringify(droppedContent(s, 0))}`);
+    }
+
+    // 45b AND THE FIGURES START BENEATH IT. The whole of the change: the band
+    // is RE-SPLIT rather than the line simply placed at the top of it. Run on
+    // the hero (which fills the band with one number), on a top-aligned row
+    // and on a top-aligned grid, because the centred branches have enough
+    // slack of their own to hide the collision.
+    {
+      const CASES: [string, SlideInput][] = [
+        ["the hero figure", { layout: "stat", title: "Composite 62 of 100", subtitle: SUB, stats: [THREE[0]] }],
+        ["a row with bullets beneath it", { layout: "stat", title: "The five pillars", subtitle: SUB, stats: THREE, body: BODY }],
+        ["a grid with a takeaway beneath it", { layout: "stat", title: "The landscape", subtitle: WRAPPING, stats: GRID7, note: NOTE3 }],
+        ["a centred row", { layout: "stat", title: "Two rates", subtitle: WRAPPING, stats: THREE }],
+      ];
+      for (let c = 0; c < CASES.length; c++) {
+        const what = CASES[c][0];
+        const d = drawOf(CASES[c][1], `t45b${c}`);
+        // The precondition IS the finding: an assertion about where the
+        // figures sit under a standfirst that was refused tests nothing.
+        A45(!!d.sub, `precondition: ${what} refused its standfirst, so the collision assertion below is about nothing`);
+        if (!d.sub) continue;
+        const bottom = d.sub.y + d.sub.h;
+        A45(bottom <= d.figuresTop + 0.01,
+          `on ${what} the standfirst runs to ${bottom.toFixed(1)}pt and the figures start at ${d.figuresTop.toFixed(1)}pt —`
+          + ` the line is printed through the numbers, which is what deleting the exclusion without re-splitting the band does`);
+        A45(d.figuresInk <= d.floor + 0.6,
+          `on ${what} the figures reach ${d.figuresInk.toFixed(1)}pt against a band floor of ${d.floor.toFixed(1)}pt —`
+          + ` the standfirst took the top of the band and the block kept measuring against all of it`);
+      }
+    }
+
+    // 45c AND THE BAND BELOW IT IS SHORTER, not merely started lower. The
+    // block solves its own size from the room it is given — the hero's figure
+    // and the grid's rung both — so a standfirst that moves the top without
+    // shortening the measure is a block that overruns rather than compresses.
+    // Asserted as a COMPARISON against the same slide with no subtitle, so
+    // nothing here is a second copy of a rung table.
+    {
+      const hero: SlideInput = { layout: "stat", title: "Composite 62 of 100", subtitle: SUB, stats: [THREE[0]] };
+      const big = drawOf(without(hero), "t45c1"), small = drawOf(hero, "t45c2");
+      A45(small.valueSize > 0 && big.valueSize > 0, `precondition: no hero figure was sized to compare (${big.valueSize}, ${small.valueSize})`);
+      A45(small.valueSize < big.valueSize,
+        `the hero figure is ${small.valueSize}pt with a standfirst above it and ${big.valueSize}pt without —`
+        + ` the number is being solved from a band it no longer has all of`);
+      const grid: SlideInput = { layout: "stat", title: "The landscape", subtitle: WRAPPING, stats: GRID7, note: NOTE3 };
+      const wide = drawOf(without(grid), "t45c3"), tight = drawOf(grid, "t45c4");
+      A45(tight.valueSize < wide.valueSize,
+        `the grid's figures stay at ${tight.valueSize}pt under a two-line standfirst, the same rung they take without one —`
+        + ` the ladder is stepping against the band the slide would have had rather than the one it has`);
+    }
+
+    // 45d THE FIGURES NEVER PAY FOR IT. The ladder runs out on eight long-
+    // labelled figures under a four-line takeaway; the honest outcome is no
+    // standfirst, not seven figures and a 7pt line saying so.
+    //
+    // Asserted as "the slide is drawn EXACTLY as it would be with no subtitle
+    // at all", which is stronger than looking for the declaration string: a
+    // refusal that costs the slide anything at all is not a refusal.
+    {
+      const s: SlideInput = { layout: "stat", title: "Everything at once", subtitle: SUB, stats: GRID8, note: NOTE4 };
+      const d = drawOf(s, "t45d1"), bare = drawOf(without(s), "t45d2");
+      A45(!d.sub, `eight figures under a four-line takeaway found room for a standfirst — it can only have taken it from them`);
+      A45(d.text.indexOf("Showing") < 0 || bare.text.indexOf("Showing") >= 0,
+        `a figure was dropped to make room for the standfirst, and declared in 7pt: ${d.text.slice(-120)}`);
+      A45(d.figuresTop === bare.figuresTop && d.figuresInk === bare.figuresInk && d.valueSize === bare.valueSize,
+        `refusing the standfirst still moved the figures: top ${d.figuresTop.toFixed(1)} vs ${bare.figuresTop.toFixed(1)},`
+        + ` ink ${d.figuresInk.toFixed(1)} vs ${bare.figuresInk.toFixed(1)}, ${d.valueSize}pt vs ${bare.valueSize}pt`);
+      // BOTH WAYS ROUND, or "refuse when the grid is full" is satisfied by
+      // refusing every grid there is. The same eight figures with the band's
+      // other end back can afford it.
+      const roomier = drawOf({ layout: "stat", title: "Everything at once", subtitle: SUB, stats: GRID8 }, "t45d3");
+      A45(!!roomier.sub,
+        `eight figures with no takeaway bar beneath them still refuse a standfirst — the layout has simply stopped drawing it`);
+    }
+
+    // 45e AND NOR DOES THE PROSE. A body pushed from 10pt to the 8pt floor to
+    // make room for a line above it is the slide's argument demoted to a
+    // footnote, silently. Same shape: refused, and refused for free.
+    {
+      const s: SlideInput = { layout: "stat", title: "The five pillars", subtitle: SUB, stats: THREE,
+        body: LONG_BODY, note: NOTE4 };
+      const d = drawOf(s, "t45e1"), bare = drawOf(without(s), "t45e2");
+      A45(bare.bodySize > 0, `precondition: the fixture drew no bullets, so there is no prose to protect`);
+      A45(!d.sub, `the bullets under the figures were made to pay for the standfirst above them`);
+      A45(d.bodySize === bare.bodySize,
+        `the bullets are set at ${d.bodySize}pt with a standfirst attempted and ${bare.bodySize}pt without it —`
+        + ` the slide's argument was stepped down to caption size to buy a sentence, and nothing says so`);
+      // BOTH WAYS ROUND: a shorter body on the same figures affords it, and
+      // affords it without touching the prose either.
+      const fits: SlideInput = { layout: "stat", title: "The five pillars", subtitle: SUB, stats: THREE, body: BODY };
+      const shorter = drawOf(fits, "t45e3"), shorterBare = drawOf(without(fits), "t45e4");
+      A45(!!shorter.sub, `a three-line body refuses the standfirst too — the prose test is refusing everything`);
+      A45(shorter.bodySize === shorterBare.bodySize,
+        `the standfirst was drawn AND the bullets stepped down from ${shorterBare.bodySize}pt to ${shorter.bodySize}pt —`
+        + ` affording it cost the prose after all`);
+
+      // AND THE STEP THAT IS ONE RUNG, NOT TWO. Everything above turns on the
+      // body OVERRUNNING; nothing above turns on its SIZE, because on every
+      // other fixture here the prose either fits at its own size or does not
+      // fit at all. This is the case in between, and it is the one the failure
+      // message two assertions up is written about: two bullets under a
+      // takeaway bar fit at 10pt with no standfirst and at 9pt with one. The
+      // slide is still readable, which is exactly what makes the demotion
+      // silent — so it is refused, and refused for free.
+      const ONE_RUNG: SlideInput = { layout: "stat", title: "The five pillars", subtitle: SUB, stats: THREE,
+        body: BULLETS(2), note: NOTE3 };
+      const rung = drawOf(ONE_RUNG, "t45e5"), rungBare = drawOf(without(ONE_RUNG), "t45e6");
+      A45(rungBare.bodySize > 0 && rung.bodySize > 0, `precondition: the one-rung fixture drew no bullets`);
+      A45(rung.bodySize === rungBare.bodySize,
+        `the bullets are set at ${rung.bodySize}pt with a standfirst attempted and ${rungBare.bodySize}pt without it —`
+        + ` one rung is still a demotion, and it is the quietest one there is`);
+
+      // AND THE LADDER GOES ALL THE WAY DOWN. The step-down under the figures
+      // is 10, then 9, then the 8pt floor, and the floor is the rung that
+      // matters: Slides does not shrink text to fit, it draws it straight
+      // through the takeaway bar beneath. A ladder that stops at 9 passes
+      // every assertion above, because they all compare two sizes that moved
+      // together. Asserted as a comparison — the same prose in a band with the
+      // bar taken out of it must end up SMALLER, not pinned at a rung.
+      const floorBody = BULLETS(6);
+      const roomy = drawOf({ layout: "stat", title: "The five pillars", stats: THREE, body: floorBody }, "t45e7");
+      const tight = drawOf({ layout: "stat", title: "The five pillars", stats: THREE, body: floorBody, note: NOTE3 }, "t45e8");
+      A45(roomy.bodySize > 0 && tight.bodySize > 0, `precondition: the floor fixture drew no bullets`);
+      A45(tight.bodySize < roomy.bodySize,
+        `the same prose is ${roomy.bodySize}pt with no takeaway bar and ${tight.bodySize}pt with one — the ladder has`
+        + ` stopped stepping, so a body that does not fit is drawn through the bar rather than at the floor`);
+    }
+
+    // 45f A REFUSAL NAMES THE FIELD, DOES NOT QUOTE IT, AND STAYS REPORTED.
+    // The note names `subtitle` so the model can move the line; it must not
+    // QUOTE it, because droppedContent leaves text a layout note has already
+    // quoted to that note — so a quoting note would make "nothing was dropped"
+    // true by suppression, in the audit the user actually reads.
+    {
+      const s: SlideInput = { layout: "stat", title: "Everything at once", subtitle: SUB, stats: GRID8, note: NOTE4 };
+      const notes: string[] = [];
+      buildSlideRequests(s, 0, "t45f", notes);
+      A45(notes.some((n) => n.indexOf("`subtitle`") >= 0),
+        `nothing named the field whose line could not be placed: ${JSON.stringify(notes)}`);
+      A45(!notes.some((n) => n.indexOf(quoteClip(SUB)) >= 0),
+        `the note QUOTES the standfirst, which silences droppedContent about it: ${JSON.stringify(notes)}`);
+      A45(droppedContent(s, 0, notes).some((m) => m.trim() === SUB),
+        `the standfirst was neither drawn nor reported — it is simply gone`);
+      A45(deckWarnings([s]).indexOf(quoteClip(SUB).slice(0, 40)) >= 0,
+        `deckWarnings does not name the standfirst this slide could not draw: ${deckWarnings([s]).slice(-200)}`);
+
+      // AND THE REMEDY IS FREE ON THE SLIDE IT IS PRINTED ON. "Move it to
+      // `note`" is good advice on a slide with no takeaway and actively wrong
+      // on one that has a full one — and a takeaway is usually the REASON the
+      // band ran out, because bandHeightFor takes the bar's height out of it.
+      // The fixture above carries a four-line bar, so the unconditional
+      // wording was telling the model to overwrite content it can see.
+      A45(!notes.some((n) => n.indexOf("move it to `note`") >= 0),
+        `the slide already carries a four-line takeaway and the refusal still says to move the standfirst into`
+        + ` \`note\` — the one field on the slide that is full: ${JSON.stringify(notes)}`);
+      A45(notes.some((n) => n.indexOf("shorten") >= 0), `the refusal offers no remedy at all: ${JSON.stringify(notes)}`);
+      // BOTH WAYS ROUND: with the bar gone, `note` is the right place for it
+      // and the wording has to say so rather than always hedging.
+      const free: string[] = [];
+      buildSlideRequests({ layout: "stat", title: "Everything at once", subtitle: SUB,
+        stats: GRID8, body: LONG_BODY } as SlideInput, 0, "t45f2", free);
+      A45(free.some((n) => n.indexOf("`subtitle`") >= 0) && free.some((n) => n.indexOf("move it to `note`") >= 0),
+        `a refused standfirst on a slide with an EMPTY takeaway bar is not pointed at it: ${JSON.stringify(free)}`);
+    }
+
+    // 45g AND `image-split` STILL DROPS IT, AND STILL SAYS SO.
+    //
+    // The decision is asymmetric on purpose — on image-split the line competes
+    // with the photograph for the same column — and nothing else in this file
+    // holds that half of it, so widening the condition one layout too far
+    // would be a silent change to eight shipped slides. Both halves asserted:
+    // it is not drawn, and the loss is declared in the channel that already
+    // exists. And NOT declared twice: a second note for a loss deckWarnings
+    // already names is noise, and noise is how a warning stops being read.
+    {
+      const sub = "They sit above every traditional channel, reading and synthesising across all of them at once";
+      const s: SlideInput = { layout: "image-split", eyebrow: "The shift", title: "AI assistants are a layer, not a channel",
+        subtitle: sub, body: "Every channel below is read, compared and synthesised before the answer is written.",
+        resolvedImage: { url: "p.jpg", scrim: 0 } as any };
+      const notes: string[] = [];
+      const reqs = buildSlideRequests(s, 0, "t45g", notes) as any[];
+      const drew = (reqs.filter((r) => r.insertText).map((r) => String(r.insertText.text))).some((t) => t.trim() === sub);
+      A45(!drew, `image-split now draws its subtitle — the decision of 2026-09-17 was to leave it dropped, where it`
+        + ` competes with the photograph for the same column; reopen it with Chris, not here`);
+      A45(droppedContent(s, 0, notes).some((m) => m.trim() === sub),
+        `image-split drops its subtitle and droppedContent no longer reports it — the loss has gone silent`);
+      A45(deckWarnings([s]).indexOf(quoteClip(sub).slice(0, 40)) >= 0,
+        `the user is told nothing about the line this image-split slide swallowed: ${deckWarnings([s]).slice(-200)}`);
+      A45(!notes.some((n) => n.indexOf("`subtitle`") >= 0),
+        `image-split declares the same loss twice — once through droppedContent and once through a layout note: ${JSON.stringify(notes)}`);
+    }
+
+    // 45h AND A STAT SLIDE WITH NO SUBTITLE IS EXACTLY WHERE IT WAS. The
+    // re-split threads a band TOP through three branches, a five-rung ladder
+    // and two centring rules; every stat slide in the corpus that carries no
+    // subtitle — which is most of them — has to come out unmoved.
+    {
+      const topped = drawOf({ layout: "stat", title: "The landscape", stats: GRID7, note: NOTE3 }, "t45h1");
+      A45(Math.abs(topped.figuresTop - GRID.bodyY) < 0.01,
+        `a top-aligned grid with no standfirst starts at ${topped.figuresTop.toFixed(2)}pt rather than at the band's own`
+        + ` top of ${GRID.bodyY.toFixed(2)}pt — the re-split has moved slides that asked for nothing`);
+      const centred = drawOf({ layout: "stat", title: "Two rates", stats: THREE }, "t45h2");
+      const slackAbove = centred.figuresTop - GRID.bodyY;
+      const slackBelow = centred.floor - centred.figuresInk;
+      A45(Math.abs(slackAbove - slackBelow) < 1,
+        `a self-contained row with no standfirst sits ${slackAbove.toFixed(1)}pt below the band's top and`
+        + ` ${slackBelow.toFixed(1)}pt above its floor — it is no longer centred in its own band`);
+
+      // AND THE BULLETS STILL SIT JUST UNDER THE FIGURES. The air between the
+      // two was a bare 10 in the middle of the branch and is now a named
+      // constant, which makes it the kind of thing a later change moves in
+      // passing — and nothing anywhere measured it. Stated against the body's
+      // own type rather than against the number: the gap has to be more than
+      // half a line, or the bullets crowd the source lines above them, and
+      // less than a line and a half, or the figures and the argument beneath
+      // them stop reading as one block and the last bullet is pushed into the
+      // takeaway bar.
+      const withBody = drawOf({ layout: "stat", title: "The five pillars", stats: THREE, body: BODY }, "t45h3");
+      A45(withBody.bodySize > 0 && withBody.figuresInk > 0, `precondition: the gap fixture drew no bullets under its figures`);
+      const air = withBody.bodyTop - withBody.figuresInk;
+      A45(air >= withBody.bodySize / 2 && air <= withBody.bodySize * 1.5,
+        `the bullets start ${air.toFixed(1)}pt under the figures they belong to, against ${withBody.bodySize}pt body type —`
+        + ` that is not the air between a block and its own caption`);
+    }
+
+    // 45i AND A SELF-CONTAINED BLOCK CENTRES IN WHAT IS LEFT, NOT IN THE BAND.
+    //
+    // The one rule of the re-split that leaves no wreckage to trip over. A
+    // block that is followed by something is TOP-aligned, so a mis-measured
+    // band shows up immediately as a collision and check 2 catches it. A block
+    // that is alone is CENTRED, and centring in the full band after the top of
+    // it has been given away just slides the figures down the slide: no
+    // overlap, nothing off the canvas, nothing dropped — a row sitting 16pt
+    // low, on the commonest shape there is (eight of the twelve slides this
+    // change recovers are three figures, one line of standfirst, nothing
+    // else). It survived every assertion in this file until this one.
+    //
+    // Asserted WITHOUT any constant, as a pair: the same slide twice, once
+    // under a one-line standfirst and once under a three-line one. A block
+    // centred in the room it was left moves down by HALF of the extra type; a
+    // block centred in the whole band moves down by ALL of it. No gap, no band
+    // height and no rung table appears here, so there is nothing to keep in
+    // step with the builder.
+    {
+      const PAIRS: [string, { value: string; label: string; detail: string }[]][] = [
+        ["a self-contained row", THREE],
+        ["a self-contained grid", GRID6],
+      ];
+      for (let p = 0; p < PAIRS.length; p++) {
+        const what = PAIRS[p][0], stats = PAIRS[p][1];
+        const one = drawOf({ layout: "stat", title: "Two rates", subtitle: SUB, stats }, `t45i${p}a`);
+        const three = drawOf({ layout: "stat", title: "Two rates", subtitle: WRAPPING3, stats }, `t45i${p}b`);
+        A45(!!one.sub && !!three.sub,
+          `precondition: ${what} refused one of the two standfirsts, so there is no pair to compare`);
+        if (!one.sub || !three.sub) continue;
+        // Same block, or the comparison is measuring the ladder rather than
+        // the centring.
+        A45(one.valueSize === three.valueSize,
+          `precondition: ${what} stepped from ${one.valueSize}pt to ${three.valueSize}pt between the two standfirsts,`
+          + ` so the two blocks are not the same size and cannot be compared for where they sit`);
+        if (one.valueSize !== three.valueSize) continue;
+        const extra = (three.sub!.y + three.sub!.h) - (one.sub!.y + one.sub!.h);
+        const moved = three.figuresTop - one.figuresTop;
+        A45(extra > 20, `precondition: the two standfirsts differ by only ${extra.toFixed(1)}pt of type — too little to tell`
+          + ` centring in the room from centring in the band`);
+        A45(Math.abs(moved - extra / 2) < 0.6,
+          `${what} moved ${moved.toFixed(1)}pt down when the standfirst above it grew by ${extra.toFixed(1)}pt —`
+          + ` a block centred in the room it was left moves by half of that, and one centred in the whole band moves`
+          + ` by all of it, which is a row sitting low on the slide that nothing else here would notice`);
+      }
+    }
+
+    // 45j AND THE BULLETS UNDER A HERO FIGURE DO NOT MOVE.
+    //
+    // The single-stat branch is the one that reports a height rather than
+    // measuring one: the hero fills whatever it is given, so it tells the
+    // caller it took the whole room, and the caller places the bullets at the
+    // foot of that. Which means the re-split has to reach the REPORTED height
+    // too, not just the drawing — and if it does not, the standfirst pushes
+    // the scorecard under a single big number further down the slide by its
+    // own height. This is conversation df7700f1's slide 15, and no other
+    // fixture in this file carries a hero with a body.
+    //
+    // NOT an assertion that the bullets are inside the band: they are not, and
+    // they were not before this change either. A single stat reports the WHOLE
+    // band as its height, so the scorecard is already placed at the band floor
+    // and overruns it — a real fault on a shipped slide, older than this work
+    // and left alone by it deliberately, since making that height honest moves
+    // the prose on every hero-with-body slide there is. What is asserted is
+    // the thing this change is responsible for: that it did not make it worse.
+    {
+      const HB: SlideInput = { layout: "stat", title: "Composite 62 of 100", subtitle: SUB,
+        stats: HERO1, body: SCORECARD };
+      const d = drawOf(HB, "t45j1"), bare = drawOf(without(HB), "t45j2");
+      A45(!!d.sub, `precondition: the hero-with-body slide refused its standfirst, so nothing below is being measured`);
+      A45(d.bodyTop > 0 && bare.bodyTop > 0, `precondition: the hero-with-body fixture drew no bullets`);
+      A45(Math.abs(d.bodyTop - bare.bodyTop) < 0.01,
+        `the scorecard under the hero figure is at ${d.bodyTop.toFixed(1)}pt with a standfirst above it and`
+        + ` ${bare.bodyTop.toFixed(1)}pt without — the hero is reporting a band it no longer has all of, so the line`
+        + ` of context above the number pushed the prose beneath it further off the slide`);
+      A45(d.valueSize <= bare.valueSize,
+        `the hero figure GREW from ${bare.valueSize}pt to ${d.valueSize}pt under a standfirst`);
+    }
+
+    // 45k AND A CENTRED BLOCK IS NOT PUSHED THROUGH THE FLOOR OF THE BAND.
+    //
+    // The branches that are FOLLOWED by something top-align, so whatever the
+    // standfirst takes comes off the bottom of the block and lands as a
+    // collision that check 2 sees. The branches that are ALONE centre, and a
+    // centred block moves DOWN by half of what the line takes — so a block
+    // that already fills its band is carried through the floor without
+    // overlapping a thing, without dropping a figure, without a rung moving
+    // and without one word of the drawn text changing. Every other assertion
+    // here would call that free. Three figures with labels that wrap and
+    // source lines that wrap twice leave eleven points of slack: enough for
+    // the block to fit, not enough for half a standfirst.
+    {
+      const FAT = [1, 2, 3].map((i) => ({ value: `${i}0%`,
+        label: "A label for this figure that runs on and on on and on on and on on and on to some length",
+        detail: `Source ${i}, ` + "a citation long enough to wrap and wrap again ".repeat(5) + "2026" }));
+      const s: SlideInput = { layout: "stat", title: "Two rates", subtitle: SUB, stats: FAT };
+      const d = drawOf(s, "t45k1"), bare = drawOf(without(s), "t45k2");
+      A45(bare.figuresInk <= bare.floor + 0.6,
+        `precondition: this fixture runs ${(bare.figuresInk - bare.floor).toFixed(1)}pt past its band floor with no`
+        + ` standfirst at all, so refusing one proves nothing about the standfirst`);
+      A45(bare.floor - bare.figuresInk < 30,
+        `precondition: the fixture leaves ${(bare.floor - bare.figuresInk).toFixed(1)}pt of slack, which is room enough`
+        + ` for the line — it is no longer the band-filling case this is about`);
+      A45(!d.sub,
+        `a centred block that fills its band drew a standfirst anyway: its ink reaches ${d.figuresInk.toFixed(1)}pt`
+        + ` against a band floor of ${d.floor.toFixed(1)}pt, and centring carries it half of whatever the line takes`
+        + ` above it — nothing overlaps, nothing was dropped and every word is still there, which is exactly why`
+        + ` only the floor itself can catch this one`);
+      A45(d.figuresTop === bare.figuresTop && d.figuresInk === bare.figuresInk,
+        `refusing it still moved the block: top ${d.figuresTop.toFixed(1)} vs ${bare.figuresTop.toFixed(1)},`
+        + ` ink ${d.figuresInk.toFixed(1)} vs ${bare.figuresInk.toFixed(1)}`);
+    }
+  }
+  if (failures === before45) pass("the standfirst is drawn above the figures out of a band they gave up, or it is named, refused and still reported");
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   // 2, not 1, when a self-test detector carried nothing (check 40 b): the

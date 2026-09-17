@@ -1852,10 +1852,17 @@ function planStatGrid(stats: StatIn[], rung: StatRung, extra: number): StatPlan 
  *  plot in this file follows. Whatever goes is DECLARED on the slide; a note
  *  line is part of the height being fitted, or it is the thing that overflows. */
 function statGridRequests(
-  page: string, id: (s: string) => string, all: StatIn[], band: number, topAlign: boolean
+  page: string, id: (s: string) => string, all: StatIn[], band: number, topAlign: boolean,
+  bandTop: number = GRID.bodyY
 ): { reqs: Req[]; height: number; bottom: number } {
   const G = STAT_GRID;
   const DECL_H = 14;
+  // The room the cards actually have, which is the band less whatever was
+  // taken above them — a standfirst. Written the way every plot in this file
+  // writes it (`bandTop` in, `GRID.bodyY + band` as the floor) so the rung
+  // ladder steps down against the room it will be drawn in rather than the
+  // room the slide would have had without a line of context over it.
+  const room = GRID.bodyY + band - bandTop;
   const hasSources = (list: StatIn[]) => list.some((s) => !!s.detail?.trim());
   let shown = all.slice(0, STAT_MAX);
   let plan: StatPlan | null = null;
@@ -1865,7 +1872,7 @@ function statGridRequests(
       const rung = G.rungs[r];
       const declares = count < all.length || (!rung.sources && hasSources(subset));
       const p = planStatGrid(subset, rung, declares ? DECL_H : 0);
-      if (p.height <= band + 0.01) { plan = p; shown = subset; break; }
+      if (p.height <= room + 0.01) { plan = p; shown = subset; break; }
     }
   }
   if (!plan) {
@@ -1876,7 +1883,7 @@ function statGridRequests(
     plan = planStatGrid(shown, G.rungs[G.rungs.length - 1], DECL_H);
   }
   const dropped = all.length - shown.length;
-  const top = GRID.bodyY + (topAlign ? 0 : Math.max(0, (band - plan.height) / 2));
+  const top = bandTop + (topAlign ? 0 : Math.max(0, (room - plan.height) / 2));
   const border = { color: COLOR.navy, alpha: G.borderAlpha, weight: G.borderWeight };
   const out: Req[] = [];
   for (let i = 0; i < shown.length; i++) {
@@ -1931,7 +1938,8 @@ function statGridRequests(
 function heroStat(
   page: string, id: (s: string) => string,
   stat: { value: string; label: string; detail?: string },
-  band: number = GRID.bandHeight
+  band: number = GRID.bandHeight,
+  bandTop: number = GRID.bodyY
 ): Req[] {
   // Poppins runs ~0.62 of the point size per character; solve the size that
   // fills the content width, floored so a short value does not become absurd
@@ -1941,13 +1949,16 @@ function heroStat(
   const detailH = stat.detail ? 40 : 0;
   const LEAD = 1.5;   // one Poppins line's drawn height as a fraction of the size
   // Bounded by BOTH the content width AND the vertical band — a short value
-  // ("0", "64 GW") would otherwise scale so large it ran off the bottom.
+  // ("0", "64 GW") would otherwise scale so large it ran off the bottom. The
+  // band is measured from `bandTop`, so a standfirst above the figure shrinks
+  // the number rather than pushing it off the slide.
+  const room = GRID.bodyY + band - bandTop;
   const byWidth = (GRID.contentWidth - INSET) / (Math.max(stat.value.length, 1) * 0.62);
-  const byHeight = (band - labelH - (detailH ? detailH + 8 : 0)) / LEAD;
+  const byHeight = (room - labelH - (detailH ? detailH + 8 : 0)) / LEAD;
   const size = Math.max(54, Math.min(150, Math.floor(Math.min(byWidth, byHeight))));
   const valueH = size * LEAD;
   const groupH = valueH + labelH + (detailH ? detailH + 8 : 0);
-  const top = GRID.bodyY + Math.max(0, (band - groupH) / 2);
+  const top = bandTop + Math.max(0, (room - groupH) / 2);
   const out: Req[] = [
     ...textBox(id("sv0"), page, stat.value, { ...TYPE.statValue, size }, {
       x: GRID.margin, y: top, width: GRID.contentWidth, height: valueH,
@@ -1976,8 +1987,13 @@ function statRequests(
   stats: StatIn[],
   band: number = GRID.bandHeight,
   onDark = false,
-  topAlign = false
+  topAlign = false,
+  bandTop: number = GRID.bodyY
 ): { reqs: Req[]; height: number; bottom: number } {
+  // Everything below places itself against `bandTop` and measures against the
+  // room left beneath it, so the figures can be given the band MINUS a
+  // standfirst without a single one of the measurements above changing.
+  const room = GRID.bodyY + band - bandTop;
   // EIGHT, not three.
   //
   // This said slice(0, 3), and a source page carrying SEVEN figures with their
@@ -1987,13 +2003,13 @@ function statRequests(
   // it. Past eight a figure stops being a headline number and the slide wants
   // a table, so eight is the ceiling and anything beyond it is DECLARED.
   const all = stats.filter(Boolean);
-  if (!all.length) return { reqs: [], height: 0, bottom: GRID.bodyY };
+  if (!all.length) return { reqs: [], height: 0, bottom: bandTop };
   // FOUR OR MORE take the card grid on the LIGHT ground — see slideStyle()
   // and statGridRequests. The two-row grid used to live below, on navy at a
   // 10% white wash, and only from five: at four the figures were a 54pt hero
   // row with the rest of a source page demoted to bullets beneath it, so the
   // takeaway's "note the second row" pointed at a row that did not exist.
-  if (isStatGrid(all)) return statGridRequests(page, id, all, band, topAlign);
+  if (isStatGrid(all)) return statGridRequests(page, id, all, band, topAlign, bandTop);
   const shown = all;
 
   // A SINGLE stat is the moment the slide exists for — the fee, the headline
@@ -2004,14 +2020,14 @@ function statRequests(
   // `primary` among several does NOT drop the others (that would lose data);
   // it tints that column so the eye lands on it. The single-stat hero is the
   // real fix for the ask slide the audit flagged.
-  if (shown.length === 1) return { reqs: heroStat(page, id, shown[0], band), height: band, bottom: GRID.bodyY + band };
+  if (shown.length === 1) return { reqs: heroStat(page, id, shown[0], band, bandTop), height: room, bottom: bandTop + room };
 
   const out: Req[] = [];
 
   // Two or three: the navy hero row, one figure per column.
   const cell = (GRID.contentWidth - CHART.statGap * (shown.length - 1)) / shown.length;
   let groupH = CHART.statValueHeight + CHART.statLabelHeight + CHART.statDetailHeight + 4;
-  let top = GRID.bodyY + (topAlign ? 0 : Math.max(0, (band - groupH) / 2));
+  let top = bandTop + (topAlign ? 0 : Math.max(0, (room - groupH) / 2));
 
   // Size the number to its column instead of trusting one fixed size.
   //
@@ -2076,7 +2092,7 @@ function statRequests(
     : 0;
 
   groupH = CHART.statValueHeight + labelH + (detailH ? detailH + 4 : 0);
-  top = GRID.bodyY + (topAlign ? 0 : Math.max(0, (band - groupH) / 2));
+  top = bandTop + (topAlign ? 0 : Math.max(0, (room - groupH) / 2));
 
   shown.forEach((sx, i) => {
     const x = GRID.margin + i * (cell + CHART.statGap);
@@ -2098,6 +2114,79 @@ function statRequests(
     );
   });
   return { reqs: out, height: groupH, bottom: top + groupH };
+}
+
+/** The gap between a standfirst and whatever it introduces. Named for the two
+ *  branches that share this one: the chart band and the figures, which are the
+ *  same `if` and would otherwise hold two copies of the number the stat slide
+ *  was carved out of. The layers and hub branches set the same 8 of their own,
+ *  and are left alone here rather than swept up in a change about `stat`. */
+const STANDFIRST_GAP = 8;
+/** The air between the figures and the bullets beneath them. */
+const STAT_BODY_GAP = 10;
+
+/** WHAT THE FIGURES WOULD ACTUALLY DRAW IN A GIVEN BAND — built, not restated.
+ *
+ *  The standfirst on a stat slide is not paid for out of slack: it is paid for
+ *  out of the band the figures already have. So the question is never "is
+ *  there room for a line of type" — the answer to that is always yes, because
+ *  the rung ladder will step down and then start dropping figures to make it
+ *  true. The question is whether anything CHANGES, and the only honest way to
+ *  ask it is to lay the figures out both ways and compare.
+ *
+ *  Built rather than measured from a second copy of the rules, for the reason
+ *  droppedContent gives at length: the stat block has three branches, a five-
+ *  rung ladder, a figure-dropping loop and two declaration lines, and any
+ *  restatement of when each fires would be a second answer to drift from the
+ *  first. The drawn TEXT is the comparison because that is where a loss shows
+ *  up — "Showing 6 of 7 figures" and "Sources omitted for room" are drawn
+ *  strings, so a standfirst bought with a figure or with the source lines
+ *  changes the text and is refused. A rung's smaller type does not change it,
+ *  and should not: compression is what the ladder is for, and the takeaway bar
+ *  has always shortened this band the same way. */
+function statProbe(
+  stats: StatIn[], band: number, onDark: boolean, topAlign: boolean, bandTop: number
+): { bottom: number; ink: number; drawn: string } {
+  const out = statRequests("probe", (s) => `probe_${s}`, stats, band, onDark, topAlign, bandTop);
+  // TWO bottoms, because the block has two and they are not the same number.
+  // `bottom` is what the block REPORTS, which is where the caller puts the
+  // bullets; `ink` is how far the boxes actually reach. A single figure is a
+  // hero: it reports the whole band and draws a centred group in the middle of
+  // it, so measuring the prose against the ink would promise room under the
+  // figure that the caller will never give it.
+  let ink = bandTop;
+  const text: string[] = [];
+  for (let i = 0; i < out.reqs.length; i++) {
+    const shape = (out.reqs[i] as any).createShape;
+    if (shape) {
+      ink = Math.max(ink,
+        shape.elementProperties.transform.translateY + shape.elementProperties.size.height.magnitude);
+    }
+    const ins = (out.reqs[i] as any).insertText;
+    if (ins) text.push(String(ins.text));
+  }
+  return { bottom: out.bottom, ink, drawn: text.join(" · ") };
+}
+
+/** The size the bullets under the figures land on, and whether they landed.
+ *
+ *  Slides does not shrink text to fit a box: it draws it and lets it run
+ *  straight through the takeaway bar beneath, which is what happened the
+ *  moment that bar came up off the bezel. So the step down to 9 and then the
+ *  8pt floor is the fit, and `fits` is false when even the floor overruns —
+ *  the one thing the caller may not do silently. One function because the
+ *  standfirst has to ask what the prose will do BEFORE the prose is drawn. */
+function statBodyFit(
+  body: string, room: number, base: TypeStyle
+): { style: TypeStyle; fits: boolean } {
+  const paras = String(body).split("\n").filter((l) => l.trim());
+  let out = base;
+  for (const sz of [base.size, 9, 8]) {
+    out = { ...base, size: sz };
+    const lines = paras.reduce((n, p) => n + Math.max(1, estimateLines(p, GRID.contentWidth, sz, true)), 0);
+    if (drawnTextHeight(lines, sz, 4, paras.length) <= room) return { style: out, fits: true };
+  }
+  return { style: out, fits: false };
 }
 
 /** Fit a heading into the room above the body, growing UPWARD and shrinking
@@ -6311,19 +6400,17 @@ export function buildSlideRequests(
     // slides that carry evidence. When present it takes the top of the band and
     // the plot starts beneath it.
     //
-    // `stat` IS STILL EXCLUDED HERE, AND THE DECISION TO CHANGE THAT IS TAKEN
-    // BUT NOT BUILT. Measured over the 39 decks built to 2026-09-16, 13 stat
-    // slides and 8 image-split slides carried a `subtitle` that this condition
-    // drops — the model keeps writing the field, which is evidence the slot is
-    // wanted, and droppedContent reports every one of them. Chris decided on
-    // 2026-09-17 (docs/PLAN-slides-creative-2026-09.md, Stage 0): DRAW it on
-    // `stat`, which has the room because its whole content is three short
-    // strings, and LEAVE `image-split` dropping it, because there the subtitle
-    // competes with the photograph for the same column — with deckWarnings
-    // saying so rather than the slide swallowing it. That ships immediately
-    // after the rest of Stage 0, deliberately after rather than inside it, so
-    // it is named here rather than done in passing. Do not widen the condition
-    // to image-split when you do it.
+    // `stat` IS STILL EXCLUDED HERE, and draws its own standfirst below,
+    // because it is the one layout in this branch that has to BUY the line
+    // rather than simply place it. A plot is a solved rectangle and shrinks to
+    // whatever band it is handed; the figures are up to eight cards on a five-
+    // rung ladder that starts dropping data once the rungs run out, so the
+    // same two statements — "draw the subtitle, start the content beneath it"
+    // — mean "the plot is a little shorter" here and "one of the figures is
+    // gone" there. Chris decided on 2026-09-17 that it gets drawn on `stat`
+    // (docs/PLAN-slides-creative-2026-09.md, Stage 0), and the half of that
+    // decision about `image-split` is written where someone could act on it —
+    // in the image-split branch itself, which never reaches this condition.
     let chartBandTop = GRID.bodyY;
     if (slide.subtitle?.trim() && layout !== "stat") {
       const standStyle = onDark ? TYPE.standfirstDark : TYPE.standfirst;
@@ -6333,7 +6420,7 @@ export function buildSlideRequests(
       requests.push(...textBox(id("sub"), page, slide.subtitle, standStyle, {
         x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: standH,
       }));
-      chartBandTop = GRID.bodyY + standH + 8;
+      chartBandTop = GRID.bodyY + standH + STANDFIRST_GAP;
     }
 
     if (layout === "stat") {
@@ -6355,24 +6442,113 @@ export function buildSlideRequests(
       // the takeaway — so the bar sits just under the cards and the slack
       // falls BELOW the bar, where the reference page leaves it. Alone, it
       // centres in the band like every other self-contained block.
-      const stat = statRequests(page, id, slide.stats || [], band, onDark, hasBody || (grid && !!slide.note?.trim()));
+      const topAlign = hasBody || (grid && !!slide.note?.trim());
+      const bodyBase = onDark ? TYPE.bodyDark : TYPE.body;
+
+      // ── THE STANDFIRST, WHEN THE FIGURES CAN PAY FOR IT ────────────────────
+      //
+      // A headline number with a line of context beneath the title is a better
+      // slide than a bare number, and the model has been writing that line all
+      // along: over the 39 decks built to 2026-09-16, thirteen stat slides
+      // carried a `subtitle` that this layout drew nowhere, and droppedContent
+      // reported every one of them. Chris decided on 2026-09-17 that it gets
+      // drawn here.
+      //
+      // Not by simply deleting the exclusion, though — that is the version
+      // that looks right and prints the standfirst THROUGH the figures. The
+      // chart layouts hand `chartBandTop` to a plot that redraws itself in
+      // whatever is left; `stat` hands the whole band to statRequests, so the
+      // line of type would have been drawn at the top of a band the figures
+      // still believed they owned. The band is re-split instead: the
+      // standfirst takes the top of it, the figures are given the rest, and
+      // every measurement inside the block — the rung ladder, the honest label
+      // heights, the centring, the hero's solved size — now works from
+      // `bandTop` rather than from `GRID.bodyY`.
+      //
+      // AND THE FIGURES ARE NOT MADE TO PAY. The ladder will always make room
+      // if it is asked to: it steps down five rungs, then gives up the source
+      // lines, then starts dropping figures — each of which it declares, so a
+      // standfirst bought that way would be a slide that traded a number for a
+      // sentence and said so in 7pt. So the block is laid out BOTH ways and
+      // compared, and the line is drawn only when the figures and the bullets
+      // beneath them come out exactly as they would have without it. When they
+      // do not, nothing is clipped and nothing is quietly half-drawn: the
+      // subtitle is left undrawn and the deck SAYS the field could not be
+      // placed. The note names the field and deliberately does not quote the
+      // line, because droppedContent leaves text a note has already quoted to
+      // that note — quoting it here would make "nothing was dropped" true by
+      // suppression and blind the audit at the same time.
+      let bandTop = GRID.bodyY;
+      const sub = String(slide.subtitle || "").trim();
+      if (sub) {
+        const standStyle = onDark ? TYPE.standfirstDark : TYPE.standfirst;
+        const standH = drawnTextHeight(estimateLines(sub, GRID.contentWidth, standStyle.size), standStyle.size);
+        const under = GRID.bodyY + standH + STANDFIRST_GAP;
+        // The probe is handed exactly what the real call below is handed, so
+        // what it measures is what will be drawn and not a tidied version of it.
+        const asIs = statProbe(slide.stats || [], band, onDark, topAlign, GRID.bodyY);
+        const after = statProbe(slide.stats || [], band, onDark, topAlign, under);
+        // The prose is asked the same question the figures are: not "does it
+        // fit" but "does it come out the same". A body pushed from 10pt to 8pt
+        // to make room for a standfirst is the slide's argument demoted to a
+        // footnote, and it is a silent demotion — so it counts as unaffordable
+        // rather than as a step-down to declare.
+        //
+        // SAME OUTCOME, not absolute fit. This read `now.fits && …`, which is
+        // a stricter rule than the one stated above and it cost a real slide
+        // its line: a hero figure reports the whole band as its height, so the
+        // bullets under a single big number are already placed below the band
+        // floor and overrun whatever the standfirst does (conversation
+        // df7700f1, slide 15 — the prose is byte-identical either way, and the
+        // line was refused anyway). Prose that is already overrunning must not
+        // be made to pay a second time; it is the pre-existing overrun that
+        // wants fixing, not the sentence above it. So the test is that the
+        // outcome and the size are unchanged, and — for the already-overrunning
+        // case, where "unchanged" cannot be read off a size alone — that the
+        // box beneath the figures has not been pushed down as well.
+        const proseKept = !hasBody || (() => {
+          const roomOf = (bottom: number) => Math.max(30, GRID.bodyY + band - (bottom + STAT_BODY_GAP));
+          const was = statBodyFit(slide.body as string, roomOf(asIs.bottom), bodyBase);
+          const now = statBodyFit(slide.body as string, roomOf(after.bottom), bodyBase);
+          if (was.fits !== now.fits || was.style.size !== now.style.size) return false;
+          return now.fits || after.bottom <= asIs.bottom + 0.01;
+        })();
+        if (after.drawn === asIs.drawn && after.ink <= GRID.bodyY + band + 0.01 && proseKept) {
+          requests.push(...textBox(id("sub"), page, sub, standStyle, {
+            x: GRID.margin, y: GRID.bodyY, width: GRID.contentWidth, height: standH,
+          }));
+          bandTop = under;
+        } else {
+          // THE REMEDY HAS TO BE FREE ON THIS SLIDE. "Move it to `note`" is
+          // sound advice on a slide with no takeaway and wrong on one that has
+          // one — and a takeaway is usually WHY the band ran out, since
+          // bandHeightFor takes the bar's height out of it. Measured across
+          // every stat shape: of the slides that refuse, most already carry a
+          // `note`, so the unconditional wording pointed the model at a field
+          // it would have had to overwrite. When the bar is already there the
+          // honest advice is the other direction — shortening it gives the
+          // band back, which is the same room the standfirst was asking for.
+          shotNote(
+            "the standfirst in `subtitle` is not drawn on this stat slide: the figures need the whole band," +
+            " and a line of context above them would cost a figure, its source line or the prose beneath —" +
+            (slide.note?.trim()
+              ? " shorten it, or shorten the takeaway in `note`, which is taking part of the band"
+              : " move it to `note` for the takeaway bar, or shorten it")
+          );
+        }
+      }
+
+      const stat = statRequests(page, id, slide.stats || [], band, onDark, topAlign, bandTop);
       requests.push(...stat.reqs);
       if (grid && !hasBody) contentBottom = stat.bottom;
       if (hasBody) {
-        const bodyTop = GRID.bodyY + stat.height + 10;
+        const bodyTop = bandTop + stat.height + STAT_BODY_GAP;
         const room = Math.max(30, GRID.bodyY + band - bodyTop);
         // The bullets step down to what fits under the figures — 10, 9, then
         // the 8pt floor — because Slides draws an overflowing body straight
         // through the takeaway bar beneath it, which is what happened the
         // moment the bar came up off the bezel.
-        const base = onDark ? TYPE.bodyDark : TYPE.body;
-        const paras = String(slide.body).split("\n").filter((l) => l.trim());
-        let bodyStyle2 = base;
-        for (const sz of [base.size, 9, 8]) {
-          bodyStyle2 = { ...base, size: sz };
-          const lines = paras.reduce((n, p) => n + Math.max(1, estimateLines(p, GRID.contentWidth, sz, true)), 0);
-          if (drawnTextHeight(lines, sz, 4, paras.length) <= room) break;
-        }
+        const bodyStyle2 = statBodyFit(slide.body as string, room, bodyBase).style;
         requests.push(...textBox(id("body"), page, slide.body, bodyStyle2, {
           x: GRID.margin, y: bodyTop, width: GRID.contentWidth, height: room,
         }, { bullets: true, spaceBelow: 4 }));
@@ -6756,6 +6932,27 @@ export function buildSlideRequests(
       }),
     );
   } else if (layout === "image-split") {
+    // THE SUBTITLE IS NOT DRAWN HERE, AND THAT IS A DECISION, NOT AN OVERSIGHT.
+    //
+    // Over the 39 decks built to 2026-09-16, nine image-split slides carried a
+    // `subtitle`; this layout draws none of them. Chris took that on
+    // 2026-09-17 alongside the opposite call for `stat`
+    // (docs/PLAN-slides-creative-2026-09.md, Stage 0): on `stat` a headline
+    // number gains a line of context and the band can be re-split to pay for
+    // it, while here the line would compete with the photograph for the one
+    // half-width column the words already share. Do NOT add it — reopen the
+    // decision with Chris instead.
+    //
+    // The loss is DECLARED, in the channel that already exists rather than a
+    // second one: `subtitle` is not in NON_CONTENT_KEYS, so droppedContent
+    // reports it and deckWarnings names it to the user verbatim. That was
+    // checked against the real slides rather than assumed — eight of the nine
+    // are reported, and the ninth (conversation 04c5d402, slide 9) is silent
+    // only because the same sentence is repeated in `body` and IS drawn, which
+    // is droppedContent working, not failing. Adding a layout note here would
+    // declare the same loss twice AND silence droppedContent about it, because
+    // text a note already quotes is left to that note.
+    //
     // Image bleeds off the left edge; text takes the right half. Bleeding
     // rather than insetting is what makes it read as editorial instead of as a
     // picture pasted into a document — which is exactly why a SCREENSHOT does
