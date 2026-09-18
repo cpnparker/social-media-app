@@ -32,7 +32,7 @@ const THUMB_W = 330;
 // no server code is pulled into the bundle.
 export type { PreviewElement, PreviewSlide } from "@/lib/slides/preview-model";
 import type { PreviewSlide } from "@/lib/slides/preview-model";
-import { SLIDES_TEXT_INSET, BULLET_INDENT, NATURAL_LINE, runsOf } from "@/lib/slides/preview-style";
+import { SLIDES_TEXT_INSET, BULLET_INDENT, NATURAL_LINE, runsOf, runNeedsStyle } from "@/lib/slides/preview-style";
 import { SLIDE_FONT_CLASS } from "./slide-fonts";
 
 export interface SlideDraft {
@@ -73,7 +73,10 @@ function renderRuns(
   accents?: { start: number; end: number; italic?: boolean; color?: string }[]
 ) {
   const runs = runsOf(line, offset, links, accents);
-  if (runs.length === 1 && !runs[0].url && !runs[0].italic && !runs[0].color) return line;
+  // The fast path, through the shared predicate rather than a condition
+  // written out here — see runNeedsStyle for the field it was missing and what
+  // that cost.
+  if (runs.length === 1 && !runNeedsStyle(runs[0])) return line;
   return runs.map((run, i) => {
     const style: React.CSSProperties = {};
     if (run.url) style.textDecoration = "underline";

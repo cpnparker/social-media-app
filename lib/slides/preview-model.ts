@@ -13,7 +13,7 @@
  * would stop predicting the deck — which would make it worse than useless.
  */
 
-import { buildSlideRequests, splitOverflowingSlides, type SlideInput } from "@/lib/slides/generate";
+import { buildSlideRequests, splitOverflowingSlides, stampDeckSteps, type SlideInput } from "@/lib/slides/generate";
 import { CANVAS } from "@/lib/slides/brand";
 
 export interface PreviewElement {
@@ -112,6 +112,16 @@ const INDEXED: [RegExp, (i: number) => (string | number)[]][] = [
   // they are what let a wrong phrase be fixed in the preview rather than by
   // asking the model to rebuild the slide.
   [/^col(\d+)$/, (i) => ["image", "callouts", i, "text"]],
+  // A PROSE LIST IS ONE FIELD DRAWN AS SEVERAL BOXES. bulletBlock gives each
+  // paragraph its own box so the hung dot can be positioned on that box's own
+  // first line; the paragraphs after the first are `body1`, `left1`, `right1`
+  // and so on. They all address the whole field, because that is what editing
+  // one of them edits — the same contract the single box they replaced had.
+  // The index is deliberately discarded rather than used to reach a paragraph:
+  // `body` is a string with newlines in it, not an array.
+  [/^body(\d+)$/, () => ["body"]],
+  [/^left(\d+)$/, () => ["body"]],
+  [/^right(\d+)$/, () => ["bodyRight"]],
 ];
 
 function pathOf(objectId: string): (string | number)[] | undefined {
@@ -357,5 +367,10 @@ export function toPreviewModel(slides: SlideInput[]): PreviewDeck {
  *  nothing. */
 export function draftPreview(slides: SlideInput[]): { slides: SlideInput[]; preview: PreviewDeck } {
   const split = splitOverflowingSlides(slides);
+  // The spine is re-derived on the SPLIT deck, for the same reason the split
+  // happens here at all: the caller gets back the spec that was drawn, and a
+  // preview whose rail says "4 of 7" over a deck that will publish as eight is
+  // a preview that has stopped predicting the deck.
+  stampDeckSteps(split);
   return { slides: split, preview: toPreviewModel(split) };
 }

@@ -13,11 +13,12 @@
 import {
   buildSlideRequests, textBandsFor, splitOverflowingSlides, isoDate, isVisualSlide,
   estimateLines, drawnTextHeight, inheritContinuationImages, resolveDeckImages,
-  niceTicks, isNumericColumn, fitCell, fitColumnWidths, parseAccents, parseBold, deckWarnings, cardGeometry, bandHeightFor,
+  niceTicks, isNumericColumn, fitCell, fitColumnWidths, parseAccents, parseBold, deckWarnings, cardGeometry, gridGeometry, bandHeightFor,
   undrawnTableBodies,
   CAPS_WIDEN, faceAdvance, stripImageMarkdown, drawnText, TEXT_INSET_X, TEXT_INSET_Y, pillWidth, droppedContent, fitHeading, FOOTER_Y, captionParagraphs, splitStageOwner, slideStyle,
   labelWidthPt, quoteClip, drawsRawScreenshot, isScreenshot, fitAspect, namesAPicture, hugHeight,
   densityOf, footerLineWidth, hairlineSpan, hairline, crossingHairlines, hungDot, ctaPill, HUNG_DOT, PILL,
+  stampDeckSteps, stepperRail, stepperBox, bulletBlockHeight, deckSteps,
   type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel, readPath } from "../lib/slides/preview-model";
@@ -30,7 +31,7 @@ import {
 } from "../lib/slides/claim";
 import { createToolLoopGuard } from "../lib/ai/tool-loop-guard";
 import { deckToHtml, safeSrc } from "../lib/slides/pdf-html";
-import { SLIDES_TEXT_INSET, NATURAL_LINE } from "../lib/slides/preview-style";
+import { SLIDES_TEXT_INSET, NATURAL_LINE, runsOf, runNeedsStyle } from "../lib/slides/preview-style";
 import {
   validateDeck, offCanvasFaults, overlapFaults, overrunFaults, geometryNotes, geometryRefusal,
   faultCounts, relayableFaults, logDeckGeometry, inkBottom, GEOMETRY_SEVERITY, type DeckGeometry,
@@ -43,7 +44,7 @@ import { createServer } from "http";
 import { join } from "path";
 import { gradientProfileFor, CONTRAST } from "../lib/slides/images";
 import { CANVAS, LAYOUT_STYLE, COLOR, GRID, LAYOUTS, NOTE, SECTION, TYPE, PROCESS, SHOT, IMAGE, FEATURE_SHOT_STYLE, LOGO_PLACEMENT,
-  DENSITY, DEFAULT_DENSITY, FRAME, BAND_BOTTOM, TIMELINE, TIMELINE_PARALLEL, LOGO_WALL, withDensity, assetUrl, textOn,
+  DENSITY, DEFAULT_DENSITY, FRAME, STEPPER, BAND_BOTTOM, TIMELINE, TIMELINE_PARALLEL, LOGO_WALL, withDensity, assetUrl, textOn,
   type Density, type SlideLayout } from "../lib/slides/brand";
 
 const TYPE_STAT_CAP = 54;   // the multi-stat value cap; a hero must exceed it
@@ -620,10 +621,42 @@ const rtFail = (kind: string, what: string) => fail(`${kind} is emitted but its 
   const body = content.elements.find((e) => e.kind === "text" && /One/.test(String(e.text)));
   if (!body) rtFail("insertText", "the body text is missing entirely");
   else {
-    if (!body.bullets) rtFail("createParagraphBullets", "a two-line body is not marked as bullets");
     if (!body.font || !body.size || !body.color) rtFail("updateTextStyle", "the body has no font, size or colour");
     if (typeof body.spaceBelow !== "number") rtFail("updateParagraphStyle", "paragraph spacing was dropped");
     if (body.w <= 0 || body.h <= 0) rtFail("createShape", "the body box has no geometry");
+  }
+  // THE PROSE LIST'S MARKER IS A SHAPE NOW, not Slides' bullet preset, so the
+  // thing to round-trip is the disc. It is the marker for the paragraph whose
+  // text is here, so it is asserted AGAINST that box rather than merely
+  // counted: a disc that reaches the preview at the wrong y is a preview of a
+  // slide nobody is going to get.
+  if (body) {
+    const dots = content.elements.filter((e) => e.kind === "ellipse" && e.w < 8 && e.h < 8);
+    if (dots.length !== 2) rtFail("createShape", `a two-paragraph body drew ${dots.length} hung dots, not 2`);
+    const first = dots.slice().sort((a, b) => a.y - b.y)[0];
+    if (first && first.x >= body.x) rtFail("createShape", `the dot is drawn at x=${first.x.toFixed(2)}, inside the measure its box starts at (${body.x.toFixed(2)})`);
+    if (first && !(first.y > body.y && first.y < body.y + body.h)) {
+      rtFail("createShape", `the dot at y=${first.y.toFixed(2)} is not level with the paragraph it marks (${body.y.toFixed(2)}..${(body.y + body.h).toFixed(2)})`);
+    }
+  }
+  // AND createParagraphBullets IS NO LONGER EMITTED BY ANYTHING, which is why
+  // the fixture that used to drive it — a swot quadrant — now asserts the
+  // opposite. Slides' preset drew its glyph inside the measure; the deck hangs
+  // a disc outside it. A quadrant marked with BOTH, or with the preset alone,
+  // is the two-markers-in-one-deck defect the migration closed, and the
+  // assertion is that the panel's list is marked the way the page's is.
+  {
+    const q = toPreviewModel([{ layout: "swot", title: "S", swot: {
+      strengths: ["Owns the data", "Named in the sector"], weaknesses: ["Thin in Germany"],
+      opportunities: ["Regulation lands 2027"], threats: ["Two funded entrants"] } }]);
+    const quad = q.slides[0].elements.find((e) => e.kind === "text" && /Owns the data/.test(String(e.text)));
+    if (!quad) rtFail("insertText", "the swot quadrant's items are missing entirely");
+    else if (quad.bullets) rtFail("createParagraphBullets", "a swot quadrant still carries Slides' own bullet preset");
+    else {
+      const disc = q.slides[0].elements.filter((e) => e.kind === "ellipse" && e.w < 8 && e.h < 8)
+        .filter((e) => e.x < quad.x && Math.abs(e.y - quad.y) < quad.h);
+      if (!disc.length) rtFail("createShape", "a swot quadrant's list has no marker of any kind");
+    }
   }
   void stat;
   const photo = cover.elements.find((e) => e.kind === "image" && !e.src?.includes("logo_engine"));
@@ -933,15 +966,36 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     const name = `${proseSlides[i].layout}${proseSlides[i].resolvedImage ? " + rail" : ""}`;
     const drawn = page.elements.filter((e) => e.kind === "rect" || e.kind === "ellipse");
     if (!drawn.length) fail(`${name}: not one drawn element on the slide`);
-    const body = page.elements.find((e) => e.kind === "text" && e.bullets);
+    // The FIRST paragraph's box. A prose list is drawn as one box per paragraph
+    // now, so `bullets` is no longer the handle — the marker is a drawn disc.
+    // The path is: every one of those boxes addresses `body`.
+    const bodies = page.elements.filter((e) => e.kind === "text" && e.path?.length === 1 && e.path[0] === "body")
+      .sort((a, b) => a.y - b.y);
+    const body = bodies[0];
     if (!body) { fail(`${name}: no body`); return; }
     // A measure, not a document width: 116 characters to a line is why it read
-    // as a page rather than a slide.
-    const chars = Math.floor((body.w - 14.4 - 18) / ((body.size || 10) * 0.55));
+    // as a page rather than a slide. The 18pt bullet indent is gone with the
+    // Slides preset, so the measure is the box less its own insets.
+    const chars = Math.floor((body.w - 14.4) / ((body.size || 10) * 0.55));
     if (chars > 100) fail(`${name}: body measure is ${chars} characters a line`);
-    if (body.y + body.h < CANVAS.height * 0.85) {
-      fail(`${name}: the body stops at ${Math.round(body.y + body.h)} of ${CANVAS.height} — the band foot is unused`);
-    }
+    // THE BAND-FOOT ASSERTION IS DELIBERATELY GONE, and this is the note that
+    // says so rather than leaving its absence to be read as an oversight.
+    //
+    // It asserted `body.y + body.h >= 0.85 * canvas` — that the BOX reached the
+    // foot of the band. It did, on every slide, and it meant nothing: the box
+    // was one stretched box and the INK inside it stopped wherever the words
+    // ran out. Rendering the deck for the first time (2026-09-18) showed a
+    // three-bullet slide whose type ended at 51% of the page under a box that
+    // reached 92% of it. Worse, the assertion was load-bearing in the wrong
+    // direction: the only way to fill a box that must reach the foot is to
+    // stretch the gaps, and 22pt of paragraph space against 14.5pt of leading
+    // is what made a wrapped bullet's second line read as an orphan.
+    //
+    // What replaces it is check 48(a), which measures the RHYTHM — the step
+    // between paragraphs against the step between the lines of one — and the
+    // decision that the slack below a short list is not the list's to spend.
+    // The bond that matters is at the TOP: the list hangs from the rule under
+    // the title, which 48(a) also pins.
     if (proseSlides[i].resolvedImage) {
       const pic = page.elements.find((e) => e.kind === "image" && !e.src?.includes("logo_engine"));
       if (!pic) fail(`${name}: the picture it resolved is never drawn`);
@@ -3424,9 +3478,24 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     const cp0 = geomOf(kreqs, "_cp0"), kbar = geomOf(kreqs, "_noteBar");
     if (!cp0 || !kbar) fail("cards fixture drew no card or no takeaway");
     else {
-      const room = NOTE.bottom - kbar.h - NOTE.gap - cp0.y;
+      // MEASURED AGAINST THE BAND, not against where the row happens to start.
+      // The row now CENTRES in its band the way the stat grid does, so a
+      // denominator read off the card's own top edge shrinks by exactly the
+      // slack the centring introduced and the ratio rises while nothing about
+      // the card has changed.
+      const bandTop = GRID.bodyY;
+      const room = NOTE.bottom - kbar.h - NOTE.gap - bandTop;
       if (cp0.h > room * 0.6) fail(`a one-line card is ${cp0.h.toFixed(0)}pt tall in ${room.toFixed(0)} of room — cards are filling the band again`);
-      if (Math.abs(kbar.y - (cp0.y + cp0.h + NOTE.gap)) > 0.5) fail(`the takeaway under the cards starts at ${kbar.y.toFixed(1)}, not ${NOTE.gap}pt under them`);
+      // AND THE SLACK IS SHARED. A card grid is a figure and the band is its
+      // frame: hung from the top, three one-line cards left the bottom quarter
+      // of the page reading as unfinished. The property is that the air above
+      // the row equals the air below it — which is what "centred" means and
+      // what a fixed top edge cannot accidentally satisfy.
+      const above = cp0.y - bandTop;
+      const below = (NOTE.bottom - kbar.h - NOTE.gap) - (cp0.y + cp0.h);
+      if (above < 4) fail(`the card row starts ${above.toFixed(1)}pt into its band — it is hung from the top, not centred in it`);
+      if (Math.abs(above - below) > 1.5) fail(`the card row leaves ${above.toFixed(1)}pt above and ${below.toFixed(1)}pt below — a figure centres in its band`);
+      if (Math.abs(kbar.y - (cp0.y + cp0.h + NOTE.gap)) > 0.5 + Math.max(0, below - NOTE.gap)) fail(`the takeaway under the cards starts at ${kbar.y.toFixed(1)}, not under them`);
     }
 
     // TABLE CELLS: full row height, centred, overhanging the row by half the
@@ -3539,8 +3608,28 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     const num = geomOf(br, "_num"), bt = geomOf(br, "_title"), bs = geomOf(br, "_sub");
     if (!num || !bt || !bs) fail("fixture B drew no numeral, title or subtitle");
     else {
-      if (Math.abs(num.y - GRID.eyebrowY) > 0.5 || Math.abs(num.h - SECTION.numeralHeight) > 0.5) fail(`the numeral left its slot (y ${num.y.toFixed(1)} h ${num.h.toFixed(1)})`);
-      if (bt.y < num.y + num.h - 0.5) fail(`the lockup (title y ${bt.y.toFixed(1)}) starts inside the numeral box (ends ${(num.y + num.h).toFixed(1)})`);
+      // THE NUMERAL IS THE LOCKUP'S FIRST LINE, not a mark in the page-header
+      // slot. It kept that slot while the rest of the divider was measured as a
+      // block and centred, which drew a 64pt numeral at the top of the page,
+      // then 80pt of empty ground, then the lockup, then 146pt more down to the
+      // footer — the emptiest page in the deck, rendered and looked at. The
+      // properties are that it is ON the stack (the title follows it by one
+      // box, with no hole between), that it hugs one line of its own type
+      // rather than a 100pt slot, and that the whole group is centred.
+      if (num.h > drawnTextHeight(1, TYPE.sectionNumeral.size, 0, 1, SECTION.titleLead) + 0.5) {
+        fail(`the numeral's box is ${num.h.toFixed(1)}pt for one line of ${TYPE.sectionNumeral.size}pt type — it is back in its old 100pt slot`);
+      }
+      if (Math.abs(bt.y - (num.y + num.h)) > 0.5) fail(`the title starts at ${bt.y.toFixed(1)} against a numeral ending at ${(num.y + num.h).toFixed(1)} — the numeral is not part of the lockup`);
+      {
+        // Centred as one group: the air above the numeral and the air under the
+        // subtitle are within a couple of points of each other. Measured
+        // against the CANVAS, because a divider draws neither of the frame's
+        // hairlines — its own colour is the page, and the page is the trim.
+        const above = num.y;
+        const below = CANVAS.height - (bs.y + bs.h);
+        if (above < 20) fail(`the divider's lockup starts ${above.toFixed(1)}pt down the page — it is hung from the top, not centred`);
+        if (Math.abs(above - below) > 24) fail(`the divider leaves ${above.toFixed(1)}pt above its lockup and ${below.toFixed(1)}pt below — it is not centred as one group`);
+      }
       const lines = estimateLines(Bn.title, GRID.contentWidth, TYPE.sectionTitle.size);
       if (lines !== 2) fail(`fixture B's title measures ${lines} lines, not the two the case is about`);
     }
@@ -10480,6 +10569,1675 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   if (failures === before47) {
     pass(`the frame lands in empty bands at both presets, the folio renumbers, read is untouched,` +
       ` and the present rhythm is the solve rather than a number`);
+  }
+
+
+  /* 48. THE STEPPER, AND THE FURNITURE THE RENDER FOUND.
+   *
+   * Stage 3 of docs/PLAN-slides-creative-2026-09.md. Four of the five defects
+   * this section pins were found by RENDERING the deck and looking at it —
+   * the first time anyone had — and not one of them was reachable from a
+   * number. Every check in this file was green while:
+   *
+   *  - a bullet that wrapped had its second line 36.5pt from the first and its
+   *    neighbour 14.5pt further still, so the eye grouped the wrong lines;
+   *  - the hung dot primitive, shipped in Stage 2, was drawn by nothing;
+   *  - a table slide started its title at x=31.68, its band at 24.48 and its
+   *    first cell at 37.68 — three left edges on one slide;
+   *  - a process card with no caption kept the caption's room and rendered
+   *    with a hole in it.
+   *
+   * So the assertions below are mostly about RELATIONS BETWEEN NUMBERS rather
+   * than about numbers: a step against a step, an edge against an edge, a gap
+   * against the thing on either side of it. That is the form a defect you can
+   * see and cannot measure takes when it is written down.
+   *
+   * MUTATION LOG (detached worktree, 2026-09-18). Recorded with survivors, and
+   * the survivor is the most useful entry here.
+   * MUTATION LOG (detached worktree, 2026-09-18). Twenty-nine mutations,
+   * twenty-eight killed. The survivor is the most useful entry, and so are the
+   * seven that survived their FIRST run and are recorded with what was wrong
+   * with the check rather than quietly fixed.
+   *
+   *  - KILLED (48a): the paragraph gap goes back to filling the band. The step
+   *    between bullets reads 3.02x the step inside one at read and 2.68x at
+   *    present. THIS IS THE DEFECT THAT SHIPPED, and every check in this file
+   *    was green over it.
+   *  - KILLED (48b): the hung dot is not drawn at all. Six failures plus the
+   *    round-trip in check 3 — which is the shape the defect actually had:
+   *    Stage 2 wrote the primitive and nothing called it, and a primitive
+   *    nobody calls emits nothing for a check to inspect.
+   *  - KILLED (48b): HUNG_DOT.offsetX zeroed, so the disc is drawn on the glyph
+   *    it marks. Also caught by 47g, which is the right overlap.
+   *  - KILLED (48b): the disc centred on the BOX rather than on the box's first
+   *    line — a 3.6pt error, invisible in a number and obvious on a page.
+   *  - KILLED (48b, ON THE SECOND RUN): the disc stops scaling with the type it
+   *    marks. The first version filtered the discs by `w === HUNG_DOT.diameter`
+   *    and asserted the diameter against the same token, which is an assertion
+   *    that moves with the thing it is checking. Rewritten against the TYPE it
+   *    sits beside, it immediately found a live case nobody had looked at: a
+   *    stat slide's bullets step down to 8pt under a hero figure, where the
+   *    fixed 5pt disc is 0.63 of the type against the source deck's 0.47.
+   *  - KILLED (48c): the spine derived from the slide COUNT rather than from
+   *    the deck's structure. Six failures, including the handover deck's own
+   *    shape deriving as nothing at all.
+   *  - KILLED (48c): a continuation takes a step of its own, so one body a
+   *    paragraph too long turns seven things into eight.
+   *  - KILLED (48c): the inactive numeral back to the source deck's #B7B7B7 —
+   *    1.89:1 on off-white, under even the 3:1 large-text floor.
+   *  - KILLED (48c): the rail's box sized on its glyphs alone. Five failures,
+   *    and the interesting one is the last: the rail MEASURES as two lines in a
+   *    box it draws on one line in, so the frame's top hairline yields to ink
+   *    that is not there. Two rulers, one box.
+   *  - KILLED (48c): the eyebrow keeps its full measure under a rail — two
+   *    boxes on one line on every stepped slide in the deck.
+   *  - KILLED (48c): the rail drawn on a photo-led ground, where the inactive
+   *    numeral is 1.43:1 on a gradient solved for white.
+   *  - KILLED (48c): the current step is not marked at all.
+   *  - KILLED (48c, ON THE SECOND RUN): the active numeral ignores the ground,
+   *    so it is brand blue on navy at 2.39:1. The first version asserted the
+   *    TOKENS' contrast and never read the ink off the drawn rail — exactly the
+   *    hole check 47 found in the frame's own hairline, where the token was
+   *    right and hairlineInk ignored the ground.
+   *  - KILLED (48c, ON THE SECOND RUN): STEPPER.maxSteps lifted from 9 to 40.
+   *    Every bound assertion read the constant on both sides, so all of them
+   *    stayed green while a 34-slide client deck grew a rail of 32 numerals.
+   *    What kills it now says what the bound is FOR: a deck the size of the
+   *    ones in the corpus draws none, and the widest rail stays under a third
+   *    of the eyebrow's line.
+   *  - KILLED (48c, ON THE SECOND RUN): draftPreview stops stamping. The chat
+   *    preview then shows a deck with no rail and the file in Drive has one —
+   *    the preview/deck divergence this repo has paid for twice. Nothing saw it
+   *    until the assertion was driven through draftPreview itself.
+   *  - KILLED (48c): the rail's tracking collapsed to one space. Caught because
+   *    the rail is FOUND by the shape of its text rather than by its object id.
+   *  - KILLED (48d): the table's first column gets its extra inset back — the
+   *    three left edges, in four failures across both presets.
+   *  - KILLED (48e): a captionless process card pays both gaps around an empty
+   *    band again: 14pt between the name and the owner instead of 6.
+   *  - KILLED (48e): `text` stops being a synonym for a stage's caption, and
+   *    the same for a card's body.
+   *  - KILLED (48f): bulletBlockHeight forgets the per-box inset. Three
+   *    failures, and two of them are in OTHER checks — the stat body's fit
+   *    ladder stops stepping, and the two presets start disagreeing — which is
+   *    what "one ruler" is worth.
+   *  - KILLED (check 13 and 45, not 48): every paragraph box numbered, so the
+   *    field's name comes off the slide and `_body` addresses nothing.
+   *  - KILLED (48a): pathOf stops mapping the numbered boxes back to their
+   *    field, so only the first paragraph of a list is editable in the preview.
+   *  - KILLED (verify-slide-edit 15): applyEditSlide stops re-stamping the
+   *    spine. This is the assertion the plan asks for by name.
+   *  - KILLED (verify-slide-edit 15, ON THE SECOND RUN): stampSteps writes
+   *    through instead of copying, so an edit puts a rail on the deck the user
+   *    is looking at — including when the edit is then refused. Check 7
+   *    compares slides with `step` removed and cannot see it; the assertion
+   *    that the INPUT is untouched is what does.
+   *  - KILLED (48a2, ON THE SECOND RUN): the paragraph break stops
+   *    compressing, so an overlong list stands 18pt taller than the single
+   *    stretched box it replaced. Survived the first fixture because that
+   *    fixture FITTED its band: nothing compresses when there is room, and
+   *    every property this entry is about only exists at the cliff.
+   *  - KILLED (48a2): the compression is unbounded (PARA_MIN negative), so
+   *    consecutive boxes overlap by 7.36pt — past the 7.2pt of inset the
+   *    overlap sweep divides out, which is where the boxes stop sharing empty
+   *    space and start meeting where the glyphs are.
+   *  - KILLED (48a2, ON THE SECOND RUN): a paragraph box drawn past the foot
+   *    of its band. The first fixture used a 100-character bullet, which draws
+   *    on ONE line at the 540pt prose measure — so every box was already the
+   *    minimum height, the clamp had nothing to clamp, and deleting it changed
+   *    nothing at all. A clamp on a height needs a box taller than the floor.
+   *  - KILLED (verify-slide-edit 15): the spine derived and never written.
+   *  - KILLED (48c): generateSlides stops stamping the deck's chrome, and
+   *    separately buildSlidesDraft. BOTH WERE UNASSERTED SURVIVORS until the
+   *    two halves were hoisted into one `stampDeckChrome`: the deck that lands
+   *    in a user's Drive and the draft the chat preview is built from could
+   *    each lose the footer AND the spine with the whole suite green.
+   *  - KILLED (48c): the rail set two points larger. "the rail's box runs to
+   *    49.10 at 14pt, through the frame's top hairline at 46.80". At 12pt the
+   *    clearance is half a point, nothing said so, and the design review's own
+   *    caveat asks for a bigger rail.
+   *  - KILLED (48c): the divider's 64pt numeral back to the model's text. "the
+   *    dividers drew \"07 07 07\"" — driven on a deck whose written numerals
+   *    are deliberately wrong, because a fixture whose numerals already agree
+   *    with the spine cannot tell the two sources apart.
+   *  - KILLED (48a2, REWRITTEN): the paragraph box back to a one-line floor.
+   *    The assertion it used to face restated the builder's own clamp
+   *    expression and so could not fail for any box the builder had clamped.
+   *    Rewritten about the ORIGIN — a box whose top edge is outside the band —
+   *    and about the canvas, it goes red.
+   *  - SURVIVED (48a): PARA_SPACE set to zero. Provably not a defect rather
+   *    than untested. PARA_SPACE is the CEILING on how much of the band's slack
+   *    a paragraph break may absorb, and the break's FLOOR comes from somewhere
+   *    else entirely — the 3.6pt Slides insets at the foot of one box and the
+   *    head of the next, which give 7.2pt whatever this constant says. At zero
+   *    the step is still 1.50x the line step at 10pt, comfortably inside the
+   *    band 48a asserts. The rhythm does not depend on it; only the stretch
+   *    does. Worth knowing before anyone reaches for this constant to fix a
+   *    rhythm complaint.
+   */
+  const before48 = failures;
+  console.log(`\n48. The stepper, the bullet rhythm and the edges the render found`);
+  const A48 = (ok: boolean, m: string) => { if (!ok) fail(m); };
+  {
+    const lum48 = (hex: string) => {
+      const h = hex.replace("#", "");
+      const f = (c: number) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+      const v = [0, 2, 4].map((i) => f(parseInt(h.substr(i, 2), 16) / 255));
+      return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+    };
+    const ratio48 = (a: string, b: string) => {
+      const x = lum48(a), y = lum48(b);
+      return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+    };
+    const els = (slide: SlideInput, i = 1, run = "c48") =>
+      previewSlideFrom(slide, buildSlideRequests(slide, i, run) as any[]).elements;
+
+    /* (a) THE RHYTHM. A paragraph break is wider than a line and narrower than
+     *     two, at every size the body is set at and in every prose layout.
+     *
+     *     ASSERTED AS A RATIO, not as a gap. The defect was never "22pt is too
+     *     much" — it is that 22pt sits against a 14.5pt line, and the same 22pt
+     *     against a 30pt line would be right. Proximity is what groups lines,
+     *     so the only honest statement is the one about the two steps. */
+    {
+      const bullets = "We will be your partners in balancing the demands of your organisation and the interests of your audience"
+        + "\nIt takes experimentation to know what works"
+        + "\nWe will use data to see what is working and adapt our approach accordingly";
+      const cases: { name: string; slide: SlideInput; field: string }[] = [
+        { name: "content", slide: { layout: "content", title: "Put the audience first", subtitle: "Growth happens when you see a story through the audience's eyes.", body: bullets }, field: "body" },
+        { name: "content + rail", slide: { layout: "content", title: "Put the audience first", body: bullets, resolvedImage: PHOTO_DARK }, field: "body" },
+        { name: "two-column", slide: { layout: "two-column", title: "Your goals are our goals", body: bullets, bodyRight: bullets }, field: "body" },
+        { name: "stat + body", slide: { layout: "stat", title: "Content units", stats: [{ value: "12", label: "CU contracted", primary: true }, { value: "0", label: "CU used" }], body: bullets }, field: "body" },
+      ];
+      for (const preset of ["read", "present"] as Density[]) {
+        for (const c of cases) {
+          const drawn = els({ ...c.slide, density: preset }, 2, `c48a${preset}${c.name.length}`)
+            .filter((e) => e.kind === "text" && e.path?.length === 1 && e.path[0] === c.field)
+            .sort((a, b) => a.y - b.y);
+          // PRECONDITION: three paragraphs, three boxes. Without this every
+          // assertion below is vacuously true on a layout that drew nothing.
+          if (drawn.length !== 3) {
+            fail(`48a precondition: ${c.name} at ${preset} drew ${drawn.length} body boxes for a three-paragraph list, not 3`);
+            continue;
+          }
+          const size = drawn[0].size || 10;
+          // The step WITHIN a paragraph is the line pitch Slides draws at; the
+          // step BETWEEN them is box top to box top, which is what the reader
+          // sees because the ink is top-inset by the same amount in both.
+          const within = size * NATURAL_LINE * ((drawn[0].lineSpacing ?? 115) / 100);
+          // The step from the LAST line of one paragraph to the FIRST of the
+          // next, which is the one the eye compares against the step inside a
+          // paragraph. Box top to box top would be right only for a paragraph
+          // that draws on one line, and the fixture's first bullet wraps in
+          // every column narrower than the full measure — which is the case
+          // the whole defect is about.
+          const lines0 = Math.max(1, Math.round((drawn[0].h - TEXT_INSET_Y) / within));
+          const between = (drawn[1].y - drawn[0].y) - (lines0 - 1) * within;
+          A48(between > within * 1.05,
+            `48a ${c.name} at ${preset}: the gap between bullets (${between.toFixed(2)}pt) is not clear of the line step (${within.toFixed(2)}pt)` +
+            ` — with no break at all the list is a paragraph`);
+          A48(between <= within * 2,
+            `48a ${c.name} at ${preset}: the step between bullets is ${(between / within).toFixed(2)}x the step inside one` +
+            ` (${between.toFixed(2)}pt against ${within.toFixed(2)}pt) — past 2x a wrapped bullet's second line reads as an orphan` +
+            ` and two unrelated bullets read as a pair, which is what the render showed`);
+        }
+      }
+      // AND THE LIST HANGS FROM THE TOP OF ITS BAND, which is the other half of
+      // the decision: the slack under a short list is NOT the list's to spend.
+      // Centring it was built and rendered on 2026-09-18 and is worse — it
+      // opens ~90pt between the standfirst and the first bullet and detaches
+      // the list from the title it belongs to. A figure centres in its band
+      // because a figure is a block; prose reads from a fixed top edge.
+      const short: SlideInput = { layout: "content", title: "Put the audience first", subtitle: "Growth happens when you see a story through the audience's eyes.", body: "One short line\nAnother short line\nA third" };
+      const shortBoxes = els(short, 2, "c48a2").filter((e) => e.kind === "text" && e.path?.[0] === "body").sort((a, b) => a.y - b.y);
+      const stand = els(short, 2, "c48a2").find((e) => e.kind === "text" && e.path?.[0] === "subtitle");
+      A48(shortBoxes.length === 3 && !!stand, `48a precondition: the short fixture drew ${shortBoxes.length} bullets and ${stand ? "a" : "no"} standfirst`);
+      if (shortBoxes.length === 3 && stand) {
+        const gap = shortBoxes[0].y - (stand.y + stand.h);
+        A48(gap >= 0 && gap < 24,
+          `48a a three-bullet list starts ${gap.toFixed(1)}pt under its standfirst — the slack below a short list belongs to the page,` +
+          ` not to the space between the standfirst and the first thing it introduces`);
+      }
+    }
+
+    /* (a2) AND AT THE CLIFF: a list that does NOT fit its band.
+     *
+     *      Everything in (a) is measured on a list with room around it, which
+     *      is the case that looks after itself. The three properties that only
+     *      exist at the cliff are: the break COMPRESSES rather than growing the
+     *      block; it compresses only into the inset Slides draws no glyph in,
+     *      so the boxes never really meet; and a box is never drawn past the
+     *      foot of the room it was given, because the box is the band's and
+     *      only the ink is the content's. All three were added because a
+     *      mutation survived the fixture that had room. */
+    {
+      // LONG ENOUGH TO WRAP AT THE FULL MEASURE, which is not the same as long.
+      // The first version of this used a 100-character bullet, which draws on
+      // ONE line in a 540pt column — so every box was exactly one line tall,
+      // the clamp had nothing to clamp, and removing it changed nothing. A
+      // capacity cliff needs a fixture that reaches the cliff, and a clamp on
+      // a box's height needs a box taller than the floor it is clamped to.
+      const N48 = 16;
+      const many = Array.from({ length: N48 }, (_, i) =>
+        `Bullet ${i + 1}: a line of real client copy, long enough to wrap onto a second line even at the full`
+        + ` prose measure, which is what makes this the case a shorter bullet cannot reach at all`).join("\n");
+      for (const preset of ["read", "present"] as Density[]) {
+        const slide: SlideInput = { layout: "content", title: "A full page of findings",
+          subtitle: "Everything the audit turned up, in one place.", body: many, density: preset };
+        const boxes = els(slide, 2, `c48a3${preset}`)
+          .filter((e) => e.kind === "text" && e.path?.length === 1 && e.path[0] === "body")
+          .sort((a, b) => a.y - b.y);
+        // PRECONDITION: THE BLOCK MERGED. Past the point where a paragraph no
+        // longer has a top edge inside the band, the rest are drawn as the tail
+        // of the last one that does — the single stretched box this replaced —
+        // so a fixture at the cliff draws FEWER boxes than it has bullets. If
+        // it drew all sixteen it never reached the cliff and nothing below is
+        // about an overflowing list.
+        A48(boxes.length > 1 && boxes.length < N48,
+          `48a2 precondition at ${preset}: drew ${boxes.length} boxes for ${N48} bullets — the fixture is not at the cliff`);
+        if (!(boxes.length > 1 && boxes.length < N48)) continue;
+        // AND NOT ONE WORD WENT WITH IT. Merging paragraphs into the last box
+        // is a fallback, not a cut: every bullet's text is still somewhere in
+        // the drawn boxes. Without this the cheapest way to pass every
+        // assertion below would be to stop drawing the list at the band's foot.
+        {
+          const drawnText = boxes.map((b) => String(b.text)).join("\n");
+          let lost = 0;
+          for (let i = 1; i <= N48; i++) if (drawnText.indexOf(`Bullet ${i}:`) < 0) lost += 1;
+          A48(lost === 0, `48a2 ${preset}: ${lost} of ${N48} bullets are not drawn at all — the block cut the list instead of running over`);
+        }
+        const size = boxes[0].size || 10;
+        const line = size * NATURAL_LINE * ((boxes[0].lineSpacing ?? 115) / 100);
+        // PRECONDITION: this really is the overflowing case. Without it every
+        // assertion below is about a list that fitted. Read off the INK rather
+        // than the box, because the box is now clamped to the room it was
+        // given — that is the property under test two assertions down, and a
+        // precondition that reads the same number would go quiet the moment the
+        // property held.
+        {
+          const last = boxes[boxes.length - 1];
+          const need = drawnTextHeight(
+            Math.max(1, estimateLines(String(last.text), last.w, size, false, false, last.font)), size);
+          A48(need > last.h + 0.5,
+            `48a2 precondition at ${preset}: the last box holds its own words (${need.toFixed(1)}pt of ink in ${last.h.toFixed(1)}pt)` +
+            ` — ${N48} bullets fit the band and nothing here reaches the cliff`);
+        }
+        // THE BREAK COMPRESSES, and the block is never taller than the single
+        // stretched box it replaced — which carried Slides' own 6pt between
+        // paragraphs and is the height every stored deck was measured at.
+        // Counted from the TEXT, not from the box heights: a box past the
+        // band's foot is clamped to one line, so measuring the block by its
+        // boxes would shrink both sides of the comparison at once.
+        let lines = 0;
+        for (const b of boxes) lines += Math.max(1, estimateLines(String(b.text), b.w, size, false, false, b.font));
+        const wasTall = drawnTextHeight(lines, size, 6, boxes.length);
+        const isTall = (boxes[boxes.length - 1].y + boxes[boxes.length - 1].h) - boxes[0].y;
+        A48(isTall <= wasTall + 1e-6,
+          `48a2 ${preset}: the list stands ${isTall.toFixed(2)}pt against the ${wasTall.toFixed(2)}pt the one box it replaced needed` +
+          ` — a break that cannot compress makes every overlong body worse than it was`);
+        // AND ONLY INTO THE INSET. Below that the boxes really meet, and the
+        // overlap sweep divides out exactly 3.6pt at each end and no more.
+        for (let i = 1; i < boxes.length; i++) {
+          const over = (boxes[i - 1].y + boxes[i - 1].h) - boxes[i].y;
+          A48(over <= SLIDES_TEXT_INSET.y * 2 + 1e-6,
+            `48a2 ${preset}: paragraph ${i} and ${i + 1} overlap by ${over.toFixed(2)}pt, past the ${(SLIDES_TEXT_INSET.y * 2).toFixed(1)}pt of inset` +
+            ` the sweep divides out — the boxes are meeting where the glyphs are`);
+          A48(boxes[i].y - boxes[i - 1].y > line,
+            `48a2 ${preset}: the step to paragraph ${i + 1} is ${(boxes[i].y - boxes[i - 1].y).toFixed(2)}pt against a ${line.toFixed(2)}pt line` +
+            ` — compressed past a line there is no break left`);
+        }
+        // AND EVERY BOX STARTS INSIDE THE ROOM IT WAS GIVEN.
+        //
+        // THE BOUND HERE CONTAINS NO PART OF THE CODE'S OWN EXPRESSION, and the
+        // version before it did: it asserted the box's FOOT against
+        // `Math.max(BAND_BOTTOM, y + oneLine)`, which is the clamp the builder
+        // computes, so it could not fail for any box the builder had clamped —
+        // however far past the foot that box started. Twenty stored slides drew
+        // paragraph boxes off the bottom of the canvas underneath it. The
+        // property that means something is about the ORIGIN: a box whose top
+        // edge is outside the band is a box on a part of the page the layout
+        // never gave this field, and a box past the canvas is words missing
+        // from the deck rather than overflowing on it.
+        for (let i = 0; i < boxes.length; i++) {
+          A48(boxes[i].y <= BAND_BOTTOM + 1e-6,
+            `48a2 ${preset}: paragraph ${i + 1}'s box STARTS at ${boxes[i].y.toFixed(2)}, past the foot of the band it was given (${BAND_BOTTOM})`);
+          A48(boxes[i].y + boxes[i].h <= CANVAS.height + 1e-6,
+            `48a2 ${preset}: paragraph ${i + 1}'s box runs to ${(boxes[i].y + boxes[i].h).toFixed(2)}, off the ${CANVAS.height}pt canvas` +
+            ` — those words are missing from the deck, not overflowing on it`);
+        }
+      }
+    }
+
+    /* (b) THE HUNG DOT IS DRAWN, and it is drawn OUTSIDE the measure.
+     *
+     *     Stage 2 built the primitive and nothing called it, which no check
+     *     could see because a primitive nobody calls emits nothing to inspect.
+     *     This drives the LAYOUTS and reads the discs back off them. */
+    {
+      const bullets = "First thing, long enough that it wraps onto a second line on any layout in this deck\nSecond thing\nThird thing";
+      const cases: { name: string; slide: SlideInput; fields: string[] }[] = [
+        { name: "content", slide: { layout: "content", title: "T", body: bullets }, fields: ["body"] },
+        { name: "two-column", slide: { layout: "two-column", title: "T", body: bullets, bodyRight: bullets }, fields: ["body", "bodyRight"] },
+        { name: "stat + body", slide: { layout: "stat", title: "T", stats: [{ value: "12", label: "CU", primary: true }], body: bullets }, fields: ["body"] },
+      ];
+      for (const c of cases) {
+        const all = els(c.slide, 2, `c48b${c.name.length}`);
+        const dots = all.filter((e) => e.kind === "ellipse" && e.w <= HUNG_DOT.diameter * 1.5 && e.w === e.h);
+        A48(dots.length === 3 * c.fields.length,
+          `48b ${c.name}: ${dots.length} hung dots for ${3 * c.fields.length} paragraphs — the primitive Stage 2 shipped is still not being used`);
+        for (const field of c.fields) {
+          const boxes = all.filter((e) => e.kind === "text" && e.path?.length === 1 && e.path[0] === field).sort((a, b) => a.y - b.y);
+          A48(boxes.length === 3, `48b precondition: ${c.name}/${field} drew ${boxes.length} paragraph boxes`);
+          // PAIRED BY ORDER, not by nearest y. One dot per paragraph, both
+          // sorted down the page, so index i is index i — and the first
+          // version of this took the nearest dot instead, which on an 8pt
+          // stat body put paragraph 2's box 7.1pt from paragraph 1's disc and
+          // 7.4pt from its own. A matching rule that can pick the wrong pair
+          // reports the wrong thing when it is right.
+          const own = dots.filter((d) => Math.abs(d.x - (boxes[0].x + SLIDES_TEXT_INSET.x - HUNG_DOT.offsetX)) < 0.01)
+            .sort((a, b) => a.y - b.y);
+          A48(own.length === boxes.length,
+            `48b ${c.name}/${field}: ${own.length} discs at the hung offset for ${boxes.length} paragraphs`);
+          for (let i = 0; i < boxes.length; i++) {
+            const dot = own[i];
+            A48(!!dot, `48b ${c.name}/${field} paragraph ${i + 1}: no disc at the hung offset from its box`);
+            if (!dot) continue;
+            // OUTSIDE THE MEASURE. A disc drawn at the text inset is Slides'
+            // own bullet preset with extra steps, and the whole point of the
+            // device is that no line of prose starts where the marker is.
+            A48(dot.x < boxes[i].x,
+              `48b ${c.name}/${field} paragraph ${i + 1}: the disc is at x=${dot.x.toFixed(2)}, inside its own box (${boxes[i].x.toFixed(2)})`);
+            // LEVEL WITH THE FIRST LINE, not with the box: the box carries
+            // 3.6pt of inset before any ink at all, and on a paragraph that
+            // wraps the dot must mark the FIRST of its lines.
+            const lineTop = boxes[i].y + SLIDES_TEXT_INSET.y;
+            const centre = dot.y + dot.h / 2;
+            const lineMid = lineTop + (boxes[i].size || 10) * 1.45 / 2;
+            A48(Math.abs(centre - lineMid) < 1.5,
+              `48b ${c.name}/${field} paragraph ${i + 1}: the disc's centre is ${centre.toFixed(2)} against a first line centred at ${lineMid.toFixed(2)}`);
+            // AND THE DISC IS THE SIZE OF A BULLET, said against the TYPE and
+            // not against its own token — every assertion that reads
+            // HUNG_DOT.diameter on both sides moves with it, and a 2pt disc
+            // beside 10pt prose is a smudge nobody can see. The source deck
+            // sets 5.8pt against a 12.3pt body, which is 0.47.
+            const ratioToType = dot.w / (boxes[i].size || 10);
+            A48(ratioToType >= 0.35 && ratioToType <= 0.62,
+              `48b ${c.name}/${field}: the disc is ${dot.w.toFixed(2)}pt against ${(boxes[i].size || 10)}pt type` +
+              ` (${ratioToType.toFixed(2)} of it) — the source deck's own ratio is 0.47`);
+          }
+        }
+        // AND ITS INK READS ON THE GROUND IT IS DRAWN ON.
+        for (const dot of dots) {
+          const bg = all.length ? (previewSlideFrom(c.slide, buildSlideRequests(c.slide, 2, `c48bg${c.name.length}`) as any[]).background || "#F8F8F8") : "#F8F8F8";
+          A48(ratio48(String(dot.fill || "").replace("#", ""), bg.replace("#", "")) >= 3,
+            `48b ${c.name}: the disc ${dot.fill} is ${ratio48(String(dot.fill || "").replace("#", ""), bg.replace("#", "")).toFixed(2)}:1 on ${bg}`);
+        }
+      }
+      // ON A DARK GROUND THE DISC IS NOT BRAND BLUE. Blue on navy is 2.39:1,
+      // which is the same asymmetry the folio and the frame's rule already
+      // carry — and it is derived from the ink rather than passed in, so this
+      // drives a layout whose ground is navy rather than a flag.
+      const navyStat = els({ layout: "stat", title: "T", stats: [{ value: "12", label: "CU", primary: true }], body: "One long enough to draw\nTwo long enough to draw" }, 2, "c48bd");
+      const navyDots = navyStat.filter((e) => e.kind === "ellipse" && e.w <= HUNG_DOT.diameter * 1.5 && e.w === e.h);
+      A48(navyDots.length === 2, `48b precondition: the navy hero drew ${navyDots.length} discs`);
+      for (const d of navyDots) {
+        A48(String(d.fill || "").toUpperCase() !== `#${COLOR.blue}`,
+          `48b the disc on a navy hero is brand blue (2.39:1) — the ink has to follow the ground`);
+      }
+    }
+
+    /* (c) THE STEPPER. */
+    {
+      // DERIVED FROM STRUCTURE, and the two structures are named rather than
+      // inferred from a count. A slide count would number a 34-slide client
+      // deck 1..32 and call it a progress bar.
+      const spine = (n: number) => {
+        const out: any[] = [{ layout: "cover", title: "Seven things" }, { layout: "statement", title: "A pledge" }];
+        for (let i = 1; i <= n; i++) out.push({ layout: "content", title: `Thing ${i}`, body: `Body ${i}` });
+        out.push({ layout: "closing", title: "Thank you" });
+        return out;
+      };
+      const railOf = (d: any[]) => d.map((x) => (x.step ? `${x.step.n}/${x.step.of}` : "-")).join(" ");
+      A48(railOf(stampDeckSteps(spine(7))) === "- - 1/7 2/7 3/7 4/7 5/7 6/7 7/7 -",
+        `48c the handover deck's own shape — cover, pledge, seven things, closing — does not derive as seven steps: "${railOf(stampDeckSteps(spine(7)))}"`);
+      // THE FRONT MATTER IS A LEADING RUN ONLY. A statement in the MIDDLE of a
+      // deck is one of the things, not a preface to them.
+      {
+        const mid: any[] = [{ layout: "cover", title: "C" },
+          { layout: "content", title: "One", body: "b" }, { layout: "statement", title: "A line" },
+          { layout: "content", title: "Three", body: "b" }, { layout: "closing", title: "T" }];
+        A48(railOf(stampDeckSteps(mid)) === "- 1/3 2/3 3/3 -",
+          `48c a statement in the middle of a deck was skipped as front matter: "${railOf(stampDeckSteps(mid))}"`);
+      }
+      // SECTION DIVIDERS WIN when the deck has them, and every slide in a
+      // chapter carries that chapter's number.
+      {
+        const chaptered: any[] = [{ layout: "cover", title: "C" }];
+        for (let c = 1; c <= 3; c++) {
+          chaptered.push({ layout: "section", title: `Part ${c}` });
+          chaptered.push({ layout: "content", title: `${c}a`, body: "b" });
+          chaptered.push({ layout: "content", title: `${c}b`, body: "b" });
+        }
+        chaptered.push({ layout: "closing", title: "T" });
+        // The DIVIDER IS ON THE STEP IT OPENS, and that is not decoration: its
+        // own 64pt numeral is stamped from this field.
+        A48(railOf(stampDeckSteps(chaptered)) === "- 1/3 1/3 1/3 2/3 2/3 2/3 3/3 3/3 3/3 -",
+          `48c three sections do not derive as three steps carried by the slides inside them: "${railOf(stampDeckSteps(chaptered))}"`);
+        // A divider draws no rail of its own — it already carries a 64pt index
+        // numeral in that slot, and it takes none of the frame's hairlines.
+        const dividerEls = els(chaptered[1] as SlideInput, 1, "c48cs");
+        A48(!dividerEls.some((e) => e.kind === "text" && /^1\s{2,}2/.test(String(e.text || ""))),
+          `48c a section divider drew the rail over its own index numeral`);
+
+        // AND THE 64pt NUMERAL IS THE BUILDER'S TOO.
+        //
+        // This is the whole argument for deriving the rail, applied to the
+        // number ten times its size sitting beside it: a static "02" written by
+        // the model lies the moment a chapter is inserted before it, and for one
+        // commit the deck drew the rail renumbered and the divider's own numeral
+        // stale — two chapter counters on consecutive pages disagreeing. Driven
+        // through the real builder on a deck whose model-written numerals are
+        // DELIBERATELY WRONG, because a fixture whose numerals already agree
+        // with the spine cannot tell the two sources apart.
+        {
+          const misnumbered: any[] = [{ layout: "cover", title: "C" }];
+          for (let c = 1; c <= 3; c++) {
+            // Every divider says "07". Only the spine knows better.
+            misnumbered.push({ layout: "section", eyebrow: "07", title: `Part ${c}` });
+            misnumbered.push({ layout: "content", title: `${c}a`, body: "b" });
+          }
+          misnumbered.push({ layout: "closing", title: "T" });
+          stampDeckSteps(misnumbered);
+          const drawnNumerals: string[] = [];
+          for (let i = 0; i < misnumbered.length; i++) {
+            if (misnumbered[i].layout !== "section") continue;
+            const e = els(misnumbered[i] as SlideInput, i, `c48cn${i}`)
+              .filter((x) => x.kind === "text" && (x.size || 0) >= SECTION.numeralHeight / 2)
+              .filter((x) => /^\d{1,2}$/.test(String(x.text || "").trim()));
+            drawnNumerals.push(e.length ? String(e[0].text).trim() : "-");
+          }
+          A48(drawnNumerals.join(" ") === "01 02 03",
+            `48c the dividers drew "${drawnNumerals.join(" ")}" — the rail renumbers on an edit and the 64pt numeral beside it does not`);
+        }
+
+        // A CHAPTER WITH NO PAGE IN IT IS NOT A STEP. A divider followed
+        // straight by another divider, or by nothing but the sign-off — a
+        // chapter opener for the closing, which is an ordinary shape — would
+        // otherwise take a numeral that no page in the deck ever lights, so the
+        // rail counts to three and the marked numeral jumps 1 → 3.
+        {
+          const hollow: any[] = [{ layout: "cover", title: "C" },
+            { layout: "section", eyebrow: "01", title: "One" }, { layout: "content", title: "1a", body: "b" },
+            { layout: "section", eyebrow: "02", title: "Two" }, { layout: "content", title: "2a", body: "b" },
+            { layout: "section", eyebrow: "03", title: "Three" }, { layout: "content", title: "3a", body: "b" },
+            // A chapter opener for the sign-off, with nothing but the sign-off
+            // after it.
+            { layout: "section", eyebrow: "04", title: "Next steps" },
+            { layout: "closing", title: "T" }];
+          const rail = railOf(stampDeckSteps(hollow));
+          A48(rail === "- 1/3 1/3 2/3 2/3 3/3 3/3 - -",
+            `48c a chapter with no page in it still took a numeral nothing lights: "${rail}"`);
+        }
+      }
+      // A CONTINUATION IS THE SAME THING, CONTINUED. The splitter runs before
+      // the stamp, so without this a body one paragraph too long turns seven
+      // things into eight.
+      {
+        const cont: any[] = [{ layout: "cover", title: "C" },
+          { layout: "content", title: "One", body: "b" },
+          { layout: "content", title: "One (continued)", body: "b", continuation: true },
+          { layout: "content", title: "Two", body: "b" },
+          { layout: "content", title: "Three", body: "b" },
+          { layout: "closing", title: "T" }];
+        A48(railOf(stampDeckSteps(cont)) === "- 1/3 1/3 2/3 3/3 -",
+          `48c a continuation took a step of its own: "${railOf(stampDeckSteps(cont))}"`);
+      }
+      // THE BOUNDS ARE A SEAM, driven at both ends rather than asserted to
+      // exist. Two things is not a progress bar; ten numerals is a number to
+      // read rather than a shape to take in.
+      A48(deckSteps(spine(STEPPER.minSteps - 1), { min: STEPPER.minSteps, max: STEPPER.maxSteps }).every((x) => !x),
+        `48c ${STEPPER.minSteps - 1} things still drew a rail`);
+      A48(deckSteps(spine(STEPPER.maxSteps + 1), { min: STEPPER.minSteps, max: STEPPER.maxSteps }).every((x) => !x),
+        `48c ${STEPPER.maxSteps + 1} things still drew a rail`);
+      A48(deckSteps(spine(STEPPER.minSteps), { min: STEPPER.minSteps, max: STEPPER.maxSteps }).some((x) => !!x)
+        && deckSteps(spine(STEPPER.maxSteps), { min: STEPPER.minSteps, max: STEPPER.maxSteps }).some((x) => !!x),
+        `48c the bounds exclude their own endpoints`);
+      // AND THE BOUNDS THEMSELVES ARE JUDGED, not just applied. Every
+      // assertion above reads STEPPER.maxSteps on both sides, so lifting it to
+      // forty would leave all of them green while a 34-slide client deck grew
+      // a rail of thirty-two numerals — a check that moves with the thing it
+      // is checking is a check that tests nothing. These two say what the
+      // bound is FOR: a deck the size of the ones this tool actually builds
+      // draws no rail, and the rail it does draw stays a shape the eye takes
+      // in rather than a number to read.
+      A48(stampDeckSteps(spine(32)).every((x: any) => !x.step),
+        `48c a 34-slide deck — the size of real client work in this corpus — drew a rail of 32 numerals`);
+      {
+        const widest = stepperBox({ n: 1, of: STEPPER.maxSteps }).width;
+        A48(widest <= GRID.eyebrowWidth / 3,
+          `48c the widest rail takes ${widest.toFixed(1)}pt of the eyebrow's ${GRID.eyebrowWidth.toFixed(1)}pt line` +
+          ` — past a third of it the chrome has taken the line off the content`);
+      }
+
+      // THE RAIL ON THE PAGE, at both presets and on both grounds.
+      for (const preset of ["read", "present"] as Density[]) {
+        const deck48 = stampDeckSteps(spine(7).map((x: any) => ({ ...x, density: preset })));
+        const at = 4;                                  // "Thing 3", step 3 of 7
+        const slide = deck48[at] as SlideInput;
+        const all = els(slide, at, `c48r${preset}`);
+        const rail = all.find((e) => e.kind === "text" && /^1\s{2,}2/.test(String(e.text || "")));
+        A48(!!rail, `48c ${preset}: no rail on a stepped slide`);
+        if (!rail) continue;
+        A48(String(rail.text) === stepperRail({ n: 3, of: 7 }).text,
+          `48c ${preset}: the rail reads "${rail.text}"`);
+        // ONE LINE. The rail is measured by labelWidthPt and MEASURED BACK by
+        // estimateLines, which uses a mixed-case mean that eighteen spaces in
+        // twenty-five characters is nothing like. Sized on the glyphs alone it
+        // draws on one line and measures as two, and then the frame's top rule
+        // yields to ink that is not there.
+        A48(estimateLines(String(rail.text), rail.w, rail.size || STEPPER.size, false, false, rail.font) === 1,
+          `48c ${preset}: the rail measures as ${estimateLines(String(rail.text), rail.w, rail.size || STEPPER.size, false, false, rail.font)} lines in its own box`);
+        // OVER THE HAIRLINE, not through it.
+        A48(inkBottom({ y: rail.y, w: rail.w, text: String(rail.text), size: rail.size, font: rail.font, weight: rail.weight }) < FRAME.topRuleY,
+          `48c ${preset}: the rail's ink reaches the frame's top hairline at ${FRAME.topRuleY}`);
+        // THE RIGHT END OF THE EYEBROW'S OWN LINE.
+        A48(Math.abs(rail.x + rail.w - (GRID.margin + GRID.eyebrowWidth)) < 0.01,
+          `48c ${preset}: the rail ends at ${(rail.x + rail.w).toFixed(2)}, not at the eyebrow's right edge (${(GRID.margin + GRID.eyebrowWidth).toFixed(2)})`);
+        // AND THE EYEBROW GIVES UP EXACTLY THAT ROOM — no overlap, and no more
+        // than the gutter. An eyebrow that kept its full measure would put two
+        // boxes on one line on every stepped slide in the deck.
+        const withEyebrow = { ...slide, eyebrow: "OUR APPROACH" } as SlideInput;
+        const eb = els(withEyebrow, at, `c48e${preset}`).find((e) => e.kind === "text" && String(e.text) === "OUR APPROACH");
+        A48(!!eb, `48c ${preset}: the eyebrow fixture drew no eyebrow`);
+        if (eb) {
+          A48(eb.x + eb.w <= rail.x + 1e-6,
+            `48c ${preset}: the eyebrow box runs to ${(eb.x + eb.w).toFixed(2)} and the rail starts at ${rail.x.toFixed(2)}`);
+          A48(rail.x - (eb.x + eb.w) <= STEPPER.gutter + 0.01,
+            `48c ${preset}: the eyebrow gave up ${(rail.x - (eb.x + eb.w)).toFixed(2)}pt of gutter, more than the ${STEPPER.gutter}pt the rail asks for`);
+        }
+        // AND A SLIDE WITH NO RAIL KEEPS ITS FULL EYEBROW, which is what leaves
+        // every deck built before today exactly where it was.
+        const plain = els({ ...withEyebrow, step: undefined } as SlideInput, at, `c48p${preset}`)
+          .find((e) => e.kind === "text" && String(e.text) === "OUR APPROACH");
+        A48(!!plain && Math.abs(plain.w - GRID.eyebrowWidth) < 0.01,
+          `48c ${preset}: an unstepped slide's eyebrow is ${plain ? plain.w.toFixed(2) : "missing"}, not the full ${GRID.eyebrowWidth.toFixed(2)}`);
+        // THE CURRENT STEP IS THE ONLY ONE MARKED, and it is marked on the
+        // right characters — a range computed apart from the string it indexes
+        // is a range that goes wrong the day the separator changes.
+        const span = stepperRail({ n: 3, of: 7 });
+        const marks = (rail.accents || []);
+        A48(marks.length === 1 && marks[0].start === span.start && marks[0].end === span.end,
+          `48c ${preset}: ${marks.length} run styles on the rail, at ${JSON.stringify(marks.map((m) => [m.start, m.end]))} against the numeral at [${span.start}, ${span.end}]`);
+        A48(marks.length === 1 && !!marks[0].bold, `48c ${preset}: the current step is not bold`);
+        A48(String(rail.text).slice(span.start, span.end) === "3",
+          `48c ${preset}: the marked characters are "${String(rail.text).slice(span.start, span.end)}", not the current numeral`);
+        // THE INK IS READ OFF THE DRAWN RAIL, on both grounds. The tokens
+        // below say the right thing; only this says the drawing USES them.
+        // The frame already learned this the hard way — its hairline's token
+        // was correct while hairlineInk ignored the ground entirely, and the
+        // token assertion stayed green through it.
+        A48(String(marks[0]?.color || "").toUpperCase() === `#${STEPPER.active}`,
+          `48c ${preset}: the current step on off-white is drawn ${marks[0]?.color}, not #${STEPPER.active}`);
+        A48(String(rail.color || "").toUpperCase() === `#${STEPPER.inactive}`,
+          `48c ${preset}: the rest of the rail is drawn ${rail.color}, not #${STEPPER.inactive}`);
+        // And on NAVY — a hero stat's own ground — where brand blue is 2.39:1.
+        const navy: SlideInput = { layout: "stat", title: "Content units are our currency", density: preset,
+          stats: [{ value: "12", label: "CU contracted", primary: true }, { value: "0", label: "CU used" }],
+          step: { n: 3, of: 7 } } as any;
+        const navyEls = els(navy, at, `c48n${preset}`);
+        const navyRail = navyEls.find((e) => e.kind === "text" && /^1\s{2,}2/.test(String(e.text || "")));
+        A48(!!navyRail, `48c ${preset}: the navy hero drew no rail`);
+        if (navyRail) {
+          const mark = (navyRail.accents || [])[0];
+          A48(String(mark?.color || "").toUpperCase() === `#${STEPPER.activeOnDark}`,
+            `48c ${preset}: the current step on navy is drawn ${mark?.color}, not #${STEPPER.activeOnDark}` +
+            ` — brand blue on navy is ${ratio48(STEPPER.active, COLOR.navy).toFixed(2)}:1`);
+        }
+      }
+      // CONTRAST, on both grounds the rail is drawn on. #B7B7B7 — the source
+      // deck's own inactive numeral — is 1.89:1 on off-white and fails even the
+      // 3:1 large-text floor; it is a defect in the source, not a design.
+      A48(ratio48(STEPPER.inactive, COLOR.offWhite) >= 3,
+        `48c the inactive numeral is ${ratio48(STEPPER.inactive, COLOR.offWhite).toFixed(2)}:1 on off-white`);
+      A48(ratio48(STEPPER.inactive, COLOR.navy) >= 3,
+        `48c the inactive numeral is ${ratio48(STEPPER.inactive, COLOR.navy).toFixed(2)}:1 on navy`);
+      A48(ratio48(STEPPER.active, COLOR.offWhite) >= 4.5,
+        `48c the active numeral is ${ratio48(STEPPER.active, COLOR.offWhite).toFixed(2)}:1 on off-white`);
+      A48(ratio48(STEPPER.activeOnDark, COLOR.navy) >= 4.5,
+        `48c the active numeral on dark is ${ratio48(STEPPER.activeOnDark, COLOR.navy).toFixed(2)}:1 on navy`);
+      // AND THE ACTIVE STEP IS DISTINGUISHABLE FROM THE REST, which contrast
+      // against the GROUND does not say: two inks can both clear 3:1 and read
+      // the same as each other.
+      A48(ratio48(STEPPER.active, STEPPER.inactive) >= 1.5,
+        `48c the active and inactive numerals are ${ratio48(STEPPER.active, STEPPER.inactive).toFixed(2)}:1 against each other`);
+      A48(ratio48(STEPPER.activeOnDark, STEPPER.inactive) >= 1.5,
+        `48c on dark they are ${ratio48(STEPPER.activeOnDark, STEPPER.inactive).toFixed(2)}:1 against each other`);
+      // A GROUND THE RAIL WAS NOT DESIGNED FOR TAKES NONE OF IT. A full-bleed
+      // photograph's baked gradient is solved to carry WHITE at 4.5:1, which
+      // puts the ground at about 0.18 luminance — and the inactive numeral
+      // reads 1.43:1 on that. Six invisible numerals answer "how much is left"
+      // with nothing, so the rail is not drawn there at all.
+      {
+        const photo: any = { layout: "feature", title: "A feature page", body: "One\nTwo", resolvedImage: PHOTO_DARK, step: { n: 2, of: 5 } };
+        const drawn = els(photo, 3, "c48ph");
+        A48(!drawn.some((e) => e.kind === "text" && /^1\s{2,}2/.test(String(e.text || ""))),
+          `48c a photo-led page drew the rail over a picture the grey numerals cannot be read on`);
+      }
+      // THE PREVIEW SHOWS THE DECK THAT WILL PUBLISH. draftPreview is the one
+      // entry point that both splits and previews, precisely so the two cannot
+      // drift; the rail is derived AFTER the split and must be derived there
+      // too, or the chat preview shows a deck with no rail and the file in
+      // Drive has one. Driven through draftPreview rather than through
+      // stampDeckSteps, because what is being asserted is that the call site
+      // exists.
+      {
+        const dp = draftPreview(spine(7) as SlideInput[]);
+        A48(dp.slides.filter((x: any) => x.step).length === 7,
+          `48c draftPreview returned a spec with ${dp.slides.filter((x: any) => x.step).length} stepped slides, not 7` +
+          ` — the preview would show a deck without the rail the publish will have`);
+        A48(dp.preview.slides[4].elements.some((e: any) => e.kind === "text" && /^1\s{2,}2/.test(String(e.text || ""))),
+          `48c the previewed slide draws no rail`);
+      }
+      // AND SO DO THE TWO BUILD PATHS, WHICH ARE THE OTHER HALF OF THE SAME
+      // CONTRACT AND WERE NOT ASSERTED AT ALL.
+      //
+      // `draftPreview` and `applyEditSlide` each had a check; `generateSlides`
+      // — the deck that lands in somebody's Drive — and `buildSlidesDraft` —
+      // the draft the chat preview and every later edit are built from — did
+      // not, and deleting BOTH calls left the entire suite green. With
+      // buildSlidesDraft not stamping, a freshly built deck carries no spine,
+      // so the chat draft shows no rail while the publish re-derives one: the
+      // preview/deck divergence in the opposite direction from the case that
+      // WAS tested.
+      //
+      // Neither function can be driven here (one reaches for a Google token,
+      // the other for the image resolver), so this reads the source the way
+      // check 27 already reads the publish route's. The seam is what makes it
+      // worth reading: one exported `stampDeckChrome` does the footer and the
+      // spine together, so a fifth entry point cannot be added with half of it,
+      // and this asserts the CALL rather than the presence of a line.
+      {
+        const gen = readFileSync(join(__dirname, "..", "lib/slides/generate.ts"), "utf8");
+        const prov = readFileSync(join(__dirname, "..", "lib/ai/providers.ts"), "utf8");
+        const bodyOf = (src: string, sig: string) => {
+          const at = src.indexOf(sig);
+          return at < 0 ? "" : src.slice(at, at + 2600);
+        };
+        const genBody = bodyOf(gen, "export async function generateSlides(");
+        const draftBody = bodyOf(prov, "async function buildSlidesDraft(");
+        A48(!!genBody && /stampDeckChrome\(slides, title\)/.test(genBody),
+          `48c generateSlides does not stamp the deck's chrome — the deck in somebody's Drive would carry no running head and no rail`);
+        A48(!!draftBody && /stampDeckChrome\(slides, title\)/.test(draftBody),
+          `48c buildSlidesDraft does not stamp the deck's chrome — the chat draft would show a deck the publish then changes`);
+        // ONE DOOR. Two lines that happen to sit beside each other are two
+        // things to forget; the assertion is that neither entry point reaches
+        // past the seam to the halves.
+        A48(!/stampFooter\(/.test(draftBody) && !/stampDeckSteps\(/.test(draftBody),
+          `48c buildSlidesDraft stamps a deck-wide field outside stampDeckChrome`);
+        A48(!/stampFooter\(/.test(genBody) && !/stampDeckSteps\(/.test(genBody),
+          `48c generateSlides stamps a deck-wide field outside stampDeckChrome`);
+      }
+      // THE RAIL'S SIZE HAS A CEILING, AND IT IS WRITTEN DOWN WHERE THE SIZE
+      // IS. At 12pt the rail's box foot is 46.20 and the frame's top hairline
+      // is at 46.80 — half a point of clearance nobody had measured, and the
+      // design review's own caveat asks for a LARGER rail on a slide with no
+      // eyebrow. One point of that puts a box through a rule, and the hairline
+      // assertion above measures the frame's INK rather than the rail's box, so
+      // it would stay green while it happened.
+      {
+        const foot = GRID.eyebrowY + drawnTextHeight(1, STEPPER.size);
+        A48(foot <= FRAME.topRuleY,
+          `48c the rail's box runs to ${foot.toFixed(2)} at ${STEPPER.size}pt, through the frame's top hairline at ${FRAME.topRuleY}`);
+        // And its own hierarchy: more structural than the eyebrow beside it,
+        // never louder than the lockup above it. A relation, so it cannot be
+        // satisfied by moving the constant it is checked against.
+        A48(STEPPER.size >= TYPE.eyebrow.size,
+          `48c the rail is set at ${STEPPER.size}pt under an eyebrow at ${TYPE.eyebrow.size} — it is the more structural of the two`);
+        A48(STEPPER.size <= 16,
+          `48c the rail is set at ${STEPPER.size}pt, at or past the lockup's own weight on that line`);
+      }
+      // THE TOP HAIRLINE IS STILL DRAWN under a rail at `present`. The frame
+      // measures the page's ink before every rule, so a rail that reached the
+      // rule would silently take it away — and a missing rule is furniture
+      // nobody counts.
+      {
+        const deckP = stampDeckSteps(spine(7).map((x: any) => ({ ...x, density: "present" })));
+        const reqs = buildSlideRequests(deckP[4] as SlideInput, 4, "c48tr") as any[];
+        A48(reqs.some((r: any) => String(r.createShape?.objectId || "").endsWith("_frTop")),
+          `48c at present the top hairline is gone from a stepped slide — the rail is standing in its band`);
+      }
+    }
+
+    /* (d) THE TABLE'S FIRST COLUMN IS ON THE PAGE'S TYPE COLUMN.
+     *
+     *     Three left edges on one slide is the one defect here that no
+     *     geometric check could ever have caught: nothing overlapped, nothing
+     *     left the canvas, nothing overran. It is only visible. */
+    {
+      const t: SlideInput = { layout: "table", title: "Where the twelve units sit", subtitle: "Booked against the window.",
+        table: { columns: ["Workstream", "Units", "Status"], rows: [["Mini-strategy", "4", "Not started"], ["Long-form pieces", "5", "Awaiting copy"]] },
+        body: "Nothing is commissioned yet, so resourcing cannot see this contract." };
+      for (const preset of ["read", "present"] as Density[]) {
+        const all = els({ ...t, density: preset }, 2, `c48d${preset}`);
+        const title = all.find((e) => e.kind === "text" && e.path?.[0] === "title");
+        const head = all.find((e) => e.kind === "text" && String(e.text) === "Workstream");
+        const cell = all.find((e) => e.kind === "text" && String(e.text) === "Mini-strategy");
+        // The header band, not the frame's full-bleed hairline: both are rects
+        // the width of the page, and only one of them is 1pt tall.
+        const band = all.filter((e) => e.kind === "rect" && e.w > GRID.contentWidth * 0.9
+          && e.w <= GRID.contentWidth + 0.01 && e.h > 5).sort((a, b) => a.y - b.y)[0];
+        A48(!!title && !!head && !!cell && !!band,
+          `48d precondition at ${preset}: title=${!!title} head=${!!head} cell=${!!cell} band=${!!band}`);
+        if (!title || !head || !cell || !band) continue;
+        // TWO EDGES, NOT THREE: type on the glyph line, furniture on the page
+        // margin. The glyph line is the box's x plus the inset Slides applies
+        // to every box in the deck and does not expose.
+        const glyph = (e: typeof title) => e.x + SLIDES_TEXT_INSET.x;
+        A48(Math.abs(glyph(head) - glyph(title)) < 0.01,
+          `48d ${preset}: the first heading's glyphs start at ${glyph(head).toFixed(2)} and the title's at ${glyph(title).toFixed(2)}`);
+        A48(Math.abs(glyph(cell) - glyph(title)) < 0.01,
+          `48d ${preset}: the first cell's glyphs start at ${glyph(cell).toFixed(2)} and the title's at ${glyph(title).toFixed(2)}`);
+        A48(Math.abs(band.x - GRID.margin) < 0.01,
+          `48d ${preset}: the header band starts at ${band.x.toFixed(2)}, not on the page margin`);
+        A48(band.x < glyph(title) - 1,
+          `48d ${preset}: the band starts at ${band.x.toFixed(2)} and the type on it at ${glyph(title).toFixed(2)}` +
+          ` — a band that does not bleed left of its own type has stopped reading as a band`);
+        // AND THE OTHER COLUMNS KEEP THEIR OWN INSET, so the fix is the first
+        // column's alignment and not a table with no cell padding at all.
+        const second = all.find((e) => e.kind === "text" && String(e.text) === "Units");
+        A48(!!second && second.x > GRID.margin + 20,
+          `48d ${preset}: the second column lost its inset with the first`);
+      }
+    }
+
+    /* (e) A PROCESS CARD WITH NO CAPTION KEEPS NO ROOM FOR ONE — and `text` is
+     *     a synonym for the caption, because it is the word a model reaches for
+     *     beside a `title`. */
+    {
+      const names = ["Commission", "Draft", "Review", "Publish"];
+      const bare: SlideInput = { layout: "process", title: "We have a custom process",
+        stages: names.map((n, i) => ({ name: n, owner: ["Account manager", "Editor", "You", "Producer"][i] })) };
+      const captioned: SlideInput = { layout: "process", title: "We have a custom process",
+        stages: names.map((n, i) => ({ name: n, caption: "Counted against your balance", owner: ["Account manager", "Editor", "You", "Producer"][i] })) };
+      const cardOf = (s: SlideInput, run: string) => {
+        const reqs = buildSlideRequests(s, 2, run) as any[];
+        const shape = reqs.find((r: any) => String(r.createShape?.objectId || "").endsWith("_pb0"));
+        return shape ? shape.createShape.elementProperties.size.height.magnitude : 0;
+      };
+      const bareH = cardOf(bare, "c48e1"), capH = cardOf(captioned, "c48e2");
+      A48(bareH > 0 && capH > 0, `48e precondition: card heights ${bareH} / ${capH}`);
+      A48(bareH < capH, `48e a card with no caption (${bareH.toFixed(1)}pt) is no shorter than one with a caption (${capH.toFixed(1)}pt)`);
+      // THE GAP, read off the boxes: with no caption the owner follows the head
+      // by ONE gap, not by the two that surrounded an empty band.
+      {
+        const reqs = buildSlideRequests(bare, 2, "c48e3") as any[];
+        const box = (suffix: string) => {
+          const r = reqs.find((q: any) => String(q.createShape?.objectId || "").endsWith(suffix));
+          return r ? { y: r.createShape.elementProperties.transform.translateY, h: r.createShape.elementProperties.size.height.magnitude } : null;
+        };
+        const name = box("_ps0"), owner = box("_po0");
+        A48(!!name && !!owner, `48e precondition: name=${!!name} owner=${!!owner}`);
+        if (name && owner) {
+          const gap = owner.y - (name.y + name.h);
+          A48(Math.abs(gap - PROCESS.headGap) < 0.01,
+            `48e the owner line sits ${gap.toFixed(2)}pt under the name on a card with no caption, against one ${PROCESS.headGap}pt gap` +
+            ` — the card is still paying for a caption band of zero height on both sides`);
+        }
+      }
+      // `text` DRAWS. The schema says `caption`, the renderer also read `body`,
+      // and neither is what anyone writes beside a `title`.
+      const viaText: SlideInput = { layout: "process", title: "T",
+        stages: [{ title: "Commission", text: "Counted against your balance" }, { title: "Draft", text: "Written and edited in house" }] as any };
+      const drawnText48 = (buildSlideRequests(viaText, 2, "c48e4") as any[])
+        .filter((r: any) => r.insertText).map((r: any) => String(r.insertText.text)).join(" · ");
+      A48(drawnText48.indexOf("Counted against your balance") >= 0,
+        `48e a stage written as { title, text } drew its name and dropped its sentence`);
+      A48(droppedContent(viaText, 2).length === 0,
+        `48e the audit still reports the same slide as losing copy: ${JSON.stringify(droppedContent(viaText, 2))}`);
+      // AND ON A CARD, which is the same trap in the layout the model reaches
+      // for most. Found by rendering: a card written as { title, text } drew
+      // three bold headings over two thirds of empty page.
+      const cardText: SlideInput = { layout: "cards", title: "We run newsroom-style meetings",
+        cards: [{ title: "Work in progress", text: "What is live, what is drafted and what is waiting on you" },
+          { title: "The calendar", text: "What is coming up over the next month" }] as any };
+      const cardDrawn = (buildSlideRequests(cardText, 2, "c48e5") as any[])
+        .filter((r: any) => r.insertText).map((r: any) => String(r.insertText.text)).join(" · ");
+      A48(cardDrawn.indexOf("What is live, what is drafted") >= 0,
+        `48e a card written as { title, text } drew its heading and dropped its sentence`);
+      A48(droppedContent(cardText, 2).length === 0,
+        `48e the audit still reports the card slide as losing copy: ${JSON.stringify(droppedContent(cardText, 2))}`);
+      // AND AN EXPLICIT `body` STILL WINS, so the lift is a fallback rather
+      // than a second field the two of them race over.
+      const both: SlideInput = { layout: "cards", title: "T",
+        cards: [{ title: "A", body: "The body that was written", text: "The one that was not" },
+          { title: "B", body: "Another body" }] as any };
+      const bothDrawn = (buildSlideRequests(both, 2, "c48e6") as any[])
+        .filter((r: any) => r.insertText).map((r: any) => String(r.insertText.text)).join(" · ");
+      A48(bothDrawn.indexOf("The body that was written") >= 0 && bothDrawn.indexOf("The one that was not") < 0,
+        `48e with both fields present the card drew "${bothDrawn}"`);
+    }
+
+    /* (f) ONE RULER. bulletBlockHeight is what the drawing, the fit ladders and
+     *     the splitter's probe all measure with, and a block that measured
+     *     differently from the way it is drawn is a body judged to fit and
+     *     drawn through the takeaway bar. */
+    {
+      const paras = "One line that is short\nA second paragraph long enough to wrap onto two lines in a 540pt column, comfortably past the end\nA third";
+      const style = { size: 10, font: "Roboto" };
+      const drawn = els({ layout: "content", title: "T", body: paras }, 2, "c48f")
+        .filter((e) => e.kind === "text" && e.path?.[0] === "body").sort((a, b) => a.y - b.y);
+      A48(drawn.length === 3, `48f precondition: drew ${drawn.length} boxes`);
+      if (drawn.length === 3) {
+        let stacked = 0;
+        for (const b of drawn) stacked += b.h;
+        A48(Math.abs(stacked - bulletBlockHeight(paras, drawn[0].w, style)) < 0.01,
+          `48f the boxes total ${stacked.toFixed(2)}pt and the ruler says ${bulletBlockHeight(paras, drawn[0].w, style).toFixed(2)}pt`);
+        // AND THE RULER IS MONOTONIC IN THE GAP, so a caller that asks for the
+        // block at a gap gets an answer that includes it.
+        const added = bulletBlockHeight(paras, drawn[0].w, style, 6) - bulletBlockHeight(paras, drawn[0].w, style);
+        A48(Math.abs(added - 12) < 1e-9,
+          `48f asking for a 6pt gap between three paragraphs added ${added.toFixed(4)}pt, not 12`);
+      }
+    }
+  }
+  if (failures === before48) {
+    pass(`the rail derives from the deck's own structure and renumbers, the dots hang outside the measure,` +
+      ` the paragraph step is bounded by the line step, and the table's first column is on the page's type column`);
+  }
+
+
+  /* ─────────────────────────────────────────────────────────────────────────
+   * 49. WHAT THE SECOND RENDER SHOWED.
+   *
+   * Sixteen of the twenty-nine layouts were built at both presets, shot as
+   * PNGs and LOOKED AT. Every assertion below pins something that was judged
+   * bad with the picture in front of a person and that no numeric check in
+   * this file could see — because each one is about a RELATION the geometry
+   * battery is not asked about: an ink against the ground it lands on, a
+   * block against the frame drawn round it, a label against the mark it
+   * names, a row against the row above it.
+   *
+   * They are written as relations for that reason. "White on off-white is
+   * 1.05:1" is a fact about two constants; "a column heading reads on the
+   * ground its own layout draws" is the property, and it stays true when
+   * somebody changes the ground.
+   *
+   * MUTATION LOG
+   *  - KILLED (49a): comparison's headings back to TYPE.cellHead. "the
+   *    comparison heading \"Ungate\" is 1.06:1 on its own ground (#f8f8f8)",
+   *    three times — which is how three column names went invisible on a slide
+   *    whose whole subject is comparing three things.
+   *  - KILLED (49a): the stat caption back to the lime. "4 things on the stat
+   *    slide are set in the lime (11% | OF RELEVANT ANSWERS CI | SHARE OF
+   *    PUBLISHED EVI | CITATIONS RESOLVING TO)".
+   *  - KILLED (49a): the track lane back to white. "a track lane is 1.062:1
+   *    against the page — it is drawn and cannot be seen". The bound is 1.10
+   *    because both fills tried and rejected — white at 1.06 and the warm tint
+   *    at 1.08 — sit under it; a bound between them would be a rounding error.
+   *  - KILLED (49a): phase bars back to capsules. "2 phase bars are drawn as
+   *    capsules — a rounded end blurs the date it stands for".
+   *  - KILLED (49b): the venn, swot, matrix and feature floors back to the page
+   *    margin. FOUR SEPARATE KILLS, and the first version of the assertion
+   *    caught none of them: it asked whether a shape CROSSED the hairline, and
+   *    every one of them stopped a point or three above it — the venn's bottom
+   *    circle tangent to the rule at `read` and cut flat by it at `present`,
+   *    the swot panels 1.6pt clear, the matrix's axis 3.6. "It does not
+   *    technically overlap" is not the property. The frame keeps a band.
+   *  - KILLED (49b, SECOND FIXTURE): the swot kill needed FIVE items a
+   *    quadrant. The panels are sized to their contents now, so a light SWOT
+   *    floats in the middle of its band and never reaches the floor at all —
+   *    the same lesson 48(a2) learned about a bullet that never wrapped.
+   *  - KILLED (49b): the paragraph box's floor back to one line, which let the
+   *    last box of a list at the cliff reach a line past the room it was given
+   *    — 1.4pt outside a swot panel's own tint at `present`.
+   *  - KILLED (49c): THE BLOCKER — the rail drawn on image-split again. Three
+   *    failures: the rail lands inside the layout's own text column, the
+   *    eyebrow is left 60.5pt of its 315.36, and "AI VISIBILITY REVIEW" wraps
+   *    in what is left. 79% of the 235 real eyebrows in the stored corpus do
+   *    not fit beside a seven-step rail.
+   *  - KILLED (49c): the chrome span back to the full measure, at both ends.
+   *    "image-split draws its chrome from x=24.5, over a photograph that
+   *    reaches 339.8" and "case-study draws chrome to x=720.0, across a picture
+   *    that starts at 480.5".
+   *  - KILLED (49c): the rail picture floating under the rule again. "the rail
+   *    picture starts at 103.7 and the title's rule sits at 95.7".
+   *  - KILLED (49d): the venn's overlap back to one line on three circles, and
+   *    again with the meet box back at 0.40R — which is the `present` half of
+   *    the same defect and the reason this one is asserted at both presets.
+   *  - KILLED (49e): the matrix's label dodge back to a y-band test. "1 of 6
+   *    matrix labels are not on their dot's own line".
+   *  - KILLED (49e): the quadrant caption back to the guessed width. "the
+   *    quadrant caption \"Do now\" wraps in a 40.0pt box".
+   *  - KILLED (49f): the layers band back to its own words' width. "4 of 4
+   *    cells are drawn outside the band that heads them (band 219..501)".
+   *  - KILLED (49g): the ragged-row penalty removed. "four pictures lay out
+   *    3 x 2 — 2 empty cells" and "six pictures lay out 4 x 2".
+   *  - KILLED (49g): the logo wall back to four across. "the logo wall draws 4
+   *    marks on one row and 2 on another".
+   *  - KILLED (49g): the picture grid's caption band back to one line. "the
+   *    grid caption \"The gated landing page\" needs 18.8pt of ink in a 15.8pt
+   *    band".
+   *  - KILLED (49h): a layout opting back into Slides' own bullet preset — the
+   *    swot quadrant, which is where the preset was used last. Three failures,
+   *    including check 3's round trip.
+   *  - KILLED (49h): a prose list with NO marker at all (the feature body back
+   *    to a plain textBox), which is the third bullet style the render found
+   *    and which deleting the preset alone would have left in place.
+   *  - KILLED (49h2): the swot heading off the items' glyph line. "the
+   *    \"STRENGTHS\" panel sets its heading at x=36.48 and its items at
+   *    x=40.68 — two left edges inside one panel".
+   *  - KILLED (49i): the card chip back to brand blue on every card.
+   *  - KILLED (49i): the chip never stacking, so a wrapped heading sits beside
+   *    it with its second line under the numeral.
+   *  - KILLED (49i2): cards preferring the taller STACKED plan on a page where
+   *    nothing fits. "6 of 6 chips are stacked above their heading on a page
+   *    where nothing fits". This is the one that mattered: it put three card
+   *    bodies through the running head on three stored slides.
+   *  - KILLED (49j): the logo wall no longer drawing its clients' names.
+   *  - KILLED (49k): the benchmark rule and the callout back to the deck's
+   *    alarm coral, and the callout back to a placement the rule runs through.
+   *  - KILLED (49k, ON THE SECOND RUN): the benchmark label back to its guessed
+   *    width. The first assertion checked only that the label's BOX cleared the
+   *    plot — and it did, the whole time; the words were the thing outside it.
+   *    "the benchmark label needs 27.5pt of ink in a 14.0pt box".
+   *  - KILLED (49l): the hub's pills back on their arc. "the left-hand pills
+   *    start at 46.5, 24.5, 46.5 — the column has no edge".
+   *  - KILLED (49l, ON THE SECOND RUN): the hub's name drawn whole rather than
+   *    as it was measured. The first fixture's name fitted one line either way,
+   *    so the two rulers agreed by accident; with a name that really does wrap,
+   *    "the hub's name is drawn as 1 line(s) in a box measured for 3".
+   *  - KILLED (49m): bold dropped from runNeedsStyle, and — separately — the
+   *    component writing the condition out again field by field. The first
+   *    version of this check re-implemented the condition instead of reading
+   *    it, so mutating the component changed nothing; that is the check
+   *    testing itself, which is the fault it was written about.
+   *  - SURVIVED (49i2): the card body measured without its own 20pt floor, and
+   *    the card row centring even when the cards do not fit. Both are honesty
+   *    rather than repair: with the arrangement choice fixed above, neither
+   *    changes a single slide in the 618 stored ones (measured — faults, kinds
+   *    and per-slide sets all identical with both reverted). They are kept
+   *    because the planner and the drawing should agree about a body's height,
+   *    and because slack you have not got is not slack to spend; they are
+   *    recorded here so nobody mistakes either for the fix.
+   *  - SURVIVED (49h2): QUAD_PAD back to the plain panel inset. The heading and
+   *    the items still share a glyph line — they both read the same constant —
+   *    and the disc still lands inside the panel, 7.8pt from its edge instead
+   *    of 12. Tighter, not broken.
+   * ───────────────────────────────────────────────────────────────────────── */
+  const before49 = failures;
+  console.log(`\n49. What the second render showed`);
+  const A49 = (ok: boolean, m: string) => { if (!ok) fail(m); };
+  {
+    const lum = (hex: string) => {
+      const h = String(hex || "").replace("#", "");
+      const f = (c: number) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+      const v = [0, 2, 4].map((i) => f(parseInt(h.substr(i, 2), 16) / 255));
+      return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+    };
+    const ratio = (a: string, b: string) => {
+      const x = lum(a), y = lum(b);
+      return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+    };
+    const page49 = (s: SlideInput, i: number, run: string) =>
+      previewSlideFrom(s, buildSlideRequests(s, i, run) as any[]);
+    const els49 = (s: SlideInput, i: number, run: string) => page49(s, i, run).elements as any[];
+
+    /* (a) AN INK IS ONLY EVER RIGHT FOR A GROUND.
+     *
+     *     Driven through the real builder and read off the DRAWN element, not
+     *     off the token, because the fault this pins is a token that is right
+     *     for the ground it was designed on and wrong for the one it is used
+     *     on: `cellHead` is white because `table` draws a navy band behind its
+     *     column names, and `comparison` draws no band. */
+    {
+      const cmp: SlideInput = { layout: "comparison", title: "How the three routes compare",
+        subtitle: "Against the four things that decide whether a model can use a source.",
+        comparison: { columns: ["Ungate", "Summary hub", "Do nothing"], rows: [
+          { label: "Reachable without a form", cells: ["yes", "yes", "no"], highlight: true },
+          { label: "Tables available as HTML", cells: ["yes", "Partial", "no"] } ] } };
+      const p = page49(cmp, 2, "c49a");
+      const bg = (p.background || "#F8F8F8").replace("#", "");
+      let seen = 0;
+      for (const e of p.elements as any[]) {
+        if (e.kind !== "text" || !/ungate|summary hub|do nothing/i.test(String(e.text))) continue;
+        seen += 1;
+        A49(ratio(String(e.color || "#000000"), bg) >= 4.5,
+          `49a the comparison heading "${String(e.text)}" is ${ratio(String(e.color || "#000"), bg).toFixed(2)}:1 on its own ground (${p.background})`);
+      }
+      A49(seen === 3, `49a precondition: ${seen} of 3 comparison headings were drawn`);
+    }
+    {
+      // THE ACCENT IS SPENT ONCE. Lime marks the figure that matters; three
+      // captions in the same lime spend the meaning three times on one slide.
+      const st: SlideInput = { layout: "stat", title: "Where the Monitor stands today",
+        stats: [{ value: "11%", label: "of relevant answers cite the Monitor", primary: true },
+          { value: "34%", label: "share of published evidence" },
+          { value: "0", label: "citations resolving to siemens.com" }] };
+      // The frame's own furniture is not the slide's ink: the folio is lime on
+      // a dark ground by design, and it is not a thing the reader reads as an
+      // accent on the figures.
+      const e49 = els49(st, 2, "c49a2").filter((e) => e.kind === "text" && e.y < FRAME.bottomRuleY);
+      const lime = e49.filter((e) => String(e.color || "").toUpperCase() === `#${COLOR.lime}`);
+      A49(lime.length === 1 && /11%/.test(String(lime[0].text)),
+        `49a ${lime.length} things on the stat slide are set in the lime (${lime.map((e) => String(e.text).slice(0, 22)).join(" | ")})` +
+        ` — the accent marks the ONE figure that matters, or it marks nothing`);
+      const labels = e49.filter((e) => /relevant answers|published evidence|resolving to/i.test(String(e.text)));
+      A49(labels.length === 3, `49a precondition: ${labels.length} of 3 stat captions drawn`);
+      for (const l of labels) {
+        A49(ratio(String(l.color || "#fff"), "0A2540") >= 4.5 || ratio(String(l.color || "#fff"), "07314F") >= 4.5,
+          `49a the stat caption "${String(l.text).slice(0, 20)}" does not read on the navy ground`);
+      }
+    }
+    {
+      // A LANE THE EYE CANNOT SEE IS NOT A LANE.
+      const tp: SlideInput = { layout: "timeline-parallel", title: "Two workstreams, one quarter",
+        tracks: [
+          { name: "Publishing", phases: [{ label: "Ungate", start: "2026-10-01", end: "2026-11-01" }] },
+          { name: "Authority", phases: [{ label: "Author pages", start: "2026-11-01", end: "2027-01-15" }] },
+        ] } as any;
+      const p = page49(tp, 2, "c49a3");
+      const bg = (p.background || "#F8F8F8").replace("#", "");
+      const lanes = (p.elements as any[]).filter((e) => e.kind === "rect" && e.w > GRID.contentWidth - 1 && e.h > 20);
+      A49(lanes.length === 2, `49a precondition: ${lanes.length} track lanes drawn, not 2`);
+      for (const l of lanes) {
+        // 1.10, which is above BOTH the fills this was tried with and rejected
+        // — white at 1.06 and the warm tint at 1.08 — so the bound is a real
+        // separation rather than a rounding error either side of the ground.
+        A49(ratio(String(l.fill || "#FFFFFF"), bg) >= 1.10,
+          `49a a track lane is ${ratio(String(l.fill || "#FFFFFF"), bg).toFixed(3)}:1 against the page — it is drawn and cannot be seen`);
+      }
+      // AND A PHASE BAR STATES ITS DATES. A fully rounded capsule rounds both
+      // ends away; the two dates are what the layout exists to show.
+      const bars = (p.elements as any[]).filter((e) => e.kind === "rect" && e.rounded && e.w > 40 && e.h > 10);
+      A49(bars.length === 0, `49a ${bars.length} phase bars are drawn as capsules — a rounded end blurs the date it stands for`);
+    }
+
+    /* (b) THE FRAME IS FURNITURE: CONTENT STOPS ABOVE IT.
+     *
+     *     Four layouts ran into the footer's hairline at once, and each looked
+     *     like a different bug in the picture — a circle with no bottom, two
+     *     panels with no bottom edge, an axis crushed into the last few points
+     *     of the page, a matted screenshot resting on a rule. One property. */
+    {
+      const cases: [string, SlideInput][] = [
+        ["venn", { layout: "venn", title: "Three disciplines, one overlap",
+          venn: { sets: [{ label: "Search experience" }, { label: "Answer engines" }, { label: "Editorial authority" }],
+            overlap: "Where a citation is actually earned" } }],
+        // FIVE ITEMS A QUADRANT, not two: the panels are sized to their
+        // contents now, so a light SWOT floats in the middle of its band and
+        // never reaches the floor this is about. A fixture that does not reach
+        // the cliff proves nothing about the cliff — the same lesson 48(a2)
+        // learned about a bullet that never wrapped.
+        ["swot", { layout: "swot", title: "Where it stands", swot: {
+          strengths: ["A named research programme with twelve years of primary data behind it",
+            "A brand the models already recognise in this category", "Editorial standards that survive scrutiny",
+            "Twelve years of primary data nobody else holds", "A masthead the trade press still quotes"],
+          weaknesses: ["The flagship report is gated behind a lead form", "No structured markup on any research page",
+            "No canonical author entities anywhere on the domain", "Country tables exist only inside a PDF",
+            "The canonical tag points at a campaign URL"],
+          opportunities: ["Publish the country tables as open HTML on the research hub",
+            "Name and mark up the four lead researchers", "Syndicate the abstracts to the trade press",
+            "Answer the ten questions the category actually asks", "Open the archive to the crawlers"],
+          threats: ["Consultancies own the prompt space and publish faster",
+            "Models freeze on snapshots that predate your best work", "Attribution is drifting to aggregators",
+            "Two funded entrants publishing weekly", "The category's vocabulary is being set elsewhere"] } }],
+        ["matrix", { layout: "matrix", title: "What to do first",
+          matrix: { xAxis: ["Low effort", "High effort"], yAxis: ["Low impact", "High impact"],
+            quadrants: ["Schedule it", "Do now", "Ignore", "Plan it"],
+            items: [{ label: "Ungate the Monitor", x: 0.18, y: 0.92, highlight: true },
+              { label: "Author markup", x: 0.22, y: 0.44 },
+              { label: "Quarterly data refresh", x: 0.74, y: 0.3 }] } }],
+        // The matted screenshot stage, whose floor was NOTE.bottom — 374, two
+        // points above a hairline at 376 — so a picture the layout draws a mat
+        // and a keyline around appeared to be resting on the footer.
+        // NO CALLOUTS, so there is no legend under the picture and the stage
+        // grows all the way to its own floor — which is the case this is
+        // about. With a legend the picture stops well short and the fixture
+        // proves nothing.
+        ["feature", { layout: "feature", eyebrow: "The platform", title: "What the assistant sees",
+          image: { attachment: 1, screenshot: true },
+          resolvedImage: { url: "shot.png", scrim: 0, aspect: 1440 / 760, sourceWidth: 1440 } } as SlideInput],
+      ];
+      for (const preset of ["read", "present"] as Density[]) {
+        for (const [name, base] of cases) {
+          const s = { ...base, density: preset } as SlideInput;
+          for (const e of els49(s, 2, `c49b${name}${preset}`)) {
+            // The frame's own furniture is excluded: it IS the frame. The
+            // running head and the folio live in the margin band BELOW the
+            // rule, which is exactly where nothing else may go.
+            if (e.kind === "rect" && e.w > CANVAS.width - 1) continue;
+            if (e.y >= FRAME.bottomRuleY) continue;
+            // AIR, NOT MERELY CLEARANCE. Every one of these already stopped a
+            // point or three above the rule, which is why no check saw them:
+            // the venn's bottom circle was TANGENT to the hairline at `read`
+            // and cut flat by it at `present`, the two lower swot panels had
+            // 1.6pt under them, the matrix's axis row 3.6. A shape that touches
+            // a rule reads as a shape the rule has cut, and "it does not
+            // technically overlap" is not the property — the property is that
+            // the frame has a band of its own that content stays out of.
+            A49(e.y + e.h <= FRAME.bottomRuleY - FRAME.contentGap + 0.6,
+              `49b ${name} at ${preset}: a ${e.kind} runs to ${(e.y + e.h).toFixed(1)}, into the ${FRAME.contentGap}pt the frame keeps above its hairline at ${FRAME.bottomRuleY}`);
+          }
+        }
+      }
+    }
+
+    /* (c) THE PAGE'S CHROME DOES NOT CROSS A PICTURE.
+     *
+     *     A 6pt grey running head over a bleeding photograph is legible on a
+     *     pale tower and invisible on a dark one, which is not a decision
+     *     anybody made; a full-bleed hairline cuts the picture into bands. Two
+     *     layouts bleed a photograph to a trim the chrome also reaches. */
+    {
+      const split: SlideInput = { layout: "image-split", eyebrow: "AI VISIBILITY REVIEW",
+        title: "The report is invisible to the crawlers",
+        body: "The Monitor sits behind a marketing gate\nThe HTML that survives it is an abstract",
+        image: { query: "server room" }, resolvedImage: { url: "p.jpg", scrim: 0.45, credit: "Photograph: Unsplash" },
+        step: { n: 3, of: 7 } } as any;
+      const els = els49(split, 2, "c49c1");
+      // AND NO RAIL ON THIS PAGE AT ALL.
+      //
+      // The rail ends where the eyebrow's box ends, and that is only the same
+      // line on the layouts whose eyebrow is on the page margin. `image-split`
+      // puts its eyebrow in the right-hand text column at 380.16, so a rail
+      // ending at 611.28 lands INSIDE that column and eyebrowRoom hands the
+      // label back whatever is left: measured against the 235 real eyebrows in
+      // the stored corpus, 43% no longer fit at three steps and 79% at seven.
+      // "AI VISIBILITY REVIEW" stacked as three lines and ran down into the
+      // standfirst. A page whose top band is a photograph and a column has no
+      // chrome line to put a rail on, so it takes none.
+      A49(!els.some((e) => e.kind === "text" && /^\d(\s{2,}\d)+\s*$/.test(String(e.text || ""))),
+        `49c image-split drew the rail inside its own text column`);
+      const brow = els.find((e) => e.kind === "text" && /AI VISIBILITY REVIEW/i.test(String(e.text)));
+      A49(!!brow && Math.abs(brow.w - IMAGE.splitTextWidth) < 0.6,
+        `49c image-split's eyebrow gave up room to a rail it does not draw (${brow ? brow.w.toFixed(1) : "none"} of ${IMAGE.splitTextWidth})`);
+      A49(!!brow && estimateLines(String(brow.text), brow.w, brow.size || 11, false, true) === 1,
+        `49c image-split's eyebrow wraps in the room it was left`);
+      const pic = els.filter((e) => e.kind === "image" && e.w > 200)[0];
+      A49(!!pic, "49c precondition: image-split drew no photograph");
+      if (pic) {
+        const picRight = pic.x + pic.w;
+        for (const e of els) {
+          if (e.kind === "image") continue;
+          const isChrome = e.kind === "rect" ? e.h <= 2 : /Content Engine|Siemens|·/.test(String(e.text || ""));
+          if (!isChrome) continue;
+          A49(e.x >= picRight - 0.6,
+            `49c image-split draws its chrome from x=${e.x.toFixed(1)}, over a photograph that reaches ${picRight.toFixed(1)}`);
+        }
+        // AND THE RAIL TAKES THE RIGHT END OF THE SAME LINE.
+        const cs: SlideInput = { layout: "case-study", title: "What changed for a comparable publisher",
+          subtitle: "A body that ungated one flagship report.",
+          body: "Citation share moved from 8% to 23%\nNo new research was published",
+          image: { query: "wind" }, resolvedImage: { url: "p.jpg", scrim: 0.45 } } as any;
+        const cels = els49(cs, 4, "c49c2");
+        const rail = cels.filter((e) => e.kind === "image" && e.w > 150)[0];
+        A49(!!rail, "49c precondition: case-study drew no rail picture");
+        if (rail) {
+          for (const e of cels) {
+            if (e.kind === "image") continue;
+            const isChrome = (e.kind === "rect" && e.h <= 2 && e.w > 200) || (e.kind === "text" && /^\d+$/.test(String(e.text || "").trim()));
+            if (!isChrome) continue;
+            A49(e.x + e.w <= rail.x + 0.6,
+              `49c case-study draws chrome to x=${(e.x + e.w).toFixed(1)}, across a picture that starts at ${rail.x.toFixed(1)}`);
+          }
+          // AND THE PICTURE IS HUNG FROM THE RULE rather than floating under
+          // it: three bled edges and one drawn one reads as a rectangle unless
+          // the drawn one is the page's own horizontal.
+          const rule = cels.filter((e) => e.kind === "rect" && e.h <= 3 && e.y < GRID.bodyY && e.x < GRID.margin + 2)
+            .sort((a, b) => b.y - a.y)[0];
+          A49(!!rule && Math.abs(rule.y - rail.y) < 2.5,
+            `49c the rail picture starts at ${rail.y.toFixed(1)} and the title's rule sits at ${rule ? rule.y.toFixed(1) : "none"}` +
+            ` — the one edge the picture has is not on the page's own line`);
+        }
+      }
+    }
+
+    /* (d) A FIELD A LAYOUT DECLARES IN ITS OWN SCHEMA IS DRAWN. */
+    {
+      const v: SlideInput = { layout: "venn", title: "Three disciplines, one overlap",
+        venn: { sets: [{ label: "Search experience" }, { label: "Answer engines" }, { label: "Editorial authority" }],
+          overlap: "Where a citation is actually earned" } };
+      // AT BOTH PRESETS. `present` has a taller title band, so its circles are
+      // a fifth smaller and its meet box smaller again — which is where the
+      // first fix for this stopped working and the centre of the picture went
+      // empty one preset along.
+      for (const preset of ["read", "present"] as Density[]) {
+        const drawn = els49({ ...v, density: preset } as SlideInput, 2, `c49d${preset}`)
+          .filter((e) => e.kind === "text").map((e) => String(e.text)).join(" · ");
+        A49(/citation is actually earned/i.test(drawn),
+          `49d at ${preset} the venn's own \`overlap\` field is not drawn — the centre of a three-circle diagram is empty on a slide titled "one overlap"`);
+      }
+    }
+
+    /* (e) ONE RELATION BETWEEN A LABEL AND THE THING IT NAMES.
+     *
+     *     The collision resolver was dodging a BAND — "anything in the top
+     *     22pt goes under its dot" — rather than a caption, so items nowhere
+     *     near a corner still had their labels thrown below or above while
+     *     their neighbours kept theirs beside. Six points, three relations. */
+    {
+      const m: SlideInput = { layout: "matrix", title: "What to do first",
+        subtitle: "Effort against the citation share each move returns.",
+        matrix: { xAxis: ["Low effort", "High effort"], yAxis: ["Low impact", "High impact"],
+          quadrants: ["Schedule it", "Do now", "Ignore", "Plan it"],
+          items: [
+            { label: "Ungate the Monitor", x: 0.18, y: 0.92, highlight: true },
+            { label: "Publish country tables as HTML", x: 0.34, y: 0.78 },
+            { label: "Author markup", x: 0.22, y: 0.44 },
+            { label: "Rebuild the research hub", x: 0.86, y: 0.7 },
+            { label: "Quarterly data refresh", x: 0.74, y: 0.3 },
+            { label: "Social repackaging", x: 0.3, y: 0.16 } ] } };
+      const els = els49(m, 2, "c49e");
+      const dots = els.filter((e) => e.kind === "ellipse" && e.w <= 13).sort((a, b) => a.y - b.y);
+      const names = els.filter((e) => e.kind === "text" && /Ungate|country tables|Author markup|research hub|data refresh|repackaging/.test(String(e.text)));
+      A49(dots.length === 6 && names.length === 6, `49e precondition: ${dots.length} dots and ${names.length} labels`);
+      if (dots.length === 6 && names.length === 6) {
+        let beside = 0;
+        for (const n of names) {
+          // Its own dot: the nearest one, which is unambiguous because the
+          // label is always the nearest ink to its point.
+          let best = dots[0], bestD = Infinity;
+          for (const d of dots) {
+            const dist = Math.abs(d.x + d.w / 2 - (n.x < 360 ? n.x : n.x + n.w)) + Math.abs(d.y + d.h / 2 - (n.y + n.h / 2));
+            if (dist < bestD) { bestD = dist; best = d; }
+          }
+          const dotMid = best.y + best.h / 2;
+          if (Math.abs((n.y + n.h / 2) - dotMid) <= 3) beside += 1;
+        }
+        A49(beside === 6, `49e ${6 - beside} of 6 matrix labels are not on their dot's own line` +
+          ` — a reader learns the relation once on the first point and has to relearn it on the rest`);
+      }
+      // And a corner caption is one line, not two jammed against the edge.
+      const caps = els.filter((e) => e.kind === "text" && /^(Schedule it|Do now|Ignore|Plan it)$/.test(String(e.text).trim()));
+      A49(caps.length === 4, `49e precondition: ${caps.length} of 4 quadrant captions drawn`);
+      for (const c of caps) {
+        A49(estimateLines(String(c.text), c.w, c.size || 9) === 1,
+          `49e the quadrant caption "${String(c.text)}" wraps in a ${c.w.toFixed(1)}pt box`);
+      }
+    }
+
+    /* (f) A BLOCK CONTAINS ITS OWN CONTENTS. */
+    {
+      const ly: SlideInput = { layout: "layers", title: "Where the AI layer sits",
+        layers: [
+          { title: "The answer layer", caption: "What an assistant says", style: "blue", arrow: "up" },
+          { title: "What it reads", cells: [{ title: "Your site" }, { title: "Trade press" }, { title: "Analyst notes" }, { title: "Open data" }], style: "teal", arrow: "up" },
+          { title: "What you publish", caption: "Reports, releases and bylines", style: "grey" },
+        ] } as any;
+      const els = els49(ly, 2, "c49f");
+      const band = els.filter((e) => e.kind === "rect" && /What it reads/.test("") === false && e.h > 18 && e.w > 200)
+        .sort((a, b) => a.y - b.y);
+      const head = els.find((e) => e.kind === "text" && /What it reads/.test(String(e.text)));
+      A49(!!head, "49f precondition: the cell-bearing layer drew no heading");
+      if (head) {
+        const owner = band.filter((b) => b.y <= head.y + 1 && b.y + b.h >= head.y + head.h - 1)
+          .sort((a, b) => a.w - b.w)[0];
+        const cells = els.filter((e) => e.kind === "text" && /Your site|Trade press|Analyst notes|Open data/.test(String(e.text)));
+        A49(!!owner && cells.length === 4, `49f precondition: owner band ${owner ? "found" : "missing"}, ${cells.length} cells`);
+        if (owner && cells.length === 4) {
+          let out = 0;
+          for (const c of cells) if (c.x < owner.x - 0.6 || c.x + c.w > owner.x + owner.w + 0.6) out += 1;
+          A49(out === 0, `49f ${out} of 4 cells are drawn outside the band that heads them` +
+            ` (band ${owner.x.toFixed(0)}..${(owner.x + owner.w).toFixed(0)}) — the layer does not contain its own contents`);
+        }
+      }
+    }
+
+    /* (g) NO ROW OF REPEATED CELLS ENDS RAGGED.
+     *
+     *     Both of these describe themselves as filling their band. Four
+     *     pictures laid out three-then-one and six client marks 4 + 2, each
+     *     leaving holes a reader reads as something that failed to load. */
+    {
+      const g = gridGeometry(4, true);
+      A49(g.cols * g.rows === 4, `49g four pictures lay out ${g.cols} x ${g.rows} — ${g.cols * g.rows - 4} empty cells`);
+      const six = gridGeometry(6, true);
+      A49(six.cols === 3 && six.rows === 2, `49g six pictures lay out ${six.cols} x ${six.rows}, not the 3 x 2 their shape asks for`);
+      const wall: SlideInput = { layout: "logo-wall", title: "Where your findings already appear",
+        logos: [1, 2, 3, 4, 5, 6].map((i) => ({ name: `Outlet ${i}`, resolvedUrl: "logo.png" })) } as any;
+      // The lockup is an image too, and it lives above the content band.
+      const marks = els49(wall, 2, "c49g").filter((e) => e.kind === "image" && e.w < 300 && e.y > GRID.bodyY);
+      const rows: number[] = [];
+      for (const m of marks) if (!rows.some((y) => Math.abs(y - m.y) < 2)) rows.push(m.y);
+      // AND A CAPTION THAT WRAPS STAYS IN ITS OWN BAND. One line was reserved
+      // whatever the words were, so the second line of a longer caption was
+      // drawn through the footer's hairline and off the bottom of the page.
+      {
+        const grid: SlideInput = { layout: "image-grid", title: "The research hub as it stands",
+          images: [{ query: "a" }, { query: "b" }, { query: "c" }, { query: "d" }],
+          resolvedImages: [
+            { url: "p.jpg", caption: "The gated landing page" },
+            { url: "p.jpg", caption: "The abstract, all 180 words of it" },
+            { url: "p.jpg", caption: "The PDF, where the tables live" },
+            { url: "p.jpg", caption: "The campaign URL the canonical points at" } ] } as any;
+        const gels = els49(grid, 2, "c49g2");
+        const caps = gels.filter((e) => e.kind === "text" && /landing page|180 words|tables live|canonical points/.test(String(e.text)));
+        A49(caps.length === 4, `49g precondition: ${caps.length} of 4 grid captions drawn`);
+        let wrapped = 0;
+        for (const c of caps) {
+          const need = drawnTextHeight(Math.max(1, estimateLines(String(c.text), c.w, c.size || 8)), c.size || 8);
+          if (need > (c.size || 8) * 2) wrapped += 1;
+          A49(need <= c.h + 0.5,
+            `49g the grid caption "${String(c.text).slice(0, 24)}" needs ${need.toFixed(1)}pt of ink in a ${c.h.toFixed(1)}pt band`);
+          A49(c.y + Math.max(c.h, need) <= FRAME.bottomRuleY - FRAME.contentGap + 0.6,
+            `49g the grid caption "${String(c.text).slice(0, 24)}" runs to ${(c.y + Math.max(c.h, need)).toFixed(1)}, into the frame's own band`);
+        }
+        A49(wrapped >= 1, `49g precondition: no grid caption in this fixture wraps, so the band's height is never tested`);
+      }
+      A49(rows.length === 2 && marks.length === 6,
+        `49g six client marks lay out on ${rows.length} rows (${marks.length} marks) — 4 + 2 leaves two holes in a wall of clients`);
+      let perRow = 0;
+      for (const y of rows) {
+        const n = marks.filter((m) => Math.abs(m.y - y) < 2).length;
+        if (!perRow) perRow = n;
+        A49(n === perRow, `49g the logo wall draws ${perRow} marks on one row and ${n} on another`);
+      }
+    }
+
+    /* (h) ONE BULLET MARKER IN A DECK.
+     *
+     *     Stage 3 hung a brand disc outside the measure on four layouts and
+     *     left five on Slides' own glyph inside it, so 15 of 37 stored decks
+     *     drew both and a reader was asked to believe they meant different
+     *     things. The preset is gone from the builder rather than merely
+     *     unused; this asserts it over every fixture in the file. */
+    {
+      let preset = 0;
+      const offenders: string[] = [];
+      for (let i = 0; i < ALL.length; i++) {
+        const reqs = buildSlideRequests(ALL[i], i, "c49h") as any[];
+        for (const r of reqs) if (r.createParagraphBullets) { preset += 1; offenders.push(String(ALL[i].layout)); break; }
+      }
+      A49(preset === 0, `49h ${preset} fixtures still draw Slides' own bullet preset (${Array.from(new Set(offenders)).join(", ")})`);
+      // AND EVERY PROSE LIST IS MARKED. A migration that simply deleted the
+      // preset would pass the line above and leave five layouts with no marker
+      // at all, which is the third bullet style the render also found.
+      const listed: [string, SlideInput][] = [
+        ["content", { layout: "content", title: "T", body: "One long enough to wrap around\nTwo long enough to wrap around\nThree long enough to wrap" }],
+        ["image-split", { layout: "image-split", title: "T", body: "One long enough to wrap around\nTwo long enough to wrap around",
+          image: { query: "x" }, resolvedImage: { url: "p.jpg", scrim: 0.4 } } as any],
+        ["swot", { layout: "swot", title: "T", swot: { strengths: ["Alpha one", "Beta two"], weaknesses: ["Gamma three", "Delta four"],
+          opportunities: ["Epsilon five", "Zeta six"], threats: ["Eta seven", "Theta eight"] } }],
+        ["feature", { layout: "feature", title: "T", body: "One long enough to wrap around\nTwo long enough to wrap around" }],
+        ["cards", { layout: "cards", title: "T", cards: [{ title: "A", body: "One line here\nTwo lines here" },
+          { title: "B", body: "One line here\nTwo lines here" }] }],
+        ["table", { layout: "table", title: "T", table: { columns: ["A", "B"], rows: [["1", "2"], ["3", "4"]] },
+          bodyRight: "One long enough to wrap\nTwo long enough to wrap" }],
+      ];
+      for (const [name, s] of listed) {
+        const els = els49(s, 2, `c49h${name}`);
+        const discs = els.filter((e) => e.kind === "ellipse" && e.w <= HUNG_DOT.diameter * 1.6 && Math.abs(e.w - e.h) < 0.01);
+        A49(discs.length >= 2, `49h ${name} drew ${discs.length} hung discs for a two-paragraph list — a list with no marker is a third bullet style`);
+      }
+    }
+
+    /* (h2) ONE GLYPH LINE INSIDE A PANEL.
+     *
+     *     The same defect the table slide had, one scale down: a quadrant's
+     *     heading was set on the panel's 12pt padding and its items on a wider
+     *     one, so every panel in the grid had two left edges in it. With the
+     *     discs hung outside the measure the padding is the DOT's column and
+     *     the words — heading and items alike — sit on one line 11.4pt inside
+     *     it. */
+    {
+      const sw: SlideInput = { layout: "swot", title: "Where it stands", swot: {
+        strengths: ["A named research programme", "A brand the models know"],
+        weaknesses: ["The report is gated", "No structured markup"],
+        opportunities: ["Publish the tables", "Name the researchers"],
+        threats: ["Consultancies publish faster", "Attribution is drifting"] } };
+      const els = els49(sw, 2, "c49h2");
+      const heads = els.filter((e) => e.kind === "text" && /^(STRENGTHS|WEAKNESSES|OPPORTUNITIES|THREATS)$/.test(String(e.text).trim()));
+      const items = els.filter((e) => e.kind === "text" && /named research|models know|report is gated|structured markup|Publish the tables|the researchers|publish faster|is drifting/.test(String(e.text)));
+      A49(heads.length === 4 && items.length === 8, `49h2 precondition: ${heads.length} headings and ${items.length} items`);
+      for (const h of heads) {
+        const mine = items.filter((it) => Math.abs(it.x - h.x) < 40 && it.y > h.y);
+        A49(mine.length >= 1, `49h2 precondition: the "${String(h.text)}" panel has no items beside its heading`);
+        for (const it of mine) {
+          A49(Math.abs(it.x - h.x) < 0.01,
+            `49h2 the "${String(h.text)}" panel sets its heading at x=${h.x.toFixed(2)} and its items at x=${it.x.toFixed(2)}` +
+            ` — two left edges inside one panel`);
+        }
+      }
+      // And the discs hang into the padding, not over the panel's edge.
+      const panels = els.filter((e) => e.kind === "rect" && e.w > 200 && e.h > 60);
+      const discs = els.filter((e) => e.kind === "ellipse" && e.w <= HUNG_DOT.diameter * 1.6);
+      A49(panels.length === 4 && discs.length === 8, `49h2 precondition: ${panels.length} panels, ${discs.length} discs`);
+      for (const d of discs) {
+        const own = panels.find((pn) => d.x >= pn.x - 0.1 && d.x + d.w <= pn.x + pn.w + 0.1 && d.y >= pn.y && d.y <= pn.y + pn.h);
+        A49(!!own, `49h2 a hung disc at x=${d.x.toFixed(1)} is drawn outside every quadrant panel`);
+      }
+    }
+
+    /* (i) A CARD'S PARTS ARE ONE CARD. */
+    {
+      const cards: SlideInput = { layout: "cards", title: "Three workstreams",
+        cards: [
+          { marker: "01", tone: "blue", title: "Ungate the Monitor", body: "Remove the form on the flagship report." },
+          { marker: "02", tone: "teal", title: "Name the researchers", body: "Consistent bylines and author pages." },
+          { marker: "03", tone: "coral", title: "Syndicate the abstracts", body: "Place the findings where models look." } ] };
+      const els = els49(cards, 2, "c49i");
+      const chips = els.filter((e) => e.kind === "rect" && e.h > 15 && e.h < 24 && e.w < 60);
+      A49(chips.length === 3, `49i precondition: ${chips.length} of 3 marker chips drawn`);
+      const fills = Array.from(new Set(chips.map((c) => String(c.fill || "").toUpperCase())));
+      A49(fills.length === 3,
+        `49i the three cards' chips are drawn in ${fills.length} colour(s) (${fills.join(", ")}) — a green card with a blue numeral` +
+        ` says the numeral belongs to something else`);
+      // AND A HEADING NEVER WRAPS BACK UNDER ITS OWN CHIP. Slides does not flow
+      // text around a block, so the second line runs under the numeral and
+      // leaves it sitting in a hole.
+      for (const c of chips) {
+        const titles = els.filter((e) => e.kind === "text" && /Ungate|researchers|abstracts/.test(String(e.text)));
+        for (const t of titles) {
+          const sameLine = t.y < c.y + c.h - 1 && t.y + t.h > c.y + 1;
+          if (!sameLine) continue;
+          A49(estimateLines(String(t.text), t.w, t.size || 13) === 1,
+            `49i "${String(t.text)}" wraps beside its chip — its second line is drawn under the numeral`);
+        }
+      }
+    }
+
+    /* (i2) AND A PAGE WHERE NOTHING FITS STILL KEEPS ITS WORDS ON THE PAGE.
+     *
+     *     Six iconed cards with word markers and a standfirst over them: no
+     *     arrangement on the ladder fits, so the fallback picks the one that
+     *     misses by least and scales its rows. Stacking every chip costs each
+     *     card a row, and on this page that row is the BODY's — the bodies came
+     *     out under their own 20pt floor and were drawn through the running
+     *     head. Three stored slides. The property is the one that matters to a
+     *     reader: the words are still above the frame. */
+    {
+      const tight: SlideInput = { layout: "cards", eyebrow: "Topics", title: "Weekly monitoring positions",
+        subtitle: "Three topics owned. Three contested. Three lost, and the reason is the same in each.",
+        cards: ["Industrial electrification", "Demand-side flexibility", "Smart infrastructure",
+          "Grid flexibility markets", "Building retrofitting", "Industrial decarbonization"].map((t, i) => ({
+          title: t, marker: i < 3 ? "OWN" : "LOSING",
+          body: `Rank ${i + 1} of 10. Schneider Electric is second.`,
+          resolvedIcon: "icon.png",
+        })) } as SlideInput;
+      for (const preset of ["read", "present"] as Density[]) {
+        const els = els49({ ...tight, density: preset } as SlideInput, 7, `c49i2${preset}`);
+        const bodies = els.filter((e) => e.kind === "text" && /Rank \d+ of 10/.test(String(e.text)));
+        A49(bodies.length === 6, `49i2 precondition at ${preset}: ${bodies.length} of 6 card bodies drawn`);
+        // THE SHORTER ARRANGEMENT IS THE ONE DRAWN. On a page where nothing on
+        // the ladder fits, the fallback used to compare the STACKED measures
+        // only and pick the smallest of those, which is taller than every
+        // inline one by a whole row per card. Read off the drawing: the chip
+        // and the heading share a line.
+        const chips = els.filter((e) => e.kind === "text" && /^(OWN|LOSING)$/.test(String(e.text).trim()));
+        const heads = els.filter((e) => e.kind === "text" && /electrification|flexibility|infrastructure|retrofitting|decarbonization/.test(String(e.text)));
+        A49(chips.length === 6 && heads.length === 6, `49i2 precondition at ${preset}: ${chips.length} chips, ${heads.length} headings`);
+        let beside = 0;
+        for (const c of chips) for (const h of heads) if (h.y < c.y + c.h - 1 && h.y + h.h > c.y + 1) { beside += 1; break; }
+        A49(beside === 6,
+          `49i2 at ${preset} ${6 - beside} of 6 chips are stacked above their heading on a page where nothing fits` +
+          ` — the stack costs each card a row, and on this page that row is the body's`);
+        // AND THE WORDS ARE STILL ON THE PAGE. Asserted at `read`, which is the
+        // preset the product ships at; `present` is not reachable in
+        // production and six iconed cards genuinely do not fit its shorter
+        // band, which is a capacity fact rather than a placement defect.
+        if (preset !== "read") continue;
+        for (const b of bodies) {
+          const need = drawnTextHeight(
+            Math.max(1, estimateLines(String(b.text), b.w, b.size || 8, false, false, b.font)), b.size || 8);
+          // THE BOUND IS THE FOOTER'S OWN LINE, which is what validate.ts
+          // reports a body as running into. A card row is allowed to end
+          // tight against the frame's rule — this layout fills its band by
+          // design — and the fault is words drawn over the running head.
+          A49(b.y + Math.max(b.h, need) <= FOOTER_Y + 0.6,
+            `49i2 at ${preset} a card body's ink runs to ${(b.y + Math.max(b.h, need)).toFixed(1)},` +
+            ` onto the running head at ${FOOTER_Y} — the arrangement cost the body the row it needed`);
+        }
+      }
+    }
+
+    /* (j) A WALL OF LOGOS SAYS WHO THESE PEOPLE ARE. */
+    {
+      const wall: SlideInput = { layout: "logo-wall", title: "Where your findings already appear",
+        logos: [1, 2, 3, 4, 5, 6].map((i) => ({ name: `Outlet ${i}`, resolvedUrl: "logo.png" })) } as any;
+      const els = els49(wall, 2, "c49j");
+      const named = els.filter((e) => e.kind === "text" && /^Outlet \d$/.test(String(e.text).trim()));
+      A49(named.length === 6,
+        `49j ${named.length} of 6 client names are drawn — a wall of unrecognised marks is a slide whose only job is to say who these people are, saying nothing`);
+      const marks = els.filter((e) => e.kind === "image" && e.w < 300 && e.y > GRID.bodyY);
+      for (const n of named) {
+        // The mark it belongs to is the nearest one above it in its own column.
+        const column = marks.filter((m) => Math.abs(m.x + m.w / 2 - (n.x + n.w / 2)) < 12 && m.y + m.h <= n.y + 1);
+        const nearest = column.sort((a, b) => (n.y - (a.y + a.h)) - (n.y - (b.y + b.h)))[0];
+        A49(!!nearest && n.y - (nearest.y + nearest.h) < 30,
+          `49j "${String(n.text)}" is not set directly under a mark (${column.length} above it in its column)`);
+      }
+    }
+
+    /* (k) A REFERENCE RECEDES; AN ANNOTATION BELONGS TO ITS BAR. */
+    {
+      const bar: SlideInput = { layout: "bar-chart", title: "Who the assistants reach for instead",
+        subtitle: "Share of cited sources across the 400-prompt set.",
+        chart: { source: "AuthorityOn, September 2026", highlight: 3,
+          benchmark: { value: 17, label: "Category average" },
+          callout: { point: 3, text: "Fourth, on the largest evidence base" },
+          series: [{ name: "Share", points: [
+            { label: "McKinsey", value: 31 }, { label: "IEA", value: 24 },
+            { label: "Bloomberg NEF", value: 18 }, { label: "Siemens", value: 11 },
+            { label: "ABB", value: 9 }, { label: "Schneider", value: 7 } ] }] } };
+      const els = els49(bar, 2, "c49k");
+      const rule = els.filter((e) => e.kind === "rect" && e.w <= 2 && e.h > 60)[0];
+      const note = els.find((e) => e.kind === "text" && /largest evidence base/.test(String(e.text)));
+      const label = els.find((e) => e.kind === "text" && /CATEGORY AVERAGE/i.test(String(e.text)));
+      A49(!!rule && !!note && !!label, `49k precondition: rule ${!!rule}, callout ${!!note}, benchmark label ${!!label}`);
+      if (rule && note && label) {
+        A49(String(rule.fill || "").toUpperCase() !== `#${COLOR.coralDeep}`,
+          `49k the benchmark rule is drawn in the deck's alarm colour, so a chart where nothing is wrong reads as an error`);
+        A49(String(note.color || "").toUpperCase() !== `#${COLOR.coralDeep}`,
+          `49k the callout is drawn in the deck's alarm colour`);
+        A49(note.x >= rule.x + rule.w,
+          `49k the callout starts at ${note.x.toFixed(1)} and the benchmark rule stands at ${rule.x.toFixed(1)}` +
+          ` — the rule is drawn straight through the sentence`);
+        // AND THE BENCHMARK'S LABEL HOLDS ITS OWN WORDS. Its width was a guess
+        // of four and a bit points per character and "Category average" is
+        // sixteen of them, so the box came out narrower than the label: it
+        // wrapped to two lines inside a box sized for one and the second line
+        // was drawn onto the top bar, letters touching it. The property is that
+        // the ink fits the box AND the box clears the plot — asserting only the
+        // second is what let this through, because the box was above the bars
+        // the whole time and the words were not.
+        const need = drawnTextHeight(
+          Math.max(1, estimateLines(String(label.text), label.w, label.size || 7, false, true)), label.size || 7);
+        A49(need <= label.h + 0.5,
+          `49k the benchmark label needs ${need.toFixed(1)}pt of ink in a ${label.h.toFixed(1)}pt box — its wrapped line is drawn outside it`);
+        const bars = els.filter((e) => e.kind === "rect" && e.h > 10 && e.w > 40);
+        for (const b of bars) {
+          A49(label.y + Math.max(label.h, need) <= b.y + 0.6,
+            `49k the benchmark label's ink runs to ${(label.y + Math.max(label.h, need)).toFixed(1)}, onto a bar whose top edge is ${b.y.toFixed(1)}`);
+        }
+      }
+    }
+
+    /* (l) A COLUMN HAS AN EDGE. */
+    {
+      const hub: SlideInput = { layout: "hub", title: "Everything that feeds an answer",
+        hub: { title: "The answer", caption: "Six inputs, one output", groups: [
+          { name: "Owned", tone: "blue", items: [{ title: "Research hub" }, { title: "Newsroom" }, { title: "Author pages" }] },
+          { name: "Earned", tone: "teal", items: [{ title: "Trade press" }, { title: "Analyst notes" }, { title: "Open datasets" }] } ] } } as any;
+      const els = els49(hub, 2, "c49l");
+      const pills = els.filter((e) => e.kind === "rect" && e.rounded && e.h > 18 && e.h < 40);
+      A49(pills.length === 6, `49l precondition: ${pills.length} of 6 hub pills drawn`);
+      if (pills.length === 6) {
+        const left = pills.filter((p) => p.x < CANVAS.width / 2), right = pills.filter((p) => p.x >= CANVAS.width / 2);
+        const spread = (v: number[]) => Math.max(...v) - Math.min(...v);
+        A49(spread(left.map((p) => p.x)) < 0.6,
+          `49l the left-hand pills start at ${left.map((p) => p.x.toFixed(1)).join(", ")} — the column has no edge where the eye expects one`);
+        A49(spread(right.map((p) => p.x + p.w)) < 0.6,
+          `49l the right-hand pills end at ${right.map((p) => (p.x + p.w).toFixed(1)).join(", ")}`);
+      }
+      // AND THE CENTRE IS ONE BLOCK. The name was re-wrapped by the renderer
+      // after being measured here, so a two-line box held one line of ink and
+      // the caption under it sat a whole line low inside the disc.
+      // The centre's own name, not the slide's title: inside the disc, which
+      // is the middle of the page.
+      const name = els.find((e) => e.kind === "text" && /answer/.test(String(e.text))
+        && (e.size || 0) >= 12 && e.y > CANVAS.height * 0.35 && e.x > CANVAS.width * 0.35);
+      const cap = els.find((e) => e.kind === "text" && /Six inputs/.test(String(e.text)));
+      A49(!!name && !!cap, "49l precondition: the hub's centre drew no name or no caption");
+      if (name && cap) {
+        const lines = Math.max(1, estimateLines(String(name.text), name.w, name.size || 18));
+        A49(Math.abs(name.h - drawnTextHeight(lines, name.size || 18, 0, 1, 1.0)) < 1.5,
+          `49l the hub's name is drawn in a ${name.h.toFixed(1)}pt box for ${lines} line(s) of ${name.size}pt type`);
+        A49(cap.y - (name.y + name.h) < 4,
+          `49l the hub's caption sits ${(cap.y - (name.y + name.h)).toFixed(1)}pt under its name inside the disc — they read as two things`);
+      }
+      // A NAME THAT REALLY DOES TAKE TWO LINES CARRIES THE BREAK IT WAS
+      // MEASURED WITH. The lines are wrapped here, against a chord that gets
+      // narrower down the disc, and the box is sized from them — but the text
+      // went to the renderer whole and was re-wrapped by ITS metrics, so a
+      // two-line box could hold one line of ink with the caption a whole line
+      // low under it, or a three-line name could spill onto the lavender ring.
+      // One ruler means sending the lines.
+      {
+        const wide: SlideInput = { layout: "hub", title: "Everything that feeds an answer",
+          hub: { title: "Enterprise knowledge platform", caption: "Six inputs, one output", groups: [
+            { name: "Owned", tone: "blue", items: [{ title: "Research hub" }, { title: "Newsroom" }] },
+            { name: "Earned", tone: "teal", items: [{ title: "Trade press" }, { title: "Analyst notes" }] } ] } } as any;
+        const wn = els49(wide, 2, "c49l2").find((e) => e.kind === "text" && /Enterprise/.test(String(e.text))
+          && e.y > CANVAS.height * 0.35 && e.x > CANVAS.width * 0.35);
+        A49(!!wn, "49l precondition: the long hub name was not drawn in the disc");
+        if (wn) {
+          const drawnLines = String(wn.text).split("\n").length;
+          const boxLines = Math.round((wn.h - 3.6) / ((wn.size || 18) * 1.26));
+          A49(boxLines > 1, `49l precondition: "Enterprise knowledge platform" was measured as one line in the disc`);
+          A49(drawnLines === boxLines,
+            `49l the hub's name is drawn as ${drawnLines} line(s) in a box measured for ${boxLines}` +
+            ` — the renderer re-wraps it and the caption under it lands wherever that leaves it`);
+        }
+      }
+    }
+
+    /* (m) THE CHAT PREVIEW IS THE DECK. */
+    {
+      // A whole paragraph that is only bold. Reachable since a prose list
+      // became one box per paragraph: a lead-in that used to be a prefix of a
+      // longer box is a box of its own now.
+      const runs = runsOf("Branded set", 0, [], [{ start: 0, end: 11, bold: true } as any]);
+      A49(runs.length === 1 && !!(runs[0] as any).bold, `49m precondition: runsOf did not return one bold run`);
+      A49(runNeedsStyle(runs[0]),
+        `49m a run that is only bold is not treated as styled — the chat preview draws it unbolded while the PDF sets it at 700`);
+      // AND THE COMPONENT ASKS THAT QUESTION RATHER THAN ANSWERING IT ITSELF.
+      // The condition was written out at the call site with one field missing,
+      // which is the whole defect; asserting the predicate alone would be a
+      // check on a function the renderer need not call. A React component
+      // cannot be rendered here, so this reads its source the way check 27
+      // reads the publish route's.
+      {
+        const src = readFileSync(join(__dirname, "..", "components/ai-writer/SlideDraftPreview.tsx"), "utf8");
+        A49(/runNeedsStyle\(/.test(src),
+          `49m SlideDraftPreview does not use runNeedsStyle — its fast path has its own copy of the condition again`);
+        A49(!/!runs\[0\]\.(url|italic|color)/.test(src),
+          `49m SlideDraftPreview still writes the styled-run test out field by field`);
+      }
+    }
+  }
+  if (failures === before49) {
+    pass(`every ink reads on the ground it is drawn on, no block runs into the frame, no chrome crosses a picture,` +
+      ` a label keeps one relation to the thing it names, and a deck draws one bullet marker`);
   }
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);

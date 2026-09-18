@@ -67,3 +67,22 @@ export function runsOf(
   if (at < line.length) out.push({ text: line.slice(at) });
   return out;
 }
+
+/** DOES THIS RUN CARRY ANYTHING THE RENDERER HAS TO DRAW?
+ *
+ *  The chat preview has a fast path for a line with no styling at all: it
+ *  hands React the string rather than a list of spans. The condition was
+ *  written out inline there and tested url, italic and colour — and not BOLD,
+ *  so a run that is ONLY bold fell through it and the preview drew the words
+ *  unbolded while the PDF and the published deck set them at 700. It is
+ *  reachable now that a prose list is one box per paragraph: a lead-in that
+ *  used to be the prefix of a longer box is a box of its own.
+ *
+ *  It lives here rather than in the component because the two renderers have
+ *  to agree about what a style IS, and a condition written out at a call site
+ *  is a condition that can be written out again with one field missing. */
+export function runNeedsStyle(
+  run: { url?: string; italic?: boolean; bold?: boolean; color?: string }
+): boolean {
+  return !!(run.url || run.italic || run.bold || run.color);
+}

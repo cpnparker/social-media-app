@@ -41,6 +41,13 @@ function deck(): any[] {
   return out;
 }
 
+/** A slide without the spine the builder stamps on it. */
+function withoutStep(slide: any): any {
+  const out = { ...(slide || {}) };
+  delete out.step;
+  return out;
+}
+
 /** Runs `fn`, returning the thrown Error or null. Never swallows. */
 function thrown(fn: () => any): Error | null {
   try { fn(); return null; } catch (e: any) { return e; }
@@ -136,7 +143,12 @@ console.log("\n7. Patching one slide leaves the other seven byte-identical");
     let drifted = "";
     for (let i = 0; i < 8; i++) {
       if (i === 2) continue;
-      if (JSON.stringify(after[i]) !== JSON.stringify(before[i])) drifted += ` ${i + 1}`;
+      // `step` IS THE BUILDER'S, and it is re-derived on every edit — see
+      // stampSteps. It is the one field on a slide that does not belong to the
+      // slide, so it is compared separately (check 15) rather than counted as
+      // drift here: a deck whose spine did NOT change on an edit is the defect,
+      // not the other way round.
+      if (JSON.stringify(withoutStep(after[i])) !== JSON.stringify(withoutStep(before[i]))) drifted += ` ${i + 1}`;
     }
     if (drifted) fail(`slides${drifted} changed and should not have`);
     else pass("slide 3 changed, the other seven byte-for-byte identical");
@@ -689,6 +701,79 @@ console.log("\n14. Every refusal is a SlideCallRefusal, and names its slide for 
   if (isSlideCallRefusal({ audience: "model", message: "not an error" })) fail("a non-Error object is classed as a refusal");
 
   if (failures === before14) pass(`all ${cases.length} refusals are SlideCallRefusals, faults are numbered in the deck and worded for a person, and a plain Error is not one`);
+}
+
+// ── 15. THE STEPPER RENUMBERS ON AN EDIT ────────────────────────────────────
+//
+// Stage 3 of docs/PLAN-slides-creative-2026-09.md. The stepper answers "where
+// am I, how much is left", and a rail that says 4 of 7 on a deck that now has
+// eight things is answering it with a lie — which is exactly the objection that
+// kept a page number off these slides for a year. The resolution was that the
+// number is DERIVED, at build, and re-derived on every edit; this is the half
+// of it that an edit can break, because applyEditSlide has nine return paths
+// and a stamp written at eight of them passes every other check in this file.
+//
+// Driven through the PUBLIC function on a REAL insert, not by calling
+// stampSteps directly: what is being asserted is that the edit path re-derives,
+// and a check that calls the stamper itself would pass with the call site gone.
+console.log("\n15. An insert renumbers every step after it");
+{
+  const before15 = failures;
+  const spine = () => {
+    const out: any[] = [{ layout: "cover", title: "Seven things" }];
+    for (let i = 1; i <= 5; i++) out.push({ layout: "content", title: `Thing ${i}`, body: `Body ${i}` });
+    out.push({ layout: "closing", title: "Thank you" });
+    return out;
+  };
+  const stamped = applyEditSlide(spine(), { slideNumber: 1, subtitle: "A guide" });
+  const rail = (d: any[]) => d.map((x) => (x.step ? `${x.step.n}/${x.step.of}` : "-")).join(" ");
+  // PRECONDITION. A deck with no rail at all would pass every assertion below
+  // by drawing nothing, which is the check that silently tests nothing.
+  if (rail(stamped) !== "- 1/5 2/5 3/5 4/5 5/5 -") {
+    fail(`precondition: a cover, five things and a closing did not stamp as five steps — got "${rail(stamped)}"`);
+  } else {
+    const grown = applyEditSlide(stamped, {
+      insertAfter: 3, layout: "content", title: "A new thing", body: "Inserted between 2 and 3",
+    });
+    const got = rail(grown);
+    if (got !== "- 1/6 2/6 3/6 4/6 5/6 6/6 -") {
+      fail(`inserting after the second thing left the rail as "${got}" — every step after the insert must renumber,`
+        + ` and the total must go to six, or slide 5 is marked 4 of 5 for the rest of the deck`);
+    } else pass("five steps became six, the inserted slide took step 3, and everything after it moved up");
+    // AND IN THE OTHER DIRECTION. A removal that did not renumber would leave a
+    // rail counting to six on a deck of five, which is the same lie.
+    const cut = applyEditSlide(stamped, { removeSlides: [4] });
+    const cutRail = rail(cut);
+    if (cutRail !== "- 1/4 2/4 3/4 4/4 -") {
+      fail(`removing the third thing left the rail as "${cutRail}" — a removal must renumber too`);
+    } else pass("removing a thing takes the rail to four, renumbered from the cut");
+    // AND THE COVER AND CLOSING NEVER CARRY ONE. They are not in the series;
+    // the source deck marks neither, and the folio already numbers the page.
+    if (grown[0].step || grown[grown.length - 1].step) {
+      fail("the cover or the closing was given a step — neither is one of the things the rail counts");
+    } else pass("the cover and the closing carry no step");
+    // AND THE DECK HANDED IN IS NOT TOUCHED. The result is a fresh ARRAY whose
+    // entries are the caller's own slide objects, so a stamper that wrote
+    // through would put a rail on the deck the user is looking at — including
+    // on the path where the edit is then REFUSED, which leaves the screen
+    // showing something nobody asked for. Check 7 compares the slides with
+    // `step` removed, so it cannot see this; only this can.
+    const source = spine();
+    const stampedOnce = applyEditSlide(source, { slideNumber: 1, subtitle: "A guide" });
+    if (source.some((x: any) => x.step)) {
+      fail("applyEditSlide stamped the spine onto the deck it was handed, not onto the deck it returned");
+    } else if (!stampedOnce.some((x: any) => x.step)) {
+      fail("precondition: the returned deck carries no rail, so the copy assertion above proves nothing");
+    } else pass("the rail is stamped on the returned deck and the deck handed in is untouched");
+    // A DECK THAT IS NOT A SERIES CARRIES NO RAIL, and the stale one is
+    // cleared rather than left behind. Cutting to two things takes it under
+    // the floor: "1 2" is not a progress bar.
+    const tiny = applyEditSlide(stamped, { removeSlides: [4, 5, 6] });
+    if (tiny.some((x: any) => x.step)) {
+      fail(`cutting to two things left a stale rail: "${rail(tiny)}" — under the floor the field must be removed, not kept`);
+    } else pass("a deck that drops under the floor loses its rail entirely rather than keeping a stale one");
+  }
+  if (failures === before15) pass("the spine is the builder's, and every edit re-derives it");
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);

@@ -7,7 +7,12 @@
  * providers.ts cannot be imported by a check script (it pulls in the provider
  * SDKs and server-only config), so logic that lived there could not be tested
  * at all. Guarded by scripts/verify-slide-edit.ts.
+ *
+ * brand.ts is the one thing it imports, and only for the stepper's bounds. That
+ * module is a true leaf — no imports of its own, no server config — so the
+ * property this file's seam was cut for is intact.
  */
+import { STEPPER } from "@/lib/slides/brand";
 
 /** What each layout is DRAWN FROM. A layout in this table with its field
  *  missing has nothing to render: the slide comes out as a title over empty
@@ -514,7 +519,200 @@ export function insertableLayout(layout: string, edit: any): { ok: boolean; need
   return { ok: payloadDraws(layout, edit), needs: need };
 }
 
-export function applyEditSlide(
+/* ─────────────── The deck's spine ─────────────── */
+
+/**
+ * WHERE EACH SLIDE SITS IN THE DECK'S OWN SPINE, derived from the deck's
+ * structure and written onto every slide as `step`.
+ *
+ * DECK-LEVEL, STAMPED, NEVER THE MODEL'S. `generate.ts` deliberately drew no
+ * page number for years on the grounds that a static number lies the moment
+ * somebody merges two slides by hand, and a static "1 2 3 4 5 6 7" inherits
+ * that objection exactly. A per-slide field the model fills in desynchronises
+ * on the first insert and says nothing about it — the same class of defect as
+ * the "(continued) (continued)" fossils. So it is derived from the deck, here,
+ * and every route that changes a deck runs this again: `applyEditSlide` below,
+ * and the two build entry points beside `stampFooter`.
+ *
+ * WHAT IT IS DERIVED FROM, in order:
+ *
+ *  1. THE SECTION DIVIDERS, when the deck has them. A divider is the author
+ *     saying "a new chapter starts here" in the one way this schema has of
+ *     saying it. Every slide from a divider up to the next one belongs to that
+ *     divider's step. This is the only derivation that means anything on a
+ *     34-slide client deck, and it is the one the plan names.
+ *  2. THE BODY RUN, when it has none. The slides between the front matter (a
+ *     cover, an opening statement) and the back matter (a closing) are the
+ *     deck's things, one step each. That is the handover deck exactly: cover,
+ *     pledge, seven things, closing — seven steps, and it has no dividers.
+ *
+ * A CONTINUATION IS NOT A NEW STEP. `splitOverflowingSlides` turns one slide
+ * whose body overran into two, and the second carries `continuation: true`; it
+ * is the same thing, continued, so it carries the same numeral. Stamping after
+ * the split without this would turn seven things into eight the moment one of
+ * them was a paragraph too long.
+ *
+ * NOTHING IS STAMPED at all when the derived count falls outside
+ * STEPPER.minSteps..maxSteps — see there for why both ends exist. That is not a
+ * failure: most decks are not a numbered series, and a rail is furniture that
+ * has to earn its line.
+ */
+export interface SlideStep {
+  /** 1-based, the step this slide is on. */
+  n: number;
+  /** How many steps the rail holds. */
+  of: number;
+}
+
+/** Layouts that are the deck's covers rather than its contents. The stepper
+ *  skips them for the same reason the footer does — and the footer's own rule
+ *  is `layout !== "cover" && layout !== "closing"`, which is where this list
+ *  starts. `statement` joins them at the HEAD only: an opening pledge is front
+ *  matter, and the same layout used in the middle of a deck is a slide. */
+const SPINE_SKIP_HEAD = ["cover", "statement", "section"];
+
+/** A section divider announces its own chapter and draws a 64pt index numeral
+ *  in the top-left slot instead of the rail, exactly as it takes none of the
+ *  frame's hairlines. It still sits ON a step — that numeral is stamped from
+ *  it — so it is skipped by the drawing, not by the derivation. */
+function isDivider(layout: string): boolean { return layout === "section"; }
+
+export function deckSteps(slides: any[], bounds: { min: number; max: number }): (SlideStep | undefined)[] {
+  const n = slides.length;
+  const out: (SlideStep | undefined)[] = new Array(n);
+  if (!n) return out;
+  const layoutAt = (i: number): string => {
+    const raw = String((slides[i] || {}).layout || "").trim();
+    return raw || (i === 0 ? "cover" : "content");
+  };
+
+  // 1. Dividers.
+  //
+  // A CHAPTER IS A DIVIDER WITH A PAGE IN IT, not a divider. Sizing the rail on
+  // the dividers alone lets a chapter that opens and immediately closes — a
+  // divider followed by another divider, or by nothing but the sign-off —
+  // consume a numeral that no page in the deck ever lights, so the rail
+  // advertises N things and the marked numeral visibly jumps 1 → 3. "How much
+  // is left" is the question this device exists to answer; a numeral that is
+  // never current is not an answer to it.
+  const dividers: number[] = [];
+  for (let i = 0; i < n; i++) if (isDivider(layoutAt(i))) dividers.push(i);
+  if (dividers.length) {
+    // The pages each divider opens, in order.
+    const pages: number[][] = [];
+    for (let d = 0; d < dividers.length; d++) {
+      const from = dividers[d] + 1;
+      const to = d + 1 < dividers.length ? dividers[d + 1] : n;
+      const mine: number[] = [];
+      for (let i = from; i < to; i++) {
+        const layout = layoutAt(i);
+        // A cover or a closing is not in a chapter by definition, and neither
+        // is the front matter before the first divider — which is why this
+        // walks forward from a divider rather than over the whole deck.
+        if (layout === "cover" || layout === "closing") continue;
+        mine.push(i);
+      }
+      pages.push(mine);
+    }
+    let chapters = 0;
+    for (let d = 0; d < pages.length; d++) if (pages[d].length) chapters += 1;
+    if (chapters < bounds.min || chapters > bounds.max) return out;
+    let step = 0;
+    for (let d = 0; d < pages.length; d++) {
+      if (!pages[d].length) continue;
+      step += 1;
+      // THE DIVIDER ITSELF IS ON THE STEP IT OPENS. It draws no rail — see
+      // layoutHoldsRail in generate.ts — but its own 64pt chapter numeral is
+      // stamped from this, so the large number and the small ones cannot
+      // disagree after an insert. That was the whole argument for deriving the
+      // rail at all, and for one commit the ten-times-larger number beside it
+      // was still the model's.
+      out[dividers[d]] = { n: step, of: chapters };
+      for (let k = 0; k < pages[d].length; k++) out[pages[d][k]] = { n: step, of: chapters };
+    }
+    return out;
+  }
+
+  // 2. The body run. Front matter is a LEADING run only — a statement in the
+  //    middle of a deck is one of the things, not a preface to them.
+  let first = 0;
+  while (first < n && SPINE_SKIP_HEAD.indexOf(layoutAt(first)) >= 0) first += 1;
+  let last = n - 1;
+  while (last >= first && layoutAt(last) === "closing") last -= 1;
+  if (last < first) return out;
+
+  // Count the things first, so the bounds are judged on what the rail would
+  // actually hold rather than on the number of slides.
+  let total = 0;
+  for (let i = first; i <= last; i++) if (!(slides[i] || {}).continuation) total += 1;
+  if (total < bounds.min || total > bounds.max) return out;
+  let step = 0;
+  for (let i = first; i <= last; i++) {
+    if (!(slides[i] || {}).continuation) step += 1;
+    // A continuation before anything has been counted cannot happen — the
+    // splitter always emits the first half — but a stored deck is replayed
+    // through here and a `continuation` flag can arrive on its own.
+    if (step) out[i] = { n: step, of: total };
+  }
+  return out;
+}
+
+/** The deck's spine, put onto every slide in it — the same shape as
+ *  `stampFooter` and `stampDensity` in generate.ts, and for the same reason:
+ *  the builder is handed one slide at a time, so a deck-wide decision has to
+ *  travel on each of them.
+ *
+ *  It lives HERE rather than beside those two because generate.ts already
+ *  imports this module and the reverse would be a cycle; generate.ts re-exports
+ *  it, the way validate.ts re-exports inkBottom. One implementation.
+ *
+ *  ALWAYS CLEARS FIRST. A slide that was step 4 of a deck that has since lost
+ *  its dividers must stop saying so, and a stale field is worse than none. */
+export function stampSteps(slides: any[], bounds: { min: number; max: number }): any[] {
+  if (!Array.isArray(slides)) return slides;
+  const steps = deckSteps(slides, bounds);
+  for (let i = 0; i < slides.length; i++) {
+    const slide = slides[i];
+    if (!slide) continue;
+    const want = steps[i];
+    const has = slide.step;
+    // Nothing to do is the common case, and saying so here is what keeps this
+    // idempotent: running it twice over the same deck must not produce a
+    // second set of objects.
+    if (want ? (has && has.n === want.n && has.of === want.of) : !has) continue;
+    // COPY, NEVER WRITE THROUGH. `applyEditSlide` returns a fresh ARRAY whose
+    // entries are the caller's own slide objects, and it is contract — checked
+    // — that the deck handed in is not changed: a refused or partial edit must
+    // leave what is on screen exactly as it was. stampFooter and stampDensity
+    // write in place because they are handed the deck that is about to be
+    // drawn; this one runs on an edit's result as well, so it copies.
+    const next = { ...slide };
+    if (want) next.step = want; else delete next.step;
+    slides[i] = next;
+  }
+  return slides;
+}
+
+/** The bounds the product ships at. Taken as a parameter by the two functions
+ *  above so a check can drive both ends of the range rather than assert that a
+ *  constant exists — the seam GEOMETRY_SEVERITY established in Stage 1. */
+export const STEP_BOUNDS = { min: STEPPER.minSteps, max: STEPPER.maxSteps };
+
+/**
+ * THE RE-STAMP. Every edit renumbers the whole spine before the deck comes
+ * back.
+ *
+ * This is the wrapper rather than a line at each `return` because the function
+ * below has nine of them, and the one that gets forgotten is the one that
+ * matters: inserting a slide in the middle of a stepped deck is precisely the
+ * case where a stale rail would show slide 5 marked as step 4 for the rest of
+ * the deck, and nothing anywhere would say so.
+ */
+export function applyEditSlide(slides: any[], edit: Parameters<typeof applyEditSlideTo>[1]): any[] {
+  return stampSteps(applyEditSlideTo(slides, edit), STEP_BOUNDS);
+}
+
+function applyEditSlideTo(
   slides: any[],
   edit: {
     slideNumber?: number;

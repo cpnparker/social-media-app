@@ -10,7 +10,7 @@ import { fetchBlobContent } from "./blob-utils";
 import { anthropicCallParams, anthropicMaxTokens } from "./anthropic-params";
 import { supabase } from "@/lib/supabase";
 import { searchNotebook } from "@/lib/notebook/search";
-import { generateSlides, updateSlides, resolveDeckImages, splitOverflowingSlides, isVisualSlide, deckWarnings, stampFooter, undrawnTableBodies } from "@/lib/slides/generate";
+import { generateSlides, updateSlides, resolveDeckImages, splitOverflowingSlides, isVisualSlide, deckWarnings, stampDeckChrome, undrawnTableBodies } from "@/lib/slides/generate";
 import { authorityOnEnabled } from "@/lib/authorityon/mcp";
 import { toolActivityEvent, dataSubject } from "@/lib/ai/tool-activity";
 import { createToolLoopGuard, repeatedCallNotice, overBudgetNotice, stallOutcome, slidesWritten, cutShortLookupNotice, DO_NOT_BLAME_THE_SOURCE, OUR_LIMIT_CUT_IT_SHORT, type ToolUsage } from "@/lib/ai/tool-loop-guard";
@@ -4897,7 +4897,10 @@ async function buildSlidesDraft(
   // Split BEFORE anything else, so the preview shows the deck that will be
   // built rather than one slide fewer.
   const slides = splitOverflowingSlides(rawSlides);
-  stampFooter(slides, title);
+  // AFTER THE SPLIT, and the split is why the spine counts continuations as
+  // part of the thing they continue: stamped before it, a body one paragraph
+  // too long would have turned seven things into eight.
+  stampDeckChrome(slides, title);
   // How many slides the server added. On a faithful conversion this is the
   // difference between "one source slide, one output slide" and a deck with
   // "(continued)" in it, and the user has to be told which slides those are

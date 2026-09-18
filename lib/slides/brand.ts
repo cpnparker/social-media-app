@@ -641,6 +641,16 @@ export const TYPE: Record<string, TypeStyle> = {
   statementTitle:{ font: "Playfair Display", size: 25, color: COLOR.navy },
   statementLead: { font: "Roboto", size: 10, weight: 300, color: COLOR.ink },
   cellHead:      { font: "Roboto", size: 9, bold: true, color: COLOR.white },
+  /** THE SAME HEADING, ON THE PAGE'S OWN GROUND. `cellHead` is white because
+   *  the table draws a navy band behind its column names. `comparison` draws no
+   *  band, and for one release it used the same token: three column headings
+   *  set in white on #F8F8F8 at 1.05:1, invisible at both presets, so the slide
+   *  lost the names of the three things it was comparing and the ticks and
+   *  crosses were left arguing about unlabelled columns. An ink is only ever
+   *  right for a GROUND, which is why the two are separate tokens rather than
+   *  one token and a memory. Caps, because with no band behind them the
+   *  headings need some other way to read as headings. */
+  cellHeadLight: { font: "Roboto", size: 9, bold: true, color: COLOR.navy, caps: true },
   get standfirstDark() { return { font: "Roboto", size: density().type.standfirstDark, weight: 300, color: COLOR.greyLight }; },
   statistic:     { font: "Poppins", size: 30, color: COLOR.white },
   source:        { font: "Roboto", size: 7, color: COLOR.ink },
@@ -661,7 +671,16 @@ export const TYPE: Record<string, TypeStyle> = {
    *  photographer's name anywhere a reader would find it. */
   creditOnLight: { font: "Roboto", size: 6, weight: 300, color: COLOR.ink },
   statValue:     { font: "Poppins", size: 54, color: COLOR.white },
-  statLabel:     { font: "Roboto", size: 10, bold: true, color: COLOR.lime, caps: true },
+  /** THE CAPTION UNDER A FIGURE, and NOT in the lime.
+   *
+   *  Lime on this layout means one thing: the figure that matters. It is what
+   *  `primary` puts on one of three numbers so the eye lands on it. Setting all
+   *  three CAPTIONS in the same lime spent that meaning three times on the same
+   *  slide — the colour said "this is the number" and "this is a label" at
+   *  once, and the accent stopped accenting anything. The light grey is the
+   *  deck's own second voice on navy, at 10:1, and the caps and the weight are
+   *  what separate a label from the source line under it. */
+  statLabel:     { font: "Roboto", size: 10, bold: true, color: COLOR.greyLight, caps: true },
   statDetail:    { font: "Roboto", size: 9, weight: 300, color: COLOR.greyLight },
   /** The stat CARD (four or more figures, light ground): the reference's
    *  24pt figure / 8pt bold label / 7pt source, with the source held at the
@@ -675,9 +694,20 @@ export const TYPE: Record<string, TypeStyle> = {
   chartAxis:     { font: "Roboto", size: 7, weight: 300, color: COLOR.ink },
   /** The caps label above a benchmark rule — deep coral, so it reads as the
    *  reference line it marks, not as data. */
-  benchmarkLabel:{ font: "Roboto", size: 7, bold: true, color: COLOR.coralDeep, caps: true },
+  /** THE BENCHMARK IS A REFERENCE, NOT AN ALARM. It was set in the deep coral,
+   *  which is in the palette but is the deck's only WARNING colour — so a
+   *  chart's two most important annotations, the rule and the callout, read as
+   *  errors on a slide where nothing was wrong. A reference line's job is to
+   *  give every bar something to be measured against and then recede; the navy
+   *  is the deck's own quiet voice and it is what the axis and the source line
+   *  already speak in. */
+  benchmarkLabel:{ font: "Roboto", size: 7, bold: true, color: COLOR.navy, caps: true },
   /** A one-line annotation beside a highlighted bar — the reason for it. */
-  calloutText:   { font: "Roboto", size: 8, weight: 300, color: COLOR.coralDeep },
+  /** The one line that says what the highlighted bar MEANS. It takes the
+   *  accent the highlighted bar is drawn in — see calloutInkFor — so the eye
+   *  joins the sentence to the bar rather than reading it as a warning about
+   *  it. Navy is the fallback on a chart with no highlight. */
+  calloutText:   { font: "Roboto", size: 8, weight: 300, color: COLOR.navy },
   chartSeries:   { font: "Roboto", size: 8, bold: true, color: COLOR.navy },
   cardMarker:    { font: "Roboto", size: 9, bold: true, color: COLOR.white, caps: true },
   cardTitle:     { font: "Playfair Display", size: 13, color: COLOR.navy },
@@ -708,6 +738,10 @@ export const TYPE: Record<string, TypeStyle> = {
    *  than a picture of a wordmark: it is plainly OUR typography naming them,
    *  not a reproduction of a logo we do not have. */
   logoWallName:  { font: "Playfair Display", size: 13, color: COLOR.navy },
+  /** The name UNDER a mark, as against the name INSTEAD of one. Set as a
+   *  caption, in the same grey as every other caption in the deck, so it
+   *  identifies the mark without competing with it. */
+  logoWallCaption: { font: "Roboto", size: 8, weight: 300, color: COLOR.ink },
 };
 
 /* ─────────────── Logo ─────────────── */
@@ -788,6 +822,15 @@ export const FRAME = {
    *  the rhythm nothing, which is why both presets carry it and only `present`
    *  carries the top one. */
   bottomRuleY: 376,
+  /** THE AIR A DRAWN BLOCK LEAVES ABOVE THE FOOTER'S RULE.
+   *
+   *  The frame is furniture: it does not move for content, so content stops
+   *  above it. Floored on the page margin instead, three layouts ran into the
+   *  hairline at once — a venn's bottom circle was tangent to it at `read` and
+   *  cut flat by it at `present`, the two lower swot panels had no bottom edge
+   *  of their own, and a matrix drew its axis labels straight through it. A
+   *  rule touching a shape reads as a clipped shape. */
+  contentGap: 8,
 
   /** The paper ground, as a stretched picture fill on the page rather than as
    *  an element: a background cannot be selected, nudged or reordered in
@@ -820,6 +863,79 @@ export const FRAME = {
    *  to learn to ignore. Two ends of one line, each with its own box. */
   numberWidth: 24,
   numberGap: 8,
+} as const;
+
+/**
+ * THE STEPPER: where this slide sits in the deck's own spine, as a rail of
+ * numerals along the top of the page.
+ *
+ * "Seven things" is a promise made on a cover. On slide 6 of a run of visually
+ * similar pages the title answers *what is this* and nothing answers *where am
+ * I, how much is left*. The greyed numerals answer both in one line — a
+ * progress bar and a contents page at once — and they give the presenter a
+ * handle, so they can say "number four" and the room can point at a 4. It is
+ * the reason a deck can afford to draw one layout seven times.
+ *
+ * IT TAKES THE RIGHT END OF THE EYEBROW'S LINE, which is the same contract the
+ * footer already has: one discreet line with two ends, the running head at the
+ * left and the folio at the right. The source deck sets its stepper as one
+ * right-aligned paragraph clustered top-right and can afford the whole band,
+ * because it has no lockup up there and no eyebrow. We have both. So the rail
+ * ends where the eyebrow's box already ends — 14.4pt clear of the lockup, a
+ * distance that was chosen for exactly this reason once already — and the
+ * eyebrow gives up precisely the room the rail measures, and not a point more.
+ *
+ * AND IT IS SET AT CHROME SIZE, not at the source's 21pt. There the numerals
+ * ARE the top band. Here they share a line with an 11pt eyebrow, and a 21pt
+ * numeral beside an 11pt label is not a hierarchy, it is a collision with room
+ * left over. One point above the eyebrow is what says "this is the more
+ * structural of the two" without taking the page over.
+ */
+export const STEPPER = {
+  /** Roboto, one point up from the eyebrow's 11. */
+  size: 12,
+  /** Between numerals. Three spaces is the source's own tracking; the Slides
+   *  API TextStyle has no letter-spacing field, so spaces are the only tracking
+   *  there is. */
+  separator: "   ",
+  /** The steps the rail may hold.
+   *
+   *  THE FLOOR IS A FLOOR ON RESOLUTION, not on arithmetic, and that is worth
+   *  saying because the measurement argues the other way at first glance:
+   *  eleven of the largest decks in the stored corpus — 29 to 41 slides — have
+   *  exactly TWO section dividers, and a floor of two would give every one of
+   *  them a rail. It would be a rail that answers "how much is left" with
+   *  "somewhere in this half", which is the question it exists to answer and
+   *  not an answer to it. A step has to be a step the reader can be located
+   *  in. Below three there is nothing to locate.
+   *
+   *  ABOVE NINE it stops being a SHAPE the eye takes in at a glance and becomes
+   *  a number to read — and at ten the rail is 154pt of a 587pt line, which is
+   *  a third of the eyebrow's measure spent on chrome.
+   *
+   *  Measured over the 618 stored slides: nine of thirty-seven decks draw a
+   *  rail, three of them from three or four section dividers (23, 28 and 32
+   *  slides — the substantial client work) and six from a body run of three to
+   *  nine things. Whether two chapters should earn a coarse rail is the first
+   *  thing to revisit here, and it wants a render rather than an argument. */
+  minSteps: 3,
+  maxSteps: 9,
+  /** The step you are not on.
+   *
+   *  #8F8F8F, not the source deck's #B7B7B7. That grey is 1.89:1 on off-white
+   *  and fails even the 3:1 floor this file holds large text to; it is a defect
+   *  in the source, not a design choice, and the same reasoning already threw
+   *  out its #FFD966 pill label. #8F8F8F is the lightest grey that clears 3:1
+   *  (3.05 on off-white, 3.23 on white) and it happens to clear it on navy too,
+   *  at 4.12 — so one grey serves both grounds the frame is designed for. */
+  inactive: "8F8F8F",
+  /** The step you are on: brand blue, bold, on a light ground. On a dark one it
+   *  is lime, which is the same choice the folio makes and for the same reason
+   *  — blue on navy is 2.39:1. */
+  get active() { return COLOR.blue; },
+  get activeOnDark() { return COLOR.lime; },
+  /** Air between the eyebrow's box and the rail's. */
+  gutter: 18,
 } as const;
 
 const PUBLIC_ORIGIN = "https://ai.thecontentengine.com";
@@ -1116,6 +1232,8 @@ export const LOGO_WALL = {
   gap: 0.3 * IN,
   /** Each mark is fitted inside its cell with room around it. */
   inset: 0.12 * IN,
+  /** The line under a mark carrying the client's name. */
+  nameHeight: 14,
 } as const;
 
 /** Repeated blocks across the content band — the deck's most-used device.
