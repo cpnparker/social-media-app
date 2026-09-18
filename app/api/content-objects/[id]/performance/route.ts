@@ -1,12 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { lateApiFetch } from "@/lib/late";
+import { auth } from "@/lib/auth";
 
 // GET /api/content-objects/[id]/performance
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // This route had NO authentication: it reads (or writes) connected client
+  // social accounts via the Late API. Same class of hole as /api/analytics/export.
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const { id } = await params;
     const contentId = parseInt(id, 10);

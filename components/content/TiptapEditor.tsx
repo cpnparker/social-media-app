@@ -1,9 +1,27 @@
 "use client";
 
-import { useEditor, EditorContent } from "@tiptap/react";
+import { useEditor, EditorContent, type Editor } from "@tiptap/react";
+import { decideExternalContent, selectionAfterExternalContent } from "@/lib/editor/external-content";
 import StarterKit from "@tiptap/starter-kit";
+// Tables are not in StarterKit, and their absence was not cosmetic. Tiptap
+// DISCARDS markup its schema cannot represent, so an imported Google Doc built
+// on a table template lost that structure the moment it hit the editor — and
+// the editor's text then no longer matched the text the optimiser's judge had
+// been given, so every finding failed to anchor and was dropped as unlocatable.
+// The writer saw "nothing outstanding" on a draft scoring 37/100.
+//
+// The invariant this restores is the important part: whatever is stored must
+// round-trip through the editor unchanged, or anchoring silently returns
+// nothing and looks like an empty result rather than a broken one.
+import { TableKit } from "@tiptap/extension-table";
 import Placeholder from "@tiptap/extension-placeholder";
-import { useEffect, useRef, useCallback } from "react";
+// Images are not in StarterKit either, and their absence fails the same silent
+// way tables did: ProseMirror DROPS a node type it has no schema for, so an
+// uploaded document's figures vanish between import and editor with nothing
+// logged. The optimiser scores what is in the editor, so a dropped image is
+// also an image the alt-text criteria can never see.
+import Image from "@tiptap/extension-image";
+import { useEffect, useRef, useCallback, useState } from "react";
 import {
   Bold,
   Italic,
@@ -24,6 +42,29 @@ interface TiptapEditorProps {
   onChange: (html: string) => void;
   placeholder?: string;
   editable?: boolean;
+  /**
+   * Hands the editor instance to the parent once it exists.
+   *
+   * Needed for streaming: appending generated text has to go through
+   * `insertContentAt`, because feeding each chunk back through `content` calls
+   * `setContent`, which replaces the whole document — resetting the caret on
+   * every chunk, destroying the undo stack, and reparsing half-formed HTML like
+   * `<h2>Why This Ma` into a different shape on every frame.
+   *
+   * The parent must ALSO stop updating `content` while streaming, or the
+   * effect below will fire a `setContent` and wipe the inserted nodes.
+   */
+  onReady?: (editor: Editor) => void;
+  /** Debounce for onChange in ms. Streaming callers want this shorter than the 2s default. */
+  debounceMs?: number;
+  /**
+   * Extra Tiptap extensions, appended to the base set.
+   *
+   * MUST be referentially stable — useEditor does not rebuild on a changed
+   * extension array, so an inline literal here would be silently ignored on
+   * every render after the first. Define it as a module constant.
+   */
+  extraExtensions?: any[];
 }
 
 export default function TiptapEditor({
@@ -31,15 +72,43 @@ export default function TiptapEditor({
   onChange,
   placeholder = "Start writing...",
   editable = true,
+  onReady,
+  debounceMs = 2000,
+  extraExtensions,
 }: TiptapEditorProps) {
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
+  // Refs so the unmount cleanup can flush without re-registering on every
+  // render (which would defeat the point of an unmount-only effect).
+  const editorRef = useRef<Editor | null>(null);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  /**
+   * The last HTML this editor reported upward.
+   *
+   * The parent stores it and hands it straight back as `content`, so without a
+   * record of what we sent there is no way to tell our own text returning late
+   * from a genuinely new document arriving. See lib/editor/external-content.ts:
+   * treating the first as the second is what threw the caret to the end of the
+   * document whenever a writer resumed typing just after a debounce fired.
+   */
+  const lastEmittedRef = useRef<string | null>(null);
+  const emit = (html: string) => {
+    lastEmittedRef.current = html;
+    onChangeRef.current(html);
+  };
 
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
         heading: { levels: [1, 2, 3] },
       }),
+      TableKit.configure({ table: { resizable: false } }),
+      // inline:false — figures are block-level in an article. allowBase64 stays
+      // OFF: uploaded images live in blob storage and are referenced by URL,
+      // and a base64 image would ride the draft body through every autosave.
+      Image.configure({ inline: false, allowBase64: false }),
       Placeholder.configure({ placeholder }),
+      ...(extraExtensions || []),
     ],
     content,
     editable,
@@ -53,22 +122,91 @@ export default function TiptapEditor({
     onUpdate: ({ editor }) => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => {
-        onChange(editor.getHTML());
-      }, 2000);
+        emit(editor.getHTML());
+      }, debounceMs);
     },
     onBlur: ({ editor }) => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
-      onChange(editor.getHTML());
+      emit(editor.getHTML());
     },
   });
 
-  // Update content when prop changes externally
+  // Update content when it changes EXTERNALLY — which is not the same thing as
+  // when it differs. See lib/editor/external-content.ts for the race and the
+  // production measurement behind this.
   useEffect(() => {
-    if (editor && content !== editor.getHTML()) {
-      editor.commands.setContent(content, { emitUpdate: false });
-    }
+    if (!editor) return;
+    const decision = decideExternalContent(content, lastEmittedRef.current, editor.getHTML());
+    if (!decision.apply) return;
+
+    const hadFocus = editor.isFocused;
+    const { from, to } = editor.state.selection;
+    editor.commands.setContent(content, { emitUpdate: false });
+    // A writer whose caret was in this editor keeps it. setContent rebuilds the
+    // document, so the position has to be re-applied and clamped: the new
+    // document can be shorter than the old offset.
+    const keep = selectionAfterExternalContent({ from, to }, editor.state.doc.content.size, hadFocus);
+    if (keep) editor.commands.setTextSelection(keep);
+    // The record means "the HTML this editor and its parent last agreed on",
+    // which an external write settles just as much as an emission does.
+    //
+    // Without this line the guard turns into a different bug: edit piece A,
+    // open piece B, come back to A, and A's stored body is byte-identical to
+    // what this editor last emitted for A — so it reads as an echo, is skipped,
+    // and the editor goes on showing B's text under A's title.
+    lastEmittedRef.current = content;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [content]);
+
+  useEffect(() => {
+    editorRef.current = editor || null;
+    if (editor && onReady) onReady(editor);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor]);
+
+  // On unmount, FLUSH the pending save — do not cancel it.
+  //
+  // The first version cleared the timer, which discarded up to a full debounce
+  // window of the writer's typing whenever they navigated away or the editor
+  // unmounted. Losing someone's words is a worse failure than a late write, and
+  // it is invisible: the text was on screen a moment ago and is simply gone.
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+        if (editorRef.current) {
+          lastEmittedRef.current = editorRef.current.getHTML();
+          onChangeRef.current(lastEmittedRef.current);
+        }
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /**
+   * Whether there is anything to undo, tracked rather than asked once.
+   *
+   * `editor.can().undo()` is read at render time, and nothing re-renders this
+   * component when the history stack changes — so the buttons would show
+   * whatever was true when the toolbar last happened to redraw. Subscribed to
+   * the editor's own transaction event, which is the only thing that moves the
+   * stack.
+   */
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+  useEffect(() => {
+    if (!editor) return;
+    const sync = () => {
+      setCanUndo(editor.can().undo());
+      setCanRedo(editor.can().redo());
+    };
+    sync();
+    editor.on("transaction", sync);
+    return () => { editor.off("transaction", sync); };
+  }, [editor]);
+
+  /** ⌘ on a Mac, Ctrl everywhere else. Read once; it cannot change. */
+  const modKey = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || "") ? "⌘" : "Ctrl+";
 
   if (!editor) return null;
 
@@ -77,19 +215,23 @@ export default function TiptapEditor({
     isActive,
     children,
     title,
+    disabled,
   }: {
     onClick: () => void;
     isActive?: boolean;
     children: React.ReactNode;
     title: string;
+    disabled?: boolean;
   }) => (
     <button
       type="button"
       onClick={onClick}
       title={title}
+      disabled={disabled}
       className={cn(
         "p-1.5 rounded hover:bg-muted transition-colors",
-        isActive && "bg-muted text-foreground"
+        isActive && "bg-muted text-foreground",
+        disabled && "opacity-35 pointer-events-none"
       )}
     >
       {children}
@@ -175,15 +317,21 @@ export default function TiptapEditor({
 
           <div className="w-px h-5 bg-border mx-1" />
 
+          {/* Labelled with the shortcut and dimmed when there is nothing to
+              undo. Two unlabelled arrows that look identical whether or not
+              they will do anything read as decoration, which is how a writer
+              comes to believe the editor has no undo at all. */}
           <ToolbarButton
             onClick={() => editor.chain().focus().undo().run()}
-            title="Undo"
+            title={`Undo (${modKey}Z)`}
+            disabled={!canUndo}
           >
             <Undo className="h-4 w-4" />
           </ToolbarButton>
           <ToolbarButton
             onClick={() => editor.chain().focus().redo().run()}
-            title="Redo"
+            title={`Redo (${modKey}⇧Z)`}
+            disabled={!canRedo}
           >
             <Redo className="h-4 w-4" />
           </ToolbarButton>

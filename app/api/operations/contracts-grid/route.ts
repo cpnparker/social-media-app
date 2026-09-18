@@ -19,7 +19,9 @@ export async function GET(req: NextRequest) {
       .from("app_contracts")
       .select("id_contract, id_client, name_contract, name_client, units_contract, units_total_completed, date_start, date_end, flag_active")
       .eq("flag_active", 1)
-      .gte("date_end", `${endAfter}T00:00:00.000Z`)
+      // TEXT bare-date column — the old T00:00:00.000Z suffix excluded
+      // contracts whose date_end is exactly the cutoff day (text compare)
+      .gte("date_end", endAfter)
       .order("name_client", { ascending: true });
 
     const { data: contractRows, error: contractErr } = await contractQuery;
