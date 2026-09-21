@@ -20,7 +20,10 @@ import { getModelInfo, isPersonnelSensitive } from "../lib/ai/providers";
 import * as providers from "../lib/ai/providers";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { buildSystemPrompt } from "../lib/ai/system-prompts";
+import { buildSystemPrompt, normalizeContextConfig, GENERATION_CONTROL_CHAT } from "../lib/ai/system-prompts";
+import { GENERATION_CONTROL_DESIGN } from "../lib/ai/capability-control";
+import { buildDeckContext, DECK_CONTEXT_HEADING } from "../lib/slides/deck-context";
+import { unmadeDeckChangeNotice } from "../lib/slides/claim";
 
 let pass = 0;
 let fail = 0;
@@ -849,6 +852,845 @@ console.log("\nMailbox identity");
     check("it says read/unread are the user's own flags", /Read and unread are THEIR flags/i.test(out));
     check("it forbids describing results as a colleague's inbox", /NEVER "Gary's inbox"|never .*inbox/i.test(out));
   }
+}
+
+/* ── A capability that is off SAYS so; one that is on is never called absent ──
+ *
+ * 2026-09-20, Prachi, conversation 925c922b. She asked for a roadmap graphic.
+ * The reply ended "say so and I'll generate it now". She said so. The next
+ * reply opened "I don't have an image/slide-generation tool available in this
+ * environment", and twelve minutes later a request for a Google Slides deck
+ * got the same answer. She built it in Figma and asked which setting to
+ * change.
+ *
+ * There was no setting. Her refusal turn READ 42,677 cached tokens; the whole
+ * image-OFF prefix for her configuration is about 23,927, and an Anthropic
+ * cache is a prefix match that starts with the tool array — a toggle flip
+ * moves the first tool, so a 42,677-token read off a 1,884-token write is only
+ * possible if the tools were unchanged from the turn before, the turn that
+ * promised to build the deck. No config_context row in any workspace has ever
+ * contained the string "off". The tools were there. The absence was invented.
+ *
+ * So this section pins TWO different things, because the incident and the
+ * feature are not the same problem:
+ *
+ *   (A) THE RULE THAT WOULD HAVE CAUGHT HER TURN — never report an absence —
+ *       lives in FORMATTING_GUIDELINES and must be in EVERY assembly, on or
+ *       off, the way the anti-preamble rule is. A rule that only fires when a
+ *       capability is off would not have fired here.
+ *   (B) THE OFF-BRANCH, for the turns where the limit is real. Before this
+ *       there was no `off` branch anywhere in system-prompts.ts: the five
+ *       tools simply vanished and the model was left to describe its own
+ *       environment. It must be TRUE on every path that can produce a false,
+ *       and there are three shapes of those — the chat switch, a headless turn
+ *       with no switch at all, and Design Mode, which force-registers
+ *       generate_image even with the switch off.
+ *
+ * Asserted on the ASSEMBLED prompt, never by grepping system-prompts.ts: a
+ * rule only matters if it reaches the model, and this repo has already closed
+ * a live hole on the strength of a line merely existing.
+ *
+ * "ASSEMBLED" now means the whole string the model is sent, INCLUDING the chat
+ * route's own appends. The first version of this section said that and did not
+ * do it: it ran buildSystemPrompt alone, and so could not see that the deck
+ * block appended afterwards ordered a generate_slides call in the same prompt
+ * that had just said generate_slides was not loaded. One click on the Image
+ * switch in a thread already holding a deck reached that state. The deck block
+ * is a function (lib/slides/deck-context.ts) rather than a template literal in
+ * a route handler precisely so this can assemble it.
+ *
+ * MUTATION LOG — detached worktree at d167abc, 2026-09-21, restored after.
+ * Sections 17 and 18 were driven together; each line is one mutation run
+ * against the whole file, and the quoted text is the assertion that went red.
+ *   KILLED  delete the whole own-the-limit rule from FORMATTING_GUIDELINES →
+ *           "the own-the-limit rule is in every gate combination", 20
+ *           variant/sentence pairs missing
+ *   KILLED  move that rule inside `if (ctx.designMode)` — present in the
+ *           source, absent from most assemblies → same assertion, 16 pairs
+ *   KILLED  restore the bare `=== "on"` gate and drop the else → "every
+ *           switched-off variant says it is switched off", 7 silent
+ *   KILLED  rename the control to "the Settings page", which has no such
+ *           switch → "the control name quotes the labels it means". Without
+ *           the composer cross-check this SURVIVED: the prompt and the check
+ *           read the same constant, so renaming both kept every other
+ *           assertion green while the model sent users to the wrong screen.
+ *   KILLED  drop `generationControl: null` from lib/scheduled/runner.ts → "the
+ *           scheduled brief declares it has no switch to name"
+ *   KILLED  drop the ctx.designMode narrowing, so the off-branch lists
+ *           generate_image on the one surface that registers it anyway → "the
+ *           off-branch never claims a tool that IS registered", 2 wrong
+ *   KILLED  `generationOn` back to `=== "on"` → "a context config with the key
+ *           missing is ON in the prompt" (this is the default-off that lived
+ *           in the builder itself) plus 4 live variants reading as off
+ *   KILLED  plant "If this is not available in this environment, say so" in
+ *           generate_chart's description → "no tool description instructs an
+ *           absence report", 2 hits
+ *   KILLED  empty ABSENCE_PHRASES → self-test red, 4 unseen, and nothing is
+ *           reported
+ *   KILLED  restore the raw `config_context = contextConfig` write → "the raw
+ *           write is gone"
+ *   KILLED  restore `setContextConfig(data.contextConfig)` → "the composer page
+ *           no longer assigns the fetched config raw"
+ *   KILLED  restore `|| "on"` on the composer's capability switches → "the
+ *           chat composer resolves the switch with the server's predicate"
+ *   KILLED  duplicate `contextConfig.imageGeneration === "on"` in the chat
+ *           route instead of reading the shared const → "the duplicated
+ *           expression is gone", 2 occurrences
+ *   KILLED  off-branch stops interpolating ${generationControl} → "names the
+ *           switch the user can actually see", 6 unnamed
+ *   SURVIVOR  rewording the off-branch's HEADING ("## Making things —
+ *           SWITCHED OFF FOR THIS CONVERSATION" → "## Making things — a note")
+ *           survives. Deliberate: the body still says "switched off for this
+ *           conversation", and pinning heading text goes red on every honest
+ *           edit. It does mean the heading is unpinned — a finding about this
+ *           check, recorded rather than tidied away.
+ *
+ * SECOND ROUND — detached worktree at d167abc, 2026-09-21, same day, after a
+ * review found two survivors in the round above and four live faults the round
+ * above could not see. The two survivors are listed first, with what killed
+ * them, because a survivor that later becomes a kill is the useful half of a
+ * mutation log.
+ *   WAS A SURVIVOR, NOW KILLED  rename the control to an existing but WRONG
+ *           label ("the Memory switch under the message box"). The old check
+ *           matched the quoted labels against the WHOLE of ChatPanel.tsx, and
+ *           "Memory" is a real label in that file, so it passed 225/0 while
+ *           the prompt sent every affected user to the wrong switch. Now
+ *           matched against the <button> that WRITES imageGeneration, on both
+ *           composers → "the label the prompt names is the label on that
+ *           switch", 2 off-screen, plus the notice's own cross-check.
+ *   WAS A SURVIVOR, NOW KILLED  add generate_video to the design-mode
+ *           offFamily — a tool Design Mode registers unconditionally. The old
+ *           assertion named generate_image literally, so it saw nothing. The
+ *           list is now DERIVED from providers.ts's own design block →
+ *           "the off-branch never claims a tool that IS registered", 2 wrong.
+ *   KILLED  make the deck block order a generate_slides call whichever way the
+ *           capability is set — the live bug → "no assembled prompt both
+ *           denies generate_slides and orders it", 7 contradictions. This is
+ *           the mutation that proves §17 now assembles the ROUTE'S appends
+ *           and not just buildSystemPrompt.
+ *   KILLED  drop the deck block entirely when the capability is off, the
+ *           tempting cheap fix → "the deck spec survives the switch being
+ *           off", 7 variants lost the spec. The off-branch tells the model to
+ *           write the revised slide out in full; it cannot do that from a
+ *           deck it was not shown.
+ *   KILLED  the route inlines the heading again instead of reading
+ *           DECK_CONTEXT_HEADING → "the route appends it under the shared
+ *           heading".
+ *   KILLED  unmadeDeckChangeNotice ignores `offered` → "asking again is not
+ *           the whole of the advice when the switch is off", and five
+ *           assertions in verify-slide-layouts 40c.
+ *   KILLED  restore the two-limb disjunction ("either switched off and named
+ *           below, or was never part of this product") → "the rule offers all
+ *           three reasons a tool can be absent", 20 pairs, and "the promise is
+ *           never made on the prompt's silence alone", 10 variants. That
+ *           two-limb form told a user with no resourcing, finance, mailbox,
+ *           calendar or Microsoft flag that they HAD a tool nobody had given
+ *           them, while forbidding the one accurate sentence.
+ *   KILLED  artlistTools defaults ON when omitted → "omitting the flag means
+ *           absent, not present". Failing open here re-creates the fault it
+ *           was added for.
+ *   KILLED  restore the unconditional Artlist prose → "a design turn without
+ *           the Artlist key is never told about Artlist", 3 leaks.
+ *   KILLED  drop the run-time design re-pin → "a design turn is re-pinned to
+ *           Anthropic when it runs".
+ *   KILLED  name the chat composer's switch at design turns too →
+ *           "the route picks the control from the surface, not a default".
+ *   KILLED  AdminDialog stops PATCHing contextConfig → "all three settings
+ *           writers PATCH the whole object", 1 not wholesale. The third writer
+ *           was missing from the first enumeration entirely.
+ *   KILLED  the scheduled runner reads the stored task config's capability
+ *           instead of declaring false → "and the capability is overridden
+ *           regardless of what it stored".
+ *   KILLED  break the anchor the design tool list is derived from
+ *           (`if (config.designMode) {`) → "the design surface's own tool list
+ *           was read from providers.ts", none. The derivation refuses to
+ *           report clean when it cannot find what it reads.
+ *   SURVIVOR  rename DECK_CONTEXT_HEADING's text ("## The deck in this
+ *           conversation" → "## Deck"). Survives, and deliberately: the route
+ *           and the check both read the constant, so renaming it renames both
+ *           sides — the same shape as the GENERATION_CONTROL rename that DID
+ *           matter. It matters less here because the heading is an internal
+ *           section label and not a pointer at something on the user's screen,
+ *           which is why it is recorded rather than pinned.
+ *   NOT A MUTATION, A LIMIT  the source assertions on the three callers are
+ *           proxies. They see that the OLD shape is gone; they cannot see two
+ *           new expressions that happen to agree today. Only the behavioural
+ *           override checks above are real, and they test the builder, not the
+ *           routes.
+ */
+console.log("\n17. A switched-off capability says so, and a live one is never reported absent");
+{
+  const base: any = {
+    conversationVisibility: "private",
+    userName: "Test",
+    workspaceConfig: { companyContext: "TCE is a content agency.", contentTypes: [], cuDefinitions: [], formatDescriptions: {}, typeInstructions: {} },
+    clientContext: null,
+    contentDetail: null,
+  };
+
+  // Every shape of turn this rule has to survive. `generationTools` is the
+  // boolean the TOOL ARRAY reads; contextConfig is deliberately left saying
+  // "on" in the headless rows, because that is exactly the disagreement that
+  // told a scheduled brief it had a generate_image tool it was never given.
+  const V: { label: string; on: boolean; control: string | null | undefined; text: string }[] = [];
+  const ROWS: [string, any][] = [
+    ["chat on", { contextConfig: { imageGeneration: "on" }, generationTools: true }],
+    ["chat off", { contextConfig: { imageGeneration: "off" }, generationTools: false }],
+    ["chat, key missing", { contextConfig: {} }],
+    ["chat, no config at all", {}],
+    ["headless (scheduled brief)", { contextConfig: { imageGeneration: "on" }, generationTools: false, generationControl: null }],
+    ["design mode, switch off", { contextConfig: { imageGeneration: "off" }, generationTools: false, designMode: true }],
+    ["design+studio, switch off", { contextConfig: { imageGeneration: "off" }, generationTools: false, designMode: true, studioMode: true }],
+    ["role persona, switch off", { contextConfig: { imageGeneration: "off" }, generationTools: false, role: { name: "Editor", instructions: "You edit." } }],
+    ["team thread, switch off", { contextConfig: { imageGeneration: "off" }, generationTools: false, conversationVisibility: "team" }],
+    ["resourcing, switch off", { contextConfig: { imageGeneration: "off" }, generationTools: false, resourcingAccess: true }],
+  ];
+  for (let i = 0; i < ROWS.length; i++) {
+    const cfg = ROWS[i][1];
+    V.push({
+      label: ROWS[i][0],
+      on: cfg.generationTools === undefined ? (cfg.contextConfig?.imageGeneration !== "off") : cfg.generationTools,
+      control: cfg.generationControl,
+      text: buildSystemPrompt({ ...base, ...cfg }),
+    });
+  }
+
+  // PRECONDITIONS. A builder returning "" satisfies every assertion about what
+  // is ABSENT and reports nothing about what is present.
+  check("10 capability variants assembled", V.length === 10, String(V.length));
+  let shortest = V[0];
+  for (let i = 1; i < V.length; i++) if (V[i].text.length < shortest.text.length) shortest = V[i];
+  check("the shortest capability variant is a real prompt", shortest.text.length > 4000, `${shortest.label} is ${shortest.text.length} chars`);
+  const onRow = V[0], offRow = V[1];
+  check("switching the capability really changes the prompt",
+    Math.abs(onRow.text.length - offRow.text.length) > 2000,
+    `${onRow.text.length} vs ${offRow.text.length}`);
+
+  // ── (A) THE RULE THAT WOULD HAVE CAUGHT THE ACTUAL INCIDENT ──
+  // In every variant, on or off. Two load-bearing sentences, not the whole
+  // block: pinning all of it would go red on every honest edit.
+  const ALWAYS = [
+    "You are one product with one settled set of features.",
+    "If a tool IS in your tool list, YOU HAVE IT",
+  ];
+  let missingAlways = 0;
+  for (let i = 0; i < V.length; i++) {
+    for (let j = 0; j < ALWAYS.length; j++) {
+      if (V[i].text.indexOf(ALWAYS[j]) < 0) { missingAlways++; console.log(`      (${V[i].label} is missing: ${ALWAYS[j].slice(0, 44)}…)`); }
+    }
+  }
+  check("the own-the-limit rule is in every gate combination", missingAlways === 0, `${missingAlways} variant/sentence pairs missing`);
+
+  // …and the promise it makes has to be TRUE for a tool this user's ACCOUNT
+  // does not reach. The first draft said "If nothing below says a feature is
+  // off, YOU HAVE IT — use it", with a two-limb disjunction: switched off and
+  // named below, or never part of the product. query_resourcing is neither.
+  // It is registered only under `resourcingAccess`, its prose is emitted under
+  // the same flag, and for the five users at (0,0,0,0,0) the prompt says
+  // nothing at all — so the rule told the model it had a tool it had not been
+  // given, while separately forbidding the one accurate sentence. Same shape
+  // for finance, Gmail, Calendar and Microsoft.
+  const LIMBS = [
+    ["switched off and named below", "Someone may have turned that feature off"],
+    ["granted by an admin", "a part of EngineAI this user's account has not been granted"],
+    ["never part of the product", "never part of this product"],
+  ];
+  let missingLimb = 0;
+  for (let i = 0; i < V.length; i++) {
+    for (let j = 0; j < LIMBS.length; j++) {
+      if (V[i].text.indexOf(LIMBS[j][1]) < 0) { missingLimb++; console.log(`      (${V[i].label} does not offer the limb: ${LIMBS[j][0]})`); }
+    }
+  }
+  check("the rule offers all three reasons a tool can be absent", missingLimb === 0, `${missingLimb} variant/limb pairs missing`);
+  let unconditional = 0;
+  for (let i = 0; i < V.length; i++) if (/if nothing below says a feature is off/i.test(V[i].text)) unconditional++;
+  check("the promise is never made on the prompt's silence alone", unconditional === 0, `${unconditional} variants`);
+  // PRECONDITION: the silence being reasoned about is real. An access-gated
+  // tool has to genuinely vanish from the prose, or the limb above is guarding
+  // a gap that does not exist and this assertion is decoration.
+  const gateBase: any = { ...base, contextConfig: { imageGeneration: "on" }, generationTools: true };
+  const withResourcing = buildSystemPrompt({ ...gateBase, resourcingAccess: true });
+  const withoutResourcing = buildSystemPrompt({ ...gateBase, resourcingAccess: false });
+  // The tool's own SECTION, not the bare name: one line elsewhere mentions
+  // `query_resourcing` unconditionally and hedges it with "(if available to
+  // this user)", which is the honest half-measure this limb generalises.
+  const RESOURCING_SECTION = "## Resourcing & contracts (query_resourcing)";
+  check("an ungranted capability really is silent in the prompt",
+    withResourcing.indexOf(RESOURCING_SECTION) >= 0 && withoutResourcing.indexOf(RESOURCING_SECTION) < 0,
+    `granted ${withResourcing.indexOf(RESOURCING_SECTION) >= 0}, ungranted ${withoutResourcing.indexOf(RESOURCING_SECTION) >= 0}`);
+  check("the ungranted turn still carries the limb that covers it",
+    withoutResourcing.indexOf(LIMBS[1][1]) >= 0);
+  // And the part that is specifically about her turn: the reply contradicted
+  // an offer made 80 seconds earlier in the same thread.
+  let missingRecall = 0;
+  for (let i = 0; i < V.length; i++) if (!/read back what you already said in this thread/i.test(V[i].text)) missingRecall++;
+  check("every variant tells it to re-read its own offer before refusing", missingRecall === 0, `${missingRecall} variants`);
+
+  // ── (B) THE OFF-BRANCH ──
+  // It must say the capability is SWITCHED OFF (a setting), not missing.
+  let offSilent = 0, offUnnamed = 0, headlessNamed = 0;
+  for (let i = 0; i < V.length; i++) {
+    const v = V[i];
+    if (v.on) continue;
+    if (!/switched off for this conversation|not what this kind of turn produces/i.test(v.text)) { offSilent++; console.log(`      (${v.label}: the off-branch is not in the prompt)`); }
+    if (v.control === null) {
+      // A brief has no composer. Naming one is the same class of lie as
+      // naming an environment: it sends the reader somewhere that is not there.
+      if (v.text.indexOf(GENERATION_CONTROL_CHAT) >= 0) { headlessNamed++; console.log(`      (${v.label}: names a composer switch it does not have)`); }
+    } else if (v.text.indexOf(GENERATION_CONTROL_CHAT) < 0) {
+      offUnnamed++; console.log(`      (${v.label}: does not name the switch)`);
+    }
+  }
+  check("every switched-off variant says it is switched off", offSilent === 0, `${offSilent} silent`);
+  check("names the switch the user can actually see", offUnnamed === 0, `${offUnnamed} unnamed`);
+  check("a headless turn names no switch", headlessNamed === 0, `${headlessNamed} named one`);
+
+  // …and the switch it names EXISTS. Asserting the prompt contains
+  // GENERATION_CONTROL_CHAT only pins it against itself: renaming the constant
+  // to "the Settings page" renames both sides and every check above stays
+  // green while the model sends users to a page with no such control. The
+  // labels it quotes are therefore matched against the composer's own source.
+  // Read once: the tool-description scan below and the design-narrowing
+  // assertion above both need it.
+  const provSrc = readFileSync(join(process.cwd(), "lib/ai/providers.ts"), "utf8");
+  const quoted = GENERATION_CONTROL_CHAT.match(/"([^"]+)"/g) || [];
+  check("the control name quotes the label it means", quoted.length >= 1, `${quoted.length} quoted labels`);
+  // Matched against the CONTROL'S OWN JSX, on BOTH composers — not against the
+  // file. Two mutations survived the file-wide version. One renamed the string
+  // to "the Memory switch in the Context menu": both are real labels in
+  // ChatPanel, so every assertion stayed green while the prompt sent every
+  // affected user to the wrong switch. The other was invisible by omission —
+  // the check only ever read ChatPanel, so a control that exists on one
+  // composer and not the other could not be seen at all, and the phrase it
+  // used to carry ("in the Context menu") was true on exactly one of them.
+  const COMPOSERS: [string, string][] = [
+    ["components/ai-writer/ChatPanel.tsx", "the chat composer"],
+    ["app/engineai/page.tsx", "the home composer"],
+  ];
+  // Every place either composer WRITES the capability into state. The control
+  // the user presses is the <button> around it.
+  const TOGGLE = /imageGeneration:\s*(?:prev\.imageGeneration|turningOn|initial)/g;
+  let offScreen = 0, noControl = 0;
+  for (let c = 0; c < COMPOSERS.length; c++) {
+    const src = readFileSync(join(process.cwd(), COMPOSERS[c][0]), "utf8");
+    TOGGLE.lastIndex = 0;
+    const blocks: string[] = [];
+    let tm: RegExpExecArray | null;
+    while ((tm = TOGGLE.exec(src))) {
+      const open = src.lastIndexOf("<button", tm.index);
+      const close = src.indexOf("</button>", tm.index);
+      if (open < 0 || close < 0) continue;
+      blocks.push(src.slice(open, close + 9));
+    }
+    // PRECONDITION: a composer with no toggle at all would satisfy every
+    // assertion below by having nothing to disagree with.
+    if (blocks.length === 0) { noControl++; console.log(`      (${COMPOSERS[c][1]} has no button that writes imageGeneration)`); continue; }
+    for (let i = 0; i < quoted.length; i++) {
+      const label = quoted[i].slice(1, -1);
+      let found = false;
+      for (let b = 0; b < blocks.length; b++) if (new RegExp("[>\\s]" + label + "\\s*<").test(blocks[b])) found = true;
+      if (!found) { offScreen++; console.log(`      (the prompt names "${label}", which is not the label on ${COMPOSERS[c][1]}'s own switch)`); }
+    }
+  }
+  check("both composers have a switch that writes the capability", noControl === 0, `${noControl} without one`);
+  check("the label the prompt names is the label on that switch", offScreen === 0, `${offScreen} off-screen`);
+
+  // The design rail has no such control at all — no context menu, and it posts
+  // no context config — so it is told what governs it instead of being sent to
+  // a switch that is not on its screen.
+  const designOff = buildSystemPrompt({ ...base, contextConfig: { imageGeneration: "off" }, generationTools: false, designMode: true, generationControl: GENERATION_CONTROL_DESIGN });
+  check("a design turn is not sent to the chat composer's switch",
+    designOff.indexOf(GENERATION_CONTROL_CHAT) < 0 && designOff.indexOf(GENERATION_CONTROL_DESIGN) >= 0);
+  check("the design control names no label, because there is none to name",
+    (GENERATION_CONTROL_DESIGN.match(/"([^"]+)"/g) || []).length === 0);
+  check("the route picks the control from the surface, not a default",
+    /generationControl: isDesignConversation \? GENERATION_CONTROL_DESIGN : GENERATION_CONTROL_CHAT,/.test(msgSrcForPaths()));
+  // …and the narrowing that makes the design off-branch correct — dropping
+  // generate_image, because that chain registers it anyway — is only true on
+  // the Anthropic chain, which is the only one with the design tool layer. The
+  // creation-time pin can be moved afterwards by body.model or a PATCH, so the
+  // turn re-pins.
+  check("a design turn is re-pinned to Anthropic when it runs",
+    /if \(isDesignConversation && !model\.startsWith\("claude-"\)\) \{[\s\S]{0,240}?model = "claude-sonnet-5";/.test(msgSrcForPaths()));
+  check("only the Anthropic chain force-registers the design image tool",
+    (provSrc.match(/if \(!config\.imageGeneration\) tools\.push\(IMAGE_GEN_TOOL\);/g) || []).length === 1,
+    `${(provSrc.match(/if \(!config\.imageGeneration\) tools\.push\(IMAGE_GEN_TOOL\);/g) || []).length} chains`);
+
+  // The off-branch must never claim a tool that IS registered. Design Mode
+  // force-registers generate_image with the switch off (providers.ts), so
+  // listing it there would be a fresh lie written by the fix for a lie.
+  //
+  // DERIVED FROM providers.ts, not written out here. Naming generate_image
+  // literally left a survivor: adding generate_video to the design off-branch
+  // — a tool Design Mode registers unconditionally — passed every assertion,
+  // because nothing tied the list of what the off-branch may claim to the list
+  // of what that surface actually registers.
+  const designBlock = (function () {
+    const at = provSrc.indexOf("if (config.designMode) {");
+    if (at < 0) return "";
+    // Bound at the nested session-only block: the shot CRUD tools are gated on
+    // designSessionId and are not what "registered anyway" means.
+    const end = provSrc.indexOf("if (config.designSessionId) {", at);
+    return provSrc.slice(at, end < 0 ? at + 1200 : end);
+  })();
+  const designRegistered: string[] = [];
+  {
+    const pushRe = /tools\.push\((\w+)\)/g;
+    let pm: RegExpExecArray | null;
+    while ((pm = pushRe.exec(designBlock))) {
+      // Resolve the constant to the tool name the model actually sees.
+      const nameAt = provSrc.indexOf("const " + pm[1]);
+      if (nameAt < 0) continue;
+      const nm = /name:\s*"([\w_]+)"/.exec(provSrc.slice(nameAt, nameAt + 400));
+      if (nm && designRegistered.indexOf(nm[1]) < 0) designRegistered.push(nm[1]);
+    }
+  }
+  // PRECONDITION: the derivation found something, and found the tool the
+  // narrowing exists for. An empty list makes every assertion below vacuous.
+  check("the design surface's own tool list was read from providers.ts",
+    designRegistered.length >= 2 && designRegistered.indexOf("generate_image") >= 0,
+    designRegistered.join(", ") || "none");
+  let designLies = 0;
+  for (let i = 0; i < V.length; i++) {
+    const v = V[i];
+    if (v.on) continue;
+    const head = v.text.indexOf("## Making things");
+    if (head < 0) continue;
+    // Bound the block at its OWN end, not at a guessed length. Sliced 1800
+    // chars this read into Design Mode's persona section, which lists
+    // generate_image legitimately — and reported the off-branch as lying about
+    // a tool it never mentions.
+    const nextHead = v.text.indexOf("\n\n## ", head + 4);
+    const block = v.text.slice(head, nextHead < 0 ? v.text.length : nextHead);
+    const claimsImageOff = block.indexOf("generate_image") >= 0;
+    const isDesign = v.label.indexOf("design") === 0;
+    if (v.control === null) {
+      // A headless turn has no tool array at all, so it names the DELIVERABLES
+      // rather than the tools — a brief being told which function id is absent
+      // is noise it can only repeat at the reader.
+      if (/generate_(image|chart|slides|word_document|document)/.test(block)) { designLies++; console.log(`      (${v.label}: names tool ids to a turn that has no tools)`); }
+      continue;
+    }
+    if (isDesign) {
+      for (let k = 0; k < designRegistered.length; k++) {
+        if (block.indexOf(designRegistered[k]) >= 0) { designLies++; console.log(`      (${v.label}: the off-branch lists ${designRegistered[k]}, which Design Mode registers anyway)`); }
+      }
+    }
+    if (!isDesign && !claimsImageOff) { designLies++; console.log(`      (${v.label}: the off-branch does not name generate_image, which IS off here)`); }
+  }
+  check("the off-branch never claims a tool that IS registered", designLies === 0, `${designLies} wrong`);
+
+  // …and it never tells the model the USER can flip a switch the user does not
+  // have. The off-branch used to close "the user can put them back in one
+  // click", which is true at the chat composer and false on the design rail,
+  // where there is no control of any kind and a workspace setting governs it.
+  // A fix that writes a second, smaller lie is not a fix.
+  const SELF_SERVE = [/\bin one click\b/i, /\byou can (just )?(turn|switch) (it|them) (back )?on\b/i, /\btheir own switch\b/i];
+  let overclaim = 0;
+  for (let i = 0; i < V.length; i++) {
+    const v = V[i];
+    if (v.on) continue;
+    // Only where the named control is one the user operates themselves.
+    if (v.control === undefined || v.control === GENERATION_CONTROL_CHAT) continue;
+    const head = v.text.indexOf("## Making things");
+    if (head < 0) continue;
+    const nextHead = v.text.indexOf("\n\n## ", head + 4);
+    const block = v.text.slice(head, nextHead < 0 ? v.text.length : nextHead);
+    for (let j = 0; j < SELF_SERVE.length; j++) {
+      if (SELF_SERVE[j].test(block)) { overclaim++; console.log(`      (${v.label}: promises a switch the user does not have)`); }
+    }
+  }
+  check("no off-branch hands the user a switch they do not have", overclaim === 0, `${overclaim} overclaims`);
+  // PRECONDITION: a detector that cannot fire proves nothing. The sentence
+  // that was actually there has to trip one of them.
+  let selfServeDeaf = 0;
+  const WAS_THERE = "they are switched off for this conversation, and the user can put them back in one click.";
+  for (let j = 0; j < SELF_SERVE.length; j++) if (SELF_SERVE[j].test(WAS_THERE)) selfServeDeaf = 1;
+  check("the self-serve detector sees the sentence that was there", selfServeDeaf === 1);
+
+  // …and the ON variants must not carry it, or the model reads a live
+  // capability as switched off — the incident, written into the prompt.
+  let onContradicted = 0;
+  for (let i = 0; i < V.length; i++) {
+    if (!V[i].on) continue;
+    if (/switched off for this conversation/i.test(V[i].text)) { onContradicted++; console.log(`      (${V[i].label}: says a live capability is off)`); }
+    if (V[i].text.indexOf("You have a generate_image tool") < 0) { onContradicted++; console.log(`      (${V[i].label}: does not advertise the tool it was given)`); }
+  }
+  check("no live variant reads as switched off", onContradicted === 0, `${onContradicted} contradictions`);
+
+  // ── (C) THE PHRASES SHE ACTUALLY GOT ──
+  // Nothing in any assembled prompt may INSTRUCT the shape of sentence the
+  // model produced. The rule QUOTES two of them, so those quotes — and only
+  // those — come out before the scan, exactly as section 7b does it: a rule's
+  // own block is otherwise the one place a contradiction can hide.
+  const ABSENCE_PHRASES: [string, RegExp][] = [
+    ["not available in this environment", /\b(not|isn'?t|aren'?t)\s+available\s+in\s+this\s+environment\b/i],
+    ["I don't have a … tool", /\b(i\s+)?(don'?t|do not)\s+have\s+(an?\s+|any\s+)?[\w/-]{0,24}\s*tool\b/i],
+    ["in this environment / setup / session", /\bin\s+this\s+(environment|setup|configuration|session|version)\b/i],
+    ["another / a different / a later session", /\b(another|a\s+different|a\s+later)\s+session\b/i],
+    // Her transcript's exact escape hatch: "or I, in a session where that tool
+    // is available, can produce it". It names no environment and no missing
+    // tool, so every pattern above is deaf to it.
+    ["in a session where …", /\bin\s+a\s+session\s+where\b/i],
+    ["no access to that here", /\bno\s+access\s+to\s+(that|this|it)\s+here\b/i],
+    ["say the feature is missing", /\b(say|tell|explain)\b[^.]{0,40}\b(feature|capability|tool)\b[^.]{0,20}\b(is\s+)?(missing|unavailable|unsupported)\b/i],
+  ];
+  // The phrases the rule and the off-branch quote in order to FORBID them,
+  // removed before the scan and nothing else. Stripping the rule's whole block
+  // instead would make the block the one place in the prompt a contradicting
+  // instruction could hide, which is the mistake section 7b had to be
+  // corrected for; these are exact substrings, so a new instruction cannot
+  // shelter behind them.
+  const OWN_QUOTES = [
+    '"not available in this environment"',
+    '"don\'t have"',
+    "that a different session — or a person with a different setup — could do it instead",
+    "another session could do it",
+    "do not tell the reader that a tool is unavailable",
+  ];
+  const withoutQuotes = (t: string) => {
+    let out = t;
+    for (let j = 0; j < OWN_QUOTES.length; j++) out = out.split(OWN_QUOTES[j]).join("");
+    return out;
+  };
+  let absHits = 0, strippedNothing = 0;
+  for (let i = 0; i < V.length; i++) {
+    const stripped = withoutQuotes(V[i].text);
+    // PRECONDITION: the strip found what it exists for. Removing nothing means
+    // the rule stopped quoting the phrases it forbids, and this list has to be
+    // re-read against it rather than silently reporting the quotes as hits.
+    if (stripped.length === V[i].text.length) { strippedNothing++; continue; }
+    for (let j = 0; j < ABSENCE_PHRASES.length; j++) {
+      if (ABSENCE_PHRASES[j][1].test(stripped)) { absHits++; console.log(`      (${V[i].label}: "${ABSENCE_PHRASES[j][0]}")`); }
+    }
+  }
+  check("the rule still quotes the phrases it forbids", strippedNothing === 0, `${strippedNothing} variants quoted none`);
+  check("no variant instructs an absence report outside the rule's own quotes", absHits === 0, `${absHits} hits`);
+
+  // Tool descriptions are prompt text too — the same reason section 7b reads
+  // them. Read from source: the constants are module-private, and the source
+  // set is a superset of any assembled set.
+  const descs = provSrc.match(/description:\s*(`[\s\S]*?`|"(?:[^"\\]|\\.)*")/g) || [];
+  check("tool descriptions were found to scan (capability pass)", descs.length > 100, `${descs.length} found`);
+  let descHits = 0;
+  for (let i = 0; i < descs.length; i++) {
+    // A description may FORBID the sentence; it may not instruct it.
+    if (/\bnever\s+(say|tell|write|claim)\b|\bdo not (say|tell|claim)\b/i.test(descs[i])) continue;
+    for (let j = 0; j < ABSENCE_PHRASES.length; j++) {
+      if (ABSENCE_PHRASES[j][1].test(descs[i])) { descHits++; console.log(`      (description #${i}: "${ABSENCE_PHRASES[j][0]}" — ${descs[i].slice(0, 90)})`); }
+    }
+  }
+  check("no tool description instructs an absence report", descHits === 0, `${descHits} hits`);
+
+  // SELF-TEST. The pattern list is the whole value of the scan, so it is driven
+  // against the sentences EngineAI actually produced on 2026-09-20. A detector
+  // that cannot fire reports "clean" for ever.
+  // The first three are verbatim from conversation 925c922b.
+  const BAD = [
+    "I don't have an image/slide-generation tool available in this environment, so I can't render the actual graphic file for you right now.",
+    "or I, in a session where that tool is available, can produce it",
+    "That feature is unavailable in this setup — ask an admin.",
+    "You have no access to that here.",
+  ];
+  let deaf = 0;
+  for (let i = 0; i < BAD.length; i++) {
+    let fired = false;
+    for (let j = 0; j < ABSENCE_PHRASES.length; j++) if (ABSENCE_PHRASES[j][1].test(BAD[i])) fired = true;
+    if (!fired) { deaf++; console.log(`      (no detector sees: "${BAD[i].slice(0, 62)}…")`); }
+  }
+  check("every known absence sentence is seen by a detector", deaf === 0, `${deaf} unseen`);
+  // THE BLIND SPOT, asserted so it stays recorded rather than being quietly
+  // assumed fixed. Her third refusal — "Since I can't generate the actual
+  // .pptx/Slides file" — names no environment, no session and no tool, so
+  // nothing here sees it and nothing here could without firing on every honest
+  // "I can't verify that". It is the same incident, and only the prompt rule
+  // addresses it; this scan is about what the PROMPT instructs, not a filter
+  // on what the model says.
+  const BLIND = "Since I can't generate the actual .pptx/Slides file, here's the deck copy laid out slide-by-slide";
+  let bland = false;
+  for (let j = 0; j < ABSENCE_PHRASES.length; j++) if (ABSENCE_PHRASES[j][1].test(BLIND)) bland = true;
+  check("the blind spot is still blind (recorded, not assumed fixed)", !bland);
+  let falseAlarm = 0;
+  const CLEAN = "You have a generate_image tool. When the user asks you to create a graphic, call it.";
+  for (let j = 0; j < ABSENCE_PHRASES.length; j++) if (ABSENCE_PHRASES[j][1].test(CLEAN)) falseAlarm++;
+  check("no detector fires on ordinary capability prose", falseAlarm === 0, `${falseAlarm} false alarms`);
+
+  // ── (D) THE PROMPT AND THE TOOL ARRAY READ ONE BOOLEAN ──
+  // Behavioural, not a grep: `generationTools` must OVERRIDE contextConfig, or
+  // the two drift the way they had on three surfaces.
+  const overrideOff = buildSystemPrompt({ ...base, contextConfig: { imageGeneration: "on" }, generationTools: false });
+  const overrideOn = buildSystemPrompt({ ...base, contextConfig: { imageGeneration: "off" }, generationTools: true });
+  check("a turn with no tools is not told it has them",
+    overrideOff.indexOf("You have a generate_image tool") < 0 && /switched off/i.test(overrideOff));
+  check("a turn with tools is not told they are off",
+    overrideOn.indexOf("You have a generate_image tool") >= 0 && !/switched off for this conversation/i.test(overrideOn));
+
+  // And the three production callers pass it. The chat route computes it ONCE;
+  // the proxy assertion is that the duplicated expression is GONE, because two
+  // copies that agree today are invisible to the behavioural checks above.
+  const msgSrc = readFileSync(join(process.cwd(), "app/api/ai/conversations/[id]/messages/route.ts"), "utf8");
+  check("the chat route derives the flag once",
+    /const generationTools = contextConfig\.imageGeneration === "on";/.test(msgSrc));
+  check("the chat route passes it to the prompt", /\n\s+generationTools,\n/.test(msgSrc));
+  check("the chat route passes the SAME value to the tools", /imageGeneration: generationTools,/.test(msgSrc));
+  check("the duplicated expression is gone",
+    (msgSrc.match(/contextConfig\.imageGeneration === "on"/g) || []).length === 1,
+    `${(msgSrc.match(/contextConfig\.imageGeneration === "on"/g) || []).length} occurrences`);
+  const HEADLESS: [string, string][] = [
+    ["lib/scheduled/runner.ts", "the scheduled brief"],
+    ["app/api/engineai/meeting-prep/route.ts", "the meeting brief"],
+  ];
+  for (let i = 0; i < HEADLESS.length; i++) {
+    const src = readFileSync(join(process.cwd(), HEADLESS[i][0]), "utf8");
+    check(`${HEADLESS[i][1]} declares it has no generation tools`,
+      /generationTools: false/.test(src) && /imageGeneration: false/.test(src));
+    check(`${HEADLESS[i][1]} declares it has no switch to name`, /generationControl: null/.test(src));
+  }
+
+  // ── (E) THE ROUTE'S OWN APPENDS, WHICH ARE PART OF THE PROMPT ──
+  // Everything above assembles buildSystemPrompt while calling the result "the
+  // ASSEMBLED prompt". It is not: the chat route appends more to it, and one of
+  // those appends was the contradiction. With a deck in the conversation and
+  // the switch off, the same string said generate_slides was "not loaded this
+  // turn" and then ordered a generate_slides call — reachable by one click on
+  // the Image switch in any thread already holding a deck, which is the
+  // reported scenario one turn later.
+  const DRAFT = {
+    title: "Infrastructure Transition Monitor",
+    slides: [
+      { layout: "title", title: "Where we are", preview: "<svg/>" },
+      { layout: "two-column", title: "The two tracks", bullets: ["a", "b"], image: { query: "bridge" }, resolvedImage: "https://blob/x.png" },
+    ],
+    published: { presentationId: "pres-123" },
+  };
+  // PRECONDITION: the route still appends this, under this heading, from this
+  // builder. The assembly below is only the route's if these hold.
+  check("the route builds the deck block from the shared builder",
+    /deckContext = buildDeckContext\(deckRows\?\.\[0\]\?\.slides_draft, \{ generationTools \}\);/.test(msgSrcForPaths()));
+  check("the route appends it under the shared heading",
+    /systemPrompt \+= `\\n\\n\$\{DECK_CONTEXT_HEADING\}\\n\$\{deckContext\}`;/.test(msgSrcForPaths()));
+  check("the deck block is built for a deck that exists",
+    buildDeckContext(DRAFT, { generationTools: true }) !== null && buildDeckContext(null, { generationTools: true }) === null);
+
+  // Assemble it the way route.ts does, for every variant, and hold the
+  // invariant on the WHOLE string.
+  const ORDERS_A_CALL = /call generate_slides with the\s+COMPLETE slides array/i;
+  let contradictions = 0, deckLost = 0, liveDeckMute = 0;
+  for (let i = 0; i < V.length; i++) {
+    const v = V[i];
+    const deck = buildDeckContext(DRAFT, { generationTools: v.on });
+    const assembled = v.text + "\n\n" + DECK_CONTEXT_HEADING + "\n" + deck;
+    const saysOff = /not loaded this turn|switched off for this conversation|not what this kind of turn produces/i.test(assembled);
+    if (saysOff && ORDERS_A_CALL.test(assembled)) {
+      contradictions++;
+      console.log(`      (${v.label}: the same prompt says generate_slides is off AND orders a generate_slides call)`);
+    }
+    // The SPEC must survive the switch being off, or the off-branch's own
+    // instruction — write the revised slide out in full — has nothing to write
+    // it from, and gating the append would look like a fix while removing the
+    // one thing the turn can still deliver.
+    if (String(deck).indexOf("Infrastructure Transition Monitor") < 0 || String(deck).indexOf("two-column") < 0) deckLost++;
+    if (v.on && !ORDERS_A_CALL.test(assembled)) { liveDeckMute++; console.log(`      (${v.label}: a live turn is not told how to edit the deck it holds)`); }
+  }
+  check("no assembled prompt both denies generate_slides and orders it", contradictions === 0, `${contradictions} contradictions`);
+  check("the deck spec survives the switch being off", deckLost === 0, `${deckLost} variants lost the spec`);
+  check("a live turn still gets the edit instruction", liveDeckMute === 0, `${liveDeckMute} mute`);
+  // The preview is still stripped and the Drive id still passed, on both
+  // framings — the block's original job, which the second framing must not
+  // quietly drop.
+  const onDeck = String(buildDeckContext(DRAFT, { generationTools: true }));
+  const offDeck = String(buildDeckContext(DRAFT, { generationTools: false }));
+  check("the rendered preview is never sent to the model",
+    onDeck.indexOf("<svg/>") < 0 && offDeck.indexOf("<svg/>") < 0);
+  check("the resolved image survives both framings",
+    onDeck.indexOf("https://blob/x.png") >= 0 && offDeck.indexOf("https://blob/x.png") >= 0);
+  check("only the live framing passes the Drive id to edit in place",
+    onDeck.indexOf("pres-123") >= 0 && !ORDERS_A_CALL.test(offDeck));
+
+  // ── (F) THE LAST MEMBER OF THE SAME FAMILY ──
+  // Design Mode's prose introduced search_artlist and license_artlist_asset in
+  // every turn, while providers.ts registers them only when ARTLIST_API_KEY is
+  // set — and the registration's own comment says why unregistered tools must
+  // not be described. The key is not in .env.local, so locally that prompt was
+  // describing two tools that were not there, every run. Same one-line pattern
+  // as generationTools, asserted the same way: behaviourally, off the prompt.
+  const designBase: any = { ...base, contextConfig: { imageGeneration: "on" }, generationTools: true, designMode: true };
+  const artOn = buildSystemPrompt({ ...designBase, artlistTools: true });
+  const artOff = buildSystemPrompt({ ...designBase, artlistTools: false });
+  const artDefault = buildSystemPrompt({ ...designBase });
+  const ART = ["search_artlist", "license_artlist_asset", "Artlist", "b-roll"];
+  let artLeak = 0, artMute = 0;
+  for (let i = 0; i < ART.length; i++) {
+    if (artOff.indexOf(ART[i]) >= 0) { artLeak++; console.log(`      (the no-key design prompt still mentions ${ART[i]})`); }
+    if (artOn.indexOf(ART[i]) < 0) { artMute++; console.log(`      (the design prompt with a key does not mention ${ART[i]})`); }
+  }
+  check("a design turn without the Artlist key is never told about Artlist", artLeak === 0, `${artLeak} leaks`);
+  check("a design turn with the key still gets the whole workflow", artMute === 0, `${artMute} missing`);
+  // Omitting the flag must fail CLOSED. A designer told nothing about stock
+  // footage loses a suggestion; one promised a search that throws loses the turn.
+  check("omitting the flag means absent, not present", artDefault === artOff);
+  // The prose around the gap has to still read. Dropping step 5 left the list
+  // numbered 1,2,3,4,6, and "three specialist tools" counting two of them.
+  check("the design prompt does not promise a tool count it does not list",
+    artOff.indexOf("two specialist tools") >= 0 && artOn.indexOf("three specialist tools") >= 0);
+  check("the design workflow is not left with a hole in its numbering",
+    artOff.indexOf("\n5. **Image → video") >= 0 && artOn.indexOf("\n6. **Image → video") >= 0);
+  // The registration and the prose read ONE predicate. Source-level, and
+  // recorded as a proxy: it sees the old env read returning, not two new calls
+  // that happen to agree.
+  check("the route passes the registration's own predicate",
+    /artlistTools: artlistConfigured\(\),/.test(msgSrcForPaths()));
+  check("providers registers on that same predicate",
+    /if \(artlistConfigured\(\)\) \{\s*tools\.push\(ARTLIST_SEARCH_TOOL\);/.test(provSrc));
+  check("no chain reads the Artlist key behind the predicate's back",
+    (provSrc.match(/ARTLIST_API_KEY/g) || []).length === 1,
+    `${(provSrc.match(/ARTLIST_API_KEY/g) || []).length} mentions (1 = the explanatory comment)`);
+
+  // And the user-facing end of the same fault: the notice a turn ends on when
+  // it claimed a change and made none. Both original notices close "Ask again",
+  // which is true when asking again can work and false when the switch is off.
+  const claimText = "I've replaced slide 9 with two clearer slides — the deck is now 12 slides.";
+  const noticeOff = unmadeDeckChangeNotice(claimText, {}, { asked: true, deckInConversation: true, alreadySaid: false, offered: false, toolsUsed: null });
+  const noticeOn = unmadeDeckChangeNotice(claimText, {}, { asked: true, deckInConversation: true, alreadySaid: false, offered: true, toolsUsed: null });
+  check("PRECONDITION: the claim fires a notice at all", noticeOn.length > 0 && noticeOff.length > 0);
+  // The fault is not the words "ask again" — it is asking again being the WHOLE
+  // of the advice, which sends the user round the same loop. The switched-off
+  // notice may say it, and does, but only after naming what to change first.
+  check("asking again is not the whole of the advice when the switch is off",
+    noticeOff.indexOf("Ask again to make the change.") < 0 && noticeOff.indexOf("Ask again to make it.") < 0,
+    noticeOff.slice(-70));
+  check("an offered turn is still told simply to ask again",
+    noticeOn.indexOf("Ask again to make the change.") >= 0);
+  let unnamedInNotice = 0;
+  for (let i = 0; i < quoted.length; i++) if (noticeOff.indexOf(quoted[i].slice(1, -1)) < 0) unnamedInNotice++;
+  check("the notice names the same switch the prompt names", unnamedInNotice === 0, `${unnamedInNotice} labels missing`);
+}
+
+/* ── FIX 2: every path that resolves this setting fails ON ─────────────────
+ * Chris's instruction after the incident was that it should be on by default,
+ * everywhere. The paths that can produce a false are enumerated here rather
+ * than described, because the diagnosis was guessed twice before it was
+ * measured: the workspace row, the browser's body, the normaliser's own
+ * defaulting, the two client initial states, and the prompt builder's own
+ * gate. There is no per-conversation copy — ai_conversations has no
+ * config_context column — and the only surviving way to produce a false is a
+ * click on the composer switch, which lives in page state and does not
+ * survive a reload.
+ */
+console.log("\n18. The generation capability defaults ON down every path");
+{
+  // (1) THE NORMALISER. Both the no-config default and the per-key default.
+  // The legacy shape is the real one: three of the four rows in
+  // intelligence.ai_settings are `{contracts, socialPresence, contentPipeline}`
+  // written in February and never touched since.
+  const ON_INPUTS: [string, any][] = [
+    ["no config at all", undefined],
+    ["null", null],
+    ["an empty object", {}],
+    ["the real legacy row", { contracts: true, socialPresence: true, contentPipeline: true }],
+    ["the key present but garbage", { imageGeneration: "yes-please" }],
+    ["a legacy boolean true", { imageGeneration: true }],
+    ["a legacy boolean false", { imageGeneration: false }],
+    ["the TCE row", { ideas: "summary", memory: "on", contracts: "full-year", incognito: "off", webSearch: "on", meetingBrain: "on", socialPresence: "summary", contentPipeline: "full-month", imageGeneration: "on" }],
+  ];
+  for (let i = 0; i < ON_INPUTS.length; i++) {
+    check(`${ON_INPUTS[i][0]} resolves to ON`,
+      normalizeContextConfig(ON_INPUTS[i][1]).imageGeneration === "on",
+      normalizeContextConfig(ON_INPUTS[i][1]).imageGeneration);
+  }
+  // A legacy boolean `false` resolving to ON is deliberate and worth stating:
+  // the only thing that may switch a capability off is the literal "off",
+  // which is the only value either composer can write.
+  check("only the literal \"off\" switches it off",
+    normalizeContextConfig({ imageGeneration: "off" }).imageGeneration === "off");
+
+  // (2) THE PROMPT BUILDER'S OWN GATE. It read `=== "on"`, which made every
+  // pre-March row — and the shape both settings pages still POST — a silent
+  // off in the prose while the tools were registered anyway.
+  const keyMissing: any = { conversationVisibility: "private", userName: "Test", contextConfig: {},
+    workspaceConfig: { companyContext: "TCE.", contentTypes: [], cuDefinitions: [], formatDescriptions: {}, typeInstructions: {} } };
+  check("a context config with the key missing is ON in the prompt",
+    buildSystemPrompt(keyMissing).indexOf("You have a generate_image tool") >= 0);
+  check("no context config at all is ON in the prompt",
+    buildSystemPrompt({ ...keyMissing, contextConfig: undefined }).indexOf("You have a generate_image tool") >= 0);
+
+  // (3) THE TWO CLIENT INITIAL STATES, and the predicate they resolve with.
+  // `|| "on"` agrees with the server for undefined and for "off" and
+  // disagrees for a legacy boolean `true`, which it passes straight through —
+  // every switch then renders OFF while the server registers the tools.
+  const panel = readFileSync(join(process.cwd(), "components/ai-writer/ChatPanel.tsx"), "utf8");
+  check("the chat composer resolves the switch with the server's predicate",
+    /imageGeneration: initialContextConfig\?\.imageGeneration !== "off" \? "on" : "off"/.test(panel));
+  check("the chat composer no longer uses || \"on\" for a capability switch",
+    !/(webSearch|memory|meetingBrain|imageGeneration): initialContextConfig\?\.\w+ \|\| "on"/.test(panel));
+  const page = readFileSync(join(process.cwd(), "app/engineai/page.tsx"), "utf8");
+  check("the composer page still starts the switch ON", /imageGeneration: "on" as string/.test(page));
+  check("the composer page no longer assigns the fetched config raw",
+    !/setContextConfig\(data\.contextConfig\)/.test(page));
+  check("the composer page folds it in through the fail-on merge",
+    (page.match(/mergeContextConfig\(prev, data\.contextConfig\)/g) || []).length === 2,
+    `${(page.match(/mergeContextConfig\(prev, data\.contextConfig\)/g) || []).length} of 2 call sites`);
+
+  // (4) THE WRITE PATH. THREE surfaces hold a ContextConfig that omits
+  // imageGeneration, memory, meetingBrain and incognito, and PATCH the whole
+  // object — so an admin pressing Save dropped four keys from the row. Safe
+  // only because the normaliser defaults them on; one edit from a stored false.
+  //
+  // The third one was missed the first time this was enumerated, and it is the
+  // one most likely to be used: AdminDialog is the admin surface INSIDE
+  // EngineAI, not a settings page someone has to navigate to. All three go
+  // through the same endpoint, which is why normalising on write is the fix
+  // rather than patching each caller — but the enumeration has to name them,
+  // or the next surface added is invisible the same way.
+  const settings = readFileSync(join(process.cwd(), "app/api/ai/settings/route.ts"), "utf8");
+  check("the settings write normalises rather than storing the raw object",
+    /updateData\.config_context = normalizeContextConfig\(contextConfig\);/.test(settings));
+  check("the raw write is gone", !/updateData\.config_context = contextConfig;/.test(settings));
+  // PRECONDITION for the claim above: the surfaces really do omit the keys and
+  // really do PATCH the whole object, so this stops being a guess about why it
+  // mattered — and a fourth surface appearing without the keys is seen.
+  const WRITERS: [string, string][] = [
+    ["app/(app)/settings/ai-context/page.tsx", "the AI-context settings page"],
+    ["app/(app)/settings/ai-usage/page.tsx", "the AI-usage settings page"],
+    ["components/ai-writer/AdminDialog.tsx", "the in-app admin dialog"],
+  ];
+  let notWholesale = 0, keyPresent = 0;
+  for (let i = 0; i < WRITERS.length; i++) {
+    const src = readFileSync(join(process.cwd(), WRITERS[i][0]), "utf8");
+    const initial = (/useState<ContextConfig>\(\{[\s\S]*?\n\s*\}\)/.exec(src) || [""])[0];
+    if (initial.length < 20) { notWholesale++; console.log(`      (${WRITERS[i][1]}: no ContextConfig initial state found — this precondition is reading the wrong file)`); continue; }
+    if (initial.indexOf("imageGeneration") >= 0) { keyPresent++; console.log(`      (${WRITERS[i][1]}: now carries imageGeneration — the dropped-key hazard has changed shape)`); }
+    if (!/body: JSON\.stringify\(\{[\s\S]{0,400}?contextConfig,/.test(src)) { notWholesale++; console.log(`      (${WRITERS[i][1]}: does not PATCH the whole contextConfig)`); }
+  }
+  check("all three settings writers PATCH the whole object", notWholesale === 0, `${notWholesale} not wholesale`);
+  check("all three really do omit imageGeneration", keyPresent === 0, `${keyPresent} carry it`);
+
+  // (5) THE STORED COPIES. There is NO per-conversation one — ai_conversations
+  // has no config_context column — and that absence is asserted rather than
+  // remembered, because adding one makes this enumeration silently wrong.
+  check("no per-conversation copy of the context config exists",
+    !/conversation\.config_context|conversation\.contextConfig/.test(msgSrcForPaths()));
+  // There IS a per-TASK one: ai_scheduled_prompts.config_context, written when
+  // a scheduled task is created and read back by the runner. Claiming "no
+  // stored copy exists" was not quite true. It cannot produce a false for this
+  // capability, and the reason is worth pinning rather than trusting: the
+  // runner resolves it through the same normaliser and then DECLARES
+  // generationTools false regardless, because a brief has no tools and no
+  // switch. Both halves are asserted — a stored row that reached the prompt
+  // ungated would be a sixth path.
+  const schedRoute = readFileSync(join(process.cwd(), "app/api/ai/scheduled/route.ts"), "utf8");
+  check("PRECONDITION: a scheduled task really does store a context config",
+    /config_context: proposalId \? \{ \.\.\.\(body\.configContext \|\| \{\}\), proposalId \} : \(body\.configContext \|\| null\),/.test(schedRoute));
+  const runnerSrc = readFileSync(join(process.cwd(), "lib/scheduled/runner.ts"), "utf8");
+  check("the stored task config is read through the normaliser",
+    /normalizeContextConfig\(Object\.keys\(ctxRest\)\.length \? ctxRest : null\)/.test(runnerSrc));
+  check("and the capability is overridden regardless of what it stored",
+    /generationTools: false/.test(runnerSrc) && /generationControl: null/.test(runnerSrc));
+}
+
+/** Read once, where both sections above need it. */
+function msgSrcForPaths(): string {
+  return readFileSync(join(process.cwd(), "app/api/ai/conversations/[id]/messages/route.ts"), "utf8");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -3,6 +3,7 @@ import { applyEditSlide, unrenderableSlides, undrawnTableSlides, undrawnTableFau
 import { slidesFailure, parseSlidesArguments, type SlidesTurnState } from "@/lib/slides/failure";
 import { shouldRetryDeckClaim, unmadeDeckChangeNotice, DECK_CLAIM_NUDGE } from "@/lib/slides/claim";
 import { splitVolatile } from "@/lib/ai/prompt-cache";
+import { artlistConfigured } from "@/lib/ai/capability-control";
 import { logAiUsage } from "@/lib/ai/usage-logger";
 import OpenAI from "openai";
 import { put } from "@vercel/blob";
@@ -9260,6 +9261,29 @@ async function streamAnthropic(
   if (config.webSearch) {
     tools.push({ type: "web_search_20250305", name: "web_search", max_uses: 5 });
   }
+  // ONE flag, FIVE tools, and a switch labelled "Image". It also gates charts,
+  // decks, Word files and .pptx, which is why a user who never touched it can
+  // lose deck generation and have no idea what to look for.
+  //
+  // IF THIS TOGGLE IS REMOVED — measured 2026-09-21, so the decision is cheap
+  // to act on. Always-on costs +18,351 tokens of tool payload per request on
+  // this chain (23,062 with it on against 4,711 with it off) plus the 25,200
+  // chars of prose the three system-prompt blocks add: about $0.025 a turn
+  // blended at the observed 36% cold-cache rate, roughly $18/month against a
+  // $222/month bill. Nobody has ever switched it off — no config_context row
+  // in any workspace contains the string "off" — and the family is 13% of all
+  // tool calls. What it touches: this block and its three twins (xAI ~:11010,
+  // Gemini ~:12232, OpenAI ~:13326); `imageGeneration` in AIProviderConfig;
+  // the generationOn gate and the off-branch in lib/ai/system-prompts.ts,
+  // which would then only be reachable from the headless callers; the switch
+  // in components/ai-writer/ChatPanel.tsx and the pill in app/engineai/page.tsx;
+  // and the key in normalizeContextConfig, which must stay so that stored rows
+  // carrying it keep parsing. WATCH THE CEILING: SLIDES_GEN_TOOL alone
+  // serialises to ~52,900 chars against the TOOL_CEILING of 55,000 asserted in
+  // scripts/verify-slide-layouts.ts, so always-on means every turn on every
+  // chain carries it and the next layout added is the one that breaches it.
+  // The lever for a cheap route is then a per-ROUTE tool set, never a
+  // per-user preference: a preference makes the payload non-deterministic.
   if (config.imageGeneration) {
     tools.push(IMAGE_GEN_TOOL);
     tools.push(DOCUMENT_GEN_TOOL);
@@ -9274,7 +9298,9 @@ async function streamAnthropic(
     // Only offer stock footage when there is a key to fetch it with. Registered
     // unconditionally, these invite the model to promise a search that always
     // throws "ARTLIST_API_KEY is not set" — a capability that does not exist.
-    if (process.env.ARTLIST_API_KEY?.trim()) {
+    // Same predicate the chat route passes into buildSystemPrompt, so the
+    // registration and the prose that describes it cannot disagree.
+    if (artlistConfigured()) {
       tools.push(ARTLIST_SEARCH_TOOL);
       tools.push(ARTLIST_LICENSE_TOOL);
     }
@@ -10896,7 +10922,7 @@ async function streamAnthropic(
   // claimed again, or when no retry was allowed. Only when the user asked for
   // a change this turn, and only if no notice above has spoken: one a turn.
   {
-    const unmade = unmadeDeckChangeNotice(spokenText, config.slidesTurn, { asked: config.deckEditAsked === true, deckInConversation: config.deckInConversation === true, alreadySaid: fullText !== spokenText, toolsUsed: toolLoopGuard.usage() });
+    const unmade = unmadeDeckChangeNotice(spokenText, config.slidesTurn, { asked: config.deckEditAsked === true, deckInConversation: config.deckInConversation === true, alreadySaid: fullText !== spokenText, offered: tools.some((t: any) => t?.name === "generate_slides"), toolsUsed: toolLoopGuard.usage() });
     if (unmade) {
       fullText += unmade;
       try {
@@ -12063,7 +12089,7 @@ async function streamXAIChatCompletions(
   // claimed again, or when no retry was allowed. Only when the user asked for
   // a change this turn, and only if no notice above has spoken: one a turn.
   {
-    const unmade = unmadeDeckChangeNotice(spokenText, config.slidesTurn, { asked: config.deckEditAsked === true, deckInConversation: config.deckInConversation === true, alreadySaid: fullText !== spokenText, toolsUsed: toolLoopGuard.usage() });
+    const unmade = unmadeDeckChangeNotice(spokenText, config.slidesTurn, { asked: config.deckEditAsked === true, deckInConversation: config.deckInConversation === true, alreadySaid: fullText !== spokenText, offered: tools.some((t: any) => t?.function?.name === "generate_slides"), toolsUsed: toolLoopGuard.usage() });
     if (unmade) {
       fullText += unmade;
       try {
@@ -13244,7 +13270,7 @@ async function streamGemini(
   // claimed again, or when no retry was allowed. Only when the user asked for
   // a change this turn, and only if no notice above has spoken: one a turn.
   {
-    const unmade = unmadeDeckChangeNotice(spokenText, config.slidesTurn, { asked: config.deckEditAsked === true, deckInConversation: config.deckInConversation === true, alreadySaid: fullText !== spokenText, toolsUsed: toolLoopGuard.usage() });
+    const unmade = unmadeDeckChangeNotice(spokenText, config.slidesTurn, { asked: config.deckEditAsked === true, deckInConversation: config.deckInConversation === true, alreadySaid: fullText !== spokenText, offered: tools.some((t: any) => t?.function?.name === "generate_slides"), toolsUsed: toolLoopGuard.usage() });
     if (unmade) {
       fullText += unmade;
       try {
@@ -14333,7 +14359,7 @@ async function streamOpenAI(
   // claimed again, or when no retry was allowed. Only when the user asked for
   // a change this turn, and only if no notice above has spoken: one a turn.
   {
-    const unmade = unmadeDeckChangeNotice(spokenText, config.slidesTurn, { asked: config.deckEditAsked === true, deckInConversation: config.deckInConversation === true, alreadySaid: fullText !== spokenText, toolsUsed: toolLoopGuard.usage() });
+    const unmade = unmadeDeckChangeNotice(spokenText, config.slidesTurn, { asked: config.deckEditAsked === true, deckInConversation: config.deckInConversation === true, alreadySaid: fullText !== spokenText, offered: tools.some((t: any) => t?.function?.name === "generate_slides"), toolsUsed: toolLoopGuard.usage() });
     if (unmade) {
       fullText += unmade;
       try {

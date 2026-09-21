@@ -141,6 +141,40 @@ function sameConversationList(a: AIConversation[], b: AIConversation[]): boolean
   return true;
 }
 
+/**
+ * Fold the workspace's saved context config into the composer's state, failing
+ * ON the way the server does.
+ *
+ * This state used to be ASSIGNED whatever the settings endpoint returned. The
+ * endpoint normalises, so that was safe — but every switch below renders off
+ * unless its value is the literal "on", and three of the four workspace rows
+ * in the database carry `{contracts, socialPresence, contentPipeline}` and
+ * nothing else. One request that skipped the normalise, or one row read
+ * straight from Supabase, and the four capability switches would light up OFF
+ * while the server treated them as on. A control whose light disagrees with
+ * the setting is worse than no control: the user turns it "on", nothing
+ * changes, and they conclude the feature is broken.
+ *
+ * Keys are read one by one rather than spread, so a payload missing one of
+ * them keeps the default rather than writing `undefined` over it. `!== "off"`
+ * is deliberately the same predicate as normalizeContextConfig — if one of the
+ * two moves the other has to, and scripts/verify-incident-fixes.ts says so.
+ */
+function mergeContextConfig<T extends Record<string, string>>(prev: T, incoming: any): T {
+  if (!incoming || typeof incoming !== "object") return prev;
+  const next: Record<string, string> = { ...prev };
+  const LEVELS = ["contracts", "contentPipeline", "socialPresence", "ideas"];
+  for (let i = 0; i < LEVELS.length; i++) {
+    const v = incoming[LEVELS[i]];
+    if (typeof v === "string" && v) next[LEVELS[i]] = v;
+  }
+  const SWITCHES = ["webSearch", "memory", "meetingBrain", "imageGeneration"];
+  for (let i = 0; i < SWITCHES.length; i++) {
+    if (SWITCHES[i] in incoming) next[SWITCHES[i]] = incoming[SWITCHES[i]] !== "off" ? "on" : "off";
+  }
+  return next as T;
+}
+
 export default function EngineAIPage() {
   return (
     <Suspense>
@@ -454,10 +488,10 @@ function EngineAIContent() {
         if (data.currentModel) {
           setSelectedModel(data.currentModel);
           if (data.contextConfig) {
-            setContextConfig(data.contextConfig);
+            setContextConfig((prev) => mergeContextConfig(prev, data.contextConfig));
           }
         } else if (data.contextConfig) {
-          setContextConfig(data.contextConfig);
+          setContextConfig((prev) => mergeContextConfig(prev, data.contextConfig));
         }
         if (data.debugMode) setDebugMode(data.debugMode);
       })

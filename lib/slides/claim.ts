@@ -53,6 +53,7 @@
  *     and slide titles carry no double quote; otherwise the template's "Change
  *     only that slide" reads as an ask, as it did before.
  */
+import { GENERATION_CONTROL_CHAT_MD } from "@/lib/ai/capability-control";
 import { stripQuotedContent } from "@/lib/ai/personal-data-intent";
 import type { SlidesTurnState } from "@/lib/slides/failure";
 
@@ -375,6 +376,13 @@ export const DECK_NOT_CHANGED_NOTICE =
   "\n\n---\n\n⚠ **The deck was not changed.** No slides were added, removed or edited in this reply, so the deck on screen is as it was before your message. Ask again to make the change.";
 export const NO_DECK_BUILT_NOTICE =
   "\n\n---\n\n⚠ **No deck was built or changed.** No slides were drawn in this reply, even if the reply above describes a deck. Ask again to make it.";
+// The same fact, for a turn where generate_slides was never registered. Both
+// notices above end "Ask again", which is the right advice exactly when asking
+// again can work — and false advice when the switch is off, because the second
+// ask reaches a turn with no builder in it either. It names the switch instead,
+// from the one string the prompt also reads.
+export const DECK_SWITCHED_OFF_NOTICE =
+  `\n\n---\n\n⚠ **The deck was not changed.** No slides were added, removed or edited in this reply. Building and changing decks is switched off for this conversation — turn on ${GENERATION_CONTROL_CHAT_MD} and ask again.`;
 
 export interface DeckClaimRetryInput {
   text: string; asked: boolean; turn: SlidesTurnState | null | undefined; offered: boolean;
@@ -415,11 +423,24 @@ export function shouldRetryDeckClaim(i: DeckClaimRetryInput): boolean {
  */
 export function unmadeDeckChangeNotice(
   text: string, turn: SlidesTurnState | null | undefined,
-  o: { asked: boolean; deckInConversation: boolean; alreadySaid: boolean; toolsUsed: { name: string; calls: number }[] | null | undefined }
+  o: { asked: boolean; deckInConversation: boolean; alreadySaid: boolean; offered: boolean; toolsUsed: { name: string; calls: number }[] | null | undefined }
 ): string {
   if (o.alreadySaid || !o.asked) return "";
   if (turn && turn.lastOutcome) return "";
   if (madeAnotherDeliverable(o.toolsUsed)) return "";
   if (!deckChangeClaim(text)) return "";
+  // `offered` is the same question shouldRetryDeckClaim asks, put to the
+  // notice: was generate_slides in this turn's tool array at all? The retry
+  // gate has always read it — a turn with no builder cannot be made to call
+  // one — while the notice did not, and closed on "Ask again to make the
+  // change" whatever the answer was. With the capability switched off, asking
+  // again reaches another turn with no builder, so that sentence sent the user
+  // round the loop that made them leave in the first place.
+  //
+  // Read off the REGISTERED tool array and not off the taint, unlike the retry
+  // gate's own `offered`: a tainted turn refuses the call for this turn only,
+  // so "ask again" is exactly right there and naming a switch would be the
+  // wrong advice. The switch is the only thing that survives the turn.
+  if (!o.offered) return DECK_SWITCHED_OFF_NOTICE;
   return o.deckInConversation ? DECK_NOT_CHANGED_NOTICE : NO_DECK_BUILT_NOTICE;
 }

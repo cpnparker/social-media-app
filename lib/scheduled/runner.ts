@@ -152,6 +152,14 @@ export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunR
       clientContext: null,
       contentDetail: null,
       contextConfig,
+      // Declared, not inferred. This runner sets imageGeneration:false on the
+      // provider config below, so the prompt has to be built from the same
+      // fact — it used to be built from contextConfig, which resolves to "on",
+      // and every scheduled brief was told it had a generate_image tool it had
+      // not been given. `null` because a brief has no composer: there is no
+      // switch on anyone's screen to name, and naming one would be a lie.
+      generationTools: false,
+      generationControl: null,
       latestUserMessage: task.document_prompt,
       resourcingAccess: !!(resourcingRes?.data as any)?.flag_access_resourcing,
     });

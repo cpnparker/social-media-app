@@ -28,6 +28,8 @@ import { isMissingColumnError } from "@/lib/ai/usage-columns";
 import { appendVolatile } from "@/lib/ai/prompt-cache";
 import { needsClaudeForPersonalData, isPersonalMeetingQuestion } from "@/lib/ai/personal-data-intent";
 import { asksForDeckChange, lastAssistantReply } from "@/lib/slides/claim";
+import { buildDeckContext, DECK_CONTEXT_HEADING } from "@/lib/slides/deck-context";
+import { artlistConfigured, GENERATION_CONTROL_CHAT, GENERATION_CONTROL_DESIGN } from "@/lib/ai/capability-control";
 
 export const maxDuration = 300; // 5 min — covers slow attachment extractions + long responses
 
@@ -703,6 +705,21 @@ export async function POST(
     const history = historyRes.data || [];
     const wsSettings = settingsRes.data;
 
+    // Allow per-request context config override from the client (normalize to detail levels)
+    const contextConfig = normalizeContextConfig(body.contextConfig ?? wsSettings?.config_context ?? undefined);
+    // ONE boolean, read by BOTH the prompt and the tool array. They used to be
+    // two expressions in two files: the prompt gated on contextConfig while the
+    // tools gated on the provider flag, and on every surface where those
+    // disagreed the model was told in prose about tools it had not been given.
+    // Every `false` this can produce is a stored "off" in config_context or an
+    // "off" in the browser's body — nothing else, since normalizeContextConfig
+    // resolves a missing key, a missing config and a legacy boolean row to on.
+    const generationTools = contextConfig.imageGeneration === "on";
+    // Design Mode is a different SURFACE, not just a different persona: the
+    // rail at /engineai/design posts no contextConfig and carries no context
+    // menu, so the switch the chat composer names is not on that screen.
+    const isDesignConversation = conversation.type_conversation_mode === "design";
+
     // The current deck, so the model can EDIT one it made.
     //
     // The slide spec lives in ai_messages.slides_draft and was never replayed —
@@ -714,6 +731,12 @@ export async function POST(
     // pasted-document re-injection below fixes, for the same reason. The LATEST
     // draft is the live one (local edits write here too), so this is also more
     // current than the model's original tool call.
+    //
+    // The BLOCK ITSELF is built in lib/slides/deck-context.ts, because it has
+    // to agree with the capability gate above — it used to order a
+    // generate_slides call in a turn the prompt had just told the model had no
+    // generate_slides — and a check cannot prove that from a template literal
+    // inside a route handler.
     let deckContext: string | null = null;
     try {
       const { data: deckRows } = await intelligenceDb
@@ -723,38 +746,11 @@ export async function POST(
         .not("slides_draft", "is", null)
         .order("date_created", { ascending: false })
         .limit(1);
-      const draft: any = deckRows?.[0]?.slides_draft;
-      if (draft?.slides?.length) {
-        // The spec only — not the rendered preview, which the model does not
-        // need and which is large. resolvedImage URLs are KEPT so that a slide
-        // the model is not changing resends with its exact picture intact.
-        const spec = draft.slides.map((sl: any) => {
-          const { preview, ...rest } = sl || {};
-          return rest;
-        });
-        const presentationId = draft.published?.presentationId;
-        deckContext =
-          `[THE DECK CURRENTLY IN THIS CONVERSATION — "${draft.title || "Presentation"}", ${spec.length} slides. ` +
-          `This is the live slide spec. When the user asks to change a slide, call generate_slides with the ` +
-          `COMPLETE slides array below, changed ONLY where they asked and every other slide byte-for-byte as ` +
-          `it is here — including its resolvedImage, so unchanged pictures are kept. To change a slide's ` +
-          `PICTURE, set that slide's image.query to the new subject and REMOVE its resolvedImage so a fresh ` +
-          `one is fetched; leave the others' resolvedImage untouched. ` +
-          (presentationId
-            ? `This deck is already in Drive — pass presentationId "${presentationId}" so the edit updates that file in place. `
-            : `This deck is still a preview (not yet in Drive) — omit presentationId. `) +
-          `Do not ask the user to paste the deck back; it is right here. Do not refuse an ordinary picture ` +
-          `request — depicting a public place, building or landmark is fine.]
-
-` +
-          "```json\n" + JSON.stringify({ title: draft.title, slides: spec }, null, 1) + "\n```";
-      }
+      deckContext = buildDeckContext(deckRows?.[0]?.slides_draft, { generationTools });
     } catch (e: any) {
       console.warn("[Messages] could not load deck spec for editing context:", e?.message);
     }
 
-    // Allow per-request context config override from the client (normalize to detail levels)
-    const contextConfig = normalizeContextConfig(body.contextConfig ?? wsSettings?.config_context ?? undefined);
     const cuDescription = wsSettings?.information_cu_description ?? undefined;
     // Web search responses (with citations, sources, detailed research) need more room.
     // Bump the cap for search queries to avoid mid-sentence cut-offs.
@@ -1402,6 +1398,21 @@ export async function POST(
       );
     }
 
+    // DESIGN MODE IS ANTHROPIC-ONLY, and the pin has to hold on every turn, not
+    // just at creation. app/api/ai/conversations/route.ts pins name_model when
+    // a design conversation is made, but `body.model` above and the PATCH on
+    // /api/ai/conversations/[id] can both move it afterwards — and the design
+    // tool layer exists in the Anthropic chain alone: video, Artlist and the
+    // shot CRUD are registered nowhere else, and it is the only chain that
+    // force-registers generate_image when the capability is switched off. A
+    // design turn on any other model silently loses all of that, and the
+    // prompt's own design narrowing (which drops generate_image from the list
+    // of what is off, because that chain registers it anyway) becomes a lie.
+    if (isDesignConversation && !model.startsWith("claude-")) {
+      console.log(`[Messages] Design conversation pinned back to Anthropic (was ${model})`);
+      model = "claude-sonnet-5";
+    }
+
     // Route query to determine search mode and data source hints
     const { routeQuery, textNeedsMailbox } = await import("@/lib/ai/query-router");
     const queryRoute = routeQuery(userContent || "", contextConfig);
@@ -1479,6 +1490,7 @@ export async function POST(
       clientContext,
       contentDetail,
       contextConfig,
+      generationTools,
       cuDescription,
       clientIdeas,
       workspaceSummary,
@@ -1495,6 +1507,16 @@ export async function POST(
       userEmail: session.user?.email || null,
       userEngineId: userId,
       designMode: conversation.type_conversation_mode === "design",
+      // The SAME predicate providers.ts registers the Artlist tools on. The
+      // prompt described them in every Design Mode turn while registration
+      // needed ARTLIST_API_KEY, so with no key — which is every local run —
+      // the model was introduced to two tools it had not been given.
+      artlistTools: artlistConfigured(),
+      // The switch this user can actually see. The design rail has none, so it
+      // is told what governs it instead of being pointed at a control that is
+      // not on its screen — the same mistake, one level down, as naming an
+      // environment the user cannot act on.
+      generationControl: isDesignConversation ? GENERATION_CONTROL_DESIGN : GENERATION_CONTROL_CHAT,
       studioMode: conversation.type_conversation_mode === "design" && !!designSessionId,
       conversationVisibility: isTeamThread ? "team" : "private",
     });
@@ -1502,7 +1524,7 @@ export async function POST(
     // The live deck spec, so an edit request has the deck to edit. In the
     // leading system block for reliable delivery (see the note above).
     if (deckContext) {
-      systemPrompt += `\n\n## The deck in this conversation\n${deckContext}`;
+      systemPrompt += `\n\n${DECK_CONTEXT_HEADING}\n${deckContext}`;
     }
 
     // Append query router hints to system prompt as required tool calls
@@ -1798,7 +1820,7 @@ export async function POST(
     // the "user navigated away mid-stream and lost their response" bug.
     // Named so the completion callback can read flags the tool executors set
     // on it during the turn (notably sawUntrustedContent after query_gmail).
-    const aiConfigRef: any = { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: contextConfig.imageGeneration === "on", workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, conversationVisibility: isTeamThread ? "team" : "private", selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: conversation.flag_incognito === 1, designSessionId, designFocusedShotId, deckEditAsked, deckInConversation: !!deckContext, enableScheduling: conversation.type_conversation_mode !== "design", scheduledTask, financeAccess, gmailAccess, calendarAccess, microsoftAccess, resourcingAccess, // ALLOWLIST: only this interactive chat route may reach a mailbox.
+    const aiConfigRef: any = { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: generationTools, workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, conversationVisibility: isTeamThread ? "team" : "private", selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: conversation.flag_incognito === 1, designSessionId, designFocusedShotId, deckEditAsked, deckInConversation: !!deckContext, enableScheduling: conversation.type_conversation_mode !== "design", scheduledTask, financeAccess, gmailAccess, calendarAccess, microsoftAccess, resourcingAccess, // ALLOWLIST: only this interactive chat route may reach a mailbox.
         allowPersonalData: true };
 
     // The last slide draft rendered this turn, persisted with the assistant

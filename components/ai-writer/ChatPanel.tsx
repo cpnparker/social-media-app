@@ -199,10 +199,18 @@ export default function ChatPanel({
     socialPresence: initialContextConfig?.socialPresence || "summary",
     ideas: initialContextConfig?.ideas || "summary",
     incognito: initialContextConfig?.incognito,
-    webSearch: initialContextConfig?.webSearch || "on",
-    memory: initialContextConfig?.memory || "on",
-    meetingBrain: initialContextConfig?.meetingBrain || "on",
-    imageGeneration: initialContextConfig?.imageGeneration || "on",
+    // The four capability switches resolve through the SAME predicate the
+    // server uses (normalizeContextConfig: anything that is not the literal
+    // "off" is on), rather than `|| "on"`. `||` agrees with the server for
+    // undefined and for "off", and disagrees for a legacy boolean `true`,
+    // which it passes straight through — and every switch below then renders
+    // OFF, because it tests `=== "on"`, while the server registers the tools.
+    // This is the body that is POSTed on every message, so it is also the only
+    // place in the product that can put an `"off"` in front of the model.
+    webSearch: initialContextConfig?.webSearch !== "off" ? "on" : "off",
+    memory: initialContextConfig?.memory !== "off" ? "on" : "off",
+    meetingBrain: initialContextConfig?.meetingBrain !== "off" ? "on" : "off",
+    imageGeneration: initialContextConfig?.imageGeneration !== "off" ? "on" : "off",
   });
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
