@@ -2,25 +2,15 @@
  * Memory extraction engine.
  *
  * After each AI response, analyses the latest user–assistant exchange
- * with a fast/cheap model (grok-4-1-fast) to extract candidate memories.
+ * with a fast/cheap model (GPT-5.6 Luna) to extract candidate memories.
  * Returns structured suggestions that the client presents for user approval.
  *
  * Cost: ~$0.00001 per extraction call (negligible).
  */
 
-import OpenAI from "openai";
 import { logAiUsage } from "@/lib/ai/usage-logger";
+import { CHEAP_MODEL, getCheapModelClient } from "@/lib/ai/cheap-model";
 import type { MemorySuggestion } from "@/lib/types/ai";
-
-function getXAIClient() {
-  if (!process.env.XAI_API_KEY) {
-    throw new Error("XAI_API_KEY is not set");
-  }
-  return new OpenAI({
-    apiKey: process.env.XAI_API_KEY,
-    baseURL: "https://api.x.ai/v1",
-  });
-}
 
 const EXTRACTION_PROMPT = `You are a memory extractor for an AI content assistant. Analyse the conversation exchange below and identify important facts, preferences, instructions, or insights that would be useful to remember for future conversations.
 
@@ -69,7 +59,7 @@ export async function extractMemories(
   existingMemories: string[]
 ): Promise<MemorySuggestion[]> {
   try {
-    const xai = getXAIClient();
+    const client = getCheapModelClient();
 
     const existingList =
       existingMemories.length > 0
@@ -81,8 +71,8 @@ export async function extractMemories(
       existingList
     );
 
-    const response = await xai.chat.completions.create({
-      model: "grok-4-1-fast",
+    const response = await client.chat.completions.create({
+      model: CHEAP_MODEL,
       messages: [
         { role: "system", content: systemPrompt },
         {
@@ -94,7 +84,7 @@ export async function extractMemories(
       temperature: 0.3,
     });
 
-    logAiUsage({ model: "grok-4-1-fast", source: "memory-extract", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
+    logAiUsage({ model: CHEAP_MODEL, source: "memory-extract", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
 
     const raw = response.choices?.[0]?.message?.content?.trim();
     if (!raw) return [];
@@ -184,7 +174,7 @@ export async function extractMeetingMemories(
   existingMemories: string[]
 ): Promise<MemorySuggestion[]> {
   try {
-    const xai = getXAIClient();
+    const client = getCheapModelClient();
 
     // Compose meeting content as a text block
     const parts: string[] = [];
@@ -227,8 +217,8 @@ export async function extractMeetingMemories(
       existingList
     );
 
-    const response = await xai.chat.completions.create({
-      model: "grok-4-1-fast",
+    const response = await client.chat.completions.create({
+      model: CHEAP_MODEL,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: meetingText.slice(0, 4000) },
@@ -237,7 +227,7 @@ export async function extractMeetingMemories(
       temperature: 0.3,
     });
 
-    logAiUsage({ model: "grok-4-1-fast", source: "memory-extract-meeting", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
+    logAiUsage({ model: CHEAP_MODEL, source: "memory-extract-meeting", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
 
     const raw = response.choices?.[0]?.message?.content?.trim();
     if (!raw) return [];
@@ -323,7 +313,7 @@ export async function extractTaskMemories(
   existingMemories: string[]
 ): Promise<MemorySuggestion[]> {
   try {
-    const xai = getXAIClient();
+    const client = getCheapModelClient();
 
     const parts: string[] = [];
     parts.push(`Completed task: ${task.taskTitle}`);
@@ -352,8 +342,8 @@ export async function extractTaskMemories(
       existingList
     );
 
-    const response = await xai.chat.completions.create({
-      model: "grok-4-1-fast",
+    const response = await client.chat.completions.create({
+      model: CHEAP_MODEL,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: taskText.slice(0, 2000) },
@@ -362,7 +352,7 @@ export async function extractTaskMemories(
       temperature: 0.3,
     });
 
-    logAiUsage({ model: "grok-4-1-fast", source: "memory-extract-task", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
+    logAiUsage({ model: CHEAP_MODEL, source: "memory-extract-task", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
 
     const raw = response.choices?.[0]?.message?.content?.trim();
     if (!raw) return [];

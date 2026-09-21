@@ -1419,10 +1419,15 @@ export async function POST(
     // was chosen for the writing, and having search available should not
     // silently replace it. This is what sent an all-company message to Sonnet 5
     // via a search fallback on a prompt that had nothing to search for.
-    if (queryRoute.searchMode === "on" && wasAutoRouted && model.startsWith("grok") && !queryRoute.composition) {
+    //
+    // !model.startsWith("claude"), not "grok": FAST_MODEL is now GPT-5.6 Luna
+    // (PLAN-cheap-tier-model-update.md §A-3), which has no web search of its
+    // own either — a Grok-only check would let an auto-routed search turn
+    // stay on Luna with no search capability at all.
+    if (queryRoute.searchMode === "on" && wasAutoRouted && !model.startsWith("claude") && !queryRoute.composition) {
       model = "claude-sonnet-5";
       console.log(`[Messages] Web search: auto-route override → claude-sonnet-5 (grounded tool-based search)`);
-    } else if (queryRoute.searchMode === "on" && wasAutoRouted && model.startsWith("grok")) {
+    } else if (queryRoute.searchMode === "on" && wasAutoRouted && !model.startsWith("claude")) {
       console.log(`[Messages] Composition turn — keeping ${model}, search stays available`);
     }
 

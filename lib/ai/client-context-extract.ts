@@ -15,16 +15,7 @@ import { Storage } from "@google-cloud/storage";
 import { google } from "googleapis";
 import OpenAI from "openai";
 import { logAiUsage } from "@/lib/ai/usage-logger";
-
-function getXAIClient() {
-  if (!process.env.XAI_API_KEY) {
-    throw new Error("XAI_API_KEY is not set");
-  }
-  return new OpenAI({
-    apiKey: process.env.XAI_API_KEY,
-    baseURL: "https://api.x.ai/v1",
-  });
-}
+import { CHEAP_MODEL, getCheapModelClient } from "@/lib/ai/cheap-model";
 
 interface AssetFile {
   id_asset: number;
@@ -363,14 +354,14 @@ async function extractText(
  * Summarise a single document's extracted text.
  */
 async function summariseDocument(
-  xai: OpenAI,
+  client: OpenAI,
   text: string,
   fileName: string
 ): Promise<string> {
   const truncated = text.slice(0, 12000);
 
-  const response = await xai.chat.completions.create({
-    model: "grok-4-1-fast",
+  const response = await client.chat.completions.create({
+    model: CHEAP_MODEL,
     messages: [
       {
         role: "system",
@@ -401,7 +392,7 @@ Document: "${fileName}"`,
     temperature: 0.2,
   });
 
-  logAiUsage({ model: "grok-4-1-fast", source: "client-context", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
+  logAiUsage({ model: CHEAP_MODEL, source: "client-context", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
 
   return response.choices?.[0]?.message?.content?.trim() || "";
 }
@@ -410,7 +401,7 @@ Document: "${fileName}"`,
  * Consolidate multiple file summaries into one structured client profile.
  */
 async function consolidateProfile(
-  xai: OpenAI,
+  client: OpenAI,
   fileSummaries: FileSummary[],
   clientName: string
 ): Promise<string> {
@@ -418,8 +409,8 @@ async function consolidateProfile(
     .map((f) => `--- ${f.name} (${f.type}, ${f.chars_extracted.toLocaleString()} chars extracted) ---\n${f.summary}`)
     .join("\n\n");
 
-  const response = await xai.chat.completions.create({
-    model: "grok-4-1-fast",
+  const response = await client.chat.completions.create({
+    model: CHEAP_MODEL,
     messages: [
       {
         role: "system",
@@ -452,7 +443,7 @@ Aim for 400-1000 tokens. Use bullet points.`,
     temperature: 0.2,
   });
 
-  logAiUsage({ model: "grok-4-1-fast", source: "client-context", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
+  logAiUsage({ model: CHEAP_MODEL, source: "client-context", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
 
   return response.choices?.[0]?.message?.content?.trim() || "";
 }
@@ -469,7 +460,7 @@ interface SkippedFile {
  * deterministic brand rules.
  */
 async function extractVisualIdentity(
-  xai: OpenAI,
+  client: OpenAI,
   fileSummaries: FileSummary[],
   clientName: string
 ): Promise<Record<string, unknown> | null> {
@@ -485,8 +476,8 @@ async function extractVisualIdentity(
     .map((f) => `--- ${f.name} ---\n${f.summary}`)
     .join("\n\n");
 
-  const response = await xai.chat.completions.create({
-    model: "grok-4-1-fast",
+  const response = await client.chat.completions.create({
+    model: CHEAP_MODEL,
     messages: [
       {
         role: "system",
@@ -517,7 +508,7 @@ Rules:
   });
 
   logAiUsage({
-    model: "grok-4-1-fast",
+    model: CHEAP_MODEL,
     source: "client-context",
     inputTokens: response.usage?.prompt_tokens || 0,
     outputTokens: response.usage?.completion_tokens || 0,
@@ -561,7 +552,7 @@ export async function processClientContext(
       return { processed: 0, total: 0, skipped: [] };
     }
 
-    const xai = getXAIClient();
+    const client = getCheapModelClient();
     const fileSummaries: FileSummary[] = [];
     const skippedFiles: SkippedFile[] = [];
 
@@ -581,7 +572,7 @@ export async function processClientContext(
             skippedFiles.push({ id_asset: asset.id_asset, name: asset.name_asset || fileName, reason });
             continue;
           }
-          const summary = await summariseDocument(xai, text, fileName);
+          const summary = await summariseDocument(client, text, fileName);
           if (summary) {
             fileSummaries.push({
               id_asset: asset.id_asset,
@@ -644,7 +635,7 @@ export async function processClientContext(
         }
 
         // Summarise
-        const summary = await summariseDocument(xai, text, fileName);
+        const summary = await summariseDocument(client, text, fileName);
         if (summary) {
           fileSummaries.push({
             id_asset: asset.id_asset,
@@ -674,7 +665,7 @@ export async function processClientContext(
     // 3. Consolidate into one profile
     const name = clientName || `Client ${clientId}`;
     const consolidatedProfile = await consolidateProfile(
-      xai,
+      client,
       fileSummaries,
       name
     );
@@ -682,7 +673,7 @@ export async function processClientContext(
     // 3b. Extract structured visual identity for Design mode (best-effort).
     let visualIdentity: Record<string, unknown> | null = null;
     try {
-      visualIdentity = await extractVisualIdentity(xai, fileSummaries, name);
+      visualIdentity = await extractVisualIdentity(client, fileSummaries, name);
     } catch (err: any) {
       console.warn(`[ClientContext] visual_identity extraction failed for ${name}:`, err?.message);
     }

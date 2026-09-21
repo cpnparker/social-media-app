@@ -15,7 +15,7 @@ import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { createStreamingResponse, type AIMessage, type StreamResult } from "@/lib/ai/providers";
 import { buildSystemPrompt, normalizeContextConfig } from "@/lib/ai/system-prompts";
 import { routeQuery } from "@/lib/ai/query-router";
-import { routeModel } from "@/lib/ai/auto-router";
+import { routeModel, FAST_MODEL } from "@/lib/ai/auto-router";
 import { logAiUsage } from "@/lib/ai/usage-logger";
 import { markdownToEmailHtml } from "@/lib/scheduled/email-html";
 
@@ -139,13 +139,16 @@ export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunR
 
     // Model: resolve 'auto' like the chat route (incl. the grounded-search override),
     // but FLOOR auto at the reasoning tier: scheduled runs are unattended — nobody
-    // is watching to catch grok-4-1-fast fabricating a tool arg or a figure.
+    // is watching to catch the cheap fast-tier model fabricating a tool arg or a
+    // figure. Compares against the imported FAST_MODEL constant, not a literal —
+    // a hardcoded "grok-4-1-fast" here silently stopped matching the day
+    // FAST_MODEL became "gpt-5-6-luna" (PLAN-cheap-tier-model-update.md §A-3).
     let model = task.name_model || "auto";
     if (model === "auto") {
       model = routeModel(task.document_prompt);
-      if (model === "grok-4-1-fast") model = "grok-4-3";
+      if (model === FAST_MODEL) model = "grok-4-3";
     }
-    if (queryRoute.searchMode === "on" && model.startsWith("grok")) model = "claude-sonnet-5";
+    if (queryRoute.searchMode === "on" && !model.startsWith("claude")) model = "claude-sonnet-5";
 
     let systemPrompt = buildSystemPrompt({
       workspaceConfig,

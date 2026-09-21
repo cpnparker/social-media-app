@@ -14,7 +14,7 @@
  * three silent-failure paths (registry mutation, blob ownership, context
  * truncation) behave.
  */
-import { routeModel } from "../lib/ai/auto-router";
+import { routeModel, FAST_MODEL } from "../lib/ai/auto-router";
 import { routeQuery } from "../lib/ai/query-router";
 import { getModelInfo, isPersonnelSensitive } from "../lib/ai/providers";
 import * as providers from "../lib/ai/providers";
@@ -48,7 +48,12 @@ console.log("\n1. Routing — composition is flagged, but never loses its ground
   check("an all-company message reaches the flagship, not the cheap leg", m === "grok-4-6", m);
   // The route suppresses the Sonnet override and the 8192 ceiling for a
   // composition turn; searchMode itself is left alone.
-  const overrideFires = q.searchMode === "on" && m.startsWith("grok") && !q.composition;
+  //
+  // !m.startsWith("claude"), matching the route's own predicate: broadened
+  // from a Grok-only check when FAST_MODEL stopped being a Grok model (see
+  // PLAN-cheap-tier-model-update.md §A-3) — a Grok-only check here would stop
+  // matching the day the router's cheap leg changed and never tell anyone.
+  const overrideFires = q.searchMode === "on" && !m.startsWith("claude") && !q.composition;
   check("the model override does NOT fire on a composition turn", !overrideFires);
   check("the token ceiling is not doubled on a composition turn", !(q.searchMode === "on" && !q.composition));
 }
@@ -91,7 +96,12 @@ console.log("\n3. Routing — the refinement inherits the stakes of what it refi
   // which is a stronger fix than inheriting past it. The assertion is kept,
   // pointed at what now matters: it must not land on the cheap leg by ANY
   // route, with or without its prior.
-  check("classified alone it no longer falls to the cheap leg", alone !== "grok-4-1-fast", alone);
+  //
+  // Compares against the imported FAST_MODEL constant, not the literal
+  // "grok-4-1-fast" — that model id was retired from the leg 2026-09-21
+  // (PLAN-cheap-tier-model-update.md §A-3, cheap leg now GPT-5.6 Luna), and a
+  // literal here would have quietly stopped asserting anything at all.
+  check("classified alone it no longer falls to the cheap leg", alone !== FAST_MODEL, alone);
   check("with the prior turn it inherits the flagship", withPrior === "grok-4-6", withPrior);
   // And the inheritance itself still works where it is still needed: a
   // genuinely trivial refinement — one that passes the trivial gate — of a
@@ -104,7 +114,7 @@ console.log("\n3. Routing — the refinement inherits the stakes of what it refi
   );
   check(
     "and that same message alone is cheap, so the inheritance is what moved it",
-    routeModel("ok, try again") === "grok-4-1-fast",
+    routeModel("ok, try again") === FAST_MODEL,
     routeModel("ok, try again")
   );
   // One-way only: a trivial thread must never drag a complex follow-up down.
@@ -137,7 +147,7 @@ console.log("\n3. Routing — the refinement inherits the stakes of what it refi
   // own merits and would have tested nothing here.
   check(
     "an all-refinement history does not escalate",
-    routeModel("ok, try again", ["ok, tighten it", "try again"]) === "grok-4-1-fast",
+    routeModel("ok, try again", ["ok, tighten it", "try again"]) === FAST_MODEL,
     routeModel("ok, try again", ["ok, tighten it", "try again"])
   );
 }

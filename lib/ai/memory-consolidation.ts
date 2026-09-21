@@ -13,9 +13,9 @@
  * Also provides lazy decay scoring for retrieval-time importance ranking.
  */
 
-import OpenAI from "openai";
 import { logAiUsage } from "@/lib/ai/usage-logger";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
+import { CHEAP_MODEL, getCheapModelClient } from "@/lib/ai/cheap-model";
 
 // ── Types ──
 
@@ -97,16 +97,6 @@ export function findSimilarMemories(
 
 // ── LLM-based consolidation classification ──
 
-function getXAIClient() {
-  if (!process.env.XAI_API_KEY) {
-    throw new Error("XAI_API_KEY is not set");
-  }
-  return new OpenAI({
-    apiKey: process.env.XAI_API_KEY,
-    baseURL: "https://api.x.ai/v1",
-  });
-}
-
 const CONSOLIDATION_PROMPT = `You are a memory consolidation engine. Given a NEW candidate memory and EXISTING memories, classify the action.
 
 Actions:
@@ -135,7 +125,7 @@ export async function classifyMemoryAction(
   similarMemories: { memory: ExistingMemory; similarity: number }[]
 ): Promise<ConsolidationAction> {
   try {
-    const xai = getXAIClient();
+    const client = getCheapModelClient();
 
     const existingBlock = similarMemories
       .map(
@@ -148,8 +138,8 @@ export async function classifyMemoryAction(
       .replace("{CATEGORY}", candidate.category)
       .replace("{CONTENT}", candidate.content);
 
-    const response = await xai.chat.completions.create({
-      model: "grok-4-1-fast",
+    const response = await client.chat.completions.create({
+      model: CHEAP_MODEL,
       messages: [
         { role: "system", content: prompt },
         { role: "user", content: "Classify this memory." },
@@ -158,7 +148,7 @@ export async function classifyMemoryAction(
       temperature: 0.2,
     });
 
-    logAiUsage({ model: "grok-4-1-fast", source: "memory-consolidate", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
+    logAiUsage({ model: CHEAP_MODEL, source: "memory-consolidate", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
 
     const raw = response.choices?.[0]?.message?.content?.trim();
     if (!raw) return { action: "NOOP" };
