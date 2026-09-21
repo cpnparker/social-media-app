@@ -36,11 +36,7 @@ import {
   Sun,
   Moon,
   Monitor,
-  Globe,
-  ScrollText,
   Newspaper,
-  Share2,
-  Lightbulb,
   Brain,
   ListChecks,
   EyeOff,
@@ -48,7 +44,6 @@ import {
   Settings,
   Sparkles,
   Pin,
-  ImageIcon,
   ShieldCheck,
   BookOpen,
   Trash2,
@@ -139,40 +134,6 @@ function sameConversationList(a: AIConversation[], b: AIConversation[]): boolean
     ) return false;
   }
   return true;
-}
-
-/**
- * Fold the workspace's saved context config into the composer's state, failing
- * ON the way the server does.
- *
- * This state used to be ASSIGNED whatever the settings endpoint returned. The
- * endpoint normalises, so that was safe — but every switch below renders off
- * unless its value is the literal "on", and three of the four workspace rows
- * in the database carry `{contracts, socialPresence, contentPipeline}` and
- * nothing else. One request that skipped the normalise, or one row read
- * straight from Supabase, and the four capability switches would light up OFF
- * while the server treated them as on. A control whose light disagrees with
- * the setting is worse than no control: the user turns it "on", nothing
- * changes, and they conclude the feature is broken.
- *
- * Keys are read one by one rather than spread, so a payload missing one of
- * them keeps the default rather than writing `undefined` over it. `!== "off"`
- * is deliberately the same predicate as normalizeContextConfig — if one of the
- * two moves the other has to, and scripts/verify-incident-fixes.ts says so.
- */
-function mergeContextConfig<T extends Record<string, string>>(prev: T, incoming: any): T {
-  if (!incoming || typeof incoming !== "object") return prev;
-  const next: Record<string, string> = { ...prev };
-  const LEVELS = ["contracts", "contentPipeline", "socialPresence", "ideas"];
-  for (let i = 0; i < LEVELS.length; i++) {
-    const v = incoming[LEVELS[i]];
-    if (typeof v === "string" && v) next[LEVELS[i]] = v;
-  }
-  const SWITCHES = ["webSearch", "memory", "meetingBrain", "imageGeneration"];
-  for (let i = 0; i < SWITCHES.length; i++) {
-    if (SWITCHES[i] in incoming) next[SWITCHES[i]] = incoming[SWITCHES[i]] !== "off" ? "on" : "off";
-  }
-  return next as T;
 }
 
 export default function EngineAIPage() {
@@ -278,16 +239,6 @@ function EngineAIContent() {
   const [clientPopoverOpen, setClientPopoverOpen] = useState(false);
   const [userName, setUserName] = useState("");
   const [userEmail, setUserEmail] = useState("");
-  const [contextConfig, setContextConfig] = useState({
-    contracts: "summary" as string,
-    contentPipeline: "summary" as string,
-    socialPresence: "summary" as string,
-    ideas: "summary" as string,
-    webSearch: "on" as string,
-    memory: "on" as string,
-    meetingBrain: "on" as string,
-    imageGeneration: "on" as string,
-  });
   const [debugMode, setDebugMode] = useState(false);
   const [incognitoMode, setIncognitoMode] = useState(false);
   const [memoryManagerOpen, setMemoryManagerOpen] = useState(false);
@@ -479,20 +430,17 @@ function EngineAIContent() {
       .catch(() => {});
   }, []);
 
-  // Fetch workspace AI settings (default model + context config)
+  // Fetch workspace AI settings (default model + debug flag)
   useEffect(() => {
     if (!workspaceId) return;
     fetch(`/api/ai/settings?workspaceId=${workspaceId}`)
       .then((r) => r.json())
       .then((data) => {
-        if (data.currentModel) {
-          setSelectedModel(data.currentModel);
-          if (data.contextConfig) {
-            setContextConfig((prev) => mergeContextConfig(prev, data.contextConfig));
-          }
-        } else if (data.contextConfig) {
-          setContextConfig((prev) => mergeContextConfig(prev, data.contextConfig));
-        }
+        // The context levels the reply is built with live in the workspace row
+        // and are read there, by the route, on every turn. This page used to
+        // keep a copy so its context menu could post one per message; with the
+        // menu gone there is nothing here that needs them.
+        if (data.currentModel) setSelectedModel(data.currentModel);
         if (data.debugMode) setDebugMode(data.debugMode);
       })
       .catch(() => {});
@@ -1713,7 +1661,7 @@ const ORAC_ENABLED = false;
               onMenuClick={() => setSidebarOpen(true)}
               initialMessage={initialMessage}
               initialAttachments={initialAttachments}
-              contextConfig={{ ...contextConfig, incognito: incognitoMode ? "on" : "off" }}
+              incognito={incognitoMode}
               debugMode={debugMode}
               customers={customers.map((c) => ({ id: String(c.id), name: c.name, logoUrl: c.logoUrl || undefined }))}
               selectedCustomer={selectedCustomer ? { id: String(selectedCustomer.id), name: selectedCustomer.name } : null}
@@ -1979,99 +1927,6 @@ const ORAC_ENABLED = false;
                             </button>
                           </div>
 
-                          {/* Context toggles */}
-                          <div className="h-px bg-border mx-2" />
-                          <div className="px-3 pt-2 pb-1">
-                            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Context</p>
-                          </div>
-                          <div className="grid grid-cols-4 gap-1 px-2">
-                            {[
-                              { key: "contracts" as const, label: "Contracts", Icon: ScrollText, color: "text-amber-400" },
-                              { key: "contentPipeline" as const, label: "Content", Icon: Newspaper, color: "text-blue-400" },
-                              { key: "socialPresence" as const, label: "Social", Icon: Share2, color: "text-violet-400" },
-                              { key: "ideas" as const, label: "Ideas", Icon: Lightbulb, color: "text-yellow-400" },
-                            ].map((item) => {
-                              const level = contextConfig[item.key];
-                              const isOn = level !== "off";
-                              const nextLevel = isOn ? "off" : "summary";
-                              return (
-                                <button
-                                  key={item.key}
-                                  onClick={() =>
-                                    setContextConfig((prev) => ({ ...prev, [item.key]: nextLevel }))
-                                  }
-                                  className={cn(
-                                    "flex flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] transition-all",
-                                    isOn
-                                      ? "text-foreground/80 bg-foreground/5"
-                                      : "text-muted-foreground/40 hover:bg-muted"
-                                  )}
-                                >
-                                  <item.Icon className={cn("h-3.5 w-3.5", isOn ? item.color : "text-muted-foreground/50")} />
-                                  {item.label}
-                                </button>
-                              );
-                            })}
-                            <button
-                              onClick={() =>
-                                setContextConfig((prev) => ({ ...prev, webSearch: prev.webSearch === "on" ? "off" : "on" }))
-                              }
-                              className={cn(
-                                "flex flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] transition-all",
-                                contextConfig.webSearch === "on"
-                                  ? "text-foreground/80 bg-foreground/5"
-                                  : "text-muted-foreground/40 hover:bg-muted"
-                              )}
-                            >
-                              <Globe className={cn("h-3.5 w-3.5", contextConfig.webSearch === "on" ? "text-emerald-400" : "text-muted-foreground/50")} />
-                              Web
-                            </button>
-                            <button
-                              onClick={() =>
-                                setContextConfig((prev) => ({ ...prev, memory: prev.memory === "on" ? "off" : "on" }))
-                              }
-                              className={cn(
-                                "flex flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] transition-all",
-                                contextConfig.memory === "on"
-                                  ? "text-foreground/80 bg-foreground/5"
-                                  : "text-muted-foreground/40 hover:bg-muted"
-                              )}
-                            >
-                              <Brain className={cn("h-3.5 w-3.5", contextConfig.memory === "on" ? "text-pink-400" : "text-muted-foreground/50")} />
-                              Memory
-                            </button>
-                            {newVisibility !== "team" && (
-                              <button
-                                onClick={() =>
-                                  setContextConfig((prev) => ({ ...prev, meetingBrain: prev.meetingBrain === "on" ? "off" : "on" }))
-                                }
-                                className={cn(
-                                  "flex flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] transition-all",
-                                  contextConfig.meetingBrain === "on"
-                                    ? "text-foreground/80 bg-foreground/5"
-                                    : "text-muted-foreground/40 hover:bg-muted"
-                                )}
-                              >
-                                <ListChecks className={cn("h-3.5 w-3.5", contextConfig.meetingBrain === "on" ? "text-teal-400" : "text-muted-foreground/50")} />
-                                Tasks
-                              </button>
-                            )}
-                            <button
-                              onClick={() =>
-                                setContextConfig((prev) => ({ ...prev, imageGeneration: prev.imageGeneration === "on" ? "off" : "on" }))
-                              }
-                              className={cn(
-                                "flex flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] transition-all",
-                                contextConfig.imageGeneration === "on"
-                                  ? "text-foreground/80 bg-foreground/5"
-                                  : "text-muted-foreground/40 hover:bg-muted"
-                              )}
-                            >
-                              <ImageIcon className={cn("h-3.5 w-3.5", contextConfig.imageGeneration === "on" ? "text-violet-400" : "text-muted-foreground/50")} />
-                              Image
-                            </button>
-                          </div>
-
                           {/* Theme */}
                           <div className="h-px bg-border mx-2" />
                           <div className="px-3 pt-2 pb-1">
@@ -2310,137 +2165,6 @@ const ORAC_ENABLED = false;
                     ))}
                   </div>
                 )}
-
-                {/* Context & web search controls (desktop only — mobile uses + popover) */}
-                <div className="hidden lg:flex items-center justify-center gap-1.5 mt-3 flex-wrap">
-                  {[
-                    { key: "contracts" as const, label: "Contracts", Icon: ScrollText, color: "text-amber-400" },
-                    { key: "contentPipeline" as const, label: "Content", Icon: Newspaper, color: "text-blue-400" },
-                    { key: "socialPresence" as const, label: "Social", Icon: Share2, color: "text-violet-400" },
-                    { key: "ideas" as const, label: "Ideas", Icon: Lightbulb, color: "text-yellow-400" },
-                  ].map((item) => {
-                    const level = contextConfig[item.key];
-                    const isOn = level !== "off";
-                    const nextLevel = isOn ? "off" : "summary";
-                    return (
-                      <button
-                        key={item.key}
-                        onClick={() =>
-                          setContextConfig((prev) => ({
-                            ...prev,
-                            [item.key]: nextLevel,
-                          }))
-                        }
-                        title={`${item.label}: ${isOn ? "On" : "Off"} — click to toggle`}
-                        className={cn(
-                          "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-all",
-                          isOn
-                            ? "bg-foreground/[0.06] border-border text-foreground"
-                            : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-                        )}
-                      >
-                        <item.Icon className={cn(
-                          "h-3.5 w-3.5 transition-colors",
-                          isOn
-                            ? item.color
-                            : "text-muted-foreground/50"
-                        )} />
-                        {item.label}
-                      </button>
-                    );
-                  })}
-                  <div className="w-px h-4 sm:h-3 bg-border mx-0.5" />
-                  <button
-                    onClick={() => {
-                      const turningOn = contextConfig.webSearch !== "on";
-                      setContextConfig((prev) => ({
-                        ...prev,
-                        webSearch: turningOn ? "on" : "off",
-                      }));
-                      // All selectable models support web search: Claude natively,
-                      // Grok via LiveSearch, GPT/Gemini via the web_search tool.
-                    }}
-                    title={`Web Search: ${contextConfig.webSearch === "on" ? "On — AI can search the web" : "Off"} — click to toggle`}
-                    className={cn(
-                      "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-all",
-                      contextConfig.webSearch === "on"
-                        ? "bg-foreground/[0.06] border-border text-foreground"
-                        : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-                    )}
-                  >
-                    <Globe className={cn(
-                      "h-3.5 w-3.5 transition-colors",
-                      contextConfig.webSearch === "on" ? "text-emerald-400" : "text-muted-foreground/50"
-                    )} />
-                    Web
-                  </button>
-                  <button
-                    onClick={() =>
-                      setContextConfig((prev) => ({
-                        ...prev,
-                        memory: prev.memory === "on" ? "off" : "on",
-                      }))
-                    }
-                    title={`Memory: ${contextConfig.memory === "on" ? "On — AI remembers context" : "Off"} — click to toggle`}
-                    className={cn(
-                      "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-all",
-                      contextConfig.memory === "on"
-                        ? "bg-foreground/[0.06] border-border text-foreground"
-                        : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-                    )}
-                  >
-                    <Brain className={cn(
-                      "h-3.5 w-3.5 transition-colors",
-                      contextConfig.memory === "on" ? "text-pink-400" : "text-muted-foreground/50"
-                    )} />
-                    Memory
-                  </button>
-                  {newVisibility !== "team" && (
-                    <button
-                      onClick={() =>
-                        setContextConfig((prev) => ({
-                          ...prev,
-                          meetingBrain: prev.meetingBrain === "on" ? "off" : "on",
-                        }))
-                      }
-                      title={`MeetingBrain: ${contextConfig.meetingBrain === "on" ? "On — includes your tasks & meetings" : "Off"} — click to toggle`}
-                      className={cn(
-                        "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-all",
-                        contextConfig.meetingBrain === "on"
-                          ? "bg-foreground/[0.06] border-border text-foreground"
-                          : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-                      )}
-                    >
-                      <ListChecks className={cn(
-                        "h-3.5 w-3.5 transition-colors",
-                        contextConfig.meetingBrain === "on" ? "text-teal-400" : "text-muted-foreground/50"
-                      )} />
-                      MeetingBrain
-                    </button>
-                  )}
-                  <button
-                    onClick={() => {
-                      const turningOn = contextConfig.imageGeneration !== "on";
-                      setContextConfig((prev) => ({
-                        ...prev,
-                        imageGeneration: turningOn ? "on" : "off",
-                      }));
-                    }}
-                    title={`Image Generation: ${contextConfig.imageGeneration === "on" ? "On — AI can create images" : "Off"} — click to toggle`}
-                    className={cn(
-                      "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-all",
-                      contextConfig.imageGeneration === "on"
-                        ? "bg-foreground/[0.06] border-border text-foreground"
-                        : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-                    )}
-                  >
-                    <ImageIcon className={cn(
-                      "h-3.5 w-3.5 transition-colors",
-                      contextConfig.imageGeneration === "on" ? "text-violet-400" : "text-muted-foreground/50"
-                    )} />
-                    Image
-                  </button>
-                </div>
 
               </div>
             </div>

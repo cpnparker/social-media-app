@@ -26,10 +26,9 @@ import { applyEditSlide, unrenderableSlides, undrawnTableSlides, undrawnTableFau
 import { slidesFailure, parseSlidesArguments, SLIDES_FAILED_FOR_USER, type SlidesTurnState } from "../lib/slides/failure";
 import {
   asksForDeckChange, deckChangeClaim, claimingRules, CLAIM_RULES, ASK_RULES, shouldRetryDeckClaim, unmadeDeckChangeNotice,
-  DECK_CLAIM_NUDGE, DECK_NOT_CHANGED_NOTICE, NO_DECK_BUILT_NOTICE, DECK_SWITCHED_OFF_NOTICE, lastAssistantReply, endsInDeckChangeQuestion,
+  DECK_CLAIM_NUDGE, DECK_NOT_CHANGED_NOTICE, NO_DECK_BUILT_NOTICE, lastAssistantReply, endsInDeckChangeQuestion,
   type DeckClaimRetryInput, type ClaimOpts,
 } from "../lib/slides/claim";
-import { GENERATION_CONTROL_CHAT } from "../lib/ai/capability-control";
 import { createToolLoopGuard } from "../lib/ai/tool-loop-guard";
 import { deckToHtml, safeSrc } from "../lib/slides/pdf-html";
 import { SLIDES_TEXT_INSET, NATURAL_LINE, runsOf, runNeedsStyle } from "../lib/slides/preview-style";
@@ -6700,30 +6699,23 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       const CHART_USER = "Make a bar chart of the numbers on slide 5";
       const CHART_REPLY = "I've created a bar chart from the numbers on slide 5.";
       if (!asksForDeckChange(CHART_USER, { deckInConversation: true }) || !deckChangeClaim(CHART_REPLY)) fail("40c: PRECONDITION — the chart request no longer reads as an ask and a claim, so the tool gate below is untested here");
-      if (unmadeDeckChangeNotice(CHART_REPLY, {}, { asked: true, deckInConversation: true, alreadySaid: false, offered: true, toolsUsed: [{ name: "generate_chart", calls: 1 }] })) fail("40c: the notice speaks after a chart was made from the deck");
-      const said = (turn: SlidesTurnState | undefined, o: { asked: boolean; deckInConversation: boolean; alreadySaid: boolean; offered?: boolean }, text?: string) => unmadeDeckChangeNotice(text === undefined ? INCIDENT_REPLY : text, turn, { offered: true, ...o, toolsUsed: [{ name: "query_meetingbrain", calls: 1 }] });
-      // A turn where generate_slides was never registered must not close on
-      // "Ask again": the second ask reaches a turn with no builder either. It
-      // names the switch, and the switch it names is the one the PROMPT names,
-      // so the two cannot drift into pointing at different controls.
-      const switchedOff = said({}, { asked: true, deckInConversation: true, alreadySaid: false, offered: false });
-      if (switchedOff !== DECK_SWITCHED_OFF_NOTICE) fail("40c: a turn with no generate_slides does not get the switched-off notice");
-      if (/ask again to make the change\.|ask again to make it\./i.test(switchedOff)) fail(`40c: the switched-off notice still tells the user to ask again: ${switchedOff}`);
-      {
-        // Every label the PROMPT quotes has to be in the notice too, so a user
-        // told one thing by the model and another by the notice is not sent to
-        // two different controls. Derived, not listed: the string names one
-        // label today and named two yesterday.
-        const quoted = GENERATION_CONTROL_CHAT.match(/"([^"]+)"/g) || [];
-        if (quoted.length < 1) fail("40c: PRECONDITION — the prompt's control name quotes no labels, so the notice cannot be compared against it");
-        for (let k = 0; k < quoted.length; k++) {
-          const label = quoted[k].slice(1, -1);
-          if (switchedOff.indexOf(label) < 0) fail(`40c: the notice does not name "${label}", which is what the prompt tells the model to say`);
-        }
+      if (unmadeDeckChangeNotice(CHART_REPLY, {}, { asked: true, deckInConversation: true, alreadySaid: false, toolsUsed: [{ name: "generate_chart", calls: 1 }] })) fail("40c: the notice speaks after a chart was made from the deck");
+      const said = (turn: SlidesTurnState | undefined, o: { asked: boolean; deckInConversation: boolean; alreadySaid: boolean }, text?: string) => unmadeDeckChangeNotice(text === undefined ? INCIDENT_REPLY : text, turn, { ...o, toolsUsed: [{ name: "query_meetingbrain", calls: 1 }] });
+      // A THIRD NOTICE USED TO LIVE HERE, for a turn where generate_slides was
+      // never registered: it named the "Image" switch instead of saying "Ask
+      // again", because with the capability off the second ask reached a turn
+      // with no builder either. Both the switch and the notice are gone, and
+      // "Ask again" is now always right — the only thing that can stop a call
+      // on a chat turn is a taint, which lasts exactly one turn and which
+      // asking again is what clears.
+      if (DECK_NOT_CHANGED_NOTICE.indexOf("Ask again") < 0 || NO_DECK_BUILT_NOTICE.indexOf("Ask again") < 0) fail("40c: a turn that claimed a change no longer tells the user to ask again");
+      // …and neither notice sends the reader looking for a control. This is
+      // the assertion that holds the removal: a notice that names a switch
+      // nobody can press is the user-facing half of a prompt that does.
+      const NOTICES = [DECK_NOT_CHANGED_NOTICE, NO_DECK_BUILT_NOTICE];
+      for (let k = 0; k < NOTICES.length; k++) {
+        if (/\bswitch(es|ed|ing)?\b(?!\s+(from|to|between))|\btoggle[ds]?\b|\bturn (it|them|that) (back )?on\b/i.test(NOTICES[k])) fail(`40c: a deck notice points at a control that no longer exists: ${NOTICES[k].slice(-90)}`);
       }
-      // …and the other two notices still do say it, because there asking again
-      // is exactly what works.
-      if (DECK_NOT_CHANGED_NOTICE.indexOf("Ask again") < 0 || NO_DECK_BUILT_NOTICE.indexOf("Ask again") < 0) fail("40c: an offered turn no longer tells the user to ask again");
       // The reply a short answer is read against.
       if (lastAssistantReply([{ role: "user", content: "a" }, { role: "assistant", content: "Want me to replace slide 9?" }, { role: "system", content: "s" }, { role: "user", content: "yes" }]) !== "Want me to replace slide 9?") fail("40c: lastAssistantReply does not return the latest assistant message");
       if (lastAssistantReply([{ role: "user", content: "yes" }]) !== "" || lastAssistantReply(undefined) !== "" || lastAssistantReply([{ role: "assistant", content: [{ type: "text" }] }]) !== "") fail("40c: lastAssistantReply invents a reply where there is none");
@@ -6800,15 +6792,14 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
         const ur = site.indexOf("unresolvedSlidesNotice(config.slidesTurn)");
         const um = site.indexOf("unmadeDeckChangeNotice(spokenText, config.slidesTurn");
         if (um < 0 || um < ur) fail(`40f: end site ${i + 1}: the deck-claim notice does not read spokenText after the unresolved notice`);
-        // `offered` is read off THIS chain's registered tool array — the
-        // Anthropic shape is `t?.name`, the three OpenAI-compatible ones
-        // `t?.function?.name`. Hard-coding one shape would leave three chains
-        // reading `undefined` and telling every user the switch is off.
-        const offeredArg = i === 0
-          ? 'offered: tools.some((t: any) => t?.name === "generate_slides")'
-          : 'offered: tools.some((t: any) => t?.function?.name === "generate_slides")';
-        if (site.indexOf(offeredArg) < 0) fail(`40f: end site ${i + 1}: the deck-claim notice does not read generate_slides off this chain's tool array: expected ${offeredArg}`);
-        if (!new RegExp("const (\\w+) = unmadeDeckChangeNotice\\(spokenText, config\\.slidesTurn, \\{ asked: config\\.deckEditAsked === true, deckInConversation: config\\.deckInConversation === true, alreadySaid: fullText !== spokenText, " + offeredArg.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ", toolsUsed: toolLoopGuard\\.usage\\(\\) \\}\\);\\s*if \\(\\1\\) \\{\\s*fullText \\+= \\1;[\\s\\S]{0,40}?controller\\.enqueue\\(encoder\\.encode\\(`data: \\$\\{JSON\\.stringify\\(\\{ token: \\1 \\}\\)\\}").test(site)) fail(`40f: end site ${i + 1}: the deck-claim notice is not gated as designed, appended and streamed`);
+        // The notice USED to take an `offered` argument read off this chain's
+        // registered tool array, so that a turn with no generate_slides could
+        // name the switch instead of saying "Ask again". It does not any more
+        // — the tools are registered on every chat turn — and the argument is
+        // asserted GONE rather than simply not mentioned, because a leftover
+        // `offered:` here would be a live reference to a removed concept.
+        if (/unmadeDeckChangeNotice\([^;]*\boffered:/.test(site)) fail(`40f: end site ${i + 1}: the deck-claim notice still passes an \`offered\` flag`);
+        if (!new RegExp("const (\\w+) = unmadeDeckChangeNotice\\(spokenText, config\\.slidesTurn, \\{ asked: config\\.deckEditAsked === true, deckInConversation: config\\.deckInConversation === true, alreadySaid: fullText !== spokenText, toolsUsed: toolLoopGuard\\.usage\\(\\) \\}\\);\\s*if \\(\\1\\) \\{\\s*fullText \\+= \\1;[\\s\\S]{0,40}?controller\\.enqueue\\(encoder\\.encode\\(`data: \\$\\{JSON\\.stringify\\(\\{ token: \\1 \\}\\)\\}").test(site)) fail(`40f: end site ${i + 1}: the deck-claim notice is not gated as designed, appended and streamed`);
       }
       if (countIn(prov, "const spokenText = fullText;") !== 4) fail(`40f: spokenText is captured ${countIn(prov, "const spokenText = fullText;")} times, expected 4`);
       const stall = prov.indexOf("stallOutcome(stalledOut, fullText");

@@ -53,7 +53,6 @@
  *     and slide titles carry no double quote; otherwise the template's "Change
  *     only that slide" reads as an ask, as it did before.
  */
-import { GENERATION_CONTROL_CHAT_MD } from "@/lib/ai/capability-control";
 import { stripQuotedContent } from "@/lib/ai/personal-data-intent";
 import type { SlidesTurnState } from "@/lib/slides/failure";
 
@@ -376,13 +375,15 @@ export const DECK_NOT_CHANGED_NOTICE =
   "\n\n---\n\n⚠ **The deck was not changed.** No slides were added, removed or edited in this reply, so the deck on screen is as it was before your message. Ask again to make the change.";
 export const NO_DECK_BUILT_NOTICE =
   "\n\n---\n\n⚠ **No deck was built or changed.** No slides were drawn in this reply, even if the reply above describes a deck. Ask again to make it.";
-// The same fact, for a turn where generate_slides was never registered. Both
-// notices above end "Ask again", which is the right advice exactly when asking
-// again can work — and false advice when the switch is off, because the second
-// ask reaches a turn with no builder in it either. It names the switch instead,
-// from the one string the prompt also reads.
-export const DECK_SWITCHED_OFF_NOTICE =
-  `\n\n---\n\n⚠ **The deck was not changed.** No slides were added, removed or edited in this reply. Building and changing decks is switched off for this conversation — turn on ${GENERATION_CONTROL_CHAT_MD} and ask again.`;
+// A THIRD NOTICE LIVED HERE and has been removed with the switch that needed
+// it. It fired when generate_slides was not in the turn's tool array at all,
+// and it closed by naming the "Image" switch instead of saying "Ask again",
+// because with the capability off the second ask reached a turn with no
+// builder either. The five generation tools are now registered on every chat
+// turn, so the only turns without a builder are the headless ones — a brief, a
+// fact-check — and none of those sets `asked`, which is the first gate below.
+// Keeping it would have meant shipping a notice that names a control nobody
+// can press, for a state nothing can reach.
 
 export interface DeckClaimRetryInput {
   text: string; asked: boolean; turn: SlidesTurnState | null | undefined; offered: boolean;
@@ -399,7 +400,8 @@ export interface DeckClaimRetryInput {
  * the narration becomes true.
  *
  * Not when generate_slides was not offered this round (a tainted Anthropic
- * round, imageGeneration off), not twice, not on the last round (nothing could
+ * round, or a headless caller that registers no generation tools), not twice,
+ * not on the last round (nothing could
  * follow the call), not past the time budget (a retried deck with images takes
  * about a minute), not when another deliverable was made this turn, and not
  * when the claiming round wrote no text: the claim then came from an earlier
@@ -423,24 +425,22 @@ export function shouldRetryDeckClaim(i: DeckClaimRetryInput): boolean {
  */
 export function unmadeDeckChangeNotice(
   text: string, turn: SlidesTurnState | null | undefined,
-  o: { asked: boolean; deckInConversation: boolean; alreadySaid: boolean; offered: boolean; toolsUsed: { name: string; calls: number }[] | null | undefined }
+  o: { asked: boolean; deckInConversation: boolean; alreadySaid: boolean; toolsUsed: { name: string; calls: number }[] | null | undefined }
 ): string {
   if (o.alreadySaid || !o.asked) return "";
   if (turn && turn.lastOutcome) return "";
   if (madeAnotherDeliverable(o.toolsUsed)) return "";
   if (!deckChangeClaim(text)) return "";
-  // `offered` is the same question shouldRetryDeckClaim asks, put to the
-  // notice: was generate_slides in this turn's tool array at all? The retry
-  // gate has always read it — a turn with no builder cannot be made to call
-  // one — while the notice did not, and closed on "Ask again to make the
-  // change" whatever the answer was. With the capability switched off, asking
-  // again reaches another turn with no builder, so that sentence sent the user
-  // round the loop that made them leave in the first place.
+  // BOTH NOTICES END "Ask again", and that is now always the right advice.
+  // This function used to take an `offered` flag as well — was generate_slides
+  // in this turn's tool array at all — because a user behind a switched-off
+  // capability would ask again into another turn with no builder. The switch
+  // is gone and the tools are registered on every chat turn, so the only thing
+  // that can stop a call this turn is a taint, which lasts exactly one turn.
+  // Asking again is precisely what clears it.
   //
-  // Read off the REGISTERED tool array and not off the taint, unlike the retry
-  // gate's own `offered`: a tainted turn refuses the call for this turn only,
-  // so "ask again" is exactly right there and naming a switch would be the
-  // wrong advice. The switch is the only thing that survives the turn.
-  if (!o.offered) return DECK_SWITCHED_OFF_NOTICE;
+  // shouldRetryDeckClaim keeps ITS `offered`, and that is not an inconsistency:
+  // it reads the ROUND's tool list, which the Anthropic chain narrows mid-turn
+  // on taint, and it decides whether another round could possibly help.
   return o.deckInConversation ? DECK_NOT_CHANGED_NOTICE : NO_DECK_BUILT_NOTICE;
 }

@@ -29,7 +29,7 @@ import { appendVolatile } from "@/lib/ai/prompt-cache";
 import { needsClaudeForPersonalData, isPersonalMeetingQuestion } from "@/lib/ai/personal-data-intent";
 import { asksForDeckChange, lastAssistantReply } from "@/lib/slides/claim";
 import { buildDeckContext, DECK_CONTEXT_HEADING } from "@/lib/slides/deck-context";
-import { artlistConfigured, GENERATION_CONTROL_CHAT, GENERATION_CONTROL_DESIGN } from "@/lib/ai/capability-control";
+import { artlistConfigured } from "@/lib/ai/capability-control";
 
 export const maxDuration = 300; // 5 min — covers slow attachment extractions + long responses
 
@@ -705,19 +705,59 @@ export async function POST(
     const history = historyRes.data || [];
     const wsSettings = settingsRes.data;
 
-    // Allow per-request context config override from the client (normalize to detail levels)
-    const contextConfig = normalizeContextConfig(body.contextConfig ?? wsSettings?.config_context ?? undefined);
-    // ONE boolean, read by BOTH the prompt and the tool array. They used to be
-    // two expressions in two files: the prompt gated on contextConfig while the
-    // tools gated on the provider flag, and on every surface where those
+    // HOW MUCH CLIENT DATA IS RESIDENT IN THE PROMPT — the workspace row, and
+    // only the workspace row. It used to read `body.contextConfig` first, and
+    // that override was the whole plumbing behind the composer's context
+    // menu: eight keys the browser posted on every message, four of them
+    // capability switches. The menu is gone, so the browser has nothing to
+    // say about this and is no longer asked.
+    //
+    // On /engineai the levels are unchanged in practice. That composer seeded
+    // its copy from this same row through /api/ai/settings, so what the body
+    // carried was the row with a race attached: a message sent before that
+    // fetch resolved posted the client's own defaults instead. Reading the row
+    // directly removes the race and changes no prompt's size there.
+    //
+    // ON THE OTHER TWO CHATPANEL MOUNTS IT DOES CHANGE, and saying otherwise
+    // would send the next person hunting for a bug. /ai-writer and the chat
+    // beside a content item never passed a config in, so the panel fell back
+    // to "summary" for all four levels and posted that — which quietly meant
+    // those surfaces ignored the workspace's own setting. They now read the
+    // row like everything else, and on a client-anchored thread the TCE row's
+    // full-year contracts and full-month pipeline build a LARGER prompt than
+    // the hard-coded summary did. That is the admin's setting taking effect on
+    // a surface that was overriding it, not a regression.
+    const contextConfig = normalizeContextConfig(wsSettings?.config_context ?? undefined);
+    // INCOGNITO IS NOT A CAPABILITY DIAL and stays exactly where it was: a
+    // privacy control the user sets per thread, posted per message, read here.
+    // It travelled inside contextConfig because that object was the only thing
+    // the composer posted; now it travels as itself.
+    //
+    // THE ROW FIRST, THE BODY AS WELL. Reading the body alone fails OPEN for
+    // one deploy: a tab still running the old bundle posts the old shape and
+    // no top-level key, so `body.incognito` is undefined, and a thread the user
+    // marked incognito gets memories extracted, an episode recorded and a
+    // summary written — durable rows, and not the ones the page's own
+    // incognito cleanup deletes. The row is authoritative (it is what the four
+    // message-persistence gates in this file already read, set once at
+    // creation) and the body is what lets the setting take effect on a thread
+    // mid-flight, so incognito is whichever says yes. This also closes a split
+    // that predates the removal: the provider config below derived its own
+    // `incognito` from the row while this one read the browser, and nothing
+    // reconciled them.
+    const isIncognito = !!conversation.flag_incognito || body.incognito === "on";
+    // THE FIVE GENERATION TOOLS ARE REGISTERED ON EVERY CHAT TURN. One boolean
+    // still, read by BOTH the prompt and the tool array — the two used to be
+    // separate expressions in separate files, and on every surface where they
     // disagreed the model was told in prose about tools it had not been given.
-    // Every `false` this can produce is a stored "off" in config_context or an
-    // "off" in the browser's body — nothing else, since normalizeContextConfig
-    // resolves a missing key, a missing config and a legacy boolean row to on.
-    const generationTools = contextConfig.imageGeneration === "on";
-    // Design Mode is a different SURFACE, not just a different persona: the
-    // rail at /engineai/design posts no contextConfig and carries no context
-    // menu, so the switch the chat composer names is not on that screen.
+    // What changed is that nothing can make it false here any more: the button
+    // that could is deleted, and normalizeContextConfig no longer produces a
+    // key for a stored row to say "off" with. Routes that genuinely produce
+    // text and nothing else (the scheduled brief, the meeting brief, the
+    // fact-checker, the optimiser) pass false from their own call sites.
+    const generationTools = true;
+    // Design Mode is a different SURFACE, not just a different persona, and
+    // the pin below still depends on knowing which one this is.
     const isDesignConversation = conversation.type_conversation_mode === "design";
 
     // The current deck, so the model can EDIT one it made.
@@ -746,7 +786,7 @@ export async function POST(
         .not("slides_draft", "is", null)
         .order("date_created", { ascending: false })
         .limit(1);
-      deckContext = buildDeckContext(deckRows?.[0]?.slides_draft, { generationTools });
+      deckContext = buildDeckContext(deckRows?.[0]?.slides_draft);
     } catch (e: any) {
       console.warn("[Messages] could not load deck spec for editing context:", e?.message);
     }
@@ -760,8 +800,7 @@ export async function POST(
 
     // Determine if memory/summary features are enabled for this request
     // (used by truncation, memory extraction, and summary generation)
-    const isIncognito = contextConfig.incognito === "on";
-    const memoryEnabled = !isIncognito && contextConfig.memory !== "off";
+    const memoryEnabled = !isIncognito;
 
     // Build messages with attachments for AI
     // Context window truncation: keep conversations manageable for AI models.
@@ -1070,7 +1109,7 @@ export async function POST(
     // These are all independent and can run concurrently
 
     // Build memory query with V2 scored retrieval
-    const memoryPromise = (!isIncognito && contextConfig.memory !== "off")
+    const memoryPromise = !isIncognito
       ? (async (): Promise<{ content: string; category: string; strength: number }[]> => {
           let memoryQuery = intelligenceDb
             .from("ai_memories")
@@ -1249,9 +1288,11 @@ export async function POST(
         })()
       : Promise.resolve(null);
 
-    // MeetingBrain / external app context (skip in incognito or when toggled off)
-    const meetingBrainEnabled = contextConfig.meetingBrain !== "off";
-    const appContextPromise = !isIncognito && meetingBrainEnabled
+    // MeetingBrain / external app context. Incognito is the only thing that
+    // skips it now: it used to be gated on a "Tasks" switch in the composer
+    // too, and a user who had turned that off months ago got answers about
+    // their own week with their meetings quietly left out of them.
+    const appContextPromise = !isIncognito
       ? (async () => {
           const { data } = await intelligenceDb
             .from("user_app_context")
@@ -1415,7 +1456,7 @@ export async function POST(
 
     // Route query to determine search mode and data source hints
     const { routeQuery, textNeedsMailbox } = await import("@/lib/ai/query-router");
-    const queryRoute = routeQuery(userContent || "", contextConfig);
+    const queryRoute = routeQuery(userContent || "");
     console.log(`[Messages] Query route: intent=${queryRoute.intent}, searchMode=${queryRoute.searchMode}, hints=${queryRoute.hints.length}`);
 
     // Web search queries: use Claude (tool-based web_search_20250305) instead of Grok
@@ -1459,7 +1500,7 @@ export async function POST(
     // working history, and a thread with more than one reader is not the place
     // for it. Fails to an empty string, so chat never depends on it.
     let episodeLedger = "";
-    if (!isTeamThread && !isIncognito && contextConfig.memory !== "off") {
+    if (!isTeamThread && !isIncognito) {
       try {
         const { recentEpisodes, formatEpisodeLedger } = await import("@/lib/ai/episodes");
         episodeLedger = formatEpisodeLedger(
@@ -1512,11 +1553,6 @@ export async function POST(
       // needed ARTLIST_API_KEY, so with no key — which is every local run —
       // the model was introduced to two tools it had not been given.
       artlistTools: artlistConfigured(),
-      // The switch this user can actually see. The design rail has none, so it
-      // is told what governs it instead of being pointed at a control that is
-      // not on its screen — the same mistake, one level down, as naming an
-      // environment the user cannot act on.
-      generationControl: isDesignConversation ? GENERATION_CONTROL_DESIGN : GENERATION_CONTROL_CHAT,
       studioMode: conversation.type_conversation_mode === "design" && !!designSessionId,
       conversationVisibility: isTeamThread ? "team" : "private",
     });
@@ -1542,8 +1578,19 @@ export async function POST(
     // announcing "web search isn't available", which reads as a broken feature.
     // It still prevents the model from promising a search it can't run (the
     // tail-chasing spiral) and from asserting unverifiable real-time facts.
+    //
+    // ITS LAST SENTENCE USED TO NAME THE WEB TOGGLE, and that sentence was true
+    // until the toggle was deleted. It is the one the model reaches for,
+    // because it is the only one that gives the user something to do — which is
+    // exactly why a stale version of it is worse than none: they go looking for
+    // a control that is not on any screen. What decides a search now is the
+    // router, per message, and an explicit ask already overrides everything
+    // else (query-router.ts step 2), so the honest advice is to ask in those
+    // words. §17(C) of scripts/verify-incident-fixes.ts reads THIS literal, not
+    // just buildSystemPrompt's return, because that is how this one survived a
+    // green run.
     if (queryRoute.searchMode === "off") {
-      systemPrompt = appendVolatile(systemPrompt, "\n\n**No live web this turn — INTERNAL guidance, do NOT announce this to the user:** You don't have live web results for this message. Never open or caveat your reply by saying web search is unavailable/off — just answer the request normally using the workspace data, client files, brief, and your knowledge. Do NOT claim you are searching, browsing, or looking something up online (you're not), and do NOT assert real-time facts (prices, availability, current events, breaking news) you can't verify — instead, flag any such claim as 'to verify'. Only if the user EXPLICITLY asked you to search the web should you briefly note they can turn on the Web toggle and ask again.");
+      systemPrompt = appendVolatile(systemPrompt, "\n\n**No live web this turn — INTERNAL guidance, do NOT announce this to the user:** You don't have live web results for this message. Never open or caveat your reply by saying web search is unavailable/off — just answer the request normally using the workspace data, client files, brief, and your knowledge. Do NOT claim you are searching, browsing, or looking something up online (you're not), and do NOT assert real-time facts (prices, availability, current events, breaking news) you can't verify — instead, flag any such claim as 'to verify'. Only if the user EXPLICITLY asked you to search the web should you say briefly that you did not search this turn, and that a direct ask in those words (\"search the web for X\") will run one — there is nothing for them to find and press first.");
     }
 
     // Per-user access flags (Settings → Users). finance gates query_xero;
@@ -1820,7 +1867,7 @@ export async function POST(
     // the "user navigated away mid-stream and lost their response" bug.
     // Named so the completion callback can read flags the tool executors set
     // on it during the turn (notably sawUntrustedContent after query_gmail).
-    const aiConfigRef: any = { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: generationTools, workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, conversationVisibility: isTeamThread ? "team" : "private", selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: conversation.flag_incognito === 1, designSessionId, designFocusedShotId, deckEditAsked, deckInConversation: !!deckContext, enableScheduling: conversation.type_conversation_mode !== "design", scheduledTask, financeAccess, gmailAccess, calendarAccess, microsoftAccess, resourcingAccess, // ALLOWLIST: only this interactive chat route may reach a mailbox.
+    const aiConfigRef: any = { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: generationTools, workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, conversationVisibility: isTeamThread ? "team" : "private", selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: isIncognito, designSessionId, designFocusedShotId, deckEditAsked, deckInConversation: !!deckContext, enableScheduling: conversation.type_conversation_mode !== "design", scheduledTask, financeAccess, gmailAccess, calendarAccess, microsoftAccess, resourcingAccess, // ALLOWLIST: only this interactive chat route may reach a mailbox.
         allowPersonalData: true };
 
     // The last slide draft rendered this turn, persisted with the assistant
@@ -2188,8 +2235,10 @@ export async function POST(
         }
 
         // Fire-and-forget: background conversation summary update
-        // Gated by memoryEnabled — follows same rules as memory extraction:
-        // only for private/shared threads with memory toggle on, never team threads
+        // Gated by memoryEnabled — follows the same rule as memory extraction,
+        // and there is only one rule left: not an incognito thread. The Memory
+        // switch that used to be the other half of it is gone, so what this
+        // gate means now is exactly what the user set on the thread itself.
         if (memoryEnabled) {
           const currentMsgCount = (history?.length || 0) + 2; // +2 for user + assistant just added
           const lastSummaryCount = conversation.units_summary_message_count || 0;

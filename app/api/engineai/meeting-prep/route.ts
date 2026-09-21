@@ -109,10 +109,8 @@ export async function POST(req: NextRequest) {
     contextConfig,
     // Same fact the provider config carries below (imageGeneration: false).
     // Built from contextConfig this prompt claimed a generate_image tool the
-    // brief was never given; `null` because a meeting brief has no composer
-    // and so no switch to point at.
+    // brief was never given.
     generationTools: false,
-    generationControl: null,
     resourcingAccess,
   } as any);
 

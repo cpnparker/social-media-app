@@ -2,31 +2,28 @@ import { authorityOnEnabled, authorityOnOrganisations } from "@/lib/authorityon/
 import { categorizeContentType } from "@/lib/content-type-utils";
 import { markVolatile } from "@/lib/ai/prompt-cache";
 import { fenceUntrusted } from "@/lib/ai/providers";
-import { GENERATION_CONTROL_CHAT } from "@/lib/ai/capability-control";
 
 // ── Detail level types ──
 
 export type DetailLevel = "off" | "summary" | "full-week" | "full-month" | "full-year";
 
+/**
+ * HOW MUCH CLIENT DATA IS RESIDENT IN THE PROMPT, and nothing else.
+ *
+ * It used to carry five more keys — webSearch, imageGeneration, memory,
+ * meetingBrain and incognito — because a composer switch wrote each of them
+ * into the POST body of every message. Those switches are gone (see the
+ * capability note in lib/ai/providers.ts), so the keys have gone with them,
+ * and removing them from the TYPE is the point rather than a tidy-up: a field
+ * nobody can write but everybody still reads is exactly how a stale value
+ * turns into a capability nobody can switch back on.
+ */
 export interface NormalizedContextConfig {
   contracts: DetailLevel;
   contentPipeline: DetailLevel;
   socialPresence: DetailLevel;
   ideas: DetailLevel;
-  webSearch: "on" | "off";
-  imageGeneration: "on" | "off";
-  incognito: "on" | "off";
-  memory: "on" | "off";
-  meetingBrain: "on" | "off";
 }
-
-/**
- * The switch that turns the generation tools on, named the way the user sees
- * it. Defined in a leaf module and re-exported here, because the user-facing
- * notice in lib/slides/claim.ts needs the same string and cannot import this
- * file without closing a cycle. Every existing importer keeps working.
- */
-export { GENERATION_CONTROL_CHAT } from "@/lib/ai/capability-control";
 
 /** Check if a detail level is any "full" variant */
 export function isFullDetail(level: DetailLevel | string): boolean {
@@ -53,23 +50,43 @@ export function normalizeDetailLevel(value: any): DetailLevel {
   return "summary";
 }
 
-/** Normalize a full context config (handles both legacy boolean and new string formats) */
+/**
+ * Normalize a full context config (handles both legacy boolean and new string
+ * formats).
+ *
+ * THE CHOKE POINT FOR THE CAPABILITY KEYS, which is why it drops them rather
+ * than defaulting them on. `intelligence.ai_settings.config_context` and
+ * `ai_scheduled_prompts.config_context` are both stored JSON written by a UI
+ * that no longer exists: the TCE row still says `imageGeneration: "on",
+ * webSearch: "on", memory: "on", meetingBrain: "on"` and a row written on a
+ * different day could just as easily say "off". With the switches gone, an
+ * "off" in one of those rows would switch a capability off for a whole
+ * workspace with nothing on anyone's screen to switch it back — the incident
+ * of 20 September with the fix removed and the escape hatch removed too.
+ *
+ * IGNORED, NOT STRIPPED. No migration runs over the stored rows: reading them
+ * is the only thing that could hurt, so the reader stops producing the keys
+ * and every row becomes inert in the same instant on every deploy. A migration
+ * would have to be right about rows written between writing it and running it;
+ * this cannot be wrong about any row at all. The settings PATCH normalises on
+ * write, so the keys also disappear from each row the next time an admin
+ * saves — a strip that costs nothing and that nothing depends on.
+ *
+ * What remains are the four DETAIL LEVELS, which say how much client data is
+ * resident in the prompt. They stay a stored workspace setting, read from the
+ * row on every turn.
+ */
 export function normalizeContextConfig(config: any): NormalizedContextConfig {
   // contentPipeline defaulted to "off" while contracts defaulted to "summary",
   // so the only client data resident in the prompt was commercial — which is
   // exactly why answers about a client read as contract recitals. Recent work
   // shipped for a client is at least as relevant to a conversation about them.
-  if (!config) return { contracts: "summary", contentPipeline: "summary", socialPresence: "summary", ideas: "off", webSearch: "on", imageGeneration: "on", incognito: "off", memory: "on", meetingBrain: "on" };
+  if (!config) return { contracts: "summary", contentPipeline: "summary", socialPresence: "summary", ideas: "off" };
   return {
     contracts: normalizeDetailLevel(config.contracts),
     contentPipeline: normalizeDetailLevel(config.contentPipeline),
     socialPresence: normalizeDetailLevel(config.socialPresence),
     ideas: normalizeDetailLevel(config.ideas),
-    webSearch: config.webSearch === "off" ? "off" : "on",
-    imageGeneration: config.imageGeneration === "off" ? "off" : "on",
-    incognito: config.incognito === "on" ? "on" : "off",
-    memory: config.memory === "off" ? "off" : "on",
-    meetingBrain: config.meetingBrain === "off" ? "off" : "on",
   };
 }
 
@@ -215,27 +232,20 @@ export function buildSystemPrompt(ctx: {
    * generate_slides, generate_word_document, generate_document — are actually
    * REGISTERED for this turn.
    *
-   * Passed in rather than read off contextConfig, because the two have never
+   * Passed in rather than read off contextConfig, because the two never
    * agreed. This builder gated on `contextConfig.imageGeneration`; the tools
    * gate on the AIProviderConfig flag of the same name, which the scheduled
-   * runner, the meeting brief and the DeepSeek leg each set to false on their
-   * own. Every one of those turns was told in prose that it had a
-   * generate_image tool and then handed none — the same fault as the incident
-   * the off-branch below exists for, pointing the other way.
+   * runner, the meeting brief, the fact-checker and the optimiser routes each
+   * set to false on their own. Every one of those turns was told in prose that
+   * it had a generate_image tool and then handed none — the same fault as the
+   * incident the off-branch below exists for, pointing the other way.
    *
-   * Omitted falls back to contextConfig, which is what the chat route means.
+   * It is now a per-ROUTE fact and no longer a per-user one: a chat turn
+   * always has the five tools, and only a headless caller that produces text
+   * and nothing else passes false. Omitted therefore means TRUE, which is what
+   * every user-facing turn means.
    */
   generationTools?: boolean;
-  /**
-   * The switch the user would flip to get those tools back, named the way it
-   * is labelled on the screen they are looking at.
-   *
-   * `null` means this surface HAS no such switch — a scheduled brief, a
-   * meeting brief — and the prompt then says that instead of pointing at a
-   * button that is not on the page. Omitted means the chat composer, which is
-   * where every user-facing turn lives.
-   */
-  generationControl?: string | null;
   /** When true, activates the Design Mode persona + tool workflows (video + Artlist). */
   designMode?: boolean;
   /**
@@ -286,19 +296,16 @@ export function buildSystemPrompt(ctx: {
   const { workspaceConfig, clientContext, contentDetail } = ctx;
 
   /**
-   * Whether the generation tools are registered this turn, and what switches
-   * them back on. Resolved ONCE, here, so the three prose blocks below and the
-   * off-branch cannot drift apart from each other the way the prose and the
-   * tool array did.
+   * Whether the generation tools are registered this turn. Resolved ONCE,
+   * here, so the three prose blocks below and the off-branch cannot drift
+   * apart from each other the way the prose and the tool array did.
    *
-   * The fallback reads `!== "off"`, not `=== "on"`, so it fails ON exactly the
-   * way normalizeContextConfig does. `=== "on"` made a context config with the
-   * key simply MISSING — which is every workspace row written before March,
-   * and the shape both settings pages still POST — a silent off in the prompt
-   * while the tools were registered anyway.
+   * Omitted is ON. It used to fall back to `contextConfig.imageGeneration !==
+   * "off"`, which was the last thing in this file that could read a capability
+   * off a stored row; with that key gone there is nothing left to read, and a
+   * caller that means "no tools this turn" says so.
    */
-  const generationOn = ctx.generationTools ?? (ctx.contextConfig?.imageGeneration !== "off");
-  const generationControl = ctx.generationControl === undefined ? GENERATION_CONTROL_CHAT : ctx.generationControl;
+  const generationOn = ctx.generationTools !== false;
   // Same shape, one file over: describe a tool only when it is registered.
   const artlistOn = ctx.artlistTools === true;
 
@@ -340,9 +347,9 @@ Tool calls — SAY NOTHING FIRST, this one is not negotiable:
 Capabilities — OWN THE LIMIT, NEVER REPORT AN ABSENCE:
 - You are one product with one settled set of features. You are not "an environment", you do not have a "setup" or a "configuration", and there is no other "session" of you where the same request would work. Never write that something is "not available in this environment", that you "don't have access to that here", or that a different session — or a person with a different setup — could do it instead. A sentence like that describes a machine the user cannot see and cannot act on; they read it as the product being broken, close the tab and do the job somewhere else.
 - If a tool IS in your tool list, YOU HAVE IT — use it, and never hedge about whether it will work. That is the sentence this rule exists for: the worst replies this product has given came from a model that held the tool and told the user it did not.
-- A tool you cannot find is one of three things, and you are not required to know which. Someone may have turned that feature off, in which case this prompt says so below, in a section of its own, and names the switch. It may be a part of EngineAI this user's account has not been granted — the mailbox, the calendar, resourcing, finance — which an admin opens for them. Or it may be something that was never part of this product. None of the three is a reason to narrate your own internals to the user.
+- A tool you cannot find is one of two things, and you are not required to know which. It may be a part of EngineAI this user's account has not been granted — the mailbox, the calendar, resourcing, finance — which an admin opens for them: say it is not enabled for their account, and that an admin can enable it. Or it may be something that was never part of this product. There is no third case, and in particular nothing the user can press takes a feature away from you, so never tell anyone to find a switch, a toggle or a setting that would turn one back on. Neither case is a reason to narrate your own internals to the user.
 - Read back what you already said in this thread before you refuse. Offering to build something and then, a message later, saying you have no way to build it is the worst reply this product gives — the user sees a feature disappear mid-conversation and has no idea why. If you offered it, you can do it, so do it.
-- When you genuinely cannot do a thing, spend one plain line on it: what is off, and what opens it — a switch this prompt names, or an admin, or nothing at all when it is simply not something EngineAI does. Then get on with the part you CAN do, in the same reply. Never spend a reply on the limit, and never turn a limit into a lecture about how you are put together.
+- When you genuinely cannot do a thing, spend one plain line on it: what is off, and what opens it — an admin, when it is a permission on this account, or nothing at all when it is simply not something EngineAI does. Then get on with the part you CAN do, in the same reply. Never spend a reply on the limit, and never turn a limit into a lecture about how you are put together.
 
 Response format — CRITICAL, follow strictly:
 
@@ -467,13 +474,20 @@ Steps for "my work" queries:
 5. State which filter was used (e.g. "Filtered by user_account_manager = ${ctx.userEngineId || "?"}")`;
   }
 
-  // ── Web search disabled warning ──
-  if (ctx.contextConfig?.webSearch === "off") {
-    prompt += `\n\nWEB SEARCH IS CURRENTLY DISABLED. Since you cannot verify external claims, you MUST:
-- Flag ALL factual claims about companies, industries, regulations, trends, statistics, or current events with [unverified — web search disabled].
-- Do not present any external facts as confirmed. State them as "based on general knowledge" or "this may be outdated."
-- Be extra conservative — when in doubt, say you cannot verify without web search.`;
-  }
+  // ── A "WEB SEARCH IS CURRENTLY DISABLED" BLOCK LIVED HERE ──
+  //
+  // It fired on `contextConfig.webSearch === "off"` and told the model to mark
+  // every external claim "[unverified — web search disabled]". The Web switch
+  // is gone, so the condition is gone with it; leaving the block behind on a
+  // key nothing can write would have left a paragraph that could never fire
+  // and a reader who believes it can.
+  //
+  // Nothing is lost. Whether the turn actually searches is decided per request
+  // by lib/ai/query-router.ts, which is the market pattern and was already the
+  // stronger signal — the explicit-web override was written precisely because
+  // a persistent toggle the user had forgotten about was beating a direct ask.
+  // The "don't present training data as evidence" half of the warning is in
+  // FORMATTING_GUIDELINES and applies on every turn, searched or not.
 
   // ── Conversation continuity ──
   prompt += `\n\n## Conversation Continuity
@@ -502,43 +516,48 @@ Rules:
     // said so — and got "I don't have an image/slide-generation tool available
     // in this environment". She asked for a Google Slides deck twelve minutes
     // later and got the same answer. She built it in Figma instead and asked
-    // which setting to change. There was no setting: the ledger shows that turn
-    // reading 42,677 cached tokens off a prefix that begins with the tool
-    // array, so the five tools were loaded while it said they were not.
+    // which setting to change. She was looking for the "Image" switch under the
+    // message box, one button that gated all five generation tools.
     //
     // Which is why this branch is only half the fix. The rule that would have
     // caught HER turn is in FORMATTING_GUIDELINES, present in every assembly on
     // or off: never report an absence, own the limit. This branch is the other
     // half — the turns where the limit is real, and the model has nothing
     // telling it the difference between a feature that is off and a feature
-    // that does not exist. Until now there was no `off` branch anywhere in this
-    // file: the tools simply vanished and the model was left to guess.
+    // that does not exist.
     //
-    // Design Mode force-registers generate_image even with the control off
-    // (providers.ts, the `if (!config.imageGeneration) tools.push(IMAGE_GEN_TOOL)`
-    // line), so "all five are off" is a lie on exactly that surface — which is
-    // the kind of sentence this whole block exists to stop.
-    const offFamily = ctx.designMode
-      ? "generate_chart, generate_slides, generate_word_document and generate_document"
-      : "generate_image, generate_chart, generate_slides, generate_word_document and generate_document";
-    const offNouns = ctx.designMode
-      ? "a chart, a deck, a presentation, a Word document or a .pptx"
-      : "an image, a graphic, a chart, a deck, a presentation, a Word document or a .pptx";
-    if (generationControl) {
-      prompt += `\n\n## Making things — SWITCHED OFF FOR THIS CONVERSATION
-${offFamily} are not loaded this turn. The product builds every one of them. They are switched off for this conversation — nothing here is missing and nothing is broken, and switching them back on is the only thing between the user and the file.
-
-When the user asks you for ${offNouns}:
-- Say it is switched off for this conversation, and say what turns it back on: ${generationControl}. Do not say you "don't have" the tool, that it is "not available in this environment", or that another session could do it. One plain line, then move on.
-- In the SAME reply, do the whole of the part you can still do, without waiting to be asked twice: the copy, the slide-by-slide content, the document text in full, the figures a chart would plot. A user who has to ask again for the words has been charged two turns for the setting.
-- Close with one short line: switched back on, the same request gets them the file itself.
-- These tools are off together, so never offer one as a stand-in for another.`;
-    } else {
-      prompt += `\n\n## Making things — not what this kind of turn produces
-This turn writes text and nothing else. Nothing here builds ${offNouns}, and there is no setting on anyone's screen that changes it — this is not a chat conversation, it is a piece of writing being produced for someone to read.
+    // IT USED TO HAVE TWO FORMS and now has one. The first named the switch,
+    // because there was a switch; there is not any more, and a prompt that
+    // sends a user hunting for a control nobody can press is the same class of
+    // sentence as one that names an environment nobody can see. The remaining
+    // form is the HEADLESS turn — a scheduled brief, a meeting brief, a
+    // fact-check, an optimiser pass — which produces text and nothing else and
+    // never had a control to name in the first place.
+    //
+    // A capability can still be off for a user by ADMIN PERMISSION — the
+    // mailbox, the calendar, Microsoft, resourcing, finance. That case is not
+    // here, deliberately: it is handled by the always-on rule above, which says
+    // the honest thing about it — not enabled for this account, an admin opens
+    // it — and a rule the model carries on every turn is the right home for a
+    // permission that can differ per user.
+    //
+    // ONLY ONE OF THOSE SECTIONS IS ACTUALLY GATED, and pretending otherwise
+    // is how a rule gets contradicted by a louder instruction. query_resourcing
+    // is emitted under `resourcingAccess`; the mailbox, calendar, Microsoft and
+    // Slack prose further down is UNCONDITIONAL, so a user whose account has
+    // none of them still reads "For 'my email' with no provider named, prefer
+    // query_gmail" — an instruction to call a tool their chain never registers.
+    // The always-on rule is what stops the model reporting that as a broken
+    // feature, but the prose is residue, recorded in §17 of
+    // scripts/verify-incident-fixes.ts rather than left to be rediscovered.
+    // Gating those sections is the fix; it is a separate change, because it
+    // moves what the prompt says for real users rather than what it says about
+    // a control that no longer exists.
+    const offNouns = "an image, a graphic, a chart, a deck, a presentation, a Word document or a .pptx";
+    prompt += `\n\n## Making things — not what this kind of turn produces
+This turn writes text and nothing else. Nothing here builds ${offNouns}, and nothing on anyone's screen changes that — this is not a chat conversation, it is a piece of writing being produced for someone to read.
 
 Nothing is broken and nothing is missing: in a chat conversation you build all of these. So write the thing out in full — the copy, the slide-by-slide content, the document text, the figures a chart would plot — and do not tell the reader that a tool is unavailable or describe your own internals to them. If a file is genuinely the point, one closing line saying it can be built in a chat conversation is enough.`;
-    }
   }
 
   // ── Google Drive: how someone actually grants access ──
@@ -1195,7 +1214,9 @@ If internal specifics genuinely belong in the draft — sometimes they do — as
         }
       }
 
-      // Ideas submitted (within content pipeline, controlled by ideas config toggle)
+      // Ideas submitted (within content pipeline, controlled by the ideas
+      // DETAIL LEVEL — an admin setting, and the last of the four dials that
+      // still has a user-visible control anywhere)
       if (hasIdeas) {
         const weekAgo = new Date();
         weekAgo.setDate(weekAgo.getDate() - 7);

@@ -7,7 +7,6 @@
  * Generates system prompt hints to steer tool usage.
  */
 
-import type { NormalizedContextConfig } from "./system-prompts";
 import { MAIL_INTENT, personalDataAskText } from "./personal-data-intent";
 
 /* ─────────────── Types ─────────────── */
@@ -91,8 +90,9 @@ const WEB_EXPLICIT_2 = /\b(latest news|current events|trending now|breaking news
 const WEB_EXPLICIT_3 = /\b(current price|stock price|weather in|score of|released today|just announced|search for .{3,})\b/i;
 const WEB_EXPLICIT_4 = /\b(what is the (current|latest|recent)|what'?s the (latest|current|recent))\b/i;
 // Fact-checking / verification — inherently requires the web ("fact checking
-// without sources is useless"). Treated as an EXPLICIT web request so it fires
-// even when the Web toggle is off.
+// without sources is useless"). Treated as an EXPLICIT web request, which is
+// the strongest signal this router has: it beats every heuristic below, and it
+// used to beat a stored Web switch as well, back when there was one.
 const WEB_FACTCHECK = /\b(fact[\s-]?check(ed|ing)?|double[\s-]?check|cross[\s-]?check|is (this|that|it) (true|accurate|correct|real|right))\b/i;
 const WEB_FACTCHECK_2 = /\b(verify|verif(ies|ication)|confirm|check|source|substantiate|corroborate)\b[^.?!]{0,45}\b(claims?|facts?|figures?|numbers?|stats?|statistics|sources?|accura(te|cy)|true|correct|dates?|quotes?|citations?|references?|publication)\b/i;
 
@@ -258,32 +258,34 @@ function generateHints(route: Omit<QueryRoute, "hints" | "composition" | "needsM
  * Classify a user message and determine which data sources to activate.
  * Zero-cost pattern matching — runs in <2ms.
  */
-export function routeQuery(
-  userMessage: string,
-  contextConfig: NormalizedContextConfig
-): QueryRoute {
+export function routeQuery(userMessage: string): QueryRoute {
   // Wrapped rather than threaded through seventeen return sites: a field that
   // has to be remembered at every `return` is a field that will be forgotten at
   // one of them, and the one it is forgotten at will be the one that matters.
   const lower = userMessage.toLowerCase().trim();
   return {
-    ...routeQueryInner(userMessage, contextConfig),
+    ...routeQueryInner(userMessage),
     composition: COMPOSITION_REQUEST.test(lower),
     needsMailbox: textNeedsMailbox(userMessage),
   };
 }
 
-function routeQueryInner(
-  userMessage: string,
-  contextConfig: NormalizedContextConfig
-): Omit<QueryRoute, "composition" | "needsMailbox"> {
+/**
+ * IT USED TO TAKE THE CONTEXT CONFIG, and read three switches off it:
+ * webSearch, meetingBrain and memory. Each one was a persistent user toggle
+ * that suppressed a whole class of routing — a user who had turned Web off
+ * months ago got a workspace-only answer to a question about last week's news,
+ * with nothing in the reply saying why. The switches are gone (capability
+ * existence is an admin permission, invocation is per request), so the router
+ * now classifies the message and nothing else classifies it for the message.
+ *
+ * The explicit-web override at step 2 stays, and stays load-bearing: it was
+ * written to beat the off toggle, and it is still the thing that turns a
+ * pasted URL or "search online for…" into a search whatever the keywords say.
+ */
+function routeQueryInner(userMessage: string): Omit<QueryRoute, "composition" | "needsMailbox"> {
   const lower = userMessage.toLowerCase().trim();
   const len = lower.length;
-
-  // Respect config toggles
-  const webAllowed = contextConfig.webSearch !== "off";
-  const meetingBrainAllowed = contextConfig.meetingBrain !== "off";
-  const memoryAllowed = contextConfig.memory !== "off";
 
   // ── Step 1: Conversational fast-path ──
   // Short gratitude/affirmations
@@ -319,12 +321,15 @@ function routeQueryInner(
 
   // ── Step 2: Explicit web search ──
   // An explicit request ("web search", "search online", "look it up online", a
-  // pasted URL) OVERRIDES an off toggle: a direct, current ask is a stronger
-  // signal than a persistent UI toggle the user may have forgotten is off.
-  // (Without this, "do a web search about X" silently fell through to a
-  // workspace-only answer — and the model, told to search but given no web
-  // tool, looped on query_engine: the tail-chasing spiral.) Implicit signals
-  // below still respect the toggle.
+  // pasted URL) decides the turn on its own, ahead of every heuristic below.
+  // It was written to OVERRIDE the stored Web switch — a direct, current ask
+  // being a stronger signal than a persistent setting the user had forgotten
+  // was off — because without it "do a web search about X" silently fell
+  // through to a workspace-only answer, and the model, told to search but
+  // given no web tool, looped on query_engine: the tail-chasing spiral. There
+  // is no switch to override now; what survives is the priority, and it is
+  // what makes "ask again in those words" true advice on a turn that did not
+  // search (the route's no-live-web append says exactly that).
   const hasUrl = CONTAINS_URL.test(userMessage);
   const wantsFactCheck = matchesAny(lower, [WEB_FACTCHECK, WEB_FACTCHECK_2]);
   const wantsWeb = hasUrl || wantsFactCheck || matchesAny(lower, [WEB_EXPLICIT, WEB_EXPLICIT_2, WEB_EXPLICIT_3, WEB_EXPLICIT_4]);
@@ -336,9 +341,9 @@ function routeQueryInner(
     : null;
 
   // ── Step 3-5: Detect data source signals ──
-  const wantsMeeting = meetingBrainAllowed && matchesAny(lower, [MEETING_KEYWORDS, MEETING_KEYWORDS_2, MEETING_KEYWORDS_3]);
+  const wantsMeeting = matchesAny(lower, [MEETING_KEYWORDS, MEETING_KEYWORDS_2, MEETING_KEYWORDS_3]);
   const wantsEngine = matchesAny(lower, [ENGINE_KEYWORDS, ENGINE_KEYWORDS_2, ENGINE_KEYWORDS_3, ENGINE_KEYWORDS_4, ENGINE_KEYWORDS_5, ENGINE_KEYWORDS_6]);
-  const wantsMemory = memoryAllowed && matchesAny(lower, [MEMORY_KEYWORDS, MEMORY_KEYWORDS_2, MEMORY_KEYWORDS_3, MEMORY_KEYWORDS_4]);
+  const wantsMemory = matchesAny(lower, [MEMORY_KEYWORDS, MEMORY_KEYWORDS_2, MEMORY_KEYWORDS_3, MEMORY_KEYWORDS_4]);
 
   // ── Step 6: Hybrid detection ──
   // If explicit web + Engine data → hybrid
@@ -348,7 +353,7 @@ function routeQueryInner(
   }
 
   // ── Step 7: Implicit web search ──
-  const implicitWeb = webAllowed && !wantsEngine && matchesAny(lower, [WEB_IMPLICIT, WEB_IMPLICIT_2, WEB_IMPLICIT_3, WEB_IMPLICIT_4, WEB_IMPLICIT_5, WEB_IMPLICIT_6, WEB_IMPLICIT_7, WEB_IMPLICIT_8, WEB_IMPLICIT_9, WEB_IMPLICIT_10, WEB_IMPLICIT_11, WEB_IMPLICIT_12, WEB_IMPLICIT_13, WEB_IMPLICIT_14]);
+  const implicitWeb = !wantsEngine && matchesAny(lower, [WEB_IMPLICIT, WEB_IMPLICIT_2, WEB_IMPLICIT_3, WEB_IMPLICIT_4, WEB_IMPLICIT_5, WEB_IMPLICIT_6, WEB_IMPLICIT_7, WEB_IMPLICIT_8, WEB_IMPLICIT_9, WEB_IMPLICIT_10, WEB_IMPLICIT_11, WEB_IMPLICIT_12, WEB_IMPLICIT_13, WEB_IMPLICIT_14]);
 
   // If Engine data + implicit web → hybrid
   if (wantsEngine && implicitWeb) {
@@ -402,9 +407,10 @@ function routeQueryInner(
   // belongs to searchMode: forcing the model, doubling the output ceiling, and
   // the tool itself. The first two are now suppressed via `composition` in the
   // messages route, which is where those decisions actually live.
-  if (webAllowed) {
-    const partial = { searchMode: "on" as const, suggestEngine: false, suggestMemory: wantsMemory, suggestMeetingBrain: false, intent: "general" as const };
-    return { ...partial, hints: generateHints(partial) };
-  }
-  return { searchMode: "off", suggestEngine: false, suggestMemory: false, suggestMeetingBrain: false, intent: "general", hints: [] };
+  // The fall-through, and now the LAST statement: this used to sit inside
+  // `if (webAllowed)` with an off-branch beneath it for the user who had
+  // turned Web off. With no such user, that off-branch was unreachable and has
+  // gone rather than being left as a second, silent default.
+  const fallThrough = { searchMode: "on" as const, suggestEngine: false, suggestMemory: wantsMemory, suggestMeetingBrain: false, intent: "general" as const };
+  return { ...fallThrough, hints: generateHints(fallThrough) };
 }
