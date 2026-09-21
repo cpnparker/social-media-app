@@ -7957,13 +7957,20 @@ export const QUERY_DRIVE_DOCS_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
   type: "function",
   function: {
     name: "query_drive_docs",
-    description:
-      "READ-ONLY access to Google Drive documents the team has shared with EngineAI (Docs, Sheets, Slides, PDF, Word, Excel, text). Use when the user references a shared document, brief, plan, or asks what documents are available. Ground answers in the ACTUAL document content — quote/summarize what's there, never invent.",
+    // WHAT IT DOES AND DOES NOT DO, said here because a tool description is the
+    // only place the model learns either. It once told a user "still not seeing
+    // that document by its ID" when nothing in this tool could look up an ID,
+    // and sent him off to re-share a document he had already shared.
+    description: `READ-ONLY access to Google Drive documents shared with EngineAI (Docs, Sheets, Slides, PDF, Word, Excel, text). Use when the user references a shared document, brief or plan, or asks what documents are available. Ground answers in the ACTUAL document content — quote/summarize what's there, never invent.
+
+WHAT IT DOES: action:"list" returns every file shared with EngineAI's service account that this tool may open (folders and the finance workbook are not listed). action:"read" takes EITHER a document name (partial match ok) OR the Google Docs/Drive URL or file id the user pasted — a link is resolved directly by file id against Drive, which reaches files a name search cannot see, and the link may sit anywhere in the text you pass. A read that matches no name re-asks Drive before answering rather than trusting the cached list, and the result says when the list was actually fetched — so a "not shared" is never more than a few seconds stale, and it tells you which.
+
+WHAT IT CANNOT DO: it cannot search inside documents, cannot open a file nobody has shared with EngineAI, cannot see the rest of anyone's Drive, and cannot read a FOLDER link — that needs the link to a file inside it. Report only what the result actually says — it tells apart "not shared with us (404)", "shared, but the owner's organisation refuses us (403)", a temporary refusal by Drive, and the document's text. Never claim to have checked something this tool did not do: if you did not pass a link or an id, you did not look one up by id.`,
     parameters: {
       type: "object",
       properties: {
         action: { type: "string", enum: ["list", "read"], description: "list = what documents are shared; read = fetch one document's content" },
-        name: { type: "string", description: "For read: the document name (partial match ok)" },
+        name: { type: "string", description: "For read: the document name (partial match ok), OR the Google Docs/Drive URL or file id the user pasted — pass the link through verbatim and it is resolved by id" },
       },
       required: ["action"],
     },
@@ -7991,8 +7998,17 @@ function driveShareInstruction(): string {
     : `Drive sharing is not configured on this deployment, so no address can be given. Say so rather than inventing one.`;
 }
 
-export function formatDriveDocsResult(result: { data: any; count: number; error?: string; notice?: string }): string {
+export function formatDriveDocsResult(result: { data: any; count: number; error?: string; notice?: string; answered?: boolean }): string {
   if (result.notice) return `${result.notice}\n\n${driveShareInstruction()}`;
+  // DRIVE'S ANSWER, not a broken request. A definitive "not shared", a 403 and
+  // a name miss carrying near-miss candidates all used to arrive wrapped in
+  // "query failed" and "tell the user briefly" — transient-sounding framing
+  // that invites the retry this tool's 2026-09-21 fix exists to stop, and an
+  // instruction to be brief about the candidate list, which is the most useful
+  // thing in the result. Only a thrown error is a failure now.
+  if (result.error && result.answered) {
+    return `${result.error}\nThat is Drive's own answer, not a transient failure: relay it as it stands, name any document it offers, and do not invent document contents.`;
+  }
   if (result.error) return `Drive documents query failed: ${result.error}\nTell the user briefly — do not invent document contents.`;
   // Nothing matched. This is the moment the user wants to DO something, so the
   // answer has to carry the address rather than a vague "share it with me".
@@ -8002,7 +8018,7 @@ export function formatDriveDocsResult(result: { data: any; count: number; error?
       "",
       driveShareInstruction(),
       "",
-      "A Drive URL alone is not enough — EngineAI cannot fetch a link, only documents shared with that address. Once shared it appears by name, usually within a minute.",
+      "They can also paste the document's Drive link: pass it to query_drive_docs verbatim and it is resolved by file id, which reaches files a name search cannot see.",
       "Offer the alternative too: they can paste the text straight into the chat and you can work with it immediately.",
     ].join("\n");
   }

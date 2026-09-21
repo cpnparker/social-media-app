@@ -23,6 +23,7 @@ import { join } from "path";
 import { buildSystemPrompt, normalizeContextConfig } from "../lib/ai/system-prompts";
 import { buildDeckContext, DECK_CONTEXT_HEADING } from "../lib/slides/deck-context";
 import { unmadeDeckChangeNotice } from "../lib/slides/claim";
+import { queryDriveDocs, newDriveCaches } from "../lib/gdrive/docs";
 
 let pass = 0;
 let fail = 0;
@@ -1929,6 +1930,736 @@ function msgSrcForPaths(): string {
   return readFileSync(join(process.cwd(), "app/api/ai/conversations/[id]/messages/route.ts"), "utf8");
 }
 
-console.log(`\n${pass} passed, ${fail} failed`);
-if (failures.length) { console.log("\nFailures:"); for (const f of failures) console.log(`  - ${f}`); }
-process.exit(fail ? 1 : 0);
+
+/**
+ * 19. THE PASTED DRIVE LINK (2026-09-21)
+ * ─────────────────────────────────────────────────────────────────────────
+ * Chris pasted a Google Doc link at 15:24:11 and asked for a deck from it.
+ * Three times he was told the document was not shared with EngineAI. It was.
+ *
+ *   15:24:11  he pastes .../document/u/1/d/1zqolBPs…/edit?tab=t.0
+ *   15:24:15  "isn't in what's been shared with EngineAI yet" — true at that instant
+ *   15:25:05  "can you try again"      -> the same answer, from a 60-second cache
+ *   15:25:51  "I've shared it already" -> the same answer, from the same cache
+ *
+ * Three defects, and one assertion each below: a MISS served from cache, no
+ * path from a link to a file, and a model narrating a by-ID check that nothing
+ * in the tool could perform.
+ *
+ * GOOGLE_SA_EMAIL and GOOGLE_SA_PRIVATE_KEY_B64 are Vercel-only, so all of
+ * this runs against a FAKE Drive: a fetch stub returning Drive's own JSON
+ * shapes (a fileList, a 404 with error.errors[0].reason, a 403, a file
+ * carrying driveId, an export body). A check that needs the network is a check
+ * nobody runs. The fake projects the FIELDS it was asked for, because two
+ * assertions here are really about what the request asks Drive for.
+ *
+ * MUTATION LOG — 2026-09-21, run in a detached worktree at a5bdc1a, never in
+ * this working tree (it is shared, and it deploys). Survivors are findings
+ * about the checks and are recorded, not tidied away.
+ *
+ * FIRST ROUND, all re-run against the second round's code and all still red:
+ *   KILLED  the forced re-read on a miss deleted -> 11 red, incl. the replay
+ *   KILLED  the rate limit on that re-read deleted -> 6 list calls, not 2
+ *   KILLED  by-id resolution removed entirely -> 27 red
+ *   KILLED  supportsAllDrives dropped from the by-id request -> 1 red
+ *   KILLED  403 folded into a generic lookup failure -> 6 red
+ *   KILLED  driveId dropped from the by-id fields -> the Shared Drive line goes
+ *   KILLED  modifiedTime dropped from the list fields -> recency offers nothing
+ *   KILLED  the transposed-letters rule removed -> IMT no longer finds ITM
+ *   KILLED  the recently-changed rule removed -> 1 red
+ *   KILLED  the freshness sentence removed from the refusal -> 3 red
+ *   KILLED  the tool description reverted to its one-liner -> 6 red
+ *   KILLED  the prompt's "a link gives you nothing" restored -> 2 red
+ *   KILLED  a chain stops passing the user's string to the tool -> 1 red
+ *   PARTIAL the finance gate removed from the by-id path -> only "Drive is
+ *           never even asked for it" went red. The refusal TEXT stayed right
+ *           because a second gate re-checks the id on the way back, so the
+ *           text assertion alone would not have noticed the workbook being
+ *           fetched. The network assertion is the one carrying that check.
+ *
+ * SECOND ROUND — five defects found by review in the FIRST round's own fix,
+ * three of them the very failure the fix was written to remove:
+ *   KILLED  forcedAt stamped before the await again -> 4 red. One Drive 500
+ *           bought the cached negative another five seconds, under the
+ *           sentence "it was re-read moments ago": defect 1 and defect 3 at
+ *           once, inside the fix for defect 1.
+ *   KILLED  the failed-attempt backoff removed -> 3 list calls, not 2
+ *   KILLED  the link must be the whole argument again -> 6 red. Prose before
+ *           the link, a markdown link, angle brackets and a newline all fell
+ *           back to the name search that misses — the original incident,
+ *           silently, under a refusal telling him to paste the link again.
+ *   KILLED  the leading boundary dropped from the URL scan -> a Google path on
+ *           somebody else's host resolves as a Drive link
+ *   KILLED  the trailing-punctuation strip removed -> the ?id= form with a
+ *           full stop after it stops resolving (the dot lands in the id)
+ *   KILLED  the folder branch removed from the query parser -> 2 red
+ *   KILLED  the folder outcome thrown rather than returned -> correct advice
+ *           arrives wearing "Drive lookup failed"
+ *   KILLED  the already-pasted-a-link branch removed -> 2 red
+ *   KILLED  mentionsAGoogleLink always true -> an ordinary miss loses the
+ *           link route, so the suppression must stay conditional
+ *   KILLED  classify403 always answers "policy" -> 4 red. A rate limit was
+ *           reported as the owner's organisation forbidding the share, over
+ *           the top of Drive's own "Rate Limit Exceeded" quoted below it.
+ *   KILLED  error.errors[0].reason discarded -> 4 red
+ *   KILLED  the id grammar guard in fetchById removed -> a 250-character token
+ *           is sent to Drive. Invisible in the answer; only the call log shows
+ *           it, which is why that guard was a SURVIVOR on the first run.
+ *   KILLED  the bare-token id test widened -> "ITM-report-exec-draft" is sent
+ *           to Drive as an id. Same shape, same reason.
+ *   KILLED  answered dropped from the by-id 404 -> the model is handed a
+ *           definitive answer as "Drive documents query failed"
+ *   KILLED  the formatter's answered branch removed -> 2 red
+ *   KILLED  the "a Drive URL alone is not enough" sentence restored -> 1 red
+ *   KILLED  the description's "never served from a cache" restored -> 2 red.
+ *           The code never kept that promise: inside the rate limit a miss IS
+ *           answered from the list, and says so in the same turn.
+ *   KILLED  the prompt's one-explanation 403 restored -> 1 red
+ *   KILLED  the prompt's "never a stale answer" restored -> 2 red
+ *   SURVIVOR the CHARACTER class on a bare token (/^[A-Za-z0-9_-]+$/ in
+ *           driveIdFromQuery) dropped -> 0 red. It and the grammar guard in
+ *           fetchById are mutually redundant: with either one present a
+ *           badly-shaped token is rejected BEFORE the fetch and falls back to
+ *           the name search, so no answer and no request changes. Only the
+ *           LENGTH halves are independently observable, and both now are.
+ *           Kept as defence in depth in front of a hardcoded URL template,
+ *           and recorded rather than tidied away.
+ *   NOTE    the description mutation was malformed on its first attempt —
+ *           it concatenated a one-liner in FRONT of the real text instead of
+ *           replacing it, so the assertions still found what they look for and
+ *           it survived. Corrected to replace the whole template literal, it
+ *           kills 6. A mutation that does not mutate proves nothing.
+ */
+async function driveSection(): Promise<void> {
+console.log("\n19. A pasted Drive link resolves by id, and a miss is never served from cache");
+{
+  const DOC = "application/vnd.google-apps.document";
+  /** Chris's real file id, from the link in the transcript. */
+  const ITM_ID = "1zqolBPs7Ytq8dDMTOndDnaXwANrzMmwO5xdN2gsEtzA";
+  const ITM_URL = `https://docs.google.com/document/u/1/d/${ITM_ID}/edit?tab=t.0`;
+  const SA = "engineai@example.iam.gserviceaccount.com";
+  /** Europe/Zurich, the workspace's clock, so the times read as the transcript does. */
+  const at = (hms: string) => Date.parse(`2026-09-21T${hms}+02:00`);
+
+  interface FakeFile { id: string; name: string; mimeType: string; modifiedTime: string; driveId?: string; body?: string }
+
+  const OTHERS: FakeFile[] = [
+    { id: "1AAAaaa111BBBbbb222CCCccc333DDDddd44", name: "TCE 26+ strategy", mimeType: DOC, modifiedTime: "2026-09-12T09:03:00.000Z", body: "TCE 26+ strategy\nPositioning, pricing, team." },
+    { id: "1BBBbbb222CCCccc333DDDddd444EEEeee55", name: "Client onboarding checklist", mimeType: DOC, modifiedTime: "2026-08-30T15:40:00.000Z", body: "Onboarding checklist\nKick-off, access, cadence." },
+    { id: "1CCCccc333DDDddd444EEEeee555FFFfff66", name: "Q3 pipeline review", mimeType: DOC, modifiedTime: "2026-09-02T11:10:00.000Z", body: "Q3 pipeline review\nWeighted value by stage." },
+  ];
+  const ITM: FakeFile = {
+    id: ITM_ID,
+    name: "ITM report - exec draft",
+    mimeType: DOC,
+    // 15:22 Zurich — two minutes before he pasted the link, which is exactly
+    // the recency signal the candidate ranking is supposed to notice.
+    modifiedTime: "2026-09-21T13:22:00.000Z",
+    body: "Infrastructure Transition Monitor — executive draft\nSiemens. Findings, method, recommendations.",
+  };
+
+  /** The fake Drive. `listed` is what files.list returns; `known` is what
+   *  files.get can resolve — deliberately a superset, because that difference
+   *  IS the bug: a file shared straight with the service account is readable by
+   *  id while a name search never turns it up. */
+  interface Fake403 { reason: string; message: string }
+  interface FakeDrive {
+    listed: FakeFile[]; known: FakeFile[]; forbidden: string[]; calls: string[];
+    /** Non-zero makes files.list fail with that status — a flapping Drive. */
+    listFailsWith: number;
+    /** Which 403 Drive returns. Its reason is the field the tool must read. */
+    forbiddenAs: Fake403;
+  }
+
+  const fakeDrive = (listed: FakeFile[], known?: FakeFile[], forbidden?: string[], forbiddenAs?: Fake403): { drive: FakeDrive; fetchImpl: typeof fetch } => {
+    const drive: FakeDrive = {
+      listed, known: known || listed, forbidden: forbidden || [], calls: [],
+      listFailsWith: 0,
+      forbiddenAs: forbiddenAs || { reason: "forbidden", message: "The caller does not have permission" },
+    };
+    const impl = async (url: any): Promise<Response> => {
+      const u = String(url);
+      drive.calls.push(u);
+      const json = (body: any, status: number) =>
+        new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json; charset=UTF-8" } });
+
+      // Drive returns the fields you ASK for and nothing else, and that is not
+      // a detail here: `modifiedTime` is what the recency candidate reads and
+      // `driveId` is what marks a Shared Drive file, so a fake that hands back
+      // every field regardless would keep passing after either was dropped
+      // from the request.
+      const fieldsOf = (raw: string): string[] => {
+        const inner = raw.indexOf("(") >= 0 ? raw.slice(raw.indexOf("(") + 1, raw.lastIndexOf(")")) : raw;
+        const out: string[] = [];
+        const parts = inner.split(",");
+        for (let i = 0; i < parts.length; i++) if (parts[i].trim()) out.push(parts[i].trim());
+        return out;
+      };
+      const project = (f: FakeFile, asked: string[]): any => {
+        const full: any = { kind: "drive#file", id: f.id, name: f.name, mimeType: f.mimeType, modifiedTime: f.modifiedTime };
+        if (f.driveId) full.driveId = f.driveId;
+        const row: any = { kind: "drive#file" };
+        for (let i = 0; i < asked.length; i++) if (full[asked[i]] !== undefined) row[asked[i]] = full[asked[i]];
+        return row;
+      };
+      const askedFor = (): string[] => {
+        try { return fieldsOf(new URL(u).searchParams.get("fields") || ""); } catch { return []; }
+      };
+
+      if (/\/drive\/v3\/files\?/.test(u)) {
+        if (drive.listFailsWith) {
+          return json({ error: { code: drive.listFailsWith, message: "Backend Error", errors: [{ domain: "global", reason: "backendError", message: "Backend Error" }] } }, drive.listFailsWith);
+        }
+        const asked = askedFor();
+        const files = drive.listed.map((f) => project(f, asked));
+        return json({ kind: "drive#fileList", incompleteSearch: false, files }, 200);
+      }
+      const ex = u.match(/\/drive\/v3\/files\/([A-Za-z0-9_-]+)\/export\?/);
+      if (ex) {
+        const f = findById(drive.known, ex[1]);
+        if (!f) return json(notFound(ex[1]), 404);
+        return new Response(f.body || "", { status: 200, headers: { "content-type": "text/plain" } });
+      }
+      const get = u.match(/\/drive\/v3\/files\/([A-Za-z0-9_-]+)\?/);
+      if (get) {
+        const id = get[1];
+        if (drive.forbidden.indexOf(id) >= 0) {
+          const f403 = drive.forbiddenAs;
+          return json({ error: { code: 403, message: f403.message, errors: [{ domain: "global", reason: f403.reason, message: f403.message }] } }, 403);
+        }
+        const f = findById(drive.known, id);
+        if (!f) return json(notFound(id), 404);
+        return json(project(f, askedFor()), 200);
+      }
+      return json({ error: { code: 404, message: `unexpected fake-Drive URL: ${u}` } }, 404);
+    };
+    return { drive, fetchImpl: impl as unknown as typeof fetch };
+  };
+
+  const notFound = (id: string) => {
+    return { error: { code: 404, message: `File not found: ${id}.`, errors: [{ domain: "global", reason: "notFound", message: `File not found: ${id}.`, locationType: "parameter", location: "fileId" }] } };
+  };
+  const findById = (files: FakeFile[], id: string): FakeFile | undefined => {
+    for (let i = 0; i < files.length; i++) if (files[i].id === id) return files[i];
+    return undefined;
+  };
+  const listCalls = (d: FakeDrive): number => {
+    let n = 0;
+    for (let i = 0; i < d.calls.length; i++) if (/\/drive\/v3\/files\?/.test(d.calls[i])) n++;
+    return n;
+  };
+  const calledById = (d: FakeDrive, id: string): boolean => {
+    for (let i = 0; i < d.calls.length; i++) if (d.calls[i].indexOf(`/files/${id}?`) >= 0) return true;
+    return false;
+  };
+  /** Every files/{id} request, whatever the id. The two grammar guards on the
+   *  id are invisible in the ANSWER — both make the tool fall back to a name
+   *  search — so the only place they can be observed is Drive's call log. */
+  const byIdCalls = (d: FakeDrive): string[] => {
+    const out: string[] = [];
+    for (let i = 0; i < d.calls.length; i++) {
+      const m = d.calls[i].match(/\/drive\/v3\/files\/([^/?]+)\?/);
+      if (m) out.push(decodeURIComponent(m[1]));
+    }
+    return out;
+  };
+
+  /** One scenario: a fake Drive, a fresh cache, and a clock we move by hand. */
+  const scenario = (listed: FakeFile[], known?: FakeFile[], forbidden?: string[], forbiddenAs?: Fake403) => {
+    const { drive, fetchImpl } = fakeDrive(listed, known, forbidden, forbiddenAs);
+    const clock = { t: at("15:24:11") };
+    const deps = {
+      fetchImpl,
+      getToken: async () => "fake-access-token",
+      saEmail: SA,
+      now: () => clock.t,
+      caches: newDriveCaches(),
+    };
+    return { drive, clock, deps };
+  };
+
+  // ── PRECONDITION: the fake really answers like Drive ──
+  {
+    const s = scenario(OTHERS);
+    const listed = await queryDriveDocs("list", undefined, s.deps);
+    check("PRECONDITION: the fake Drive lists three files, as production did at 15:24",
+      listed.count === 3 && !listed.error && !listed.notice, JSON.stringify(listed).slice(0, 120));
+    const res: any = await (s.deps.fetchImpl as any)(`https://www.googleapis.com/drive/v3/files/${ITM_ID}?fields=id&supportsAllDrives=true`);
+    const body = await res.json();
+    check("PRECONDITION: an unshared id comes back as Drive's own 404 shape",
+      res.status === 404 && body.error.errors[0].reason === "notFound");
+  }
+
+  // ── DEFECT 2: a link resolves by id, even when no name search could find it ──
+  {
+    const s = scenario(OTHERS, OTHERS.concat([ITM]));
+    const r = await queryDriveDocs("read", ITM_URL, s.deps);
+    check("a pasted link is read by file id although the list does not hold it",
+      r.count === 1 && !r.error && String(r.data && r.data.content).indexOf("Infrastructure Transition Monitor") >= 0,
+      r.error || JSON.stringify(r.data).slice(0, 120));
+    check("the by-id lookup asks Drive with supportsAllDrives", calledById(s.drive, ITM_ID) &&
+      s.drive.calls.join(" ").indexOf("supportsAllDrives=true") >= 0);
+    check("and it says the answer came from the link, not from a name match",
+      /link you pasted/i.test(String(r.data && r.data.resolvedBy)), String(r.data && r.data.resolvedBy));
+  }
+
+  // ── DEFECT 2: the three outcomes, told apart ──
+  {
+    const s = scenario(OTHERS); // the file is nowhere: 404
+    const r = await queryDriveDocs("read", ITM_URL, s.deps);
+    const err = String(r.error || "");
+    check("a 404 on a link says Drive was asked directly and names the share address",
+      /404/.test(err) && err.indexOf(SA) >= 0 && /not shared with EngineAI/i.test(err), err.slice(0, 160));
+    check("and it says the refusal did not come from a cache",
+      /Nothing was read from a cache/i.test(err), err.slice(0, 160));
+  }
+  {
+    const s = scenario(OTHERS, OTHERS.concat([ITM]), [ITM_ID]); // shared, org refuses: 403
+    const r = await queryDriveDocs("read", ITM_URL, s.deps);
+    const err = String(r.error || "");
+    check("a 403 says the file IS shared and the owner's organisation refuses us",
+      /403/.test(err) && /organisation forbids/i.test(err) && /IS shared/.test(err), err.slice(0, 160));
+    // The distinction has to reach the user's NEXT action: telling somebody to
+    // share a document the organisation is blocking is the loop this incident
+    // was made of.
+    check("a 403 never tells them to share it again", err.indexOf(SA) < 0 && !/Viewer is enough/.test(err), err.slice(0, 160));
+  }
+  {
+    const onSharedDrive: FakeFile = { ...ITM, driveId: "0AJ5kQfakeSharedDriveId" };
+    const s = scenario(OTHERS, OTHERS.concat([onSharedDrive]));
+    const r = await queryDriveDocs("read", ITM_URL, s.deps);
+    check("a Shared Drive file resolves and says where it lives",
+      r.count === 1 && /Shared Drive/i.test(String(r.data && r.data.resolvedBy)),
+      r.error || String(r.data && r.data.resolvedBy));
+  }
+
+  // ── DEFECT 2: one extractor, not a second one ──
+  {
+    const docsSrc = readFileSync(join(process.cwd(), "lib/gdrive/docs.ts"), "utf8");
+    check("the id comes from lib/gdrive/doc-link, which already knew how to read a link",
+      /import \{ extractDocId \} from "@\/lib\/gdrive\/doc-link"/.test(docsSrc));
+    // Over stripped source: the comment explaining WHICH link shapes doc-link
+    // handles necessarily quotes one, and an absence assertion run over raw
+    // source reports its own documentation as a live parser.
+    const docsCode = stripComments(docsSrc);
+    check("and no second URL parser was written here",
+      docsCode.indexOf("new URL(") < 0 && docsCode.indexOf("document/d/") < 0);
+  }
+
+  // ── DEFECT 2: the by-id path is not a way round the finance gate ──
+  {
+    const FORECAST = process.env.FINANCE_FORECAST_FILE_ID || "1Skw6rHX5mtQMbkK5anbJrMwEL-2AHDab";
+    const workbook: FakeFile = { id: FORECAST, name: "Finance forecast", mimeType: DOC, modifiedTime: "2026-09-20T08:00:00.000Z", body: "MRR by month" };
+    const s = scenario(OTHERS.concat([workbook]), OTHERS.concat([workbook]));
+    const r = await queryDriveDocs("read", `https://docs.google.com/spreadsheets/d/${FORECAST}/edit`, s.deps);
+    check("the finance workbook is refused by id as well as by name",
+      r.count === 0 && /finance forecast workbook/i.test(String(r.error)), String(r.error).slice(0, 140));
+    check("and Drive is never even asked for it", !calledById(s.drive, FORECAST));
+    const listed = await queryDriveDocs("list", undefined, s.deps);
+    check("PRECONDITION: it was in the fake Drive and filtered out of the list", listed.count === 3);
+  }
+
+  // ── DEFECT 1: a miss is never served from cache ──
+  {
+    const s = scenario(OTHERS);
+    const first = await queryDriveDocs("read", "ITM report", s.deps);
+    check("PRECONDITION: before the share lands, the name genuinely misses", !!first.error && first.count === 3);
+    const beforeShare = listCalls(s.drive);
+    // The share lands 20 seconds later, and he asks again 34 seconds after
+    // that — 54 seconds in, well inside the 60-second window that failed him.
+    s.clock.t = at("15:24:31");
+    s.drive.listed = OTHERS.concat([ITM]);
+    s.drive.known = OTHERS.concat([ITM]);
+    s.clock.t = at("15:25:05");
+    const second = await queryDriveDocs("read", "ITM report", s.deps);
+    check("a freshly shared file is found inside the 60-second window",
+      second.count === 1 && String(second.data && second.data.content).indexOf("Infrastructure Transition Monitor") >= 0,
+      second.error || "");
+    check("because the miss forced a re-read rather than replaying the snapshot",
+      listCalls(s.drive) > beforeShare, `${beforeShare} -> ${listCalls(s.drive)}`);
+  }
+
+  // ── DEFECT 1: a HIT is still cached, or this fix costs a Drive call a turn ──
+  {
+    const s = scenario(OTHERS);
+    await queryDriveDocs("read", "TCE 26+ strategy", s.deps);
+    const afterFirst = listCalls(s.drive);
+    s.clock.t = at("15:24:20");
+    await queryDriveDocs("read", "Q3 pipeline review", s.deps);
+    check("a hit is still answered from the cached list", listCalls(s.drive) === afterFirst, `${afterFirst} -> ${listCalls(s.drive)}`);
+  }
+
+  // ── DEFECT 1: the forced re-read is rate-limited ──
+  {
+    const s = scenario(OTHERS);
+    for (let i = 0; i < 5; i++) {
+      s.clock.t = at("15:24:11") + i * 500;
+      await queryDriveDocs("read", "ITM report", s.deps);
+    }
+    const inWindow = listCalls(s.drive);
+    check("five misses in two seconds cost one forced re-read, not five", inWindow <= 2, `${inWindow} list calls`);
+    s.clock.t = at("15:24:11") + 6_000;
+    await queryDriveDocs("read", "ITM report", s.deps);
+    check("and the next miss after the window re-reads again", listCalls(s.drive) === inWindow + 1, `${listCalls(s.drive)}`);
+  }
+
+  // ── DEFECT 1: the refusal says when the list was actually fetched ──
+  {
+    const s = scenario(OTHERS);
+    const fresh = await queryDriveDocs("read", "ITM report", s.deps);
+    check("a refusal after a real re-read says so",
+      /re-read from Drive just now/i.test(String(fresh.error)), String(fresh.error).slice(0, 160));
+    s.clock.t = at("15:24:13");
+    const limited = await queryDriveDocs("read", "ITM report", s.deps);
+    check("a refusal inside the rate limit says how old the list is instead",
+      /last read from Drive/i.test(String(limited.error)) && /seconds ago|just now/.test(String(limited.error)),
+      String(limited.error).slice(0, 160));
+  }
+
+  // ── THE NEAR-MISS WORTH KEEPING: IMT / ITM, and "I just shared it" ──
+  {
+    const s = scenario(OTHERS.concat([ITM]));
+    const r = await queryDriveDocs("read", "IMT report", s.deps);
+    const err = String(r.error || "");
+    check("PRECONDITION: his typo matches no document by name", r.count === 4 && !!r.error);
+    check("the transposed typo still offers the real document",
+      err.indexOf("ITM report - exec draft") >= 0, err.slice(0, 200));
+    // The REASON, specifically the transposition. Written as an AND rather
+    // than "either signal will do": "report" matches on its own, so an OR here
+    // would stay green with the typo handling deleted, and the typo is the
+    // whole reason this offer was useful to him.
+    check("and it says the name is his typo with the letters swapped",
+      /letters swapped/i.test(err), err.slice(0, 220));
+    // Recency on its own, with a query that shares no letters with anything.
+    const r2 = await queryDriveDocs("read", "the thing I just shared", s.deps);
+    check("a document changed minutes ago is offered even when the words do not match",
+      String(r2.error).indexOf("ITM report - exec draft") >= 0, String(r2.error).slice(0, 200));
+  }
+
+  // ── DEFECT 2: the link is found ANYWHERE in the message, not only alone ──
+  //
+  // Requiring the whole argument to parse as a URL let four everyday shapes
+  // fall silently back to the name search that misses — and the refusal then
+  // told the user to paste a Drive link, with their Drive link quoted inside
+  // it. The bug is invisible in the answer: it looks exactly like the original
+  // incident.
+  {
+    const shapes: string[][] = [
+      ["prose before the link", `please read ${ITM_URL}`],
+      ["a markdown link", `[ITM](${ITM_URL})`],
+      ["angle brackets, as mail clients add", `<${ITM_URL}>`],
+      ["a newline between the words and the link", `here you go\n${ITM_URL}`],
+      ["a full stop after it", `${ITM_URL}.`],
+      // The ?id= form is where the trailing full stop actually bites: it lands
+      // INSIDE the query parameter, and an id with a dot in it is not an id.
+      ["a full stop after the ?id= form", `it's here: https://drive.google.com/open?id=${ITM_ID}.`],
+      ["a link retyped without the scheme", ITM_URL.replace(/^https:\/\//, "")],
+      ["a link with the deck request around it", `build me a deck from ${ITM_URL} please`],
+    ];
+    for (let i = 0; i < shapes.length; i++) {
+      const s2 = scenario(OTHERS, OTHERS.concat([ITM]));
+      const r = await queryDriveDocs("read", shapes[i][1], s2.deps);
+      check(`a link survives ${shapes[i][0]}`,
+        r.count === 1 && String(r.data && r.data.content).indexOf("Infrastructure Transition Monitor") >= 0,
+        String(r.error || "").slice(0, 110));
+    }
+    // And the boundary that makes the scan safe. extractDocId matches the host
+    // EXACTLY, so both of these have to come back as "no link here" rather than
+    // as Chris's document.
+    const lookalikes: string[][] = [
+      ["a look-alike host", `https://docs.google.com.evil.test/document/d/${ITM_ID}/edit`],
+      ["a Google path on somebody else's host", `https://evil.test/docs.google.com/document/d/${ITM_ID}/edit`],
+    ];
+    for (let i = 0; i < lookalikes.length; i++) {
+      const s2 = scenario(OTHERS, OTHERS.concat([ITM]));
+      const r = await queryDriveDocs("read", lookalikes[i][1], s2.deps);
+      check(`${lookalikes[i][0]} is not read as a Drive link`,
+        r.count !== 1 && !calledById(s2.drive, ITM_ID), String(r.count));
+    }
+  }
+
+  // ── DEFECT 2: a folder link is a folder, not a sharing problem ──
+  {
+    const s2 = scenario(OTHERS, OTHERS.concat([ITM]));
+    const r = await queryDriveDocs("read", `it's in here https://drive.google.com/drive/folders/0ABCdefFolderId12345`, s2.deps);
+    const err = String(r.error || "");
+    check("a pasted FOLDER link says so rather than blaming the sharing",
+      /FOLDER/.test(err) && /file inside it/i.test(err), err.slice(0, 140));
+    check("and it does not send them off to share anything again", err.indexOf(SA) < 0, err.slice(0, 140));
+    check("and Drive is not asked to open a folder", byIdCalls(s2.drive).length === 0);
+    // The same answer when the folder hides behind an ordinary /d/ link, which
+    // only Drive can tell us about.
+    const folderFile: FakeFile = { id: "1FolderIdLookingLikeADocument9999", name: "ITM working folder", mimeType: "application/vnd.google-apps.folder", modifiedTime: "2026-09-21T13:00:00.000Z" };
+    const s3 = scenario(OTHERS, OTHERS.concat([folderFile]));
+    const r3 = await queryDriveDocs("read", `https://docs.google.com/document/d/${folderFile.id}/edit`, s3.deps);
+    // Returned, not thrown. A thrown message carries correct advice wearing
+    // "Drive lookup failed", which is the framing that invites a retry.
+    check("a folder that only Drive can identify gets the same answer, as an answer",
+      /FOLDER/.test(String(r3.error)) && r3.answered === true && !/lookup failed/i.test(String(r3.error)),
+      String(r3.error).slice(0, 140));
+  }
+
+  // ── DEFECT 2: never advise the action they have just taken ──
+  {
+    const s2 = scenario(OTHERS);
+    const r = await queryDriveDocs("read", "it's at https://drive.google.com/drive/my-drive somewhere", s2.deps);
+    const err = String(r.error || "");
+    check("a refusal never tells them to paste a link they have already pasted",
+      !/paste its Drive link/i.test(err), err.slice(-160));
+    check("it says instead that no document id could be read out of it",
+      /no document id could be read/i.test(err), err.slice(-160));
+    // And the ordinary miss, with no link in it, still points at the road that
+    // would have worked — the suppression has to be conditional, not a delete.
+    const plain = await queryDriveDocs("read", "ITM report", scenario(OTHERS).deps);
+    check("an ordinary miss still offers the link route",
+      /paste its Drive link/i.test(String(plain.error)), String(plain.error).slice(-140));
+  }
+
+  // ── DEFECT 2: one 403 is not every 403 ──
+  //
+  // Drive answers 403 for a domain policy AND for its own rate limits, and the
+  // first version of this fix asserted "It IS shared — the owner's organisation
+  // forbids sharing it outside" over the top of Drive's quoted "Rate Limit
+  // Exceeded". Wrong, unactionable, and a claim the tool never checked.
+  {
+    const quota = scenario(OTHERS, OTHERS.concat([ITM]), [ITM_ID], { reason: "userRateLimitExceeded", message: "Rate Limit Exceeded" });
+    const rq = await queryDriveDocs("read", ITM_URL, quota.deps);
+    const eq = String(rq.error || "");
+    check("a rate-limit 403 is reported as OUR limit, not their sharing",
+      /rate or quota limit/i.test(eq) && !/organisation forbids/i.test(eq), eq.slice(0, 170));
+    check("and it says the same request is worth making again",
+      /worth making again/i.test(eq) && /Rate Limit Exceeded/.test(eq), eq.slice(0, 200));
+
+    const odd = scenario(OTHERS, OTHERS.concat([ITM]), [ITM_ID], { reason: "cannotDownloadAbusiveFile", message: "This file has been identified as malware" });
+    const ro = await queryDriveDocs("read", ITM_URL, odd.deps);
+    const eo = String(ro.error || "");
+    check("an unrecognised 403 quotes Drive instead of inventing a reason",
+      !/organisation forbids/i.test(eo) && !/rate or quota limit/i.test(eo) && /identified as malware/.test(eo), eo.slice(0, 200));
+    check("and says the reason is unknown to us rather than guessing",
+      /unknown to us/i.test(eo), eo.slice(0, 200));
+
+    const perm = scenario(OTHERS, OTHERS.concat([ITM]), [ITM_ID], { reason: "insufficientFilePermissions", message: "The user does not have sufficient permissions for this file" });
+    const rp = await queryDriveDocs("read", ITM_URL, perm.deps);
+    check("a permission 403 still reads as the organisation refusing us",
+      /organisation forbids/i.test(String(rp.error)), String(rp.error).slice(0, 170));
+  }
+
+  // ── DEFECT 1: a forced re-read that FAILS may not stand in for one that worked ──
+  //
+  // Stamping the rate limit before awaiting Drive meant one 500 bought the
+  // cached negative another five seconds, under the sentence "it was re-read
+  // moments ago". That is the incident's failure mode AND its third defect —
+  // narrating a check that did not happen — recreated inside the fix for the
+  // first one.
+  {
+    const s2 = scenario(OTHERS);
+    s2.clock.t = at("15:20:00");
+    await queryDriveDocs("read", "TCE 26+ strategy", s2.deps);
+    const warm = listCalls(s2.drive);
+    // 15:20:20 the share lands; 15:20:40 he asks, and Drive is flapping.
+    s2.drive.listed = OTHERS.concat([ITM]);
+    s2.drive.known = OTHERS.concat([ITM]);
+    s2.clock.t = at("15:20:40");
+    s2.drive.listFailsWith = 500;
+    const broke = await queryDriveDocs("read", "ITM report", s2.deps);
+    check("a failed re-read is reported as a failure, not as 'not shared'",
+      /Drive lookup failed/i.test(String(broke.error)) && broke.answered !== true, String(broke.error).slice(0, 120));
+    s2.clock.t = at("15:20:41");
+    const during = await queryDriveDocs("read", "ITM report", s2.deps);
+    check("the next miss does not claim a re-read that never landed",
+      !/re-read moments ago/i.test(String(during.error)), String(during.error).slice(0, 200));
+    check("it says the list could NOT be re-read, and how old it is",
+      /could NOT be re-read/i.test(String(during.error)) && /seconds ago/.test(String(during.error)), String(during.error).slice(0, 220));
+    check("a list nobody could refresh is not offered as Drive's answer", during.answered !== true);
+    check("and a flapping Drive is not hammered inside the backoff",
+      listCalls(s2.drive) === warm + 1, `${warm} -> ${listCalls(s2.drive)}`);
+    s2.clock.t = at("15:20:43");
+    s2.drive.listFailsWith = 0;
+    const healed = await queryDriveDocs("read", "ITM report", s2.deps);
+    check("and the moment Drive answers again the shared file is found",
+      healed.count === 1, healed.error || "");
+  }
+
+  // ── THE TWO ID GUARDS, which are invisible anywhere but the call log ──
+  //
+  // Both make the tool fall back to a name search, so the ANSWER is identical
+  // with either one deleted; only Drive's own call log shows the difference.
+  // Recorded as survivors on the first run of this section, and this is what
+  // it took to observe them.
+  {
+    const s2 = scenario(OTHERS, OTHERS.concat([ITM]));
+    const plausible = "ITM-report-exec-draft";
+    await queryDriveDocs("read", plausible, s2.deps);
+    check("a name that only LOOKS like an id is searched by name, not sent to Drive as one",
+      byIdCalls(s2.drive).length === 0, byIdCalls(s2.drive).join(","));
+
+    const s3 = scenario(OTHERS, OTHERS.concat([ITM]));
+    let tooLong = "9";
+    for (let i = 0; i < 83; i++) tooLong += "Ab3";
+    await queryDriveDocs("read", tooLong, s3.deps);
+    check("a token longer than Drive's own id grammar is never sent to Drive",
+      byIdCalls(s3.drive).length === 0, `${tooLong.length} chars, ${byIdCalls(s3.drive).length} by-id call(s)`);
+  }
+
+  // ── WHAT THE MODEL ACTUALLY RECEIVES ──
+  //
+  // Everything above tests the tool's result object; the chains hand the model
+  // formatDriveDocsResult's string. A definitive 404 used to arrive as "Drive
+  // documents query failed: …  Tell the user briefly" — transient-sounding,
+  // which is the retry loop, and brief about the candidate list, which is the
+  // useful part.
+  {
+    const s2 = scenario(OTHERS);
+    const missed = await queryDriveDocs("read", ITM_URL, s2.deps);
+    const shown = providers.formatDriveDocsResult(missed as any);
+    check("a by-id 404 reaches the model as Drive's answer, not a failed query",
+      shown.indexOf("Drive documents query failed") < 0 && /Drive's own answer/.test(shown), shown.slice(0, 120));
+    const named = await queryDriveDocs("read", "IMT report", scenario(OTHERS.concat([ITM])).deps);
+    const shownNamed = providers.formatDriveDocsResult(named as any);
+    check("and a near miss is not handed over with an instruction to be brief",
+      !/Tell the user briefly/.test(shownNamed) && shownNamed.indexOf("ITM report - exec draft") >= 0, shownNamed.slice(0, 140));
+    const thrown = providers.formatDriveDocsResult({ data: [], count: 0, error: "Drive lookup failed: Drive list failed (500)" });
+    check("a request that really did break still reads as a failure",
+      thrown.indexOf("Drive documents query failed") === 0, thrown.slice(0, 80));
+    const provSrc2 = readFileSync(join(process.cwd(), "lib/ai/providers.ts"), "utf8");
+    check("and nothing in providers.ts still tells the model a link cannot be fetched",
+      !/cannot fetch a link/i.test(provSrc2) && !/URL alone is not enough/i.test(provSrc2));
+  }
+
+  // ── DEFECT 3: the tool says what it does and does not do ──
+  {
+    const fn: any = (providers.QUERY_DRIVE_DOCS_OPENAI_TOOL as any).function;
+    const desc = String(fn.description || "");
+    const params: any = fn.parameters;
+    check("the description says a pasted link is resolved by file id",
+      /resolved directly by file id/i.test(desc) && /URL or file id/i.test(desc), desc.slice(0, 120));
+    check("it says a miss re-asks Drive rather than trusting the list it holds",
+      /re-asks Drive before answering rather than trusting the cached list/i.test(desc), desc.slice(0, 120));
+    // The sentence it replaced said "not shared" is NEVER served from a cache.
+    // The code does not promise that: inside the rate limit a miss IS answered
+    // from the cached list, and the refusal says so in the same turn. A tool
+    // description the result text contradicts is defect 3 all over again, in
+    // the artefact written to fix defect 3.
+    check("and it does not promise a freshness the code cannot keep",
+      !/never served from a cache/i.test(desc) && /says when the list was actually fetched/i.test(desc), desc.slice(0, 120));
+    check("it says what the tool cannot do", /WHAT IT CANNOT DO/.test(desc) && /cannot search inside documents/i.test(desc));
+    check("it forbids narrating a check the tool did not perform",
+      /Never claim to have checked something this tool did not do/i.test(desc) && /you did not look one up by id/i.test(desc));
+    check("it names the three outcomes it can report",
+      /404/.test(desc) && /403/.test(desc), desc.slice(-200));
+    check("the name parameter tells the model to pass the link through",
+      /URL or file id the user pasted/i.test(String(params.properties.name.description)));
+    // USED, not merely written. The link reaches the tool through `name`, so
+    // every chain has to still be passing it — a description promising by-id
+    // resolution over a call site that drops the argument is the shape this
+    // repo has already shipped once.
+    const provSrc = readFileSync(join(process.cwd(), "lib/ai/providers.ts"), "utf8");
+    const anthropicCalls = provSrc.split("queryDriveDocs(tool.input.action, tool.input.name)").length - 1;
+    const otherCalls = provSrc.split("queryDriveDocs(input.action, input.name)").length - 1;
+    check("all four chains still pass the user's string to the tool",
+      anthropicCalls === 1 && otherCalls === 3, `${anthropicCalls} + ${otherCalls}`);
+    check("the Anthropic tool carries the same description, not a copy",
+      /description: QUERY_DRIVE_DOCS_OPENAI_TOOL\.function\.description!/.test(provSrc));
+    // The injectable seam is for this file and nothing else: no app call site
+    // passes a third argument, so production cannot be driven through a fake.
+    const importSrc = readFileSync(join(process.cwd(), "app/api/optimizer/import/route.ts"), "utf8");
+    const threeArg = (provSrc + importSrc).match(/queryDriveDocs\([^)]*,[^)]*,[^)]*\)/g);
+    check("no production call site reaches the test seam", threeArg === null, String(threeArg));
+  }
+
+  // ── DEFECT 3: the assembled prompt no longer denies the capability ──
+  {
+    const savedSa = process.env.GOOGLE_SA_EMAIL;
+    process.env.GOOGLE_SA_EMAIL = SA;
+    const deployed = buildSystemPrompt({
+      conversationVisibility: "private",
+      userName: "Test",
+      workspaceConfig: { companyContext: "TCE is a content agency.", contentTypes: [], cuDefinitions: [], formatDescriptions: {}, typeInstructions: {} },
+      clientContext: null,
+      contentDetail: null,
+    } as any);
+    if (savedSa === undefined) delete process.env.GOOGLE_SA_EMAIL; else process.env.GOOGLE_SA_EMAIL = savedSa;
+    check("PRECONDITION: the Drive block is in that prompt", deployed.indexOf("## Google Drive access") >= 0);
+    check("the prompt no longer says a pasted link gives you nothing",
+      !/pasting a Drive link gives you nothing/i.test(deployed) && !/cannot open a document from a URL/i.test(deployed));
+    check("it tells the model to pass the link to the tool",
+      /Pass the URL they pasted straight to query_drive_docs/i.test(deployed));
+    check("it says a miss is not the old cache, so nobody is told to wait and retry",
+      /never the minute-old cache/i.test(deployed) && /do not tell the user to wait and try again/i.test(deployed));
+    check("and it tells the model to relay a list that could not be re-read",
+      /could NOT be re-read/i.test(deployed), "");
+    check("it separates a quota refusal from the organisation refusing us",
+      /rate or quota limit, that is OUR end/i.test(deployed));
+    check("it separates the 403 from the not-shared answer",
+      /the document IS shared and the owner's organisation is refusing us/i.test(deployed));
+    check("and it forbids claiming a by-ID check that was not made",
+      /by its ID/i.test(deployed) && /Never claim to have checked something you did not do/i.test(deployed));
+  }
+
+  // ── THE REPLAY: his three messages, against the fixed code ──
+  //
+  // The fake Drive lists three files at 15:24 and four from 15:25, which is
+  // what production's own log says happened. The model passes the link it was
+  // given, because that is what the tool description now tells it to do.
+  {
+    const s = scenario(OTHERS, OTHERS.slice()); // the share has not landed yet
+    const say = (t: string, r: any) =>
+      console.log(`      ${t}  ${r.count === 1 ? `READS "${r.data.name}"` : String(r.error || r.notice).slice(0, 96)}`);
+
+    s.clock.t = at("15:24:15");
+    const turn1 = await queryDriveDocs("read", ITM_URL, s.deps);
+    say("15:24:15", turn1);
+    check("REPLAY 15:24:15 — honest, actionable, and grounded in a live 404",
+      turn1.count === 0 && /404/.test(String(turn1.error)) && String(turn1.error).indexOf(SA) >= 0);
+
+    // 15:24:40 — the share lands. Nothing else changes.
+    s.drive.listed = OTHERS.concat([ITM]);
+    s.drive.known = OTHERS.concat([ITM]);
+
+    s.clock.t = at("15:25:05");
+    const turn2 = await queryDriveDocs("read", ITM_URL, s.deps);
+    say("15:25:05", turn2);
+    check("REPLAY 15:25:05 — 'can you try again' now returns the document",
+      turn2.count === 1 && String(turn2.data.content).indexOf("Infrastructure Transition Monitor") >= 0,
+      turn2.error || "");
+
+    s.clock.t = at("15:25:51");
+    const turn3 = await queryDriveDocs("read", ITM_URL, s.deps);
+    say("15:25:51", turn3);
+    check("REPLAY 15:25:51 — and so does 'I've shared it already'", turn3.count === 1);
+
+    // The same three turns through the NAME path, because the model may have
+    // used the name it saw rather than the link. Both roads have to arrive.
+    const byName = scenario(OTHERS, OTHERS.slice());
+    byName.clock.t = at("15:24:15");
+    const n1 = await queryDriveDocs("read", "ITM report", byName.deps);
+    byName.drive.listed = OTHERS.concat([ITM]);
+    byName.drive.known = OTHERS.concat([ITM]);
+    byName.clock.t = at("15:25:05");
+    const n2 = await queryDriveDocs("read", "ITM report", byName.deps);
+    check("REPLAY by name — the miss is honest at 15:24 and the retry succeeds at 15:25",
+      n1.count === 3 && !!n1.error && n2.count === 1, `${n1.count}/${n2.count} ${n2.error || ""}`);
+  }
+}
+}
+
+/**
+ * Section 19 is the first asynchronous one in this file — it drives the Drive
+ * tool against a fake Drive — and tsx transpiles scripts here to CJS, where a
+ * top-level await does not compile. So the summary is chained rather than
+ * written after it: run it after the synchronous sections, and count a throw
+ * as a failure rather than letting an unhandled rejection exit 0 with a
+ * cheerful total.
+ */
+driveSection().then(finish, (err: any) => {
+  fail++;
+  failures.push(`section 19 threw before finishing: ${err && err.message}`);
+  console.log(`  ✗ section 19 threw before finishing — ${err && err.stack ? err.stack : err}`);
+  finish();
+});
+
+function finish(): void {
+  console.log(`\n${pass} passed, ${fail} failed`);
+  if (failures.length) { console.log("\nFailures:"); for (const f of failures) console.log(`  - ${f}`); }
+  process.exit(fail ? 1 : 0);
+}

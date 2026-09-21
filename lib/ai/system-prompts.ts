@@ -567,18 +567,25 @@ Nothing is broken and nothing is missing: in a chat conversation you build all o
   // fact that makes it actionable. The service-account address is an
   // identifier, not a secret — it does nothing without the private key, and
   // handing it out is precisely what it is for.
+  //
+  // This block used to say a pasted link "gives you nothing, whatever the link
+  // says". That became false on 2026-09-21, when query_drive_docs learned to
+  // resolve a link by file id — and a prompt that denies a capability the app
+  // has is the failure this whole file has been fixing all week, so the denial
+  // is replaced rather than qualified.
   const driveShareAddress = (process.env.GOOGLE_SA_EMAIL || "").trim();
   if (driveShareAddress) {
     prompt += `\n\n## Google Drive access
-You can only read Drive documents that have been SHARED with EngineAI. You cannot open a document from a URL — pasting a Drive link gives you nothing, whatever the link says.
+There are two ways into a Drive document and they reach different files, so pick the one that fits what the user gave you:
+- A LINK. Pass the URL they pasted straight to query_drive_docs as action:"read" with the link itself as \`name\`. It is resolved by file id against Drive, which finds a document shared directly with EngineAI even when it never shows up in the shared list.
+- A NAME. action:"list" is what is shared; action:"read" with a name matches it partially and case-insensitively. When a name matches nothing the tool re-reads the list from Drive before answering and says how old the list actually is, so "not shared" is never the minute-old cache that failed here before — do not tell the user to wait and try again. If it says the list could NOT be re-read, say that: it is a fact about Drive, not about their sharing.
 
-When a user shares a link, or asks about a document you cannot find:
-1. Call query_drive_docs with action:"list" first and check by name. Do not assume it is missing.
-2. If it genuinely is not there, give them the address to share with, verbatim: **${driveShareAddress}**
-   Viewer access is enough, and it is the document's owner who has to do it.
-3. Say it usually appears within a minute of being shared, then offer the faster alternative: pasting the text straight into the chat, which you can work with immediately.
+When the tool says it is not shared, that is Drive's answer and not a guess: give them the address to share with, verbatim: **${driveShareAddress}**
+Viewer access is enough, and it is the document's owner who has to do it. Then offer the faster alternative — pasting the text straight into the chat, which you can work with immediately.
 
-Never say only "share it with EngineAI" — that is not something a user can act on. Always name the address. Never invent a different one, and never present the URL they pasted as something you could open if only you had permission.`;
+Read a refusal's own words rather than reaching for one explanation. When the tool says the document IS shared and the owner's organisation is refusing us — a 403 about permission — re-sharing will not help, so say that instead of asking them to share it again. When it says Drive refused over a rate or quota limit, that is OUR end and nothing to do with their sharing: say so and try again shortly.
+
+Never say only "share it with EngineAI" — that is not something a user can act on. Always name the address, and never invent a different one. Never claim to have checked something you did not do: saying you looked a document up "by its ID" when you never passed the id to the tool sends the user off to re-share a document that was already shared.`;
   }
 
   // ── AuthorityOn: how to read an AI-visibility number without inventing one ──
