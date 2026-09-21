@@ -330,7 +330,7 @@ export default function ClientContextDialog({
                       </span>
                     )}
                   </div>
-                  <div className="rounded-md border bg-blue-50/50 dark:bg-blue-950/20 p-4 text-sm leading-relaxed whitespace-pre-wrap max-h-[200px] overflow-y-auto">
+                  <div className="rounded-md border bg-blue-50/50 dark:bg-blue-950/20 p-4 text-sm leading-relaxed whitespace-pre-wrap break-anywhere max-h-[200px] overflow-y-auto">
                     {context.meeting_context}
                   </div>
                 </div>
@@ -345,7 +345,7 @@ export default function ClientContextDialog({
                     {new Date(context.date_last_processed).toLocaleDateString()}
                   </span>
                 </div>
-                <div className="rounded-md border bg-muted/30 p-4 text-sm leading-relaxed whitespace-pre-wrap max-h-[300px] overflow-y-auto">
+                <div className="rounded-md border bg-muted/30 p-4 text-sm leading-relaxed whitespace-pre-wrap break-anywhere max-h-[300px] overflow-y-auto">
                   {context.document_context}
                 </div>
               </div>

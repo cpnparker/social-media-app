@@ -6,6 +6,22 @@
   .text-balance {
     text-wrap: balance;
   }
+  /* A pasted URL is ONE word as far as the browser is concerned, and nothing
+     in the prose CSS let it break. The token painted straight out past the
+     bubble, and the message list — the nearest box willing to scroll — grew
+     a horizontal scrollbar across the WHOLE conversation to show one line of
+     one message. Measured in the reported thread: a 1473px line inside a
+     566px paragraph.
+     `anywhere` and not `break-all`, which breaks ordinary words at the
+     margin as well. And not `break-word`, the older spelling: it wraps the
+     same text but leaves min-content width alone, and min-content is what a
+     flex item's `min-width: auto` floors itself at. Every bubble here also
+     carries a max-width, which clamps that floor (css-flexbox-1 §4.5), so on
+     these surfaces the two spell the same result — `anywhere` is the one
+     that still holds for a box with no cap. */
+  .break-anywhere {
+    overflow-wrap: anywhere;
+  }
 }
 
 /* Scrollbar hide — placed outside @layer for maximum specificity */
@@ -298,6 +314,31 @@
 .ai-response .ai-p {
   margin-bottom: 0.75rem;
 }
+/* Same rule as .break-anywhere, on the elements the markdown pipeline emits.
+   overflow-wrap is inherited, so this is deliberately set on the text-bearing
+   elements rather than on .ai-response itself: code and tables must NOT
+   inherit it. They are wider than the column by design and scroll inside
+   their own frame, which is what a reader expects of a command or a column
+   of figures — breaking those would make them wrong, not just ugly. */
+.ai-response .ai-p,
+.ai-response .ai-h1,
+.ai-response .ai-h2,
+.ai-response .ai-h3,
+.ai-response .ai-h4,
+.ai-response .ai-uli,
+.ai-response .ai-oli,
+.ai-response .ai-content-card,
+.ai-response .ai-table th,
+.ai-response .ai-table td {
+  overflow-wrap: anywhere;
+}
+/* Said out loud so that a later blanket rule on .ai-response cannot reach in
+   here by inheritance: a code block scrolls, it does not get its tokens
+   broken. */
+.ai-response .ai-code-block,
+.ai-response .ai-code-block code {
+  overflow-wrap: normal;
+}
 .ai-response .ai-p:last-child {
   margin-bottom: 0;
 }
@@ -398,6 +439,16 @@
   border: none;
   border-radius: 0;
 }
+/* This and .ai-table-wrap below are the only two boxes in a reply allowed to
+   be wider than the column: they scroll inside their own frame rather than
+   pushing the conversation. Whether they should also SHOW that they scroll
+   while sitting still is a live question, deliberately not answered here —
+   verify-chat-wrapping cannot measure it, because headless Chrome draws no
+   scrollbars in any mode and reports offsetHeight − clientHeight as 0 for a
+   plain `overflow-x: auto` div just as readily as for these. The 0 that looks
+   like evidence of an overlay bar is the harness talking. Deciding it unseen
+   would put an 8px bar across the table frame's own rounded border on every
+   reply in the product, so it wants a real window first. */
 .ai-response .ai-code-block {
   background: hsl(var(--muted));
   border: 1px solid hsl(var(--border));
@@ -652,14 +703,21 @@
 }
 
 /* Links */
-.ai-response .ai-link {
+/* Deliberately NOT scoped to .ai-response. The same class marks a link in the
+   user's own message, and that bubble is not inside one — scoped, the class
+   matched no rule there and a clickable URL painted as ordinary black text,
+   which is the worse half of the two failures: a link nobody can see is a
+   link nobody clicks. Tailwind's preflight sets `a { color: inherit }`, so
+   there is no browser default to fall back on. --primary is the same blue in
+   both themes, so it carries onto the bubble's tint as it does onto the page. */
+.ai-link {
   color: hsl(var(--primary));
   text-decoration: underline;
   text-underline-offset: 2px;
   text-decoration-color: hsl(var(--primary)/0.3);
   transition: text-decoration-color 0.15s;
 }
-.ai-response .ai-link:hover {
+.ai-link:hover {
   text-decoration-color: hsl(var(--primary));
 }
 

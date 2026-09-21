@@ -1951,7 +1951,17 @@ export default function ChatPanel({
       </div>
 
       {/* Messages */}
-      <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-y-auto relative">
+      {/* overflow-x-hidden, not auto: once prose wraps, the only things wider
+          than the column are the ones carrying their own horizontal scroller
+          (a table, a code block), so a scrollbar HERE can only ever be a bug
+          showing through — and a loud one, because dragging it takes the
+          whole conversation sideways to read one line.
+          Not `clip`, which would be the better word for this: css-overflow-3
+          says clip beside an axis that scrolls computes to hidden, and
+          overflow-y is auto, so `overflow-x-clip` here would BE hidden while
+          reading as something stronger. Measured: computed overflow-x
+          "hidden". */}
+      <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden relative">
         {messages.length === 0 && !isStreaming ? (
           <div className="flex flex-col items-center justify-center h-full px-4 sm:px-8 text-center">
             <div className="h-12 w-12 rounded-full bg-foreground/[0.05] flex items-center justify-center mb-4">

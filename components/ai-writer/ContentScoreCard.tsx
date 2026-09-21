@@ -83,7 +83,7 @@ export default function ContentScoreCard({
         </p>
         {data.moves.map((m) => (
           <div key={m.key} className="flex items-start gap-2.5">
-            <span className="flex-1 min-w-0">
+            <span className="flex-1 min-w-0 break-anywhere">
               <span className="block text-[12.5px] font-medium leading-snug">{m.name}</span>
               {m.detail && (
                 <span className="block text-[11.5px] text-muted-foreground leading-snug">{m.detail}</span>

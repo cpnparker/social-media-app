@@ -1941,7 +1941,7 @@ function ReviewScreen(props: {
                   {emailCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />} Copy
                 </button>
               </div>
-              <pre className="mt-1 whitespace-pre-wrap rounded-lg border bg-card/50 p-2 text-[11px] leading-snug max-h-40 overflow-y-auto">{d.followup_email}</pre>
+              <pre className="mt-1 whitespace-pre-wrap break-anywhere rounded-lg border bg-card/50 p-2 text-[11px] leading-snug max-h-40 overflow-y-auto">{d.followup_email}</pre>
             </div>
           )}
         </>

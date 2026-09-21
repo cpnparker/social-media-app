@@ -277,7 +277,7 @@ function SectionCard({ s }: { s: RevisionSection }) {
 
       <div className="px-4 py-3 text-[13px] leading-relaxed">
         {s.status === "edited" && parts && (
-          <p className="whitespace-pre-wrap">
+          <p className="whitespace-pre-wrap break-anywhere">
             {parts.map((p, i) =>
               p.kind === "same" ? <span key={i}>{p.text} </span> :
               p.kind === "del" ? (
@@ -298,18 +298,18 @@ function SectionCard({ s }: { s: RevisionSection }) {
             </p>
             <div>
               <Label>Before</Label>
-              <p className="whitespace-pre-wrap text-muted-foreground">{s.before}</p>
+              <p className="whitespace-pre-wrap break-anywhere text-muted-foreground">{s.before}</p>
             </div>
             <div>
               <Label>After</Label>
-              <p className="whitespace-pre-wrap">{s.after}</p>
+              <p className="whitespace-pre-wrap break-anywhere">{s.after}</p>
             </div>
           </div>
         )}
 
-        {s.status === "added" && <p className="whitespace-pre-wrap">{s.after}</p>}
+        {s.status === "added" && <p className="whitespace-pre-wrap break-anywhere">{s.after}</p>}
         {s.status === "removed" && (
-          <p className="whitespace-pre-wrap text-muted-foreground line-through decoration-red-500/50">{s.before}</p>
+          <p className="whitespace-pre-wrap break-anywhere text-muted-foreground line-through decoration-red-500/50">{s.before}</p>
         )}
       </div>
 

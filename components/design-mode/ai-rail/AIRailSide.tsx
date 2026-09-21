@@ -461,7 +461,7 @@ function TurnView({ turn, onPickProposal }: { turn: Turn; onPickProposal?: (tag:
 function Bubble({ children }: { children: React.ReactNode }) {
   return (
     <div
-      className="rounded-2xl rounded-tl-md border px-3 py-2 text-[12.5px] leading-relaxed whitespace-pre-wrap"
+      className="rounded-2xl rounded-tl-md border px-3 py-2 text-[12.5px] leading-relaxed whitespace-pre-wrap break-anywhere"
       style={{ borderColor: "hsl(var(--design-border))", background: "hsl(var(--design-bg))" }}
     >
       {children}

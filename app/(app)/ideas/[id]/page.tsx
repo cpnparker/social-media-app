@@ -782,7 +782,7 @@ export default function IdeaDetailPage() {
                   />
                 ) : (
                   <div
-                    className="text-sm text-foreground/80 whitespace-pre-wrap leading-relaxed cursor-text min-h-[80px] p-3 rounded-md hover:bg-muted/30 transition-colors"
+                    className="text-sm text-foreground/80 whitespace-pre-wrap break-anywhere leading-relaxed cursor-text min-h-[80px] p-3 rounded-md hover:bg-muted/30 transition-colors"
                     onClick={() => setEditingDescription(true)}
                   >
                     <LinkifiedText text={description} />
