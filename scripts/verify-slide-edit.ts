@@ -29,6 +29,11 @@
  */
 import { applyEditSlide, unrenderableSlides, normaliseSlide, insertableLayout, hubHasConnections, SlideCallRefusal, isSlideCallRefusal, blankSlideFaults } from "../lib/slides/edit";
 import { deleteSlide } from "../lib/slides/draft-edit";
+import { densityFromAsk, densityFromAsks, askOpening } from "../lib/slides/density-from-ask";
+import { prepareSlidesForBuild, recentUserAsks, __setStoredDraftReader, SLIDES_GEN_OPENAI_TOOL } from "../lib/ai/providers";
+import { DECK_ASK_WINDOW } from "../lib/slides/claim";
+import { stampDeckChrome, stampDensity, densityOf, splitOverflowingSlides } from "../lib/slides/generate";
+import { DEFAULT_DENSITY } from "../lib/slides/brand";
 
 let failures = 0;
 const fail = (m: string) => { failures++; console.log(`  FAIL  ${m}`); };
@@ -776,5 +781,536 @@ console.log("\n15. An insert renumbers every step after it");
   if (failures === before15) pass("the spine is the builder's, and every edit re-derives it");
 }
 
+
+// ── 16. A DECK'S DENSITY IS DECIDED ONCE, AT CREATION, AND AN EDIT NEVER ─────
+//        CHANGES IT.
+//
+// WHY THIS EXISTS. `present` is the preset for a deck somebody stands up and
+// talks through — ~30pt titles, bodyY at 158.40 instead of 103.68, a body band
+// a fifth shorter, about half the words on a page. `read` stays the default
+// (decided 2026-09-21) because a default that silently reshapes decks already
+// sent to clients is a migration, not a default. So `present` is CHOSEN, and
+// it is chosen by inferring from the user's own words.
+//
+// The hazard that the design has to make impossible rather than unlikely:
+// inference running on every turn. Run the rule per turn over the 78 stored
+// deck drafts and 4 of the 36 later turns re-stamp a deck that already exists;
+// three of them match on QUOTED SLIDE COPY pasted into a build request rather
+// than on the ask — "or talk it through", "before a meeting", "for a meeting"
+// inside notes — and the opening clamp removes those three, leaving 1 in 36.
+// That one is a genuine occasion phrase on a turn that rebuilds an existing
+// deck, and no text rule stops it: only the creation/edit asymmetry does.
+// Three of the four are consecutive turns in ONE thread (04c5d402,
+// 2026-09-15): the deck would have reflowed under the user three times while
+// they were editing it. That is the same thread and the same failure mode
+// CLAUDE.md already records for `meeting_data` routing.
+//
+// So the assertions below are not "the predicate is right". They are:
+//   - creation INFERS, and an edit, an insert, a reorder, a SPLIT and a
+//     FULL-DECK RESEND all INHERIT — the resend most of all, because a resend
+//     is what the tool tells the model to do for a revision and it arrives
+//     with `edited: false`;
+//   - "creation" means the deck lookup LOOKED AND FOUND NOTHING. A lookup that
+//     could not run is a third answer, and read as the first it let a resend
+//     re-decide the density of a deck that already exists (16k);
+//   - the ask is the USER's, over the last few turns rather than only the
+//     newest, because the occasion and the build request are usually two
+//     different messages (16l);
+//   - the predicate is USED, not merely written (this repo has closed a live
+//     security hole on the strength of a line merely existing);
+//   - the publish path never re-stamps, because publishing has no ask.
+//
+// AND THE FIXTURES ARE THE CORPUS, not invented sentences. Every trigger in
+// the predicate was measured twice: over the 42 creation asks, and over all
+// 2,936 stored user messages, because a trigger's cost is how often its WORD
+// occurs in this workspace at all. Four triggers died on that second
+// measurement — the bare verb "present" (19 messages, about five of them
+// speaking, twice the adjective), the bare noun "pitch" (23 messages, 22 of
+// them a media pitch), "run through" (4, all the reading sense) and a
+// subject-only "I'm giving/running/doing" (fires on "I am doing some ideation
+// for IPU" and earns nothing) — and 16a holds a real message for each.
+//
+// MUTATION LOG (detached worktree, 2026-09-21) — kills AND survivors:
+//   killed   the word boundary dropped from the speaking verb: the Siemens ITM
+//            read control, whose only present-stem is "stock images ... that
+//            represent the subject", flips to present.
+//   killed   the speaking verb unbound from a person (the bare stem restored):
+//            four real messages flip, including the ADJECTIVE in "which
+//            companies apart from Hiscox are present in this space?".
+//   killed   "presentation" added to the speaking verbs: 12 of the 42 stored
+//            creations flip on a word that is a plain synonym for deck.
+//   killed   the bare noun "pitch" readmitted: three real article-pitch
+//            messages flip.
+//   killed   "run" readmitted beside walk and talk: "Run through these
+//            interview transcripts" flips.
+//   killed   "board" readmitted to the occasion nouns: "slides for the board
+//            pack" flips — a document, and the only synthetic fixture in 16a,
+//            because no stored message says the phrase at all. That is the
+//            argument: a word that occurs 0 times as an occasion cannot be in
+//            the list on the strength of sounding like one.
+//   killed   the subject-only "I'm giving/running/doing" pattern readmitted.
+//   killed   the opening clamp removed (askOpening returns the whole text):
+//            the 04c5d402 edit turns flip on their own slide copy.
+//   killed   the clamp cutting at exactly 300 rather than on a whole word: an
+//            ask whose 300th character falls inside "meetings" is truncated
+//            into "for our meeting", manufacturing an occasion the text does
+//            not contain.
+//   killed   stampDensity folded into stampDeckChrome: a present deck reverts
+//            to read the moment either build entry point stamps its chrome —
+//            and check 47b of verify-slide-layouts (DEFAULT_DENSITY === "read")
+//            stays green the whole time, which is why that mutation needs an
+//            assertion of its own.
+//   killed   creation defined as `edited === false` rather than "no stored
+//            deck": the full-deck resend re-infers and reshapes the deck.
+//   killed   the edit branch inheriting without re-stamping: an INSERTED slide
+//            arrives with no density and is drawn at read inside a present
+//            deck — a deck with two densities in it is two decks.
+//   killed   the build branch reading "could not look" as "no deck" (which is
+//            what it did until 2026-09-21): a resend during a blip infers
+//            present,present,present,present over a deck that already exists.
+//   killed   a stored-draft reader that THROWS mapped to an empty conversation.
+//   killed   carriedDensity accepting slides that disagree about their density.
+//   killed   the two edit refusals merged into one message: an edit whose
+//            lookup merely failed is told to "build one first with `slides`",
+//            and the model — which has the whole deck in its context — would
+//            resend it into the build branch as a new deck.
+//   killed   recentUserAsks reading only the newest turn, reading the
+//            ASSISTANT's turns, and densityFromAsks ignoring DECK_ASK_WINDOW.
+//   killed   bare "call" readmitted to the OCCASION noun list, by the
+//            "Prep before each call" fixture — which is a line of slide copy
+//            from 04c5d402, not an invented string. Predicted to survive and
+//            did not: worth saying, because the argument for excluding bare
+//            "call" is the 0-for-9 corpus measurement and this shows one real
+//            line of copy is enough to pin it.
+//   SURVIVED deleting `if (!opening) return "read"` in densityFromAsk. The
+//            loop below it returns "read" for an empty string anyway, so no
+//            input distinguishes the branch. A finding about the check, not an
+//            omission to tidy away: the early return is a statement of the
+//            rule ("nothing said means read"), and nothing can pin it.
+//   SURVIVED deleting carriedDensity's empty-list early return — the loop
+//            below returns the same value for an empty list. Same shape as the
+//            one above, and left in for the same reason.
+//   SURVIVED a cache hit reporting `couldNotLook: stored.couldNotLook` instead
+//            of false. Nothing reads the flag when a deck was found, so no
+//            input distinguishes it. It records something true about the
+//            design — the flag is only ever consulted on an empty answer —
+//            rather than a hole in the check.
+//   NOT REACHABLE from here, and said plainly rather than left implied: the
+//            real reader's own `if (error)` branch. The seam that lets 16k
+//            drive all three answers also means the check never runs the
+//            supabase call, so "a failed query is reported, not thrown" is
+//            asserted of the CALLER only. It needs a database to pin.
+//   And the one that shows why 16i has to exist: under the stampDeckChrome
+//   mutation, `npx tsx scripts/verify-slide-layouts.ts` exits 0 with zero 47b
+//   failures while every present deck silently reverts to read at publish.
+;(async () => {
+const before16 = failures;
+console.log("\n16. Density is decided once, at creation, and an edit never changes it");
+
+/** A deck standing in for a stored one, at whatever density it was built at. */
+const plainDeck = () => [
+  { layout: "cover", title: "AI tools at TCE" },
+  { layout: "content", title: "What it does", body: "One" },
+  { layout: "content", title: "What it costs", body: "Two" },
+  { layout: "content", title: "What happens next", body: "Three" },
+];
+const densities = (slides: any[]) => slides.map((s: any) => densityOf(s)).join(",");
+const allAt = (slides: any[], d: string) => slides.length > 0 && slides.every((s: any) => densityOf(s) === d);
+
+// THE STORED-DRAFT STORE, STUBBED FOR THE WHOLE OF 16 — and the reason it has
+// to be is the first thing this check found about itself. There is no database
+// reachable from a laptop or from CI, so against the real reader EVERY lookup
+// answers "could not look", and the whole of 16 used to run on the in-process
+// turn cache alone. That cache is warm for exactly one lambda. The path
+// production takes on every turn after the one that built the deck — read the
+// stored draft, inherit its density — had no coverage at all, so 16d and 16g
+// passed for a reason that does not exist in production.
+//
+// STORE holds what the route would have written; UNREADABLE is a conversation
+// whose lookup fails, which is a third answer and not an empty conversation.
+const STORE = new Map<string, any>();
+const UNREADABLE = new Set<string>();
+const restoreStore = __setStoredDraftReader(async (conversationId: string) => {
+  if (UNREADABLE.has(conversationId)) return { draft: null, couldNotLook: true };
+  return { draft: STORE.get(conversationId) || null, couldNotLook: false };
+});
+
+try {
+  // (a) THE PREDICATE ITSELF. Every fixture that is not synthetic is a real
+  //     ask, copied out of intelligence.ai_messages verbatim.
+  const CASES: [string, string, string][] = [
+    // The six stored creations that say plainly the deck will be spoken.
+    ["6d0ec81b", "Can you help me prepare for tomorrow's morning meeting. We need to include an agenda for the following.", "present"],
+    ["1d14b7c2", "Can you check and update this presentation. create a new deck that works for sales pitches for the AI products we are now selling", "present"],
+    ["05f0536c", "Can you use AuthorityOn to write a report for the Siemens ITM report brand's AI authority performance. make a google presentation to walk through the findings", "present"],
+    ["edbcfadf", "I'm giving a briefing to the team on AI tools for TCE tomorrow morning. can you make me a great presentation for me.", "present"],
+    ["cd96db5a", "can you create a slide deck for my 10am meeting on nature finance", "present"],
+    ["e35a5600", "Can you review these slides, fix the formatting issues and produce a Google Slides presentation for me to present for the client?", "present"],
+    // The plan's own example, kept working — and the reason bare "call" is out.
+    ["plan", "a deck for Thursday's call", "present"],
+    // THE CANONICAL READ CONTROL. Its only present-stem is "represent".
+    ["4e54d076", "Turn the Siemens ITM 2025 — AI visibility audit — Executive report report into a TCE-branded slide deck. It should summarise the executive report in a clear and insightful way so that C-suite executives are able to digest it in a time-pressured environment. For visuals, pull in stock images where appropriate that represent the subject of the slide.", "read"],
+    // "presentation" is a synonym for deck, in four separate conversations.
+    ["conversion", "Can you make this presentation in TCE format. keep the content the same just change the format to match the company style.", "read"],
+    ["04c5d402", "can you make me a 10 slide presentation on this", "read"],
+    // The ordinary edit the whole asymmetry exists for.
+    ["edit", "can you make slide 4's presentation of the numbers clearer", "read"],
+    // QUOTED SLIDE COPY, verbatim from the corpus turns that wrongly flip.
+    ["copy-1", "Prep before each call", "read"],
+    ["copy-3", "here are the notes from Gabi and my prep meeting. can you update the presentation", "read"],
+    ["copy-4", "MeetingBrain writes up your meetings", "read"],
+    ["copy-5", "build it in three tool calls, not one", "read"],
+    // What the ask usually looks like: nothing about purpose at all. 34 of 42.
+    ["bare-1", "can you make some slides for this", "read"],
+    ["bare-2", "ok. generate the slides", "read"],
+    ["bare-3", "Build the timeline as a deck first.", "read"],
+    ["", "", "read"],
+    // THE WORDS THAT MEAN SOMETHING ELSE HERE. Each of these is a real stored
+    // message, and each was measured across all 2,936 of them before the
+    // trigger that matched it was narrowed or dropped. They matter more than
+    // fixtures usually do, because any of them can now be the turn BEFORE a
+    // build request and decide a deck's shape from one turn back (16l).
+    //
+    // A PITCH IS A WRITTEN THING IN THIS WORKSPACE: 22 of the 23 stored
+    // messages containing the word are an article pitch, and only the bound
+    // form ("for sales pitches", above) is a deck somebody stands up with.
+    ["pitch-1", "Write a 50 article word pitch for the first key trend on global equity. Suggest the most engaging article type and list the researchers that would need to be interviewed", "read"],
+    ["pitch-2", "Do you think there is an article pitch that would fall under his leadership pillar?", "read"],
+    ["pitch-3", "I don't think this fund has been attributed to the fellowship projects. Omit this part of the pitch.", "read"],
+    // THE BARE VERB "present" IS USUALLY "lay out", and twice the adjective —
+    // which no word boundary can exclude, only a binding to a person can.
+    ["present-1", "Please suggest some formats we can use to present IPU's I say yes campaign, specifically unpacking the 6 pledges", "read"],
+    ["present-2", "Thanks. Which companies apart from Hiscox are present in this space?", "read"],
+    ["present-3", "You are an ideation specialist. I need to come up with some ideas for how to present this new Horizon biotech funding research on LinkedIn.", "read"],
+    ["present-4", "Here's how I propose presenting these ideas to the client in an email. Does that tally with what the client said?", "read"],
+    // "run through" IS THE READING SENSE HERE, every one of the four stored
+    // messages that says it. "walk through" and "talk through" stay.
+    ["run-1", "Run through these interview transcripts and identify the main themes", "read"],
+    ["run-2", "can you give me a summary of clients to run through (ie account managers)", "read"],
+    // AND THE SUBJECT WITHOUT THE OBJECT SAYS NOTHING: "I'm doing/running/
+    // giving" constrained who, not what, and fired on this.
+    ["doing-1", "I am doing some ideation for IPU. Please generate some ideas to promote the youth participation report attached", "read"],
+    // SYNTHETIC, and the only one here that is: no stored message says "board
+    // pack", which is exactly why the word cannot be in the occasion list on
+    // the strength of sounding like an occasion. A board MEETING still is one.
+    ["board-pack", "Turn this proposal into slides for the board pack", "read"],
+    ["board-meeting", "Turn this proposal into slides for the board meeting on Thursday", "present"],
+  ];
+  for (let i = 0; i < CASES.length; i++) {
+    const got = densityFromAsk(CASES[i][1]);
+    if (got !== CASES[i][2]) {
+      fail(`16a ${CASES[i][0] || "empty"}: expected ${CASES[i][2]}, got ${got} — ${JSON.stringify(CASES[i][1].slice(0, 70))}`);
+    }
+  }
+
+  // (b) THE CLAMP. Slide copy far into a long message is content, not the ask.
+  //     Both fixtures are the real corpus shape: a long, precise build request
+  //     whose OWN SLIDE COPY carries the words. "or talk it through" is a
+  //     caption inside a `process` stage in 04c5d402; as a bare fragment it is
+  //     a speaking verb and the rule is right to read it as one, which is
+  //     exactly why the scope — not the wording — has to be what saves it.
+  const PREAMBLE = "Rebuild this deck as exactly these 10 slides, as a new version of the deck. Use fidelity \"preserve\": these layouts, titles, fields and wording, nothing added or reworded. imageStyle: \"deep navy and electric blue, abstract light and data, calm, no people\". Use hyphens, never em or en dashes. Slide 1 cover, slide 2 content, slide 3 process. ";
+  const BURIED: [string, string][] = [
+    ["an occasion phrase", "for my 10am meeting on nature finance"],
+    ["a stage caption", "stage 4 caption \"Ask MeetingBrain, or talk it through\""],
+    ["a slide's own line", "slide 6 body \"Prep before Thursday's meeting\""],
+  ];
+  for (let i = 0; i < BURIED.length; i++) {
+    const tail = BURIED[i][1];
+    const whole = PREAMBLE + tail;
+    if (PREAMBLE.length < 300) {
+      fail(`16b precondition: the preamble is only ${PREAMBLE.length} characters, so the buried copy is inside the clamp and this fixture pins nothing`);
+      break;
+    }
+    if (densityFromAsk(tail) !== "present") {
+      fail(`16b precondition: ${BURIED[i][0]} does not infer present on its own, so the clamp assertion proves nothing — ${JSON.stringify(tail)}`);
+    } else if (densityFromAsk(whole) !== "read") {
+      fail(`16b ${BURIED[i][0]} buried in a build request still re-stamps the deck — the opening clamp is not being applied`);
+    }
+  }
+  // AND THE CLAMP CUTS ON A WHOLE WORD, because a cut mid-word can MANUFACTURE
+  // a trigger the text does not contain. Synthetic, because no stored ask does
+  // this — and pinned precisely because only a synthetic fixture ever will.
+  // `new Array(n).join` rather than String.repeat: scripts/ is type-checked by
+  // next build and tsconfig sets no target.
+  //
+  // The word is "meetings": cut at exactly 300 it becomes "for our meeting",
+  // which is an occasion, and the plural is not one. Whether it OUGHT to be is
+  // a separate question the corpus has not answered — the point here is that
+  // truncation must not answer it by accident. (This fixture used to straddle
+  // "presentation"; since the speaking verb was bound to a person, a truncated
+  // "present" is inert and that fixture asserted nothing.)
+  const straddle = new Array(285).join("x") + " for our meetings on nature finance";
+  const cut = straddle.slice(0, 300);
+  const opened = askOpening(straddle);
+  if (cut.slice(-16) !== " for our meeting" || straddle.charAt(300) !== "s") {
+    fail(`16b precondition: the 300th character does not fall inside "meetings" (${JSON.stringify(straddle.slice(290, 306))}), so the whole-word cut is not being exercised`);
+  } else if (densityFromAsk(cut) !== "present") {
+    fail("16b precondition: a bare 300-character cut does not manufacture a trigger, so there is nothing here for the whole-word cut to prevent");
+  } else if (opened.indexOf("meetings") < 0) {
+    fail(`16b askOpening cut inside "meetings" and manufactured the trigger: ${JSON.stringify(opened.slice(-20))}`);
+  } else if (densityFromAsk(straddle) !== "read") {
+    fail(`16b a truncated word still infers present: ${JSON.stringify(opened.slice(-24))}`);
+  }
+
+  // (c) CREATION INFERS. Driven through the real call site, not the predicate.
+  const convP = `verify-density-present-${process.pid}`;
+  const madeP = await prepareSlidesForBuild({ title: "Nature finance", slides: plainDeck() }, convP,
+    ["can you create a slide deck for my 10am meeting on nature finance"]);
+  if (madeP.density !== "present") fail(`16c a deck asked for a 10am meeting was created at ${madeP.density}`);
+  else if (!allAt(madeP.slides, "present")) fail(`16c the inferred density did not reach every slide: ${densities(madeP.slides)}`);
+
+  const convR = `verify-density-read-${process.pid}`;
+  const madeR = await prepareSlidesForBuild({ title: "AI tools at TCE", slides: plainDeck() }, convR,
+    ["can you make me a 10 slide presentation on this"]);
+  if (madeR.density !== "read") fail(`16c an ordinary ask was created at ${madeR.density}, not the default`);
+  else if (!allAt(madeR.slides, "read")) fail(`16c a read deck is not uniformly read: ${densities(madeR.slides)}`);
+  if (DEFAULT_DENSITY !== "read") fail(`16c precondition: the default is ${DEFAULT_DENSITY}, so "stayed read" says nothing about inheritance`);
+
+  // (d) AN EDIT INHERITS, EVEN WHEN ITS OWN WORDS SAY THE OTHER THING.
+  //     This is the assertion that would have caught 04c5d402.
+  const EDIT_ASK = "Build a NEW 10-slide deck to replace the one above, for tomorrow's team briefing.";
+  if (densityFromAsk(EDIT_ASK) !== "present") {
+    fail("16d precondition: the edit ask does not infer present on its own, so the inheritance assertions below are vacuous");
+  }
+  const edited = await prepareSlidesForBuild(
+    { slides: [], editSlide: { slideNumber: 2, body: "One, rewritten" } }, convR, [EDIT_ASK]);
+  if (edited.density !== "read") fail(`16d an edit re-stamped the deck to ${edited.density} from the words in the edit`);
+  else if (!allAt(edited.slides, "read")) fail(`16d an edit reflowed part of a read deck: ${densities(edited.slides)}`);
+
+  //     And the other direction, so "stayed read" is not just the default
+  //     showing through: a present deck survives a plain edit.
+  const editedP = await prepareSlidesForBuild(
+    { slides: [], editSlide: { slideNumber: 2, body: "One, rewritten" } }, convP, ["tidy up slide 2"]);
+  if (!allAt(editedP.slides, "present")) fail(`16d a present deck lost its density on an ordinary edit: ${densities(editedP.slides)}`);
+
+  // (e) AN INSERT — and the inserted slides carry it too, which they do only
+  //     because the inherited density is RE-STAMPED over the whole result.
+  const inserted = await prepareSlidesForBuild(
+    { slides: [], editSlide: { insertAfter: 2, insertSlides: [
+      { layout: "content", title: "Writer", body: "From brief to first draft" },
+      { layout: "content", title: "Optimiser", body: "Score, then rewrite" },
+    ] } }, convP, ["add two slides about Writer and Optimiser for tomorrow's team briefing"]);
+  if (inserted.slides.length !== 6) fail(`16e precondition: the insert did not grow the deck (${inserted.slides.length})`);
+  else if (!allAt(inserted.slides, "present")) fail(`16e inserted slides were drawn at a different density from the deck they joined: ${densities(inserted.slides)}`);
+  else if (inserted.slides[2].title !== "Writer") fail("16e precondition: the inserted slide is not where it was asked for");
+
+  // (f) A REORDER, done the way the tool makes a user do it: remove, then
+  //     insert back somewhere else. Two calls, because the numbering shifts.
+  const removed = await prepareSlidesForBuild(
+    { slides: [], editSlide: { removeSlides: [3] } }, convP, ["drop slide 3 before Thursday's meeting"]);
+  if (removed.slides.length !== 5) fail(`16f precondition: the remove did not apply (${removed.slides.length})`);
+  else if (!allAt(removed.slides, "present")) fail(`16f a removal changed the deck's density: ${densities(removed.slides)}`);
+  const reordered = await prepareSlidesForBuild(
+    { slides: [], editSlide: { insertAfter: 5, insertSlides: [{ layout: "content", title: "Optimiser", body: "Score, then rewrite" }] } },
+    convP, ["put it back at the end, ready for the briefing"]);
+  if (reordered.slides.length !== 6) fail(`16f precondition: the reorder's insert did not apply (${reordered.slides.length})`);
+  else if (!allAt(reordered.slides, "present")) fail(`16f a reorder left the deck at two densities: ${densities(reordered.slides)}`);
+
+  // (g) A FULL-DECK RESEND IS A REVISION, NOT A NEW DECK. It arrives with
+  //     `edited: false` — the tool's own description tells the model to resend
+  //     the whole list for every change — so keying creation on `edited` would
+  //     re-infer here, against the user's newest sentence, on a deck they are
+  //     part-way through editing.
+  const resent = await prepareSlidesForBuild(
+    { title: "AI tools at TCE", slides: plainDeck().concat([{ layout: "content", title: "One more", body: "Four" }]) },
+    convR, [EDIT_ASK]);
+  if (resent.edited !== false) fail("16g precondition: the resend is reported as an edit, so it does not exercise the built branch");
+  else if (resent.density !== "read") fail(`16g a full-deck resend re-inferred and reshaped an existing deck to ${resent.density}`);
+  else if (!allAt(resent.slides, "read")) fail(`16g a full-deck resend reflowed the deck: ${densities(resent.slides)}`);
+
+  // (h) A SPLIT. A body one paragraph too long becomes two slides, and the
+  //     continuation is the same deck — it is drawn at the same density or the
+  //     page it continues changes shape halfway down.
+  const paras: string[] = [];
+  for (let i = 0; i < 40; i++) paras.push(`The engine reads the brief and writes the first draft, then scores it and rewrites the weakest section (${i + 1}).`);
+  const long = paras.join("\n");
+  const split = splitOverflowingSlides(stampDensity(
+    [{ layout: "content", title: "Writer", body: long }] as any, "present") as any);
+  if (split.length < 2) fail(`16h precondition: the body did not split (${split.length} slide(s)), so nothing about continuations is proved`);
+  else if (!allAt(split as any[], "present")) fail(`16h a continuation slide is drawn at a different density from the slide it continues: ${densities(split as any[])}`);
+
+  // (i) PUBLISHING HAS NO ASK, SO IT CANNOT INFER — and the one way it would
+  //     start to is somebody folding stampDensity into the other deck-wide
+  //     stamper for tidiness. Asserted on stampDeckChrome itself, because that
+  //     is what both build entry points call.
+  const chromed = stampDeckChrome(stampDensity(plainDeck() as any, "present") as any, "AI tools at TCE");
+  if (!allAt(chromed as any[], "present")) fail(`16i stamping the deck's chrome reverted its density to ${densities(chromed as any[])} — a present deck would become a read deck the moment it reached Drive`);
+  if (!(chromed as any[])[1].footer) fail("16i precondition: stampDeckChrome stamped no footer, so the assertion above may be testing nothing");
+
+  //     And it survives the round trip through storage, because the publish
+  //     button posts the stored draft back from the browser.
+  const stored = JSON.parse(JSON.stringify({ title: "AI tools at TCE", slides: chromed }));
+  if (densityOf(stored.slides[0]) !== "present") fail("16i density did not survive the draft's round trip through JSON storage");
+
+  // (j) THE MODEL IS TOLD, and it is told inside the schema it is actually
+  //     sent. The stamp alone half-works: the geometry changes, the model goes
+  //     on writing read-length copy, and the deck grows in thin continuation
+  //     slides (measured: 80 slides to 84 across the six inferred decks).
+  const toolJson = JSON.stringify(SLIDES_GEN_OPENAI_TOOL);
+  if (toolJson.indexOf("HALF the words per slide") < 0) {
+    fail("16j nothing in generate_slides tells the model that a spoken deck holds half the words — the stamp would change the geometry under copy written for read");
+  }
+  if (toolJson.length > 55000) fail(`16j generate_slides is ${toolJson.length} characters, over its 55,000 ceiling`);
+
+  // (k) THE LOOKUP HAS THREE ANSWERS AND ONLY ONE OF THEM MAY INFER.
+  //     Everything above this point runs with the turn cache warm, because the
+  //     same process built the deck it then edits. Production is not like
+  //     that: the lambda that built the deck is usually gone by the next turn
+  //     and the deck comes back from the stored draft. So these run COLD — a
+  //     conversation id this process has never built in — and the answer comes
+  //     from the store.
+  //
+  //     "Nothing stored" and "could not read the store" are one value in a
+  //     nullable, and read as the first, the second let a resend re-decide the
+  //     density of a deck that already exists. The edit branch has always
+  //     failed CLOSED in that state; the build branch failed open in it.
+  {
+    const ASK_READ = ["can you make me a 10 slide presentation on this"];
+    const ASK_PRESENT = ["can you create a slide deck for my 10am meeting on nature finance"];
+    const storedPresent = () => ({ title: "Nature finance", slides: stampDensity(plainDeck() as any, "present") });
+    if (densityFromAsks(ASK_READ) !== "read" || densityFromAsks(ASK_PRESENT) !== "present") {
+      fail("16k precondition: the two asks do not infer opposite densities, so nothing below distinguishes inheriting from inferring");
+    }
+
+    // FOUND: the stored deck decides, and the ask is not consulted at all.
+    const convFound = `verify-density-found-${process.pid}`;
+    STORE.set(convFound, storedPresent());
+    const found = await prepareSlidesForBuild({ title: "Nature finance", slides: plainDeck() }, convFound, ASK_READ);
+    if (!allAt(found.slides, "present")) fail(`16k a resend into a conversation whose STORED deck is present came back ${densities(found.slides)} — the stored density was not inherited`);
+
+    // LOOKED AND FOUND NOTHING: the one answer that may infer.
+    const convEmpty = `verify-density-empty-${process.pid}`;
+    const empty = await prepareSlidesForBuild({ title: "Nature finance", slides: plainDeck() }, convEmpty, ASK_PRESENT);
+    if (!allAt(empty.slides, "present")) fail(`16k a first deck in an empty conversation did not infer from the ask: ${densities(empty.slides)}`);
+
+    // COULD NOT LOOK: never infers, however loudly the ask asks.
+    const convBlind = `verify-density-blind-${process.pid}`;
+    UNREADABLE.add(convBlind);
+    const blind = await prepareSlidesForBuild({ title: "Nature finance", slides: plainDeck() }, convBlind, ASK_PRESENT);
+    if (!allAt(blind.slides, "read")) fail(`16k a build whose deck lookup FAILED inferred ${densities(blind.slides)} from the ask — a blip would re-decide the density of a deck that already exists`);
+
+    //     …and it still inherits from the only other place the value survives:
+    //     the slides the model resent, which came from the deck context.
+    const convBlindResend = `verify-density-blind-resend-${process.pid}`;
+    UNREADABLE.add(convBlindResend);
+    const resentPresent = await prepareSlidesForBuild(
+      { title: "Nature finance", slides: stampDensity(plainDeck() as any, "present") }, convBlindResend, ASK_READ);
+    if (!allAt(resentPresent.slides, "present")) fail(`16k a failed lookup threw away the density the resent slides were carrying: ${densities(resentPresent.slides)}`);
+
+    //     …but a deck that does not all agree is not evidence of anything.
+    const convBlindMixed = `verify-density-blind-mixed-${process.pid}`;
+    UNREADABLE.add(convBlindMixed);
+    const mixed = plainDeck() as any[];
+    stampDensity(mixed, "present");
+    mixed[2].density = "read";
+    const mixedOut = await prepareSlidesForBuild({ title: "Nature finance", slides: mixed }, convBlindMixed, ASK_PRESENT);
+    if (!allAt(mixedOut.slides, "read")) fail(`16k slides that disagree about their density were read as inheritance: ${densities(mixedOut.slides)}`);
+
+    //     A READER THAT THROWS IS THE SAME ANSWER. The real one catches its
+    //     own faults, but what "no draft" means is decided in one place and an
+    //     exception must not arrive there as an empty conversation.
+    const convThrow = `verify-density-throw-${process.pid}`;
+    const restoreThrow = __setStoredDraftReader(async () => { throw new Error("connection reset"); });
+    const thrown = await prepareSlidesForBuild({ title: "Nature finance", slides: plainDeck() }, convThrow, ASK_PRESENT);
+    restoreThrow();
+    if (!allAt(thrown.slides, "read")) fail(`16k a stored-draft read that THREW was treated as an empty conversation and inferred ${densities(thrown.slides)}`);
+
+    //     AND THE EDIT BRANCH SAYS WHICH REFUSAL IT IS. "Build one first with
+    //     `slides`" is the one instruction that must not be given here: the
+    //     model has the whole deck in its context and would resend it, into
+    //     the build branch, as a new deck.
+    const convBlindEdit = `verify-density-blind-edit-${process.pid}`;
+    UNREADABLE.add(convBlindEdit);
+    let refusal: any = null;
+    try {
+      await prepareSlidesForBuild({ slides: [], editSlide: { slideNumber: 1, body: "One, rewritten" } }, convBlindEdit, ASK_READ);
+    } catch (e: any) { refusal = e; }
+    if (!refusal || !isSlideCallRefusal(refusal)) {
+      fail("16k an edit whose deck lookup failed did not refuse");
+    } else if (/build one first/i.test(String(refusal.message))) {
+      fail("16k an edit whose lookup merely FAILED was told to build a new deck — the model would resend the deck it already has, as a creation");
+    } else if (!/could not be loaded/i.test(String(refusal.message))) {
+      fail(`16k the refusal for a failed lookup does not say the deck could not be read: ${String(refusal.message).slice(0, 80)}`);
+    }
+    //     And the empty conversation still gets the OTHER refusal, so the two
+    //     have not simply been merged into one message.
+    const convEmptyEdit = `verify-density-empty-edit-${process.pid}`;
+    let refusal2: any = null;
+    try {
+      await prepareSlidesForBuild({ slides: [], editSlide: { slideNumber: 1, body: "One, rewritten" } }, convEmptyEdit, ASK_READ);
+    } catch (e: any) { refusal2 = e; }
+    if (!refusal2 || !/build one first/i.test(String(refusal2.message))) {
+      fail(`16k an edit in a genuinely empty conversation no longer tells the model to build one first: ${String(refusal2 && refusal2.message).slice(0, 80)}`);
+    }
+  }
+
+  // (l) THE OCCASION IS OFTEN A TURN OR TWO BACK, and it is read from the
+  //     USER's turns only.
+  //
+  //     04c5d402 is the deck this window exists for, and its real shape: the
+  //     briefing is named in the FIRST message of the conversation, the deck
+  //     is asked for eighteen minutes later with a sentence that says nothing
+  //     about purpose, and the deck was published to Drive at read.
+  {
+    const FIRST = "I'm giving a briefing to the team on AI tools for TCE tomorrow morning. can you make me an outline of this for me.";
+    const THEN = "can you make me a 10 slide presentation on this";
+    const REPLY = "Here is the outline for your briefing tomorrow morning, ready to walk the team through.";
+    const msgs: any[] = [
+      { role: "user", content: FIRST },
+      { role: "assistant", content: REPLY },
+      { role: "user", content: THEN },
+    ];
+    const asks = recentUserAsks(msgs);
+    if (asks.length !== 2 || asks[0] !== THEN || asks[1] !== FIRST) {
+      fail(`16l recentUserAsks did not return the user's own turns newest first (${asks.length}: ${JSON.stringify(asks.map((a) => a.slice(0, 24)))})`);
+    }
+    if (densityFromAsk(THEN) !== "read") fail("16l precondition: the build request infers present on its own, so the window proves nothing");
+    if (densityFromAsk(FIRST) !== "present") fail("16l precondition: the opening turn does not infer present, so there is nothing for the window to carry");
+    const convWindow = `verify-density-window-${process.pid}`;
+    const built = await prepareSlidesForBuild({ title: "AI tools at TCE", slides: plainDeck() }, convWindow, asks);
+    if (!allAt(built.slides, "present")) fail(`16l the briefing named one user turn earlier was lost: ${densities(built.slides)}`);
+
+    //     THE ASSISTANT'S WORDS ARE NEVER THE ASK. The reply above would infer
+    //     present on its own — it is the model's paraphrase, and a deck's shape
+    //     is not decided by the model describing what it just did.
+    if (densityFromAsk(REPLY) !== "present") {
+      fail("16l precondition: the assistant's reply does not infer present, so excluding it is not being tested");
+    }
+    const convSpoken = `verify-density-assistant-${process.pid}`;
+    const spokenOnly = await prepareSlidesForBuild({ title: "AI tools at TCE", slides: plainDeck() },
+      convSpoken, recentUserAsks([{ role: "user", content: "here are the notes" }, { role: "assistant", content: REPLY }, { role: "user", content: THEN }] as any));
+    if (!allAt(spokenOnly.slides, "read")) fail(`16l the model's own reply decided the deck's density: ${densities(spokenOnly.slides)}`);
+
+    //     AND IT IS BOUNDED, by the window the route already uses for deck
+    //     asks rather than by a second number written down here.
+    const far: string[] = [THEN];
+    for (let i = 1; i < DECK_ASK_WINDOW; i++) far.push("and add the Q3 figures");
+    far.push(FIRST);
+    if (densityFromAsk(far[far.length - 1]) !== "present") fail("16l precondition: the out-of-window turn does not infer present");
+    if (densityFromAsks(far) !== "read") fail(`16l a turn ${far.length - 1} back still decided the density — the window is not bounded at DECK_ASK_WINDOW (${DECK_ASK_WINDOW})`);
+    const edge = far.slice(0, DECK_ASK_WINDOW - 1).concat([FIRST]);
+    if (densityFromAsks(edge) !== "present") fail(`16l the turn at the edge of the window was dropped (${edge.length} turns, window ${DECK_ASK_WINDOW})`);
+    const many: any[] = [];
+    for (let i = 0; i < 8; i++) many.push({ role: "user", content: `turn ${i}` });
+    if (recentUserAsks(many).length !== DECK_ASK_WINDOW) fail(`16l recentUserAsks returned ${recentUserAsks(many).length} turns, not DECK_ASK_WINDOW (${DECK_ASK_WINDOW})`);
+
+    //     AND AN EDIT STILL INHERITS, even when a turn inside the window says
+    //     the other thing. Reading back over turns makes the asymmetry matter
+    //     more, not less.
+    const editedWindow = await prepareSlidesForBuild(
+      { slides: [], editSlide: { slideNumber: 2, body: "One, rewritten" } }, convR, ["tidy up slide 2", FIRST]);
+    if (!allAt(editedWindow.slides, "read")) fail(`16l an edit inherited from the window instead of from the deck: ${densities(editedWindow.slides)}`);
+  }
+} catch (e: any) {
+  fail(`16 driving the density decision threw: ${String(e?.message || e).slice(0, 160)}`);
+} finally {
+  restoreStore();
+}
+if (failures === before16) {
+  pass("a new deck infers its density from the ask, and an edit, an insert, a reorder, a split, a full-deck resend and the publish all inherit it");
+}
+
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
 process.exit(failures ? 1 : 0);
+})();

@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { applyEditSlide, unrenderableSlides, undrawnTableSlides, undrawnTableFaults, normaliseSlide, textReadySlides, PAYLOAD_FIELDS, SlideCallRefusal, blankSlideFaults, type RefusalScope } from "@/lib/slides/edit";
 import { slidesFailure, parseSlidesArguments, type SlidesTurnState } from "@/lib/slides/failure";
-import { shouldRetryDeckClaim, unmadeDeckChangeNotice, DECK_CLAIM_NUDGE } from "@/lib/slides/claim";
+import { shouldRetryDeckClaim, unmadeDeckChangeNotice, DECK_CLAIM_NUDGE, DECK_ASK_WINDOW } from "@/lib/slides/claim";
 import { splitVolatile } from "@/lib/ai/prompt-cache";
 import { artlistConfigured } from "@/lib/ai/capability-control";
 import { logAiUsage } from "@/lib/ai/usage-logger";
@@ -11,7 +11,9 @@ import { fetchBlobContent } from "./blob-utils";
 import { anthropicCallParams, anthropicMaxTokens } from "./anthropic-params";
 import { supabase } from "@/lib/supabase";
 import { searchNotebook } from "@/lib/notebook/search";
-import { generateSlides, updateSlides, resolveDeckImages, splitOverflowingSlides, isVisualSlide, deckWarnings, stampDeckChrome, undrawnTableBodies } from "@/lib/slides/generate";
+import { generateSlides, updateSlides, resolveDeckImages, splitOverflowingSlides, isVisualSlide, deckWarnings, stampDeckChrome, stampDensity, densityOf, undrawnTableBodies } from "@/lib/slides/generate";
+import { densityFromAsks } from "@/lib/slides/density-from-ask";
+import type { Density } from "@/lib/slides/brand";
 import { authorityOnEnabled } from "@/lib/authorityon/mcp";
 import { toolActivityEvent, dataSubject } from "@/lib/ai/tool-activity";
 import { createToolLoopGuard, repeatedCallNotice, overBudgetNotice, stallOutcome, slidesWritten, cutShortLookupNotice, DO_NOT_BLAME_THE_SOURCE, OUR_LIMIT_CUT_IT_SHORT, type ToolUsage } from "@/lib/ai/tool-loop-guard";
@@ -19,7 +21,7 @@ import { withoutRoundNarration, type RoundSpan } from "@/lib/ai/round-text";
 import { toPreviewModel, type PreviewDeck } from "@/lib/slides/preview-model";
 import { validateDeck, geometryNotes, geometryRefusal, logDeckGeometry, type DeckGeometry } from "@/lib/slides/validate";
 import { signedMediaUrl } from "@/lib/media/signed";
-import { COLOR as BRAND_COLOR } from "@/lib/slides/brand";
+import { COLOR as BRAND_COLOR, DEFAULT_DENSITY } from "@/lib/slides/brand";
 import { isReconnectable, isActionable } from "@/lib/slides/reauth";
 
 /* ─────────────── Types ─────────────── */
@@ -50,6 +52,31 @@ export function recentImageAttachmentUrls(messages: AIMessage[], max = 4): strin
     if (imgs.length) return imgs.slice(0, max);
   }
   return [];
+}
+
+/** THE ASK ITSELF — the words the user typed, newest turn first.
+ *
+ *  Read only to decide the density of a deck that does not exist yet
+ *  (densityFromAsks), and read from the user's own messages rather than from
+ *  the tool call: the tool call is the MODEL's paraphrase, and this is a
+ *  decision about what the user said they were going to do with the deck.
+ *
+ *  A FEW TURNS, NOT ONE, and bounded by the same DECK_ASK_WINDOW the route
+ *  already uses to decide whether a deck ask is still live. The occasion is
+ *  named when it comes up and the build is asked for when the material is
+ *  ready, and in the corpus those are not the same message: the only deck this
+ *  window rescues, 04c5d402, opens "I'm giving a briefing to the team on AI
+ *  tools for TCE tomorrow morning" and asks for slides eighteen minutes later
+ *  with "can you make me a 10 slide presentation on this". It was published to
+ *  Drive at `read`. Turns older than the window are not read at all. */
+export function recentUserAsks(messages: AIMessage[] | undefined, max: number = DECK_ASK_WINDOW): string[] {
+  const out: string[] = [];
+  if (!messages) return out;
+  for (let i = messages.length - 1; i >= 0 && out.length < max; i--) {
+    const m = messages[i];
+    if (m && m.role === "user") out.push(String(m.content || ""));
+  }
+  return out;
 }
 
 export interface AIProviderConfig {
@@ -2004,7 +2031,7 @@ export const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
   function: {
     name: "generate_slides",
     description:
-      "CALL THIS whenever a deck, presentation, slides, or a preview of any of those is wanted. It RENDERS the slides as actual images in the chat — rendering is something only this tool can do, so writing out what the slides would contain shows the user nothing at all. The rendered deck is a preview: it is not written to Google Drive, so the user reviews it, asks for changes, and presses a button to create it when happy. Call the tool again with the full revised slide list for every change they ask for. Set publish:true ONLY when they explicitly say to create, upload, save or send it to Drive now. Use generate_document instead only when they specifically want a .pptx file to download. CONVERTING AN ATTACHED DOCUMENT: set fidelity:'preserve' — one source page becomes one slide, nothing merged, nothing invented, no dividers added. THE HOUSE LENGTH GUIDANCE DOES NOT APPLY TO A CONVERSION: the source's length is the deck's length, whether that is 8 slides or 40. A LONG SOURCE IS BUILT IN BATCHES — one call cannot write out thirty-eight slides before it is cut off, and a call that is cut off runs NOTHING, so the user gets a confident reply and no deck at all. Send the FIRST ~12 slides in `slides`, say in your reply that you are continuing, then append about ten at a time with editSlide: { insertAfter: N, insertSlides: [ ... ] } — the tool result gives you the exact N — until every source page is covered. You have SIX calls a turn; use them rather than stopping short.",
+      "CALL THIS whenever a deck, presentation, slides, or a preview of any of those is wanted. It RENDERS the slides as actual images in the chat — rendering is something only this tool can do, so writing out what the slides would contain shows the user nothing at all. The rendered deck is a preview: it is not written to Google Drive, so the user reviews it, asks for changes, and presses a button to create it when happy. Call the tool again with the full revised slide list for every change they ask for. Set publish:true ONLY when they explicitly say to create, upload, save or send it to Drive now. Use generate_document instead only when they specifically want a .pptx file to download. CONVERTING AN ATTACHED DOCUMENT: set fidelity:'preserve' — one source page becomes one slide, nothing merged, nothing invented, no dividers added. THE HOUSE LENGTH GUIDANCE DOES NOT APPLY TO A CONVERSION: the source's length is the deck's length, whether that is 8 slides or 40. A LONG SOURCE IS BUILT IN BATCHES — one call cannot write out thirty-eight slides before it is cut off, and a call that is cut off runs NOTHING, so the user gets a confident reply and no deck at all. Send the FIRST ~12 slides in `slides`, say in your reply that you are continuing, then append about ten at a time with editSlide: { insertAfter: N, insertSlides: [ ... ] } — the tool result gives you the exact N — until every source page is covered. You have SIX calls a turn; use them rather than stopping short. If the user names something they will SPEAK at - a meeting, a briefing, a pitch - the deck is built bigger and holds HALF the words per slide, so write fewer and shorter lines. Otherwise it is built to be read.",
     parameters: {
       type: "object",
       properties: {
@@ -4993,47 +5020,128 @@ function recentDeck(conversationId: string) {
   return hit;
 }
 
-/** The current deck in a conversation, loaded server-side for a single-slide
- *  edit — so the model never has to resend 23 slides it may not even see. The
- *  server has held the draft all along (ai_messages.slides_draft); a picture
- *  change is a patch to it, not a full regeneration. */
-async function loadDeckForEdit(
-  conversationId: string
-): Promise<{ title: string; slides: any[]; publishedBefore: boolean } | null> {
-  // The Drive question is answered from the DATABASE even when the slides come
-  // from this turn's cache: the Create button runs in a different process and
-  // stamps `published` onto the stored row, so a warm lambda's cache knows
-  // nothing about it — and the missed note is exactly the confusion this flag
-  // exists to stop ("can you update the slide, I don't see that", asked of a
-  // Drive file that policy forbids touching).
-  let publishedBefore = false;
-  let dbDraft: any = null;
+/** WHAT THE STORED DRAFT ROW SAID — and, the field this type exists for,
+ *  whether it could be read at all.
+ *
+ *  "There is no deck" and "I could not find out" are the same value in a
+ *  nullable, and this repo has already paid for conflating them once: the
+ *  MeetingBrain session bug, where a `.single()` answered "no session" to a
+ *  database blip and deleted the login cookie for good. Here the same
+ *  conflation decides whether an EXISTING deck's density is inherited or
+ *  inferred again from whatever the user happened to type this turn. */
+export type StoredDraftRead = { draft: any | null; couldNotLook: boolean };
+
+/** THE READ ITSELF, BEHIND A SEAM, because the three answers it can give are
+ *  three different decisions downstream and a check has to be able to drive
+ *  each of them. With no database reachable — which is every check run, and
+ *  every `npx tsx` on this laptop — the real reader can only ever produce
+ *  could-not-look, so a check written against it would assert the other two
+ *  paths by never visiting them. Replaced only by scripts/verify-slide-edit.ts
+ *  through __setStoredDraftReader, which hands back a restore function. */
+let readStoredDraft: (conversationId: string) => Promise<StoredDraftRead> = async (conversationId) => {
   try {
     const { intelligenceDb } = await import("@/lib/supabase-intelligence");
-    const { data } = await intelligenceDb
+    // A FAILED QUERY IS REPORTED, NOT THROWN. supabase-js returns its error in
+    // the result, so a `const { data } = await …` that drops `error` reads a
+    // permission fault, a timeout or an unreachable host as an empty
+    // conversation — the try/catch below never sees those at all.
+    const { data, error } = await intelligenceDb
       .from("ai_messages")
       .select("slides_draft")
       .eq("id_conversation", conversationId)
       .not("slides_draft", "is", null)
       .order("date_created", { ascending: false })
       .limit(1);
-    dbDraft = data?.[0]?.slides_draft;
-    publishedBefore = !!dbDraft?.published?.presentationId;
+    if (error) {
+      console.warn("[Slides] loadDeckForEdit failed:", error.message);
+      return { draft: null, couldNotLook: true };
+    }
+    return { draft: data?.[0]?.slides_draft ?? null, couldNotLook: false };
   } catch (e: any) {
     console.warn("[Slides] loadDeckForEdit failed:", e?.message);
+    return { draft: null, couldNotLook: true };
   }
+};
 
-  // This turn's deck first: the database does not have its SLIDES yet.
+/** Swap the stored-draft reader for a check, and get back the restore. */
+export function __setStoredDraftReader(
+  fn: (conversationId: string) => Promise<StoredDraftRead>
+): () => void {
+  const previous = readStoredDraft;
+  readStoredDraft = fn;
+  return () => { readStoredDraft = previous; };
+}
+
+/** The current deck in a conversation, loaded server-side for a single-slide
+ *  edit — so the model never has to resend 23 slides it may not even see. The
+ *  server has held the draft all along (ai_messages.slides_draft); a picture
+ *  change is a patch to it, not a full regeneration.
+ *
+ *  `couldNotLook` travels with the answer rather than being swallowed here,
+ *  because the two callers want opposite things from it: the edit branch
+ *  refuses either way but must say WHICH, and the build branch must not treat
+ *  it as a green field to infer a density on. */
+async function loadDeckForEdit(
+  conversationId: string
+): Promise<{ deck: { title: string; slides: any[]; publishedBefore: boolean } | null; couldNotLook: boolean }> {
+  // The Drive question is answered from the DATABASE even when the slides come
+  // from this turn's cache: the Create button runs in a different process and
+  // stamps `published` onto the stored row, so a warm lambda's cache knows
+  // nothing about it — and the missed note is exactly the confusion this flag
+  // exists to stop ("can you update the slide, I don't see that", asked of a
+  // Drive file that policy forbids touching).
+  // A READER THAT THROWS IS A LOOKUP THAT FAILED, not a conversation with no
+  // deck in it. The real one catches its own faults, but the rule belongs
+  // where the answer is consumed: this is the single place that decides what
+  // "no draft" means, and an exception must not arrive here as one.
+  let stored: StoredDraftRead;
+  try {
+    stored = await readStoredDraft(conversationId);
+  } catch (e: any) {
+    console.warn("[Slides] loadDeckForEdit failed:", e?.message);
+    stored = { draft: null, couldNotLook: true };
+  }
+  const dbDraft: any = stored.draft;
+  const publishedBefore = !!dbDraft?.published?.presentationId;
+
+  // This turn's deck first: the database does not have its SLIDES yet. And a
+  // cache hit ANSWERS the question, so a failed read behind it is not blindness
+  // — we know what deck this conversation has.
   const fresh = recentDeck(conversationId);
   if (fresh?.slides?.length) {
-    return { title: fresh.title, slides: fresh.slides, publishedBefore };
+    return { deck: { title: fresh.title, slides: fresh.slides, publishedBefore }, couldNotLook: false };
   }
-  if (!dbDraft?.slides?.length) return null;
+  if (!dbDraft?.slides?.length) return { deck: null, couldNotLook: stored.couldNotLook };
   return {
-    title: dbDraft.title || "Presentation",
-    slides: dbDraft.slides,
-    publishedBefore,
+    deck: { title: dbDraft.title || "Presentation", slides: dbDraft.slides, publishedBefore },
+    couldNotLook: false,
   };
+}
+
+/** THE DENSITY THE RESENT SLIDES THEMSELVES CARRY — the second-best source,
+ *  read only when the best one was unreachable.
+ *
+ *  The deck context replays the stored spec into the model's prompt (density
+ *  and all: buildDeckContext strips only `preview`) and tells it to send every
+ *  unchanged slide back byte-for-byte, so a resent `present` deck usually
+ *  still says `present` on each slide. That is still INHERITANCE — the value
+ *  originally came from the server's own stamp — and it is read only when the
+ *  stored draft could not be read, only from slides that all agree, and never
+ *  as a reason to CHANGE a deck: anything short of unanimous is the default. */
+/** No conversation to look in: nothing found, and nothing went wrong. */
+const EMPTY_LOOKUP: { deck: null; couldNotLook: false } = { deck: null, couldNotLook: false };
+
+function carriedDensity(slides: any[] | undefined): Density {
+  const list = Array.isArray(slides) ? slides : [];
+  if (!list.length) return DEFAULT_DENSITY;
+  let found: Density | null = null;
+  for (let i = 0; i < list.length; i++) {
+    const d = list[i] && list[i].density;
+    if (d !== "read" && d !== "present") return DEFAULT_DENSITY;
+    if (found !== null && found !== d) return DEFAULT_DENSITY;
+    found = d;
+  }
+  return found || DEFAULT_DENSITY;
 }
 
 
@@ -5044,9 +5152,38 @@ async function loadDeckForEdit(
 /** Exported for scripts/verify-slide-layouts.ts: the turn-local deck cache and
  *  the no-silent-fallthrough rule are the two things that made a 35-slide build
  *  lose eleven slides, and both are decisions a check can drive directly. */
+/**
+ * AND WHICH DENSITY IT IS BUILT AT, which is decided HERE and nowhere else.
+ *
+ * A DECK'S DENSITY IS DECIDED ONCE, WHEN THE DECK IS CREATED, AND AN EDIT
+ * NEVER CHANGES IT. That asymmetry is the whole design, so it is written in
+ * code rather than left to the caller: creation INFERS from the ask, a
+ * conversation that already has a deck INHERITS what that deck was built at.
+ * Inference on every turn would let the word "presentation" in an ordinary
+ * edit — "can you make slide 4's presentation of the numbers clearer" —
+ * re-stamp a deck and reflow every slide under the user, which is the silent
+ * reshaping that keeping `read` as the default exists to prevent.
+ *
+ * AND CREATION IS "NO STORED DECK", NOT "NOT AN editSlide". `edited` is true
+ * only on the editSlide branch, and a FULL-DECK RESEND is what this tool's own
+ * description tells the model to do for a revision ("Call the tool again with
+ * the full revised slide list for every change they ask for"). Four asks in
+ * the stored corpus carry the per-slide edit button's own wording and every
+ * one of them arrives here as `edited: false`. Keyed on `edited`, every one of
+ * those revisions would re-infer against the user's newest sentence and
+ * reshape a deck they were part-way through editing.
+ *
+ * AND "NO STORED DECK" MEANS LOOKED AND FOUND NONE. A lookup that could not
+ * run answers neither question, and is handled where it happens rather than
+ * collapsed into a null here; see loadDeckForEdit and carriedDensity.
+ *
+ * `asks` is the user's own last few turns, NEWEST FIRST (recentUserAsks) —
+ * not the model's paraphrase in the tool call, and not one turn, because the
+ * occasion and the build request are often two messages apart.
+ */
 export async function prepareSlidesForBuild(
-  input: any, conversationId?: string | null
-): Promise<{ title: string; slides: any[]; presentationId?: string; edited: boolean; publishedBefore?: boolean }> {
+  input: any, conversationId?: string | null, asks?: string[]
+): Promise<{ title: string; slides: any[]; presentationId?: string; edited: boolean; publishedBefore?: boolean; density: Density }> {
   // THE CALL'S ARGUMENTS ARE NEVER WRITTEN TO. The build writes onto the slides
   // it is handed — the footer, the settled layout, resolved icons — and the
   // Anthropic chain releases a failed call from the loop guard by serialising
@@ -5158,16 +5295,29 @@ export async function prepareSlidesForBuild(
       : null);
 
   if (edit) {
-    const deck = conversationId ? await loadDeckForEdit(conversationId) : null;
+    const lookup = conversationId ? await loadDeckForEdit(conversationId) : EMPTY_LOOKUP;
+    const deck = lookup.deck;
     // NO SILENT FALLTHROUGH. An editSlide with no deck to edit used to drop
     // through to `input.slides` — which the schema tells the model to send
     // EMPTY when editing — and built a 0-slide deck over the one it was meant
     // to add to. An edit that cannot find its deck is an error, and the model
     // is told so rather than shown a deck that lost eleven slides.
+    //
+    // AND IT IS TOLD WHICH ERROR. "Build one first with `slides`" is exactly
+    // the wrong instruction when the deck is there and merely unreadable: the
+    // model has the whole spec in its context and would resend it, arriving at
+    // the build branch below, where a deck that already exists would have its
+    // density decided a second time. A failed lookup asks for a retry instead.
     if (!deck?.slides?.length) {
       throw new SlideCallRefusal(
-        "There is no deck in this conversation to edit. editSlide patches an existing deck; build one first with `slides`, then append to it.",
-        { userReason: "there is no deck in this conversation to change yet" }
+        lookup.couldNotLook
+          ? "The deck in this conversation could not be loaded just now (the draft store did not answer). Do not rebuild it from scratch and do not resend it as a new deck — say the edit could not be applied and offer to try again."
+          : "There is no deck in this conversation to edit. editSlide patches an existing deck; build one first with `slides`, then append to it.",
+        {
+          userReason: lookup.couldNotLook
+            ? "the deck in this conversation could not be loaded just now"
+            : "there is no deck in this conversation to change yet",
+        }
       );
     }
     // What the edit was FOR, so a refused append is reported as slides not
@@ -5177,9 +5327,14 @@ export async function prepareSlidesForBuild(
       Array.isArray(edit.removeSlides) && edit.removeSlides.length ? "remove"
         : edit.insertAfter != null || (edit.slideNumber == null && Array.isArray(edit.insertSlides) && edit.insertSlides.length) ? "insert"
           : "edit";
+    // THE DECK KEEPS THE DENSITY IT WAS BUILT AT. Read off the deck rather
+    // than the ask, and re-stamped over the WHOLE result rather than left
+    // alone, because an insert arrives with no density on it and a deck with
+    // two densities in it is two decks.
+    const inherited = densityOf(deck.slides[0]);
     const out = {
       title: deck.title,
-      slides: guard(applyEditSlide(deck.slides, edit), editScope),
+      slides: stampDensity(guard(applyEditSlide(deck.slides, edit), editScope), inherited),
       // NO presentationId, EVER. A published deck is the user's file — they
       // hand-edit it — and the in-place update replaced every slide of one
       // Chris had already edited. Edits continue on the DRAFT; publishing
@@ -5187,18 +5342,40 @@ export async function prepareSlidesForBuild(
       presentationId: undefined,
       edited: true,
       publishedBefore: deck.publishedBefore,
+      density: inherited,
     };
     rememberDeck(conversationId, out);
     return out;
   }
+  // A FULL-DECK CALL IS NOT NECESSARILY A NEW DECK. The model resends the
+  // whole deck for a revision — this tool tells it to — so the question that
+  // decides infer-or-inherit is "does this conversation already have a deck",
+  // which is the question loadDeckForEdit answers, and the same one the edit
+  // branch above asks. One lookup, one meaning, both branches.
+  //
+  // AND THE LOOKUP HAS THREE ANSWERS, NOT TWO. Inferring is only safe on a
+  // conversation we KNOW has no deck. Read as "no deck", a failed lookup made
+  // this branch fail OPEN while the edit branch above fails closed on the very
+  // same state: a resend during a blip would re-decide the density of a deck
+  // that already exists and reflow every slide of it. So a lookup that could
+  // not look does not infer — it inherits from the only other place the value
+  // survives, the slides the model just resent, and defaults when even that
+  // has nothing to say.
+  const existing = conversationId ? await loadDeckForEdit(conversationId) : EMPTY_LOOKUP;
+  const density: Density = existing.deck?.slides?.length
+    ? densityOf(existing.deck.slides[0])
+    : existing.couldNotLook
+      ? carriedDensity(input?.slides)
+      : densityFromAsks(asks);
   const built = {
     // A deck is named for what it is about: "Presentation" as a Drive filename
     // is how a folder fills with files nobody can tell apart. The cover
     // slide's own title stands in before the generic word does.
     title: input?.title || String((input?.slides || [])[0]?.title || "").trim() || "Presentation",
-    slides: guard(input?.slides || [], "build"),
+    slides: stampDensity(guard(input?.slides || [], "build"), density),
     presentationId: undefined,
     edited: false,
+    density,
   };
   rememberDeck(conversationId, built);
   return built;
@@ -9309,11 +9486,13 @@ async function streamAnthropic(
   // cold-cache rate, roughly $18/month against a $222/month bill. That is the
   // price of the failure it prevents, paid deliberately.
   //
-  // WATCH THE CEILING: SLIDES_GEN_TOOL alone serialises to 53,839 characters
-  // in the OpenAI shape and 53,810 in the Anthropic one pushed below, against
+  // WATCH THE CEILING: SLIDES_GEN_TOOL alone serialises to 54,050 characters
+  // in the OpenAI shape and 54,021 in the Anthropic one pushed below, against
   // the TOOL_CEILING of 55,000 asserted in scripts/verify-slide-layouts.ts
-  // (checks 20d and 41j) — 1,161 of headroom. Always-on does not change the
-  // per-tool size, but it does mean every chat turn on every chain carries it.
+  // (checks 20d and 41j) — 950 of headroom, the 211 characters that tell the
+  // model what the two densities are for having been spent on 2026-09-21.
+  // Always-on does not change the per-tool size, but it does mean every chat
+  // turn on every chain carries it.
   //
   // That is about ONE more layout of the cheap shape and no more. The
   // handover deck's three cost 960 between them only because they reuse
@@ -10091,7 +10270,7 @@ async function streamAnthropic(
           // The execution phase used to be silent for minutes — image generation and
           // the Drive write emitted nothing, and a working build read as a hang.
           const onDeckImage = (done: number, total: number) => { try { controller.enqueue(encoder.encode(`data: ${JSON.stringify({ slides_progress: { images: { done, total } } })}\n\n`)); } catch { /* stream may be gone */ } };
-          const prepared = await prepareSlidesForBuild(tool.input, config.conversationId);
+          const prepared = await prepareSlidesForBuild(tool.input, config.conversationId, recentUserAsks(messages));
           const deckTitle = prepared.title;
           const deckSlides = prepared.slides;
           const deckPresId = prepared.presentationId;
@@ -11551,7 +11730,7 @@ async function streamXAIChatCompletions(
           // The execution phase used to be silent for minutes — image generation and
           // the Drive write emitted nothing, and a working build read as a hang.
           const onDeckImage = (done: number, total: number) => { try { controller.enqueue(encoder.encode(`data: ${JSON.stringify({ slides_progress: { images: { done, total } } })}\n\n`)); } catch { /* stream may be gone */ } };
-          const prepared = await prepareSlidesForBuild(input, config.conversationId);
+          const prepared = await prepareSlidesForBuild(input, config.conversationId, recentUserAsks(messages));
           const deckTitle = prepared.title;
           const deckSlides = prepared.slides;
           const deckPresId = prepared.presentationId;
@@ -12756,7 +12935,7 @@ async function streamGemini(
           // The execution phase used to be silent for minutes — image generation and
           // the Drive write emitted nothing, and a working build read as a hang.
           const onDeckImage = (done: number, total: number) => { try { controller.enqueue(encoder.encode(`data: ${JSON.stringify({ slides_progress: { images: { done, total } } })}\n\n`)); } catch { /* stream may be gone */ } };
-          const prepared = await prepareSlidesForBuild(input, config.conversationId);
+          const prepared = await prepareSlidesForBuild(input, config.conversationId, recentUserAsks(messages));
           const deckTitle = prepared.title;
           const deckSlides = prepared.slides;
           const deckPresId = prepared.presentationId;
@@ -13847,7 +14026,7 @@ async function streamOpenAI(
           // The execution phase used to be silent for minutes — image generation and
           // the Drive write emitted nothing, and a working build read as a hang.
           const onDeckImage = (done: number, total: number) => { try { controller.enqueue(encoder.encode(`data: ${JSON.stringify({ slides_progress: { images: { done, total } } })}\n\n`)); } catch { /* stream may be gone */ } };
-          const prepared = await prepareSlidesForBuild(input, config.conversationId);
+          const prepared = await prepareSlidesForBuild(input, config.conversationId, recentUserAsks(messages));
           const deckTitle = prepared.title;
           const deckSlides = prepared.slides;
           const deckPresId = prepared.presentationId;

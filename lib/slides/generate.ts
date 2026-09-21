@@ -68,7 +68,14 @@ export interface SlideInput {
    *  stampDensity the way the footer is stamped by stampFooter. It is a
    *  DECK-level decision — a deck with two densities in it is two decks — and
    *  it is per-slide only because buildSlideRequests is handed one slide at a
-   *  time. Absent means `read`, which is what every deck built so far is. */
+   *  time. Absent means `read`, which is what every deck built so far is.
+   *
+   *  DECIDED ONCE, WHEN THE DECK IS CREATED, AND NEVER AGAIN. Inferred from
+   *  the user's own words by densityFromAsk in lib/slides/density-from-ask.ts,
+   *  at the one call site in prepareSlidesForBuild; every later turn — an
+   *  edit, an insert, a reorder, a full-deck resend, the publish — inherits
+   *  this field. A deck reflowing under a user who only asked to fix slide 4
+   *  is the reason the inference does not run again. */
   density?: Density;
   /** WHERE THIS SLIDE SITS IN THE DECK'S SPINE, for the stepper rail. Stamped
    *  by stampSteps from the deck's own structure and re-stamped on every edit,
@@ -554,6 +561,21 @@ export function stampDeckChrome(slides: SlideInput[], title: string | undefined)
   return slides;
 }
 
+/**
+ * WHAT THE DECK IS BUILT AT, on every slide of it.
+ *
+ * DELIBERATELY NOT PART OF stampDeckChrome, which is the other deck-wide
+ * stamper and is called by both build entry points. The footer and the spine
+ * are RE-DERIVED on every build — they are facts about the deck's current
+ * shape. Density is not: it is a decision taken once, when the deck was
+ * created, from words the publish path never sees. Stamped through the same
+ * door as the chrome, the publish would re-stamp DEFAULT_DENSITY over a
+ * `present` deck and revert it at the moment it reached Drive.
+ *
+ * Called from exactly two places, and they are the asymmetry: prepareSlidesForBuild,
+ * which infers on creation and inherits on every edit, and generateSlides,
+ * which only ever inherits.
+ */
 export function stampDensity(slides: SlideInput[], name: Density | undefined): SlideInput[] {
   const d: Density = name && DENSITY[name] ? name : DEFAULT_DENSITY;
   for (const s of slides) if (s) s.density = d;
@@ -10849,6 +10871,16 @@ export async function generateSlides(
   // the draft: this is the deck that is about to exist in somebody's Drive, and
   // the numbers on it are the builder's own for the same reason the folio is.
   stampDeckChrome(slides, title);
+  // DENSITY IS THE ONE DECK-WIDE FIELD THAT IS NOT RE-DERIVED, and that is the
+  // point rather than an omission. Publishing happens on a button press with
+  // no ask behind it, so there is nothing here to infer from; the deck keeps
+  // what it was created at. Written as an explicit inherit — not left to the
+  // per-slide fallback — so that the day somebody folds this into
+  // stampDeckChrome "for tidiness", they are changing a line that says what it
+  // is for. Folded in, BOTH entry points would re-stamp DEFAULT_DENSITY over a
+  // present deck and silently revert it to read at the moment it reaches
+  // Drive, while every geometry check in the suite stayed green.
+  stampDensity(slides, densityOf(slides[0]));
 
   const auth = await getUserGoogleToken(userEmail);
   if (!auth.ok || !auth.accessToken) {
