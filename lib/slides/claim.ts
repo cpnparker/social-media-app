@@ -10,9 +10,16 @@
  * three end-of-turn notices needs something this turn did not have (an
  * attached source, a refused call, a stall).
  *
+ * THE SECOND INCIDENT, 2026-09-21. Same guard, shut from the other side: the
+ * ask was made four turns earlier and the message in front of the reply was
+ * "I've shared it already <link>", which asks for nothing. Both halves opened
+ * on one flag, so both stayed shut. The ask is now read from the CONVERSATION
+ * (deckAskIsLive), not from one message.
+ *
  * The guard is TWO questions, and both must be yes:
- *   - did the USER'S message this turn ask for the deck to be built or changed
- *     (asksForDeckChange), and
+ *   - is an ask for a deck LIVE on this turn — made in this message, or made
+ *     recently and neither satisfied by a deck nor withdrawn (deckAskIsLive),
+ *     and
  *   - does the REPLY say a change was made (deckChangeClaim)?
  * with no generate_slides call having reached the builder
  * (SlidesTurnState.lastOutcome unset), and no OTHER deliverable made this turn
@@ -52,6 +59,42 @@
  *   - A ChatPanel slide comment is read by its own words only when the deck
  *     and slide titles carry no double quote; otherwise the template's "Change
  *     only that slide" reads as an ask, as it did before.
+ *   - A withdrawal may name the deck ("forget the deck") but not with a word
+ *     that is also an ask verb, so "let's drop the presentation idea" leaves
+ *     the ask live for up to three more user turns. `drop`, `cut`, `skip` and
+ *     `lose` all mean remove-a-slide here; see withdrawsDeckAsk.
+ *
+ * MEASURED ON THE STORED CORPUS (re-measured 2026-09-21 after the four fixes
+ * below; 751 conversations, 5,895 messages, 2,903 replayable assistant turns,
+ * 77 slide drafts in 41 conversations. Drafts have been stored only since
+ * 2026-08-18T18:47, so before that "no draft on the row" says nothing and only
+ * the 826 turns after it can say whether a deck was really drawn):
+ *   - the live ask adds ONE notice in those 826 turns, and it is the incident.
+ *     No false positive, and one extra retry — one extra model round in 826
+ *     turns. Over the whole corpus it adds two, and BOTH are 2026-08-18 turns
+ *     in the blind period that really did draw a deck (one reply carries the
+ *     Google Slides link), so lastOutcome silences both in production;
+ *   - the advisory false positive the first pass left behind is GONE at
+ *     source. It was not the window: "So how would you update slide 10 for
+ *     LinkedIn?" and "Based on this, how would you update the slide…" were
+ *     read as ASKS, because QUESTION_OPENER anchors at the start of the
+ *     sentence and the interrogative was three words in. The lead-in rule
+ *     changes the verdict on exactly 2 of the corpus's 2,935 user messages,
+ *     and they are those two;
+ *   - the ask still MISSES one real case: "and this slide", with a screenshot
+ *     attached, in a conversation that already had a deck. The message asks in
+ *     a picture, and a deck landing earlier ends the previous ask, so nothing
+ *     here can see it. The turn claimed "Slide 5 is now in the deck" and drew
+ *     nothing. Fixing it means reading attachments as asks, which is a wider
+ *     change than this one.
+ *
+ * WHAT THE CORPUS SAID ABOUT KEYING THE NOTICE ON THE CLAIM ALONE: no. It
+ * fires on 36 turns against the live ask's 17, and the additions are a
+ * critique of the user's OWN carousel, "Changes made:" over a video script, a
+ * handover summary recapping last week's decks, a reply that says outright it
+ * has not generated anything yet. What survives of that idea is the HANDOVER
+ * path in unmadeDeckChangeNotice, which is worth two turns and cannot be an
+ * honest recap.
  */
 import { stripQuotedContent } from "@/lib/ai/personal-data-intent";
 import type { SlidesTurnState } from "@/lib/slides/failure";
@@ -132,8 +175,40 @@ const ARTEFACT_WORD = new RegExp(`\\b(?:${ARTEFACTS})\\b`, "i");
 // whether this comment asks for a change.
 const COMMENT_TEMPLATE = /^On slide \d{1,3}(?: \("[^"\n]*"\))? of "[^"\n]*": ([\s\S]*?)\n\nChange only that slide\. Leave every other slide exactly as it is, and resend the complete deck\.\s*$/;
 
+// A question does not stop being one because something runs in front of the
+// interrogative. QUESTION_OPENER anchors at the start of the sentence, so
+// "How would you update slide 10?" was skipped while "So how would you update
+// slide 10 for LinkedIn?" and "Based on this, how would you update the slide
+// following that table?" were read as asks — the same question, three words
+// later. Both are real (2026-05-21): an advisory thread about a client's own
+// deck, held outside EngineAI, where nothing was drawn and nothing should have
+// been. One message alone was harmless; once the ask is read from the
+// CONVERSATION it kept the guard open for three more turns, and a retry there
+// is a round told to call generate_slides on a deck nobody asked it to touch.
+//
+// The lead-in is a discourse marker, a short framing clause, or both. It may
+// not itself ask for anything, or "Replace slide 9 with the new one, what
+// should its title say?" would lose its ask to the question hung off it: a
+// lead-in carrying a change verb or a deck word is not a lead-in, and the
+// sentence is read exactly as it was before.
+const QUESTION_MARKER = /^\s*(?:(?:so|and|but|ok(?:ay)?|right|also|then|now|actually|well|hmm|anyway|just)\b[\s,]+)*/i;
+const QUESTION_FRAMING = /^[^,?!.\n]{1,40},\s+/;
+function afterQuestionLeadIn(s: string): string {
+  const marker = QUESTION_MARKER.exec(s);
+  let rest = marker ? s.slice(marker[0].length) : s;
+  const framing = QUESTION_FRAMING.exec(rest);
+  if (framing) rest = rest.slice(framing[0].length);
+  const lead = s.slice(0, s.length - rest.length);
+  if (!lead.trim()) return s;
+  if (BARE_CHANGE_VERB.test(lead) || DECK_NOUN.test(lead)) return s;
+  return rest;
+}
 function isQuestion(s: string, x: { [k: string]: boolean }): boolean {
-  return /\?\s*$/.test(s) && QUESTION_OPENER.test(s) && (!!x.noPolite || !POLITE_REQUEST.test(s));
+  if (!/\?\s*$/.test(s)) return false;
+  // The polite-request test reads the same span as the opener: "So how about
+  // moving slide 3?" is the request "how about..." whichever word starts it.
+  const body = x.noLeadIn ? s : afterQuestionLeadIn(s);
+  return QUESTION_OPENER.test(body) && (!!x.noPolite || !POLITE_REQUEST.test(body));
 }
 
 /**
@@ -235,13 +310,154 @@ export function asksForDeckChange(userMessage: string, o: { deckInConversation: 
   return false;
 }
 
+// --------------------------------------------- the ask, over the conversation
+//
+// THE SECOND INCIDENT, 2026-09-21. A deck was asked for once and then four
+// turns went by fetching the source, because the Google Doc was not shared
+// yet. On the fourth the model finally read it and replied "Here's the deck
+// built from what I have:" and ended the turn with nothing drawn. Both guards
+// were shut, and by the same flag: the ask was computed from the CURRENT
+// message alone, and "I've shared it already <link>" asks for nothing. The
+// retry that would have nudged it to call generate_slides never ran, and the
+// notice that would have said no deck was built never printed. The guard was
+// weakest exactly where the conversation had been hardest.
+//
+// So the ask is read from the CONVERSATION. It stays live until it is
+// SATISFIED — a deck landed after it — or WITHDRAWN, and no longer than a
+// window of user turns.
+//
+// THE WINDOW IS MEASURED, not chosen. Over the stored corpus (751
+// conversations, 2,958 assistant turns), of the 77 turns that really drew a
+// deck the nearest ask sits on the current message 60 times, one user turn
+// back 10, two back 3, three back 2, and further back never (two more have no
+// ask in the previous twelve turns at all: both are driven by an attachment).
+// Four — this message and the three before it — covers every locatable case
+// there is, and widening to six or twelve adds not one turn. A TIME bound was
+// considered and rejected on the same evidence: the incident's last message
+// came three and a half hours after the one before it, so any bound short
+// enough to mean anything would have missed the incident it is for.
+const WITHDRAWN_OPENER = /^\s*(?:no|nope|nah|not (?:now|yet)|don'?t|do not|forget (?:it|that)|scrap (?:it|that)|ditch (?:it|that)|drop (?:it|that)|skip (?:it|that)|never ?mind|cancel|stop|hold off|instead|leave it)\b/i;
+// "I want a summary of this chat", "write me the email instead": a request for
+// a different deliverable, with no deck word in it, replaces the deck ask.
+// `write`, `draft` and `compose` are here and NOT in ASK_VERBS: you write an
+// email, you do not write a slide, and putting them in ASK_VERBS would widen
+// the ask side, which is the half that must not guess.
+const OTHER_DELIVERABLE_ASK = new RegExp(`\\b(?:${ASK_VERBS}|write|draft|compose|want|need|give me|send me)\\b[^.?!\\n]{0,40}?\\b(?:${ARTEFACTS})\\b`, "i");
+// A cancellation NAMES the thing it cancels — "actually forget the deck",
+// "no, don't bother with the slides" — which is the plainest way there is to
+// call a deck off and exactly the shape the deck-word refusal below throws
+// away. Two things keep it tight:
+//   - the target is the DECK AS A WHOLE, never one slide. You cancel a deck;
+//     you edit a slide. "cancel slide 9" and "forget the old cover" are edits,
+//     and `slides` is read only when no number follows it.
+//   - the cancelling word can never be an ask verb. `drop`, `cut`, `skip` and
+//     `lose` are all in ASK_VERBS and all mean remove-a-slide here ("drop
+//     slide 9", "drop the deck down to 10 slides"), so they are left to the
+//     ask side, which reads them correctly. The cost is that "let's drop the
+//     presentation idea" is not caught; it is the right trade, because a
+//     withdrawal that fires wrongly silences the guard while one that misses
+//     costs three more turns of it being open.
+const CANCEL_DECK = new RegExp(`\\b(?:forget|scrap|ditch|bin|cancel|abandon|shelve|park|never ?mind|no need for|not bothering with|don'?t bother|do not bother|hold off)\\b(?:\\s+(?:about|with|making|building|doing|creating))?[^.?!\\n]{0,20}?\\b(?:deck|presentation|slideshow|slides(?!\\s*\\d))\\b`, "i");
+/**
+ * A later message calls the deck ask off. Read only on messages BEFORE the
+ * current one, and fail-quiet by design: everything here can only close the
+ * gate, never open it, so a wrong call costs a warning nobody sees rather than
+ * a warning that is wrong.
+ *
+ * It carries a real case. "no. i want a summary of this chat. the meeting
+ * hasn't happened yet" (2026-08-18) came three turns after "can you create a
+ * new slide deck for the meeting", and the chat summary that answered it read
+ * as a deck claim.
+ */
+export function withdrawsDeckAsk(text: string): boolean {
+  const t = stripQuotedContent(String(text || "")).trim();
+  if (!t) return false;
+  // A cancellation may name the deck, so it is read before the refusal below.
+  // It stands only when the message asks for nothing else: "never mind, just
+  // redo the deck" and "forget the deck, add a title slide to the Word report"
+  // both cancel one thing and ask for another, and the ask is what matters.
+  // Reading the WHOLE message rather than what is left after the cancellation
+  // is what keeps this from ever contradicting the ask — see deckAskIsLive.
+  if (CANCEL_DECK.test(t)) return !asksForDeckChange(t, { deckInConversation: true });
+  // Still about the deck, however else it is phrased: not a withdrawal.
+  // DECK_NOUN covers "slide" too, so "no, put it on the first slide instead"
+  // stays live.
+  if (DECK_NOUN.test(t)) return false;
+  return WITHDRAWN_OPENER.test(t) || OTHER_DELIVERABLE_ASK.test(t);
+}
+
+/** One stored turn as the route reads them, oldest first. `at` is epoch ms. */
+export type AskTurn = { role: string; text: string; at?: number | null };
+/** This message and the three user turns before it. Measured; see above. */
+export const DECK_ASK_WINDOW = 4;
+
+/**
+ * An ask for a deck is LIVE on this turn: either this message makes one, or a
+ * recent one has neither been satisfied nor withdrawn.
+ *
+ * `lastDeckAt` is when the newest slide draft in the conversation was stored.
+ * An ask older than that has been answered — a deck landed after it — and
+ * every ask older still with it, which is why the walk stops there rather than
+ * carrying on.
+ *
+ * Each past message is read against ITS OWN preceding reply, not the latest
+ * one: `lastAssistantText` exists so a bare "yes" can be read against the
+ * question it answers, and reading a two-turn-old "yes" against today's reply
+ * would answer the wrong question.
+ */
+export function deckAskIsLive(
+  userMessage: string, history: AskTurn[] | null | undefined,
+  o: { deckInConversation: boolean; lastDeckAt?: number | null; window?: number }
+): boolean {
+  const current = String(userMessage || "");
+  const ms = history || [];
+  let lastAssistant = "";
+  for (let i = ms.length - 1; i >= 0; i--) {
+    if (ms[i] && ms[i].role === "assistant") { lastAssistant = String(ms[i].text || ""); break; }
+  }
+  if (asksForDeckChange(current, { deckInConversation: o.deckInConversation, lastAssistantText: lastAssistant })) return true;
+  const users: { text: string; la: string; at: number | null }[] = [];
+  for (let i = ms.length - 1; i >= 0; i--) {
+    const m = ms[i];
+    if (!m || m.role !== "user") continue;
+    let la = "";
+    for (let j = i - 1; j >= 0; j--) if (ms[j] && ms[j].role === "assistant") { la = String(ms[j].text || ""); break; }
+    const at = typeof m.at === "number" && isFinite(m.at) ? m.at : null;
+    users.push({ text: String(m.text || ""), la, at });
+  }
+  // The route saves the user's message before it loads the history, so the
+  // newest user turn is normally this same message. ONE copy of it is dropped,
+  // not every match: the incident's last two messages were identical, and the
+  // earlier of them is a real turn of the conversation.
+  const start = users.length && users[0].text.trim() === current.trim() ? 1 : 0;
+  const window = o.window || DECK_ASK_WINDOW;
+  const deckAt = typeof o.lastDeckAt === "number" && isFinite(o.lastDeckAt) ? o.lastDeckAt : null;
+  for (let k = start; k < users.length && k - start < window - 1; k++) {
+    const u = users[k];
+    if (deckAt !== null && u.at !== null && deckAt >= u.at) return false;   // satisfied
+    // The ask is read BEFORE the withdrawal, on the same message. A deck
+    // request usually names its source ("make me a presentation from this
+    // google doc"), and a message asking for a deck cannot be the message that
+    // calls one off, whatever else it names.
+    if (asksForDeckChange(u.text, { deckInConversation: o.deckInConversation, lastAssistantText: u.la })) return true;
+    if (withdrawsDeckAsk(u.text)) return false;
+  }
+  return false;
+}
+
 // ------------------------------------------------------------ the reply's claim
 const PAST = "added|removed|replaced|updated|rebuilt|inserted|deleted|swapped|moved|changed|rewritten|rewrote|reordered|shifted|renumbered|restyled|redesigned|revised|edited|merged|dropped|applied|made|put|split|cut|fixed|corrected|redrawn|redrew|shortened|lengthened|tightened|trimmed|renamed|retitled|simplified|recoloured|recolored|highlighted|expanded|condensed|combined|reworked|redone|recreated|built|created|generated|converted|turned";
 const GERUND = "adding|removing|replacing|updating|rebuilding|inserting|deleting|swapping|moving|changing|rewriting|reordering|shifting|restyling|redesigning|revising|editing|merging|dropping|applying|putting|splitting|cutting|fixing|correcting|redrawing|shortening|tightening|trimming|renaming|retitling|building|creating|generating|converting|turning";
-const NOUN = "slides?|deck|presentation|preview|cover|title slide|closing slide";
+// A cover PAGE, LETTER, NOTE or EMAIL belongs to a document, not to a deck.
+// The ask side has guarded that word since it was written; the claim side had
+// not, and "Rewrote the cover email to Lena, Tamara and Annouk so it matches
+// the parallel-workstreams framing" (2026-08-18) read as a deck claim on the
+// strength of one word, on a turn that wrote a chat summary.
+const COVER = "cover(?!\\s+(?:page|letter|note|email|e-mail)\\b)";
+const NOUN = `slides?|deck|presentation|preview|${COVER}|title slide|closing slide`;
 const NUMS = "\\d+(?:\\s*(?:,|and|&|to|-)\\s*\\d+)*";
 const NUMWORD = "\\d+|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty";
-const REF = `(?:(?:old|new|the)\\s+)?(?:slides?\\s+${NUMS}(?:'s)?|cover|title slide|closing slide)`;
+const REF = `(?:(?:old|new|the)\\s+)?(?:slides?\\s+${NUMS}(?:'s)?|${COVER}|title slide|closing slide)`;
 // "Slide 9 is now out of date" judges a slide; it does not claim an edit.
 const EVALUATIVE = "out of date|outdated|wrong|inaccurate|stale|misleading|incorrect|redundant|obsolete|too long|too dense|missing|fine|ok|okay|good|great|clear|clearer|better|stronger|weaker|busy|cluttered|consistent|accurate";
 type Rule = { id: string; re: RegExp; wholeClauseNegation?: boolean };
@@ -364,13 +580,17 @@ export function madeAnotherDeliverable(toolsUsed: { name: string; calls: number 
  *  model at the user's message rather than at its own reply, because the reply
  *  that claimed the change is the thing that was wrong. */
 export const DECK_CLAIM_NUDGE =
-  "SYSTEM NOTE (not from the user - never acknowledge or mention it): generate_slides was not called this turn, so nothing in the deck has changed - no slide was added, removed or edited - even though your reply above reads as if it had. The user's latest message asks for a change to the deck. Call generate_slides NOW to make exactly the change that message asks for (not the change your reply described, which may be wrong), and write nothing before the call: your reply is already on the user's screen. After the call succeeds, add at most one short sentence. If the request is genuinely unclear, ask the one question you need answered in a single sentence and call nothing; do not say whether the deck changed, because the user is told that separately.";
+  "SYSTEM NOTE (not from the user - never acknowledge or mention it): generate_slides was not called this turn, so nothing in the deck has changed - no slide was added, removed or edited - even though your reply above reads as if it had. The user has asked IN THIS CONVERSATION for a deck to be built or changed and has not got it. The request may be in their latest message or in an earlier one, with the turns since spent getting hold of the source, so read back through the conversation for what they actually asked for. Call generate_slides NOW to make exactly that, and write nothing before the call: your reply is already on the user's screen. Where the conversation states the request plainly, follow it rather than the description in your reply above, which may be wrong; where it does not, your reply above is the only account of what the deck should contain, so build that. After the call succeeds, add at most one short sentence. If the request is genuinely unclear, ask the one question you need answered in a single sentence and call nothing; do not say whether the deck changed, because the user is told that separately.";
 
 // User-facing. Both speak only about "this reply", so each is literally true
 // whenever the gate holds, including when an earlier turn did make a change.
 // With no deck in the conversation the ask may be a new deck OR an edit to one
 // that lives elsewhere ("Update slide 3 of our Q3 deck in Drive"), so that
 // notice says neither "there is no deck" nor which one was asked for.
+// The one claim rule that can speak without an ask: "here's the deck", "the
+// deck is ready". Named rather than spelled out at the gate, so the rule it
+// points at cannot be renamed out from under it in silence.
+export const HANDOVER_RULE = "artefact-ready";
 export const DECK_NOT_CHANGED_NOTICE =
   "\n\n---\n\n⚠ **The deck was not changed.** No slides were added, removed or edited in this reply, so the deck on screen is as it was before your message. Ask again to make the change.";
 export const NO_DECK_BUILT_NOTICE =
@@ -399,6 +619,15 @@ export interface DeckClaimRetryInput {
  * screen, only ChatPanel can take text back, and if the retry's call succeeds
  * the narration becomes true.
  *
+ * `asked` IS NOW A CONVERSATION-LEVEL FLAG (deckAskIsLive), not "this message
+ * asked", and the retry inherits that widening because both halves open on one
+ * route flag and a second one would mean four new call sites in providers.ts.
+ * Measured on the stored corpus, the inheritance costs one extra model round
+ * in 826 instrumented turns and that round is the incident. DECK_CLAIM_NUDGE
+ * is written to match: it sends the model back through the conversation for
+ * the request rather than asserting that the latest message carries it, which
+ * on an inherited ask is false.
+ *
  * Not when generate_slides was not offered this round (a tainted Anthropic
  * round, or a headless caller that registers no generation tools), not twice,
  * not on the last round (nothing could
@@ -422,15 +651,46 @@ export function shouldRetryDeckClaim(i: DeckClaimRetryInput): boolean {
  * retry was allowed. Deterministic text rather than more guidance to the
  * model: guidance to finish already existed, and it is what failed.
  * `alreadySaid` keeps it to one notice a turn.
+ *
+ * THE NOTICE IS CHEAPER THAN THE RETRY, so it is gated more loosely, and
+ * `asked` is now the LIVE ask (deckAskIsLive) rather than this one message.
+ * It was put to the corpus whether the CLAIM alone should be enough — a reply
+ * that hands over a deck it never drew is wrong however the turn began — and
+ * the answer is no, by a distance. Keyed on the claim alone, the notice fires
+ * on 18 stored turns the live ask leaves quiet, and 16 of the 18 are wrong:
+ * a critique of the user's OWN carousel ("Slide 1 now reads like a
+ * meta-explanation"), "Changes made:" over a video script, a handover summary
+ * recapping last week's decks, a reply that says outright it has not generated
+ * anything yet. A warning that is wrong sixteen times in eighteen stops being
+ * read, and this repo has paid for that twice.
+ *
+ * ONE claim is enough on its own, and only one: the reply hands over a deck
+ * ("here's the deck", "the deck is ready") in a conversation that has never
+ * had one. That is the incident's own sentence, it cannot be an honest recap
+ * of an earlier edit because there is no earlier edit, and over the whole
+ * stored corpus it adds two turns — the incident, and one 2026-08-18 preview
+ * that really was drawn (so `lastOutcome` silences it in production).
  */
 export function unmadeDeckChangeNotice(
   text: string, turn: SlidesTurnState | null | undefined,
   o: { asked: boolean; deckInConversation: boolean; alreadySaid: boolean; toolsUsed: { name: string; calls: number }[] | null | undefined }
 ): string {
-  if (o.alreadySaid || !o.asked) return "";
+  if (o.alreadySaid) return "";
   if (turn && turn.lastOutcome) return "";
   if (madeAnotherDeliverable(o.toolsUsed)) return "";
-  if (!deckChangeClaim(text)) return "";
+  const claims = claimingRules(text, CLAIM_RULES);
+  if (!claims.length) return "";
+  if (!o.asked) {
+    // EVERY claiming sentence, not just the first. deckChangeClaim returns the
+    // earliest one, so "Rebuilt the deck around the three findings. Here's the
+    // deck:" answered `past-opener` and the handover in its second sentence
+    // was never seen — and this path is the fallback that has to hold when the
+    // window is wrong, so it cannot depend on which claim happens to come
+    // first. The asked path still reads deckChangeClaim: it needs no rule.
+    let handsOver = false;
+    for (let i = 0; i < claims.length; i++) if (claims[i].rule === HANDOVER_RULE) handsOver = true;
+    if (!handsOver || o.deckInConversation) return "";
+  }
   // BOTH NOTICES END "Ask again", and that is now always the right advice.
   // This function used to take an `offered` flag as well — was generate_slides
   // in this turn's tool array at all — because a user behind a switched-off

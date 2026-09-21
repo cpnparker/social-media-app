@@ -25,7 +25,7 @@ import { toPreviewModel, readPath } from "../lib/slides/preview-model";
 import { applyEditSlide, unrenderableSlides, undrawnTableSlides, undrawnTableFaults, PAYLOAD_FIELDS, insertableLayout, normaliseSlide, SlideCallRefusal } from "../lib/slides/edit";
 import { slidesFailure, parseSlidesArguments, SLIDES_FAILED_FOR_USER, type SlidesTurnState } from "../lib/slides/failure";
 import {
-  asksForDeckChange, deckChangeClaim, claimingRules, CLAIM_RULES, ASK_RULES, shouldRetryDeckClaim, unmadeDeckChangeNotice,
+  asksForDeckChange, deckAskIsLive, withdrawsDeckAsk, DECK_ASK_WINDOW, HANDOVER_RULE, deckChangeClaim, claimingRules, CLAIM_RULES, ASK_RULES, shouldRetryDeckClaim, unmadeDeckChangeNotice,
   DECK_CLAIM_NUDGE, DECK_NOT_CHANGED_NOTICE, NO_DECK_BUILT_NOTICE, lastAssistantReply, endsInDeckChangeQuestion,
   type DeckClaimRetryInput, type ClaimOpts,
 } from "../lib/slides/claim";
@@ -5556,6 +5556,29 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       const FALSE_FIRST = "Replacing slide 9 with the two corrected MeetingBrain slides";
       const REAL_INSERT = "Inserting the Writer and Optimiser slides after slide 6, leaving the rest of the deck untouched.\n\nTwo slides are now in after the live-demo slide.";
       const EDIT = "Remove slide 9 and put these two slides in its place";
+      // ── The 2026-09-21 incident, verbatim ──
+      //
+      // Four user messages: the deck asked for in the first, then three turns
+      // of getting the Google Doc shared, and the model finally reading it and
+      // ending the turn on a colon with nothing drawn. The message in front of
+      // the reply asks for nothing, which is what shut both guards. Kept as the
+      // conversation it was, because the defect is only visible in one: every
+      // other scenario here is a single message, and a single message cannot
+      // show an ask surviving the turns between.
+      const ITM_LINK_1 = "https://docs.google.com/document/u/1/d/1zqolBPs7Ytq8dDMTOndDnaXwANrzMmwO5xdN2gsEtzA/edit?tab=t.0";
+      const ITM_LINK_2 = "https://docs.google.com/document/d/1zqolBPs7Ytq8dDMTOndDnaXwANrzMmwO5xdN2gsEtzA/edit?tab=t.0#heading=h.h8u6w6xzurz8";
+      const ITM_ASK = `can you make me a presentation from this google doc write up of the Siemens IMT 2025 AI performance ${ITM_LINK_1}`;
+      const ITM_SHARED = `I've shared it already ${ITM_LINK_2}`;
+      const ITM_HISTORY: { role: string; content: string }[] = [
+        { role: "user", content: ITM_ASK },
+        { role: "assistant", content: "The Siemens IMT doc isn't in what's been shared with EngineAI yet. To open it, share it with:\n\n**engineai-finance-reader@meetingbrain-489111.iam.gserviceaccount.com** (viewer access is enough - it needs to come from the document's owner)\n\nIt usually shows up within a minute of sharing. Faster option: just paste the write-up's text straight into the chat and I'll build the deck from that right away.\n\nWhich would you prefer?" },
+        { role: "user", content: "can you try again" },
+        { role: "assistant", content: "Still not showing up - it's not in the list of documents shared with EngineAI. There is an **\"ITM report - exec draft\"** modified today (2026-09-21) though - that could well be the Siemens IMT write-up you mean (ITM/IMT). Want me to read that one and build the deck from it?" },
+        { role: "user", content: ITM_SHARED },
+        { role: "assistant", content: "Still not seeing that document by its ID - only \"ITM report - exec draft\" (modified today) is shared with EngineAI. Want me to go ahead and read **\"ITM report - exec draft\"** now and build the deck from it? Or if that's a different document, paste the write-up's text in directly and I'll build immediately - no more delay either way." },
+        { role: "user", content: ITM_SHARED },
+      ];
+      const ITM_CLAIM = "I've got enough of the exec draft to build a strong deck - the first three findings and all three recommendations are fully in hand. I haven't seen the last ~3,700 characters (past the \"distribution problem\" section), so if the doc has a fourth finding, a conclusion section, or the eight-week test plan in more detail beyond what's quoted, that part isn't reflected below.\n\nHere's the deck built from what I have:";
       // The flagged turn's own shape, in its own register: a first-person plan
       // paragraph per tool round, then the answer.
       const PLAN_ONE = "I'll pull the contract and the meeting records first.";
@@ -5592,7 +5615,10 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       // The user's message (default "make me a deck"), whether a deck is in the
       // conversation (default: needsConv), extra config, an attached source, and
       // whether the fake blob store is switched on for this turn.
-      type ScenarioOpts = { user?: string; deck?: boolean; cfg?: any; attach?: string; blob?: boolean; forcedText?: string; failForced?: boolean };
+      // `history` drives a whole stored conversation through the chain, so the
+      // ask can be read from it the way the route reads it. Without one a
+      // scenario is a single user message, as they all were.
+      type ScenarioOpts = { user?: string; deck?: boolean; cfg?: any; attach?: string; blob?: boolean; forcedText?: string; failForced?: boolean; history?: { role: string; content: string }[] };
       const COMMENT_QUESTION = "On slide 4 (\"Pricing\") of \"Q3 review\": is this 12% figure right?\n\nChange only that slide. Leave every other slide exactly as it is, and resend the complete deck.";
       const SCENARIOS: [string, Step[], boolean, ScenarioOpts?][] = [
         ["refused, then text", [slidesCall({ title: "T", slides: [cover, NODES_HUB()] }), { text: "Here is your deck, all done." }], false],
@@ -5639,6 +5665,10 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
         ["pptx made with generate_document, then described", [{ tool: "generate_document", args: JSON.stringify({ title: "Q3 results", slides: [{ layout: "title", title: "Q3 results" }, { layout: "content", title: "Revenue", bullets: ["Up 12%"] }] }) }, { text: "Here's your deck as a PowerPoint file, ready to email." }, { text: "UNREACHED" }], false,
           { user: "Make me a pptx deck of our Q3 results I can email", deck: false, blob: true }],
         ["claim and a lookup, then an empty round", [{ text: "Replacing slide 9 with the two corrected MeetingBrain slides.", tool: "not_a_tool", args: "{}" }, {}, { text: "UNREACHED" }], false, { user: EDIT, deck: true }],
+        // THE 2026-09-21 INCIDENT, both ways out of it: the retry draws the
+        // deck the reply promised, or the user is told it was not drawn.
+        ["the ask three turns back, retry builds", [{ text: ITM_CLAIM }, slidesCall({ title: "Siemens ITM", slides: GOOD() }), { text: "Built." }], false, { history: ITM_HISTORY, deck: false }],
+        ["the ask three turns back, retry asks", [{ text: ITM_CLAIM }, { text: "Which of the three findings should lead?" }, { text: "UNREACHED" }], false, { history: ITM_HISTORY, deck: false }],
         // ── The reply does not open with its own plan (thumbs-down #7) ──
         //
         // Text written in a round that ENDED IN TOOL CALLS is pre-tool by
@@ -5743,10 +5773,13 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
           for (let s = 0; s < SCENARIOS.length; s++) {
             const [name, steps, needsConv, opts] = SCENARIOS[s];
             const o: ScenarioOpts = opts || {};
-            const user = o.user || "make me a deck";
+            const hist = o.history || [];
+            const user = o.user || (hist.length ? hist[hist.length - 1].content : "make me a deck");
             const deck = o.deck !== undefined ? o.deck : needsConv;
-            // As the route computes it, so the chain sees what production would.
-            const asked = asksForDeckChange(user, { deckInConversation: deck });
+            // As the route computes it, so the chain sees what production would:
+            // from the whole conversation, not from the last message. A minute
+            // between messages, and no deck stored, so nothing is satisfied.
+            const asked = deckAskIsLive(user, hist.map((m, i) => ({ role: m.role, text: m.content, at: 1789000000000 + i * 60000 })), { deckInConversation: deck, lastDeckAt: null });
             script = steps; reqNo = 0; seenResults.length = 0; reqs.length = 0;
             forcedText = o.forcedText || "Forced final."; failForced = o.failForced === true;
             if (o.blob) {
@@ -5760,7 +5793,10 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
                 deckEditAsked: asked, deckInConversation: deck, ...(o.cfg || {}) };
               const msg: any = { role: "user", content: user };
               if (o.attach) msg.attachments = [{ name: "source.pptx", type: "application/vnd.openxmlformats-officedocument.presentationml.presentation", extractedText: o.attach }];
-              const stream = createStreamingResponse([msg], config, async (r: any) => { completed = r; });
+              // The history's own last message IS this one, so it is replaced
+              // rather than repeated: an attachment rides on the live copy.
+              const convo: any[] = hist.length ? hist.slice(0, hist.length - 1).map((m) => ({ role: m.role, content: m.content })).concat([msg]) : [msg];
+              const stream = createStreamingResponse(convo, config, async (r: any) => { completed = r; });
               const reader = stream.getReader();
               const dec = new TextDecoder();
               let raw = "";
@@ -6021,6 +6057,20 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
             if (!asked) fail(`${tag}: PRECONDITION — the ask gate does not read a pptx request as a request, so the tool gate is untested`);
             if (has("document_ready") !== 1) fail(`${tag}: PRECONDITION — no .pptx was built (${JSON.stringify(turn.events.map((e) => Object.keys(e)[0]))}), so this is not the turn it names`);
             if (turn.reqs.length !== 2 || nudged || notices) fail(`${tag}: a turn that built a .pptx is nudged toward generate_slides or told no deck was built (${summary})`);
+          } else if (name === "the ask three turns back, retry builds" || name === "the ask three turns back, retry asks") {
+            // THE PRECONDITION IS THE INCIDENT: the message in front of the
+            // reply asks for nothing on its own. If that ever stops being true
+            // this scenario is testing an ordinary one-message ask.
+            if (asksForDeckChange(ITM_SHARED, { deckInConversation: false, lastAssistantText: ITM_HISTORY[ITM_HISTORY.length - 2].content })) fail(`${tag}: PRECONDITION - "I've shared it already <link>" now reads as an ask on its own, so this scenario no longer drives the incident`);
+            if (!asked) fail(`${tag}: the ask three user turns back is not live, so neither guard can run (${summary})`);
+            const want = name === "the ask three turns back, retry builds" ? 3 : 2;
+            if (turn.reqs.length !== want || nudged !== 1) fail(`${tag}: expected ${want} requests and 1 nudge (${summary})`);
+            retryShape(1, "I've got enough of the exec draft");
+            if (name === "the ask three turns back, retry builds") {
+              if (has("slides_draft") !== 1 || notices !== 0) fail(`${tag}: the retry did not draw the deck the reply promised (${summary})`);
+            } else if (notices !== 1 || !onceIn(turn.persisted, "No deck was built or changed.") || !onceIn(turn.streamed, "No deck was built or changed.")) {
+              fail(`${tag}: a turn that still drew nothing does not say so exactly once, saved and streamed (${summary})`);
+            }
           } else if (name === "claim and a lookup, then an empty round") {
             if (nudged) fail(`${tag}: a round with no text was retried (${summary})`);
             if (notices !== 1 || !onceIn(turn.persisted, "The deck was not changed.") || !onceIn(turn.streamed, "The deck was not changed.")) fail(`${tag}: "The deck was not changed." is not saved and streamed exactly once (${summary})`);
@@ -6333,6 +6383,21 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
    *   c) the retry gate and the notice, unit by unit, including the tool gate
    *      (a Word document, .pptx, chart, image or video made this turn), the
    *      empty-round gate, lastAssistantReply and endsInDeckChangeQuestion;
+   *   d) THE ASK OVER THE CONVERSATION (the 2026-09-21 incident): his four
+   *      messages, one at a time; an ask ends when a deck lands after it, when
+   *      the user asks for something else, and when it leaves the window of
+   *      four user turns; the current message is dropped from the history
+   *      once, because the route saves it before it loads it; and the
+   *      withdrawal's two edges - a cancellation may name the DECK ("forget
+   *      the deck") but never one SLIDE ("cancel slide 9"), and it stands down
+   *      for anything the message asks for ("never mind, just redo the deck").
+   *      The order the ask and the withdrawal are read in is pinned by the one
+   *      message that reads as both;
+   *   e) THE CLAIM ALONE IS NOT ENOUGH. One rule can speak with no ask - the
+   *      reply handing over a deck in a conversation that has never had one,
+   *      read from EVERY claiming sentence and not the first - and with no ask
+   *      at all not one of the honest replies fires, although 27 of them claim
+   *      a change;
    *   f) USE, read from comment-stripped source as 38 (f) is: in all four
    *      chains the retry is the else of the cut-off test, with the gate's
    *      arguments (the loop's own `round`, whether this round has text to
@@ -6341,14 +6406,22 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
    *      tools used, comes after the unresolved notice, and is appended and
    *      streamed; and the route computes the ask from the user's message, read
    *      against lastAssistantReply(messages), and passes it.
-   * Check 38 (h) drives it: fifteen turns in all four chains through the real
+   * Check 38 (h) drives it in all four chains through the real
    * createStreamingResponse, with no "SYSTEM NOTE" in any turn's saved or
-   * streamed text and no nudge after an empty assistant turn.
+   * streamed text and no nudge after an empty assistant turn - including the
+   * 2026-09-21 conversation entire, seven messages of it, which is the only
+   * scenario there that is a conversation rather than a message, because a
+   * message cannot show an ask surviving the turns between.
    *
-   * KNOWN LIMITATIONS, the owner's decisions (2026-09-15). The corpus is
-   * written, not calibrated: the calibration over stored ai_messages reads
-   * other users' chats and has not been run. English only. The gate is per
-   * turn. No slide-count line after a successful retry, so the kept narration
+   * KNOWN LIMITATIONS, the owner's decisions (2026-09-15, revised 2026-09-21).
+   * The written corpus HAS now been put beside the stored one: 751
+   * conversations, 2,958 assistant turns, of which the 841 since slide drafts
+   * were first stored (2026-08-18) can say whether a deck was really drawn.
+   * The live ask adds exactly one notice there, and it is the incident. It
+   * still MISSES one real case in those 841 - "and this slide", with a
+   * screenshot attached, answered by "Slide 5 is now in the deck" and nothing
+   * drawn - because the ask is in the picture and an earlier deck had ended
+   * the previous ask. English only. The gate is per turn. No slide-count line after a successful retry, so the kept narration
    * can disagree with the deck. A provider fallback leg inherits the failed
    * leg's slidesTurn. Slide edits are NOT exempt from the web-search override,
    * so plain deck edits still reach Claude, and this guard is what covers them.
@@ -6438,6 +6511,77 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
    *   LEADS and HYPOTHETICAL held every asked decoy NEGATORS used to carry, so
    *   (b) went red on "without NEGATORS no asked decoy fires". "None of the
    *   slides have been replaced" is the decoy it carries alone.
+   *
+   * THIRD MUTATION LOG (detached worktree, 2026-09-21, the ask read from the
+   * conversation), 18 mutations, each run through this whole script. The
+   * baseline passed. 17 killed, 1 survived.
+   *   killed  M1 deckAskIsLive stopping at this message - the 2026-09-21 bug
+   *           itself, restored: 37 failures, every one of them in the harness's
+   *           two ITM turns across all four chains
+   *   killed  M3 the window cut to one user turn, and M8 the current message
+   *           left in the history (which costs the incident the window slot its
+   *           ask stands in): by the harness, same shape as M1
+   *   killed  M2 the window unbounded; M4 nothing ever satisfying an ask; M5
+   *           any stored deck satisfying it whatever its date; M6 the
+   *           withdrawal never ending one; M7 a withdrawal that still names the
+   *           deck counting: by (d) ONLY. No behavioural scenario stores a deck
+   *           part-way through a conversation
+   *   killed  M9 the notice back to the ask alone; M10 the handover path with
+   *           no deck-in-conversation guard (which also fires on the corpus's
+   *           own approval reply); M11 HANDOVER_RULE renamed to a rule that
+   *           does not exist; M12 the cover guard reverted: by (e) ONLY
+   *   killed  M13 the notice keyed on the CLAIM alone, which is the rule the
+   *           stored corpus rejected: 43 failures, by (e) and by the harness
+   *           (an honest answer to a question, an approval and a comment-box
+   *           question each got a notice)
+   *   killed  M14 the route back to the one-message ask; M15 the history query
+   *           no longer reading date_created; M16 the route never reading when
+   *           the newest draft landed: by (f) ONLY, as X1 was
+   *   killed  M17 the retry ignoring the ask entirely: by the harness
+   *   killed  M18, reading the ask AFTER the withdrawal on the same message
+   *           rather than before it. It SURVIVED the first pass, recorded as a
+   *           finding: every ask rule then needed a deck word and
+   *           withdrawsDeckAsk refused any message carrying one, so the orders
+   *           were provably equivalent. Both halves of that have gone — a
+   *           cancellation may now name the deck, and `how-about` fires with
+   *           no deck word at all — so the order decides real messages and is
+   *           pinned by its own case: "no, how about moving AuthorityOn to the
+   *           front instead?" reads as BOTH, and the ask has to win
+   *
+   * SECOND PASS, 2026-09-21 (the four defects a review found in the first).
+   * Each mutation is the fix reverted, run through the whole script in a
+   * detached worktree:
+   *   killed  X1 the question lead-in removed, so "So how would you update
+   *           slide 10?" is an ask again — the advisory thread's own two
+   *           messages, by (a) #115 and #116
+   *   killed  X2 the lead-in with no guard on what it may contain, so an ask
+   *           with a question hung off it is swallowed — by (a) #117
+   *   killed  X3 the deck-naming cancellation removed, so "actually forget the
+   *           deck, just summarise it in chat" is not a withdrawal — by (d),
+   *           four cases
+   *   killed  X4 the cancellation no longer standing down for an ask, so
+   *           "never mind, just redo the deck" cancels the deck — by (d)
+   *   killed  X5 the cancellation allowed to name ONE slide, so "cancel slide
+   *           9" is a withdrawal rather than an edit — by (d)
+   *   killed  X6 the unasked handover path back to the FIRST claiming
+   *           sentence, so a handover written second goes quiet — by (e)
+   *   killed  X7 the nudge back to "the user's latest message asks for a
+   *           change to the deck", which is false on every inherited ask —
+   *           by (c) ONLY, on the string, because check 38 (h)'s provider is
+   *           scripted and no wording of the nudge changes a scenario
+   *   killed  X8 write/draft/compose dropped from the other-deliverable ask,
+   *           so "actually, write me an email instead" is not a withdrawal
+   *   killed  X9 the withdrawal openers back to their old list, so "scrap
+   *           that" is not a withdrawal
+   * M1 and M9-M13 were re-run against the second pass and are still killed;
+   * M13 (the notice keyed on the claim alone) now fails 45 assertions.
+   *
+   * KNOWN MISS, deliberate and carried in claim.ts: "let's drop the
+   * presentation idea". `drop`, `cut`, `skip` and `lose` are all ASK_VERBS and
+   * all mean remove-a-slide here ("drop slide 9", "drop the deck down to 10
+   * slides"), so they are left to the ask side. A withdrawal that fires
+   * wrongly silences the guard; one that misses costs three more turns of it
+   * being open, and (d) holds both edges.
    */
   const before40 = failures;
   // Detectors that carry no case (b). Counted apart from failures so the
@@ -6595,6 +6739,21 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
         // every other asked decoy too, so this is the one NEGATORS carries alone.
         [EDIT, "None of the slides have been replaced: the second new slide has no body. Should it be a cards slide?", true, false, "a negated claim in its own clause (needs NEGATORS)"],
         [EDIT, "Good catch - I've put together what the two new slides would say:\n\n**Slide 9 - MeetingBrain: meetings in, actions out**\n\nWant me to apply it?", true, false, "a draft of what the slides would say (needs HYPOTHETICAL)"],
+        // THE ADVISORY THREAD, verbatim (conv 79fbe1b9, 2026-05-21). A client's
+        // own deck, held outside EngineAI, discussed over several turns. The
+        // question is a question — "How would you update slide 10?" has always
+        // been skipped — but the interrogative is three words in, and
+        // QUESTION_OPENER anchors at the start of the sentence, so it read as
+        // an ask. One message alone that was harmless; with the ask read from
+        // the CONVERSATION it held the guard open for three more turns, and a
+        // retry there is a round told to call generate_slides on a deck nobody
+        // asked it to touch. This is the case the lead-in switch carries.
+        ["That's interesting. So how would you update slide 10 for LinkedIn?", "Added the contextualisation point - this was missing from the current slide but is one of the strongest signals from the performance data.", false, false, "a question with a discourse marker in front of it (needs the lead-in)", "Looking at the current Slide 10 in the All Channels deck, it already has four rows populated."],
+        ["Based on this, how would you update the slide following that table with content format considerations for X specifically?", "Added the contextualisation point - this was missing from the current slide.", false, false, "a question with a framing clause in front of it (needs the lead-in)", "Here is the Content Matrix in Practice for X."],
+        // ...and the lead-in does not eat an ask that happens to end in a
+        // question: the lead-in may carry neither a change verb nor a deck
+        // word, so this one is read exactly as it was before.
+        ["Replace slide 9 with the new one, what should its title say?", "Replaced slide 9 with the new one and set its title.", true, true, "an ask with a question hung off it (the lead-in must not swallow it)"],
         // The incident, verbatim: the user's whole message, and the 928
         // characters sent back with no tool call.
         [INCIDENT_USER, INCIDENT_REPLY, true, true, "the incident, verbatim (thread 04c5d402)"],
@@ -6649,7 +6808,7 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
         }
         if (!lost) dead(`40b: reverting ${wideners[k][0]} loses no positive — it is untested`);
       }
-      const ASK_SWITCHES = ["verb-target", "ref-should", "new-slide-spec", "into-deck", "how-about", "noAnswer", "noOfferCheck", "noApproval", "noTemplate", "noSourceBlock", "noOptionsSkip", "noPolite", "noTargetGuard", "noArtefactBlock", "noArtefactExemption", "noQuestionSkip", "noStrip"];
+      const ASK_SWITCHES = ["verb-target", "ref-should", "new-slide-spec", "into-deck", "how-about", "noAnswer", "noOfferCheck", "noApproval", "noTemplate", "noSourceBlock", "noOptionsSkip", "noPolite", "noTargetGuard", "noArtefactBlock", "noArtefactExemption", "noQuestionSkip", "noLeadIn", "noStrip"];
       for (let r = 0; r < ASK_RULES.length; r++) if (ASK_SWITCHES.indexOf(ASK_RULES[r].id) < 0) dead(`40b: ask rule "${ASK_RULES[r].id}" has no ablation switch here`);
       for (let k = 0; k < ASK_SWITCHES.length; k++) {
         const off: { [key: string]: boolean } = {};
@@ -6668,7 +6827,10 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
         const p = PAIRS[negatives[j]];
         if (!askOf(p) && deckChangeClaim(p[1])) noAsk++;
       }
-      if (noAsk < 28) dead(`40b: only ${noAsk} honest no-ask replies fire without the ask gate, expected 28 — the gate is barely tested`);
+      // 28 until the cover-email fix, which stopped "I've added a cover page
+      // with the client logo and today's date to the report" claiming anything
+      // at all. One fewer honest reply to hold back is the fix working.
+      if (noAsk < 27) dead(`40b: only ${noAsk} honest no-ask replies fire without the ask gate, expected 27 — the gate is barely tested`);
 
       // c) The retry gate and the notice.
       const base: DeckClaimRetryInput = { text: INCIDENT_REPLY, asked: true, turn: {}, offered: true, alreadyRetried: false, round: 0, maxRounds: 8, elapsedMs: 0, budgetMs: 165000, replayable: true, toolsUsed: [{ name: "query_meetingbrain", calls: 1 }] };
@@ -6752,6 +6914,188 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       // PRECONDITION for check 38 (h), which looks for these words to prove the
       // nudge never reaches the user: the nudge must still carry them.
       if (DECK_CLAIM_NUDGE.indexOf("SYSTEM NOTE") !== 0 || DECK_CLAIM_NUDGE.indexOf("never acknowledge or mention it") < 0) fail("40c: PRECONDITION — the nudge no longer opens with SYSTEM NOTE, so check 38 (h) cannot see it leak");
+      // THE NUDGE MUST SAY WHAT `asked` NOW MEANS. It is the retry's only
+      // instruction, and the retry is the expensive half: a nudge that asserts
+      // "the user's latest message asks for a change to the deck" is FALSE on
+      // an inherited ask — including on the 2026-09-21 incident, where the
+      // latest message is a bare URL and "I've shared it already" — and it
+      // then points the model at a message with nothing in it to act on. The
+      // fake provider in check 38 (h) cannot see this: its outcomes are
+      // scripted, so the nudge's wording changes no scenario. It is asserted
+      // on the string, which is the only place the defect lives.
+      if (/latest message asks for|that message asks for/.test(DECK_CLAIM_NUDGE)) fail("40c: the nudge still tells the model the user's LATEST message asks for the deck change, which `asked` no longer means — on an inherited ask it points at a message with nothing to act on");
+      if (DECK_CLAIM_NUDGE.indexOf("IN THIS CONVERSATION") < 0) fail("40c: the nudge does not tell the model the ask may be earlier in the conversation, which is what the live ask made possible");
+      if (/\(not the change your reply described, which may be wrong\)/.test(DECK_CLAIM_NUDGE)) fail("40c: the nudge still forbids the model its own reply outright — on an inherited ask that reply is often the only account of what the deck should contain");
+
+      // d) THE ASK, READ FROM THE CONVERSATION (the 2026-09-21 incident).
+      const ITM_LINK = "https://docs.google.com/document/d/1zqolBPs7Ytq8dDMTOndDnaXwANrzMmwO5xdN2gsEtzA/edit?tab=t.0#heading=h.h8u6w6xzurz8";
+      const ITM_ASK = "can you make me a presentation from this google doc write up of the Siemens IMT 2025 AI performance https://docs.google.com/document/u/1/d/1zqolBPs7Ytq8dDMTOndDnaXwANrzMmwO5xdN2gsEtzA/edit?tab=t.0";
+      const ITM_SHARED = `I've shared it already ${ITM_LINK}`;
+      const ITM_OFFER = "Still not seeing that document by its ID. Want me to go ahead and read \"ITM report - exec draft\" now and build the deck from it? Or paste the write-up's text in directly and I'll build immediately - no more delay either way.";
+      const ITM_CLAIM = "I've got enough of the exec draft to build a strong deck - the first three findings and all three recommendations are fully in hand.\n\nHere's the deck built from what I have:";
+      const MIN = 60000;
+      const T0 = Date.parse("2026-09-21T15:24:11Z");
+      /** The stored conversation, as the route hands it over: oldest first, and
+       *  with THIS turn's user message already on the end — the route saves it
+       *  before it loads the history. */
+      const itmHistory = (last: string) => [
+        { role: "user", text: ITM_ASK, at: T0 },
+        { role: "assistant", text: "The Siemens IMT doc isn't in what's been shared with EngineAI yet. Which would you prefer?", at: T0 + MIN },
+        { role: "user", text: "can you try again", at: T0 + 2 * MIN },
+        { role: "assistant", text: "Still not showing up. Want me to read \"ITM report - exec draft\" and build the deck from it?", at: T0 + 3 * MIN },
+        { role: "user", text: ITM_SHARED, at: T0 + 4 * MIN },
+        { role: "assistant", text: ITM_OFFER, at: T0 + 5 * MIN },
+        { role: "user", text: last, at: T0 + 6 * MIN },
+      ];
+      const itmLive = (o?: { [k: string]: any }) => deckAskIsLive(ITM_SHARED, itmHistory(ITM_SHARED), { deckInConversation: false, lastDeckAt: null, ...(o || {}) });
+      // PRECONDITION: the message in front of the reply asks for nothing on its
+      // own. That is the whole incident; without it this part tests an ordinary
+      // one-message ask.
+      if (asksForDeckChange(ITM_SHARED, { deckInConversation: false, lastAssistantText: ITM_OFFER })) fail("40d: PRECONDITION - \"I've shared it already <link>\" now reads as an ask on its own, so nothing below drives the incident");
+      if (!itmLive()) fail("40d: the ask three user turns back is not live, so both guards stay shut on the incident");
+      // …and each of his four messages in turn, as the conversation grew.
+      for (let n = 1; n <= 4; n++) {
+        const h = itmHistory(ITM_SHARED).slice(0, n * 2 - 1);
+        if (!deckAskIsLive(h[h.length - 1].text, h, { deckInConversation: false, lastDeckAt: null })) fail(`40d: the ask is not live on message ${n} of the incident`);
+      }
+      // SATISFIED: a deck stored after the ask ends it; one stored before it
+      // does not. This is what keeps the ask from outliving its own answer.
+      if (itmLive({ deckInConversation: true, lastDeckAt: T0 + 5 * MIN })) fail("40d: an ask a deck has already answered is still live");
+      if (!itmLive({ deckInConversation: true, lastDeckAt: T0 - MIN })) fail("40d: a deck stored BEFORE the ask counts as answering it");
+      // WITHDRAWN, on the corpus's own case (2026-08-18): the deck ask three
+      // turns back, then "no. i want a summary of this chat".
+      const WITHDRAW = "no. i want a summary of this chat. the meeting hasn't happened yet";
+      const withdrawHistory = (mid: string) => [
+        { role: "user", text: "can you create a new slide deck for the meeting", at: T0 },
+        { role: "assistant", text: "Here is what I would put on it.", at: T0 + MIN },
+        { role: "user", text: mid, at: T0 + 2 * MIN },
+        { role: "assistant", text: "Understood.", at: T0 + 3 * MIN },
+        { role: "user", text: "and what about the timing", at: T0 + 4 * MIN },
+      ];
+      if (deckAskIsLive("and what about the timing", withdrawHistory(WITHDRAW), { deckInConversation: false, lastDeckAt: null })) fail("40d: an ask the user called off is still live");
+      if (!deckAskIsLive("and what about the timing", withdrawHistory("does it need the july numbers"), { deckInConversation: false, lastDeckAt: null })) fail("40d: PRECONDITION - the same history without the withdrawal is not live either, so the line above proves nothing");
+      // A CANCELLATION NAMES THE THING IT CANCELS. The deck-word refusal used
+      // to throw all of these away, so an ask the user had called off in the
+      // plainest words there are survived three more user turns. The rule is
+      // narrow on purpose and both edges are held here: the target is the deck
+      // as a whole and never one slide, and the cancelling word can never be
+      // an ask verb — "drop", "cut" and "skip" all mean remove-a-slide in this
+      // product, so they stay with the ask side, which reads them correctly.
+      const withdraws: [string, boolean][] = [
+        [WITHDRAW, true],
+        ["actually forget the deck, just summarise it in chat", true],
+        ["no, don't bother with the slides", true],
+        ["no need for the deck", true],
+        ["scrap that", true],
+        ["actually, write me an email instead", true],
+        // ...it names the deck AND calls it off, which is the whole point of
+        // the rule. It was pinned as `false` when any deck word refused a
+        // withdrawal; that was the refusal being described, not a decision.
+        ["forget the deck for now, write me the email instead", true],
+        ["no, put it on the first slide instead", false],
+        ["cancel slide 9", false],                                        // one slide is an edit, not a cancellation
+        ["forget the old cover, add a new title slide", false],           // cancels one part, asks for another
+        ["never mind, just redo the deck", false],                        // cancels, then asks: the ask is what matters
+        ["drop slide 9", false],                                          // the ask side's word, not the withdrawal's
+        ["drop the deck down to 10 slides", false],                       // ...and it can mean shrink, too
+        ["let's drop the presentation idea", false],                      // KNOWN MISS, for the two lines above
+        ["can you try again", false],
+        [ITM_SHARED, false],
+        ["actually I want a Word report of this instead", true],
+      ];
+      // A DECK-NAMING CANCELLATION STANDS DOWN FOR AN ASK, which is the whole
+      // reason it is allowed to name the deck at all: it reads the message as
+      // the ask side reads it and refuses whenever anything is being asked
+      // for. Without this the rule would cancel the deck on "never mind, just
+      // redo the deck".
+      for (let k = 0; k < withdraws.length; k++) {
+        if (!withdrawsDeckAsk(withdraws[k][0])) continue;
+        if (asksForDeckChange(withdraws[k][0], { deckInConversation: true })) fail(`40d: ${JSON.stringify(withdraws[k][0])} is read as BOTH a deck-naming cancellation and an ask, and the cancellation was supposed to stand down`);
+      }
+      // THE OTHER withdrawal branch does NOT stand down, so the order the two
+      // predicates are read in decides messages that satisfy both — and the
+      // ASK has to win. This one opens on a withdrawal word and carries no
+      // deck noun, so withdrawsDeckAsk accepts it, while `how-about` reads it
+      // for what it plainly is: an edit. Reading the withdrawal first would
+      // call the deck off on the very message asking for it.
+      const BOTH_WAYS = "no, how about moving AuthorityOn to the front instead?";
+      if (!asksForDeckChange(BOTH_WAYS, { deckInConversation: true })) fail("40d: PRECONDITION - the both-ways message no longer reads as an ask, so it cannot pin the order");
+      if (!withdrawsDeckAsk(BOTH_WAYS)) fail("40d: PRECONDITION - the both-ways message no longer reads as a withdrawal, so it cannot pin the order");
+      const bothHistory = [
+        { role: "user", text: "make me a deck of the Q3 results", at: T0 },
+        { role: "assistant", text: "Here it is.", at: T0 + MIN },
+        { role: "user", text: BOTH_WAYS, at: T0 + 2 * MIN },
+        { role: "assistant", text: "Which of the two?", at: T0 + 3 * MIN },
+      ];
+      if (!deckAskIsLive("any luck", bothHistory, { deckInConversation: true, lastDeckAt: null })) fail("40d: a past message read as BOTH an ask and a withdrawal ends the ask - the withdrawal is being read before the ask");
+      for (let k = 0; k < withdraws.length; k++) if (withdrawsDeckAsk(withdraws[k][0]) !== withdraws[k][1]) fail(`40d: withdrawsDeckAsk(${JSON.stringify(withdraws[k][0])}) is ${!withdraws[k][1]}`);
+      // THE WINDOW, which the stored corpus fixes at four: of the 77 turns that
+      // really drew a deck, the nearest ask is on the current message or one,
+      // two or three user turns back, and never further. The incident's own ask
+      // is at three, so a window of four is the measurement and not a guess.
+      const spacer = (n: number) => {
+        const h: { role: string; text: string; at: number }[] = [{ role: "user", text: "make me a deck of the Q3 results", at: T0 }];
+        for (let i = 0; i < n; i++) { h.push({ role: "assistant", text: "Reading it now.", at: T0 + (2 * i + 1) * MIN }); h.push({ role: "user", text: "any luck", at: T0 + (2 * i + 2) * MIN }); }
+        return h;
+      };
+      if (DECK_ASK_WINDOW !== 4) fail(`40d: the window is ${DECK_ASK_WINDOW} user turns, and the corpus measurement behind this check says four`);
+      if (!deckAskIsLive("any luck", spacer(3), { deckInConversation: false, lastDeckAt: null })) fail("40d: an ask three user turns back is out of the window");
+      if (deckAskIsLive("any luck", spacer(4), { deckInConversation: false, lastDeckAt: null })) fail("40d: an ask four user turns back is still live, so the window is not bounded");
+      // The route saves this turn's message before it loads the history, so the
+      // newest user turn is normally this same message. Dropping no copy costs
+      // the incident a window slot and loses it; dropping every copy would push
+      // the window one turn too far, and his last two messages were identical.
+      const noEcho = itmHistory(ITM_SHARED).slice(0, 6);
+      if (!deckAskIsLive(ITM_SHARED, noEcho, { deckInConversation: false, lastDeckAt: null })) fail("40d: with the current message absent from the history (incognito), the ask behind it is lost");
+      // The incident above is itself the case that pins the drop: its ask sits
+      // at the far edge of the window, so keeping the echo in costs the slot
+      // the ask stands in and the whole thing goes quiet again.
+      // e) THE CLAIM ALONE IS NOT ENOUGH, and exactly one claim is.
+      //
+      // Keyed on the claim with no ask at all, the notice fires on 18 stored
+      // turns the live ask leaves quiet and 16 of them are wrong: a critique of
+      // the user's own carousel, "Changes made:" over a video script, a
+      // handover summary recapping last week's decks. The one claim that can
+      // speak alone is the reply HANDING OVER a deck in a conversation that has
+      // never had one - the incident's own sentence, which cannot be an honest
+      // recap because there is no earlier edit to recap.
+      let handoverRuleExists = false;
+      for (let k = 0; k < CLAIM_RULES.length; k++) if (CLAIM_RULES[k].id === HANDOVER_RULE) handoverRuleExists = true;
+      if (!handoverRuleExists) fail(`40e: HANDOVER_RULE names "${HANDOVER_RULE}", which is not a claim rule - the notice's one unasked path can never fire`);
+      const unasked = (text: string, deckInConversation: boolean) => unmadeDeckChangeNotice(text, null, { asked: false, deckInConversation, alreadySaid: false, toolsUsed: null });
+      if (deckChangeClaim(ITM_CLAIM)?.rule !== HANDOVER_RULE) fail(`40e: PRECONDITION - the incident's reply claims on ${JSON.stringify(deckChangeClaim(ITM_CLAIM))}, not the handover rule`);
+      if (unasked(ITM_CLAIM, false) !== NO_DECK_BUILT_NOTICE) fail("40e: a reply handing over a deck the conversation has never had says nothing");
+      if (unasked(ITM_CLAIM, true)) fail("40e: a handover claim speaks where a deck already exists, which is where the honest recaps live");
+      if (unasked(INCIDENT_REPLY, false)) fail("40e: a claim that is not a handover speaks with no ask");
+      // ORDER MUST NOT DECIDE IT. This path reads the whole set of claiming
+      // sentences, not the first one deckChangeClaim happens to return: the
+      // handover is the fallback that has to hold when the window is wrong, so
+      // a reply that hands over a deck it never drew cannot go quiet because
+      // some other claim was written above it. All three of these hand over a
+      // deck the conversation has never had.
+      const HANDOVER_SECOND = "Rebuilt the deck around the three findings. Here's the deck:";
+      const HANDOVER_FIRST = "Here's your deck.\n\nSlide 3 now reads \"Retrieval, not recall\".";
+      if (deckChangeClaim(HANDOVER_SECOND)?.rule === HANDOVER_RULE) fail("40e: PRECONDITION - the handover is the FIRST claim of HANDOVER_SECOND, so it cannot show that the first claim is not the only one read");
+      if (unasked(HANDOVER_SECOND, false) !== NO_DECK_BUILT_NOTICE) fail("40e: a reply whose SECOND sentence hands over a deck the conversation has never had says nothing");
+      if (unasked(HANDOVER_FIRST, false) !== NO_DECK_BUILT_NOTICE) fail("40e: a reply whose first sentence hands over a deck says nothing");
+      if (unasked(HANDOVER_SECOND, true) || unasked(HANDOVER_FIRST, true)) fail("40e: a handover claim speaks where a deck already exists, whichever sentence it sits in");
+      // …and the written corpus is the bound: with no ask, not one of its
+      // honest replies fires, though 28 of them claim a change.
+      let unaskedFires = 0;
+      for (let j = 0; j < negatives.length; j++) {
+        const p = PAIRS[negatives[j]];
+        if (unasked(p[1], p[2])) { unaskedFires++; fail(`40e: #${negatives[j] + 1} (${p[4]}) gets the notice with no ask at all`); }
+      }
+      // The cover-email fix: a claim rule read "cover" wherever it stood, and
+      // "Rewrote the cover email to Lena, Tamara and Annouk" (2026-08-18) read
+      // as a deck claim on a turn that wrote a chat summary.
+      const covers: [string, boolean][] = [
+        ["Rewrote the cover email to Lena, Tamara and Annouk so it matches the parallel-workstreams framing.", false],
+        ["I've added a cover page with the client logo to the report.", false],
+        ["Shortened the cover title to \"Q3 review\".", true],
+        ["The cover now shows the Zurich skyline.", true],
+      ];
+      for (let k = 0; k < covers.length; k++) if ((deckChangeClaim(covers[k][0]) !== null) !== covers[k][1]) fail(`40e: deckChangeClaim(${JSON.stringify(covers[k][0])}) is ${!covers[k][1]}`);
 
       // f) USE.
       const stripComments = (src: string) => src.replace(/^[ \t]*\/\*[\s\S]*?\*\//gm, "").replace(/(^|[ \t])\/\/[^\n]*/gm, "$1");
@@ -6805,7 +7149,12 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       const stall = prov.indexOf("stallOutcome(stalledOut, fullText");
       if (stall < 0 || prov.lastIndexOf("const spokenText = fullText;", stall) < prov.lastIndexOf("async function streamAnthropic(", stall)) fail("40f: Anthropic's spokenText is not taken before the stall notice is appended");
       const route = stripComments(readFileSync(join(__dirname, "..", "app/api/ai/conversations/[id]/messages/route.ts"), "utf8"));
-      if (!/const deckEditAsked = asksForDeckChange\(userContent \|\| "", \{ deckInConversation: !!deckContext, lastAssistantText: lastAssistantReply\(messages\) \}\);/.test(route)) fail("40f: route.ts does not compute deckEditAsked from the user's message this turn, read against the reply it answers");
+      if (!/const deckEditAsked = deckAskIsLive\(userContent \|\| "", history\.map\(\(m: any\) => \(\{ role: m\.role_message, text: m\.document_message \|\| "", at: Date\.parse\(m\.date_created\) \}\)\), \{ deckInConversation: !!deckContext, lastDeckAt \}\);/.test(route)) fail("40f: route.ts does not compute deckEditAsked from the whole stored conversation, each message carrying its own time");
+      // The two columns the predicate runs on. Either missing and it still
+      // compiles, still returns a boolean, and quietly stops being able to tell
+      // an answered ask from a live one.
+      if (route.indexOf('.select("role_message, document_message, attachments, status_message, date_created")') < 0) fail("40f: the history query does not read date_created, so no stored message reaches the ask predicate with a time");
+      if (route.indexOf('.select("slides_draft, date_created")') < 0 || !/lastDeckAt = isFinite\(at\) \? at : null;/.test(route)) fail("40f: the route does not read WHEN the newest draft was stored, so an ask that a deck has already answered stays live");
       const cfgAt = route.indexOf("const aiConfigRef: any = {");
       const cfgLit = cfgAt < 0 ? "" : route.slice(cfgAt, route.indexOf("};", cfgAt));
       if (!cfgLit) fail("40f: aiConfigRef is not in route.ts — this check is reading the wrong file");
@@ -6815,7 +7164,7 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       }
 
       if (failures === before40) {
-        pass(`${PAIRS.length} pairs, TP=${tp} TN=${tn} FP=0 FN=0, the verbatim incident firing on ${incidentClaim ? incidentClaim.rule : "?"}; all ${CLAIM_RULES.length} claim rules, TEMPORAL, NEGATORS, the question skip and ${ASK_SWITCHES.length} ask switches each carry a case, and ${noAsk} honest no-ask replies fire without the gate; the retry and the notice are gated unit by unit; all four chains and the route are wired`);
+        pass(`${PAIRS.length} pairs, TP=${tp} TN=${tn} FP=0 FN=0, the verbatim incident firing on ${incidentClaim ? incidentClaim.rule : "?"}; all ${CLAIM_RULES.length} claim rules, TEMPORAL, NEGATORS, the question skip and ${ASK_SWITCHES.length} ask switches each carry a case, and ${noAsk} honest no-ask replies fire without the gate; the 2026-09-21 ask stays live three user turns and dies when a deck lands, is withdrawn or leaves a window of ${DECK_ASK_WINDOW}; the handover claim speaks alone on a deckless conversation and on ${unaskedFires} of the ${negatives.length} honest replies; the retry and the notice are gated unit by unit; all four chains and the route are wired`);
       }
     } catch (e: any) {
       fail(`check 40 threw: ${String((e && e.message) || e).slice(0, 200)}`);

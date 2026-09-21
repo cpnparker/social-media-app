@@ -27,7 +27,7 @@ import { calculateCostTenths } from "@/lib/ai/model-costs";
 import { isMissingColumnError } from "@/lib/ai/usage-columns";
 import { appendVolatile } from "@/lib/ai/prompt-cache";
 import { needsClaudeForPersonalData, isPersonalMeetingQuestion } from "@/lib/ai/personal-data-intent";
-import { asksForDeckChange, lastAssistantReply } from "@/lib/slides/claim";
+import { deckAskIsLive } from "@/lib/slides/claim";
 import { buildDeckContext, DECK_CONTEXT_HEADING } from "@/lib/slides/deck-context";
 import { artlistConfigured } from "@/lib/ai/capability-control";
 
@@ -682,7 +682,7 @@ export async function POST(
     const [historyRes, workspaceConfig, settingsRes] = await Promise.all([
       intelligenceDb
         .from("ai_messages")
-        .select("role_message, document_message, attachments, status_message")
+        .select("role_message, document_message, attachments, status_message, date_created")
         .eq("id_conversation", conversationId)
         // A PENDING row is an assistant turn with an empty body — the
         // placeholder this route inserts before it starts generating. Sending
@@ -778,15 +778,22 @@ export async function POST(
     // generate_slides — and a check cannot prove that from a template literal
     // inside a route handler.
     let deckContext: string | null = null;
+    // WHEN that newest draft was stored, which is what says whether an earlier
+    // ask has already been answered. Read from the row rather than from
+    // deckContext, which is null for a draft the context builder cannot use —
+    // a deck that landed is a deck that landed either way.
+    let lastDeckAt: number | null = null;
     try {
       const { data: deckRows } = await intelligenceDb
         .from("ai_messages")
-        .select("slides_draft")
+        .select("slides_draft, date_created")
         .eq("id_conversation", conversationId)
         .not("slides_draft", "is", null)
         .order("date_created", { ascending: false })
         .limit(1);
       deckContext = buildDeckContext(deckRows?.[0]?.slides_draft);
+      const at = Date.parse(deckRows?.[0]?.date_created || "");
+      lastDeckAt = isFinite(at) ? at : null;
     } catch (e: any) {
       console.warn("[Messages] could not load deck spec for editing context:", e?.message);
     }
@@ -1855,14 +1862,26 @@ export async function POST(
       }
     }
 
-    // Did the user's message THIS turn ask for a deck to be built or changed?
-    // The chains retry, and then say so, when a reply claims a deck change no
-    // call made (thread 04c5d402) — but only when one was asked for, because a
-    // reply describing a REAL earlier edit ("what's on slide 9 now?") makes the
-    // same claim truthfully. The reply before this message is read so a bare
-    // "yes, go ahead" counts when that reply ended by offering a change to the
-    // slides, and "Perfect, thanks!" after a real edit does not.
-    const deckEditAsked = asksForDeckChange(userContent || "", { deckInConversation: !!deckContext, lastAssistantText: lastAssistantReply(messages) });
+    // Is an ask for a deck LIVE on this turn? The chains retry, and then say
+    // so, when a reply claims a deck change no call made (thread 04c5d402) —
+    // but only when one was asked for, because a reply describing a REAL
+    // earlier edit ("what's on slide 9 now?") makes the same claim truthfully.
+    //
+    // Read from the CONVERSATION, not from this one message. On 2026-09-21 a
+    // deck was asked for once and then four turns went by getting the source
+    // shared; the message in front of the reply was "I've shared it already
+    // <link>", the ask read false, and the reply said "Here's the deck built
+    // from what I have:" and drew nothing, with both guards shut. An ask stays
+    // live until a deck lands after it or the user asks for something else,
+    // and no longer than a window of user turns that the stored corpus fixes
+    // at four (lib/slides/claim.ts has the measurement).
+    //
+    // The stored history is passed rather than `messages`: it is the whole
+    // conversation, where `messages` is capped and re-injected, and each past
+    // message has to be read against the reply IT answered. It already holds
+    // this turn's user message — it is saved above, before this load — and
+    // deckAskIsLive drops that one copy itself.
+    const deckEditAsked = deckAskIsLive(userContent || "", history.map((m: any) => ({ role: m.role_message, text: m.document_message || "", at: Date.parse(m.date_created) })), { deckInConversation: !!deckContext, lastDeckAt });
 
     // Create streaming response.
     // The onComplete callback saves the assistant reply. It runs when the
