@@ -17,12 +17,15 @@ import {
   undrawnTableBodies,
   CAPS_WIDEN, faceAdvance, stripImageMarkdown, drawnText, TEXT_INSET_X, TEXT_INSET_Y, pillWidth, droppedContent, fitHeading, FOOTER_Y, captionParagraphs, splitStageOwner, slideStyle,
   labelWidthPt, quoteClip, drawsRawScreenshot, isScreenshot, fitAspect, namesAPicture, hugHeight,
+  leadInLength, measuresRagged, raggedLines,
   densityOf, footerLineWidth, hairlineSpan, hairline, crossingHairlines, hungDot, ctaPill, HUNG_DOT, PILL,
   stampDeckSteps, stepperRail, stepperBox, bulletBlockHeight, deckSteps,
+  photoRailBox, pictureShape, hungDotSize,
   type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel, readPath } from "../lib/slides/preview-model";
-import { applyEditSlide, unrenderableSlides, undrawnTableSlides, undrawnTableFaults, PAYLOAD_FIELDS, insertableLayout, normaliseSlide, SlideCallRefusal } from "../lib/slides/edit";
+import { applyEditSlide, unrenderableSlides, undrawnTableSlides, undrawnTableFaults, PAYLOAD_FIELDS, insertableLayout, normaliseSlide, SlideCallRefusal,
+  TEXT_EXTRAS, CONTINUATION_KEEPS, CONTINUATION_CLEARS } from "../lib/slides/edit";
 import { slidesFailure, parseSlidesArguments, SLIDES_FAILED_FOR_USER, type SlidesTurnState } from "../lib/slides/failure";
 import {
   asksForDeckChange, deckAskIsLive, withdrawsDeckAsk, DECK_ASK_WINDOW, HANDOVER_RULE, deckChangeClaim, claimingRules, CLAIM_RULES, ASK_RULES, shouldRetryDeckClaim, unmadeDeckChangeNotice,
@@ -45,6 +48,7 @@ import { join } from "path";
 import { gradientProfileFor, CONTRAST } from "../lib/slides/images";
 import { CANVAS, LAYOUT_STYLE, COLOR, GRID, LAYOUTS, NOTE, SECTION, TYPE, PROCESS, SHOT, IMAGE, FEATURE_SHOT_STYLE, LOGO_PLACEMENT,
   DENSITY, DEFAULT_DENSITY, FRAME, STEPPER, BAND_BOTTOM, TIMELINE, TIMELINE_PARALLEL, LOGO_WALL, withDensity, assetUrl, textOn,
+  columnBand, PHOTO_RAIL, SERPENTINE, RULE,
   type Density, type SlideLayout } from "../lib/slides/brand";
 
 const TYPE_STAT_CAP = 54;   // the multi-stat value cap; a hero must exceed it
@@ -184,6 +188,36 @@ const DECK: SlideInput[] = [
     logos: Array.from({ length: 8 }, (_, i) => ({ name: `Client ${i + 1}`, resolvedUrl: "logo.png" })) },
   { layout: "closing", title: "Let's map your AI visibility", subtitle: "The next step",
     body: "hello@thecontentengine.com\nBook a 30-minute call\nthecontentengine.com", resolvedImage: PHOTO_DARK },
+  // `statement` had no fixture either, and it is one of the layouts the tool
+  // steers the model towards hardest. One sentence at the length the guidance
+  // caps it at.
+  { layout: "statement", title: "We are your partners in successful communication, working together to build your audience",
+    subtitle: "A partnership of equals" },
+  // THE HANDOVER DECK'S THREE, in the deck-wide sweep rather than only in
+  // check 50. They were added to the builder and to their own check and not
+  // here, so seven of this file's assertions — off-canvas, box overlap, ink
+  // overrun, the preview round-trip, the two renders' findings — never saw
+  // them at all. A layout is covered when the sweep that covers the others
+  // covers it too.
+  { layout: "photo-rail", eyebrow: "Working together", title: LONG,
+    body: "We will be your partners in balancing the demands of your organisation and the interests of your audience\nIt takes experimentation to know what works",
+    bodyRight: "We want to become an extended part of your team and make your lives easier\nWe will send regular light-touch requests for feedback",
+    resolvedImage: PHOTO_PALE },
+  { layout: "three-column", eyebrow: "Newsroom", title: LONG,
+    subtitle: "Regular editorial meetings are a key part of how we work, and each one has the same three parts.",
+    body: "Work in progress. What is live, what is drafted and what is waiting on you",
+    bodyRight: "The calendar. What is coming up in the editorial calendar over the next month",
+    bodyThird: "New ideas. We come prepared with story ideas to pitch, and you are welcome to bring your own" },
+  { layout: "serpentine", eyebrow: "Process", title: LONG,
+    stages: [
+      { name: "Commission", caption: "Counted against your balance", owner: "Account manager" },
+      { name: "Brief", caption: "Agreed in writing before anything is written", owner: "You" },
+      { name: "Draft", caption: "Written and edited in house", owner: "Editor" },
+      { name: "Review", caption: "Two rounds of feedback included", owner: "You" },
+      { name: "Sign-off", caption: "One named approver", owner: "You" },
+      { name: "Publish", caption: "Delivered in the format agreed", owner: "Producer" },
+      { name: "Measure", caption: "Reported at the next meeting", owner: "Account manager" },
+    ] },
 ];
 
 /** The same layouts fed the amounts of data a model will actually send.
@@ -559,6 +593,26 @@ console.log(`\n1. Every element stays on the 720x405 canvas`);
 // Indexed loop, not .entries(): tsconfig sets no target, so iterating an
 // iterator needs downlevelIteration and fails the production build.
 const ALL = DECK.concat(STRESS).concat(SHOTS);
+/* AND THE SWEEP COVERS EVERY LAYOUT THE BUILDER DRAWS.
+ *
+ * Checks 1, 2, 3, 11, 46 and 49 all read this one array, so a layout with no
+ * fixture in it is a layout none of them has ever looked at — and that is not
+ * hypothetical: `photo-rail`, `three-column` and `serpentine` were built, given
+ * a check of their own and shipped without ever reaching the deck-wide geometry
+ * sweep, and `statement` had been missing for longer. Check 42 asserts the
+ * tool offers what the builder draws; this asserts the SWEEP covers it, which
+ * is the same drift one level down. */
+{
+  const covered: { [k: string]: 1 } = {};
+  for (let i = 0; i < ALL.length; i++) covered[String((ALL[i] as any).layout || "content")] = 1;
+  const missing: string[] = [];
+  for (let i = 0; i < LAYOUTS.length; i++) if (!covered[LAYOUTS[i]]) missing.push(LAYOUTS[i]);
+  if (missing.length) {
+    fail(`the fixture deck has no slide of ${missing.length} layout(s) the builder can draw — ${missing.join(", ")}`
+      + ` — so nothing below has ever measured them: not off-canvas, not box overlap, not ink overrun,`
+      + ` not the preview round-trip`);
+  }
+}
 /** One build per slide, read back for all three geometry checks. Built with
  *  the same run id the old check 1 used, so an id in a failure message reads
  *  the way it always did. */
@@ -1536,9 +1590,30 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     for (const field of PAYLOAD_FIELDS) {
       assertEdit(/^[a-z]+$/i.test(field), `payload field "${field}" is a plain name`);
     }
-    for (const l of ["table", "stat", "bar-chart", "swot", "timeline", "quote"]) {
-      const need = insertableLayout(l, {}).needs;
-      assertEdit(!!need && PAYLOAD_FIELDS.indexOf(need) >= 0, `${l} declares a payload this tool can carry (${need})`);
+    // EVERY LAYOUT THE BUILDER CAN DRAW, not the six somebody wrote down.
+    //
+    // This iterated ["table", "stat", "bar-chart", "swot", "timeline", "quote"]
+    // — the hand-kept list that drifts, which is the exact pattern check 42's
+    // own header was written about, one check below. A layout that is neither
+    // a TEXT_LAYOUT nor in REQUIRED_PAYLOAD is refused by `insertableLayout`
+    // with "there is no such layout": the enum offers it, the builder draws
+    // it, and the route every long deck is appended on will not take it.
+    // Proved by mutation — `serpentine` dropped from REQUIRED_PAYLOAD survived
+    // the list of six and goes red here.
+    {
+      const drawable = Object.keys(LAYOUT_STYLE);
+      assertEdit(drawable.length > 20, `precondition: LAYOUT_STYLE holds ${drawable.length} layouts`);
+      const unappendable: string[] = [];
+      for (let i = 0; i < drawable.length; i++) {
+        const can = insertableLayout(drawable[i], {});
+        // Either it needs no payload (a text layout), or it names one this
+        // tool can carry. Neither is the state that refuses it outright.
+        if (!can.ok && !(can.needs && PAYLOAD_FIELDS.indexOf(can.needs) >= 0)) unappendable.push(drawable[i]);
+      }
+      assertEdit(unappendable.length === 0,
+        `these layouts cannot be inserted at all — neither a text layout nor declaring a payload this tool carries:`
+        + ` ${unappendable.join(", ")}. Add each to TEXT_LAYOUTS or to REQUIRED_PAYLOAD in lib/slides/edit.ts;`
+        + ` the enum offers them and buildSlideRequests draws them, but editSlide answers "there is no such layout".`);
     }
 
     // The tool SCHEMA has to offer them, or the model cannot send what the
@@ -7720,7 +7795,14 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
         "nothing tells the model to ask for a screenshot when one would help");
       const size = JSON.stringify(SLIDES_GEN_OPENAI_TOOL).length;
       A41(size <= 55000, `generate_slides is ${size} characters, over its 55,000 ceiling`);
-      okIf(`41j callouts and screenshot are declared on all three routes, and the tool is ${size} characters of its 55,000`);
+      // THE HEADROOM, NOT ONLY THE SIZE. The always-on comment in providers.ts
+      // is the only place this number is written down outside this check, and
+      // it went stale by about nine hundred characters within one stage —
+      // somebody reading it would have believed there were 2,100 characters
+      // left where there were 1,161. A size on its own does not prompt anybody
+      // to subtract; the room left does.
+      okIf(`41j callouts and screenshot are declared on all three routes, and the tool is ${size} characters`
+        + ` of its 55,000 — ${55000 - size} left`);
     }
 
     /* 41k. A WRONG PHRASE IS FIXABLE IN THE PREVIEW. */
@@ -12609,6 +12691,1445 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   if (failures === before49) {
     pass(`every ink reads on the ground it is drawn on, no block runs into the frame, no chrome crosses a picture,` +
       ` a label keeps one relation to the thing it names, and a deck draws one bullet marker`);
+  }
+
+
+  /* 50. THE HANDOVER DECK'S THREE LAYOUTS, AND THE PRIMITIVES UNDER THEM.
+   *
+   * Stage 4 of docs/PLAN-slides-creative-2026-09.md. `photo-rail` (four of the
+   * source's ten slides), `three-column` (two) and `serpentine` (one, at seven
+   * steps against `process`'s cap of five).
+   *
+   * None of the three is a new engine and the check is written to hold them to
+   * that. The column geometry was three constants and exactly two slots and is
+   * `columnBand(n)` now; the picture is a second rail beside the bleeding one;
+   * the serpentine is `timeline` with the numeral inside the marker, the
+   * captions alternating and a seventh slot. So the assertions are about the
+   * PRIMITIVES first — the partition, the crop, the solved pitch — and about
+   * the pages second, because Stage 5 composes the primitives and would inherit
+   * every fault in them.
+   *
+   * EVERYTHING IS READ OFF THE BUILT SLIDE. A check that recomputes the
+   * geometry it is checking agrees with itself: (49m) was written that way
+   * first and mutating the component changed nothing.
+   *
+   * MUTATION LOG. Thirty-two mutations on the first pass and twenty more on
+   * the second, each applied ALONE in a detached worktree (never the shared
+   * tree, which also deploys) and restored after. Six SURVIVED the first pass
+   * and one was recorded as a kill that it is not; each survivor is a finding
+   * about the check rather than an omission to tidy away, and each is recorded
+   * with the assertion that was then written to close it — or, where no
+   * assertion can close it, with the reason.
+   *
+   * KILLED, the geometry:
+   *   M1  columnBand partitions GRID.contentWidth instead of the band the
+   *       inherited pair spans → 50a on both presets AND 50b's partition, with
+   *       the two columns 0.36pt wide and the right one moved
+   *   M2  the gutter written down as 12pt → 50a, and 50b names the hung dot
+   *   M3  the picture's top derived from GRID.bodyY → 50c: a different box at
+   *       the two presets, which is the crop-outside-withDensity fault
+   *   M4  pictureShape hands photo-rail the bleeding rail's shape → 50c: the
+   *       crop aspect is 0.79 at `read` and 0.97 at `present` against a drawn
+   *       0.736, so the picture letterboxes
+   *   M5  photo-rail takes image-split's 34pt title allowance → 50d: the
+   *       title's ink reaches 119.28 and the rule is at 96.68. This is the
+   *       live bug the first render found.
+   *   M6  the under-title rule runs the full measure → 50d AND 50e: two rects
+   *       drawn over the photograph
+   *   M7  the takeaway bar drawn from the page margin → 50e: the bar and its
+   *       sentence over the photograph. Also live, also found by rendering.
+   *   M23 the columns floored on NOTE.bottom rather than the picture's foot →
+   *       50e2 (added for this survivor; see below)
+   *   M24 the two text columns take the page band → 50e: a body over the picture
+   *   M32 the title measured against the full content width → 50d at both
+   *       presets: fitHeading keeps a size the narrow column cannot hold
+   * KILLED, the type:
+   *   M8  the lead-in carries `bold` with the body's weight 300 → 50f, six
+   *       times. The live defect: `weight ?? (bold ? 700 : 400)` keeps the 300.
+   *   M9  the lead-in keeps its hung dot → 50f
+   *   M10 the bold lead-in measured at Roboto Light's mean → 50f2, both halves
+   *   M15 three-column stops reading bodyThird → 50f and 50i
+   *   M25 three columns drawn whatever the content → 50f3 (added; see below)
+   * KILLED, the serpentine:
+   *   M11 spaced on timeline's own slot distribution → 50g: same-side captions
+   *       6.34pt apart at six steps, and the last caption 86pt off the page at
+   *       seven. This is why the pitch is solved rather than copied.
+   *   M12 the alternation removed → 50g at every count
+   *   M13 the dropped-steps admission deleted from the slide → 50h
+   *   M14 the owner rung removed from the fit ladder → 50h2, all four
+   *       assertions, including the validator's own overrun
+   *   M17 the owners-omitted admission deleted → 50h2
+   *   M18 the device pinned to the top of its band → 50g (added; see below)
+   *   M19 the slack poured into the caption bands instead of leading the
+   *       device into the page — the first version of this code → 50g
+   *   M20 the captions bottom-anchored to the rule → 50h3 (added; see below)
+   *   M21 the owner stacked after its caption → 50h3. The live defect: an
+   *       eight-step row drew "Owner: Editor" on the footer's line.
+   *   M22 the band floored on NOTE.bottom rather than above the frame's rule
+   *       → 50g's centring, because the band it is centred in moves
+   *   M26b the numeral set to COLOR.navy → 50g at every count: "the numeral
+   *       is 2.39:1 on its disc". This is the mutation that fires, and it is
+   *       the one the comment beside the code is about — a disc the palette
+   *       lightened leaves the numeral unreadable, and 50g says so.
+   *   M31 the caption fit ladder deleted → 50h2: the validator reports the
+   *       overrun onto the running head
+   * KILLED, the wiring:
+   *   M16 TEXT_EXTRAS back to ["notes","today"] → 50j, six times. The live
+   *       defect, and it predates this stage: a `bodyRight` patch was refused
+   *       outright and one sent beside `body` was accepted and discarded.
+   *   M27 the three layouts removed from the tool's enum → check 42, on two
+   *       routes
+   *   M28 `serpentine` dropped from REQUIRED_PAYLOAD → check 20d's
+   *       insertability sweep (rewritten; see below)
+   *   M29 photo-rail and three-column dropped from TEXT_LAYOUTS → the same
+   *   M30 `bodyThird` dropped from the tool schema → 50i's second half (added;
+   *       see below)
+   *
+   * SURVIVORS OF THE FIRST PASS, and what each one was:
+   *   M18/M19 — nothing asserted the device is CENTRED in its band. Every
+   *     geometric assertion above stayed green while a four-step row opened
+   *     140pt between its captions and the rule they belong to; a render is
+   *     what found it. 50g's centring pair was written for this.
+   *   M21 — nothing asserted the owner lines share a baseline or stay inside
+   *     the band, which is the fault a render found on the page. 50h3.
+   *   M23 — nothing asserted the columns stop where the picture does. 50e2.
+   *   M25 — nothing asserted the column count comes from the content. 50f3.
+   *   M28 — check 20d asserted this of a HAND-WRITTEN LIST of six layout
+   *     names, which is the pattern check 42's own header was written about
+   *     one check below. It now reads LAYOUT_STYLE's keys, so a layout that is
+   *     neither a text layout nor in REQUIRED_PAYLOAD goes red whoever adds it.
+   *   M30 — nothing asserted that a field the builder DRAWS is a field the
+   *     model is OFFERED. 50i now asks both questions of the one fixture, so
+   *     it is the fixture that has to be kept up rather than a second list.
+   *
+   * AND ONE EQUIVALENT MUTANT, recorded here because it was recorded as a
+   * KILL and is not one:
+   *   M26 — replacing the numeral's `textOn(COLOR.blue)` with `COLOR.white`
+   *     changes no emitted byte. textOn(COLOR.blue) IS "FFFFFF" and so is
+   *     COLOR.white — printed and compared — so the mutant is equivalent and
+   *     re-running it alone in a detached worktree exits 0 with "All checks
+   *     passed". The "2.39:1" recorded against it came from a DIFFERENT
+   *     mutation, COLOR.navy, which is M26b above. Nothing can kill an
+   *     equivalent mutant, so it stays recorded as a survivor rather than
+   *     being tidied away: what 50g CAN see is what the code's own comment
+   *     claims — a palette edit that lightened the disc takes the numeral
+   *     below 4.5:1 and the contrast assertion fires — and what it cannot see
+   *     is a literal that happens to equal what textOn answers today, which is
+   *     a claim about how a value was obtained rather than about the slide.
+   *
+   * SECOND PASS, 2026-09-21. Twenty more, for the twelve defects verifiers
+   * confirmed and the four pages a design review called bad. The blocks the
+   * pass added — (k) through (p) — were each driven by reintroducing the
+   * defect they were written for, and three of the layouts' own fixes turned
+   * out to be pinned by NOTHING until this pass looked.
+   *
+   * KILLED, the defects the verifiers confirmed:
+   *   M33 the photo rail's eyebrow back to the unnarrowed page measure — the
+   *       live blocker, ink on ink at both presets and every step count → 50k,
+   *       14 times: "the eyebrow's box ends at 611.28 and the rail's starts at
+   *       543.72 — a gap of -67.56pt against the 18pt this deck gives them"
+   *   M34 eyebrowRoom neutered for EVERY layout → 48c and 50k, 800 failures.
+   *       The sweep is over the layouts that draw one, not over the rail.
+   *   M35 leadInLength drops the sentence bound → 50l's precondition AND 50l:
+   *       a 205-character column written as one paragraph drawn whole at 700
+   *   M36 leadInLength's 60-character cap removed → 50l: a paragraph with no
+   *       sentence break inside the cap is accented anyway
+   *   M37 the lead-in drawn on a continuation again → 50l: "continuation 1
+   *       draws \"Point number 8. What is live on it\" as a lead-in"
+   *   M38 `bodyThird` dropped from CONTINUATION_CLEARS — the reported defect,
+   *       the third column repeated on every continuation → 50m, both halves:
+   *       the list is no longer derived from TEXT_EXTRAS, and the
+   *       continuation's column is 314.64pt wide against the 670.32 a single
+   *       column gets
+   *   M39 measuresRagged always false — the mean ruler at every measure → 50n,
+   *       12 times, with the paragraph under the under-counted one drawn
+   *       inside its last rendered line
+   *   M40 RAGGED_BELOW_CHARS 46 → 400, so the FULL measure takes the ragged
+   *       ruler too → 50n: every stored slide is re-measured and the corpus
+   *       moves. The threshold binds in both directions.
+   *   M41 columnFit's ladder deleted → 50o, 12: the band is still set at the
+   *       preset's own size and the validator reports the overrun
+   *   M42 the overfull band's on-slide admission deleted → 50o, 4
+   *   M43 the overfull band stops naming the slide to the model → 50o, 4
+   *   M44 a layout change no longer clears the baked picture → 50p
+   *   M44b the picture cleared even with no brief left to re-fetch from → 50p:
+   *       clearing it is then a deletion rather than a re-crop
+   *   M45 a layout-only patch refused again → 50j, 31 times, on every layout
+   *       in the enum this route offers
+   *   M48 raggedLines back to ceil(totalAdvance/usable) for the bold prefix —
+   *       a sum over a width rounds up at every boundary → 50o, and 50f4 once
+   *       that block existed
+   *   M50 raggedLines measures the lead-in in the LIGHT face → 50f4's boundary
+   *       precondition, which is the assertion that notices the ruler moved
+   *   M51 RAGGED_KERN 1.03 → 1.00, no kerning margin at all → 50f4's
+   *       precondition, 50n's under-count and 50o's overrun together
+   *
+   * SURVIVORS OF THE SECOND PASS, and the assertion written for each:
+   *   M47 — the photo rail hard-coded `columnBand(2)` again and NOTHING went
+   *     red. This is the verifiers' own minor finding, fixed in the code and
+   *     pinned nowhere: (f3) asked the count question of `three-column` only,
+   *     although the rule is stated for the pair and the rail is the layout
+   *     that broke it. (f3) now runs over both bands at one, two and three
+   *     fields: "with 1 field(s), column 1 is drawn at x=281.06 w=186.71, not
+   *     the 1-column solve w=414.46".
+   *   M49 — RAGGED_KERN widened from 3% back to labelWidthPt's 6%, which is
+   *     the exact regression the constant's own comment is about, and every
+   *     check stayed green. (f2) pins the ruler against UNDER-measuring and
+   *     nothing pinned the other side: an over-measured lead-in opens a blank
+   *     line inside a column and is invisible to every geometric check there
+   *     is. (f4) was written for it, on seven Chrome-measured boundary
+   *     strings: "measured at 3 lines in a 314.64pt column and Chrome draws it
+   *     on 2".
+   *   M52 — the photo rail given the three-column band's key list, so a
+   *     `bodyThird` beside a photograph is drawn as a 110pt column instead of
+   *     being reported. Nothing asked either question. (f3) now asserts both
+   *     of the one fixture, because a field the builder draws is a field
+   *     droppedContent stops reporting: the silence is the defect, not the
+   *     narrow column.
+   *
+   * AND A SECOND EQUIVALENT MUTANT:
+   *   M46 — the photo rail's picture credit back to the written-down `false`
+   *     it carried before the verifiers found it, in place of `onDark`.
+   *     SURVIVED, and nothing here can kill it: LAYOUT_STYLE fixes all three
+   *     of these layouts to `onDark: false` and `slideStyle` overrides neither,
+   *     so the two expressions cannot differ on any input a slide spec can
+   *     reach. It is recorded rather than tidied away because that is exactly
+   *     what makes it worth keeping — the branch is unreachable TODAY, Stage 5
+   *     composes these layouts, and a composition that puts one on navy would
+   *     inherit whichever expression is written here. The consistency is a
+   *     claim about the next ground this layout is drawn on, which is not a
+   *     claim any assertion about today's slide can make.
+   * ───────────────────────────────────────────────────────────────────────── */
+  const before50 = failures;
+  console.log(`\n50. The handover deck's three layouts`);
+  const A50 = (ok: boolean, m: string) => { if (!ok) fail(m); };
+  {
+    const page50 = (s: SlideInput, i: number, run: string) =>
+      previewSlideFrom(s, buildSlideRequests(s, i, run) as any[]);
+    const els50 = (s: SlideInput, i: number, run: string) => page50(s, i, run).elements as any[];
+    const PRESETS: Density[] = ["read", "present"];
+    /* THE PRESET REACHES A BUILD THROUGH THE SLIDE, NOT THROUGH withDensity.
+     * `buildSlideRequests` re-enters `withDensity(densityOf(slide))` on every
+     * call, so a fixture built inside a withDensity block WITHOUT a `density`
+     * field is built at `read` — and the first version of everything below
+     * tested `read` twice while printing "present". That is the check that
+     * silently tests nothing, so the preconditions are asserted rather than
+     * assumed: the two presets must really place the same slide differently. */
+    {
+      const probe = (d: Density) => {
+        const s: SlideInput = { layout: "photo-rail", title: "Put the audience first", density: d,
+          resolvedImage: { url: "p.jpg", scrim: 0 }, body: "One", bodyRight: "Two" } as any;
+        const e = (previewSlideFrom(s, buildSlideRequests(s, 2, `c50p${d}`) as any[]).elements as any[])
+          .find((x) => x.kind === "text" && String(x.text) === "One");
+        return e ? e.y : NaN;
+      };
+      const a = probe("read"), b2 = probe("present");
+      A50(isFinite(a) && isFinite(b2) && Math.abs(a - b2) > 10,
+        `50 precondition: the same photo-rail slide places its body at ${a} under \`read\` and ${b2} under \`present\``
+        + ` — the preset is not reaching the builder, so every "present" assertion below is a second \`read\` run`);
+    }
+    const RIGHT = GRID.margin + GRID.contentWidth;
+    const near = (a: number, b: number, tol = 0.01) => Math.abs(a - b) <= tol;
+    const lum50 = (hex: string) => {
+      const h = String(hex || "").replace("#", "");
+      const f = (c: number) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+      const v = [0, 2, 4].map((i) => f(parseInt(h.substr(i, 2), 16) / 255));
+      return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+    };
+    const ratio50 = (a: string, b: string) => {
+      const x = lum50(a), y = lum50(b);
+      return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+    };
+
+    /* (a) AT TWO COLUMNS THE SOLVER IS THE INHERITED PAIR, TO THE FLOAT.
+     *
+     *     This is the stage's own bar written as an assertion. 618 stored
+     *     slides are drawn on GRID.columnLeftX / columnRightX / columnWidth,
+     *     and an "obviously equivalent" equal partition of GRID.contentWidth
+     *     is 0.36pt wider on both columns and moves the right one — on every
+     *     two-column slide in the corpus, for a tidier formula. */
+    for (let d = 0; d < PRESETS.length; d++) {
+      withDensity(PRESETS[d], () => {
+        const two = columnBand(2);
+        A50(near(two.x[0], GRID.columnLeftX, 0) && near(two.x[1], GRID.columnRightX, 0) && near(two.width, GRID.columnWidth, 0),
+          `50a ${PRESETS[d]}: columnBand(2) answers x=[${two.x.join(", ")}] w=${two.width},`
+          + ` and the two-column layout is drawn at x=[${GRID.columnLeftX}, ${GRID.columnRightX}] w=${GRID.columnWidth}.`
+          + ` These must be the SAME floats: every stored two-column slide is drawn on them.`);
+      });
+    }
+
+    /* (b) AND AT ANY n IT PARTITIONS, WITH A GUTTER A HUNG DOT FITS IN.
+     *
+     *     The dot sits OUTSIDE the measure — that is the whole reason these
+     *     columns read as columns — so a gutter narrower than the dot's own
+     *     reach draws the dot on the column to its left. HUNG_DOT's header
+     *     states the rule; nothing asserted it of a solved band. */
+    {
+      const bands: [string, { x: number; width: number } | undefined][] = [
+        ["the page band", undefined],
+        ["the photo rail's band", { x: PHOTO_RAIL.textX, width: PHOTO_RAIL.textWidth }],
+      ];
+      for (let b = 0; b < bands.length; b++) {
+        for (let n = 1; n <= 5; n++) {
+          const cb = bands[b][1] ? columnBand(n, bands[b][1]) : columnBand(n);
+          const band = bands[b][1] || { x: GRID.columnLeftX, width: GRID.columnRightX + GRID.columnWidth - GRID.columnLeftX };
+          A50(cb.x.length === n, `50b ${bands[b][0]} n=${n}: solved ${cb.x.length} columns`);
+          A50(near(cb.x[0], band.x), `50b ${bands[b][0]} n=${n}: starts at ${cb.x[0]}, not the band's left edge ${band.x}`);
+          A50(near(cb.x[n - 1] + cb.width, band.x + band.width),
+            `50b ${bands[b][0]} n=${n}: the last column ends at ${(cb.x[n - 1] + cb.width).toFixed(2)},`
+            + ` not on the band's right edge ${(band.x + band.width).toFixed(2)} — the partition leaks`);
+          for (let i = 1; i < n; i++) {
+            const gutter = cb.x[i] - (cb.x[i - 1] + cb.width);
+            A50(near(gutter, cb.gutter),
+              `50b ${bands[b][0]} n=${n}: gutter ${i} is ${gutter.toFixed(2)}, not the solved ${cb.gutter.toFixed(2)}`
+              + ` — the source's own three-column gutters are 30.24 and 53.28 and this is here so they are not copied`);
+            A50(gutter >= HUNG_DOT.offsetX + hungDotSize(TYPE.body.size),
+              `50b ${bands[b][0]} n=${n}: gutter ${gutter.toFixed(2)}pt is narrower than the hung dot's reach`
+              + ` (${(HUNG_DOT.offsetX + hungDotSize(TYPE.body.size)).toFixed(2)}pt) — the disc is drawn on the column to its left`);
+          }
+        }
+      }
+    }
+
+    /* (c) THE PICTURE IS CROPPED TO THE BOX IT IS DRAWN IN, AND THE BOX DOES
+     *     NOT MOVE WITH THE PRESET.
+     *
+     *     One ruler: `pictureShape` decides the crop at resolution time and
+     *     `photoRailBox` the placement at draw time, and a picture baked to one
+     *     shape and drawn in another letterboxes. And images RESOLVE OUTSIDE
+     *     `withDensity`, so a box measured off GRID.bodyY would be cropped at
+     *     the default preset whatever the deck is set to — which is true of the
+     *     bleeding rail and must not become true of this one. */
+    {
+      const shot: SlideInput = { layout: "photo-rail", title: "A page with a picture",
+        resolvedImage: { url: "p.jpg", scrim: 0 }, body: "One", bodyRight: "Two" } as any;
+      const boxes: { x: number; y: number; width: number; height: number }[] = [];
+      for (let d = 0; d < PRESETS.length; d++) {
+        withDensity(PRESETS[d], () => {
+          const box = photoRailBox(shot);
+          A50(!!box, `50c ${PRESETS[d]}: photo-rail draws no picture box`);
+          if (!box) return;
+          boxes.push(box);
+          const shape = pictureShape("photo-rail");
+          A50(!!shape && near(shape.width / shape.height, box.width / box.height),
+            `50c ${PRESETS[d]}: the crop aspect ${(shape ? shape.width / shape.height : 0).toFixed(4)}`
+            + ` is not the drawn box's ${(box.width / box.height).toFixed(4)} — the picture letterboxes`);
+          A50(near(box.width / box.height, PHOTO_RAIL.aspect),
+            `50c ${PRESETS[d]}: the box is ${(box.width / box.height).toFixed(4)}, not the source's ${PHOTO_RAIL.aspect} portrait`);
+          A50(box.y >= FRAME.topRuleY + FRAME.thickness && box.y + box.height <= FRAME.bottomRuleY - FRAME.contentGap + 0.01,
+            `50c ${PRESETS[d]}: the picture runs ${box.y.toFixed(2)}..${(box.y + box.height).toFixed(2)},`
+            + ` into the frame's rules at ${FRAME.topRuleY} and ${FRAME.bottomRuleY}`);
+          A50(near(box.x, GRID.margin), `50c ${PRESETS[d]}: the picture starts at ${box.x}, not the page margin`);
+        });
+      }
+      A50(boxes.length === 2 && near(boxes[0].y, boxes[1].y) && near(boxes[0].height, boxes[1].height)
+        && near(boxes[0].width, boxes[1].width),
+        `50c the picture is a different box at the two presets (${JSON.stringify(boxes)}) — it resolves outside withDensity,`
+        + ` so a density-dependent box is cropped at one preset and drawn at another`);
+    }
+
+    /* (d) THE RULE STARTS AT THE PICTURE'S EDGE, AND THE TITLE ENDS ABOVE IT.
+     *
+     *     Both halves found by RENDERING. The rule's start is the detail that
+     *     makes these pages read as the source's — a full-measure rule here is
+     *     drawn across a photograph holding all four of its own edges. And the
+     *     title was first given `image-split`'s 34pt allowance, which costs
+     *     nothing on a layout with no rule under its title and here drew a
+     *     hairline straight through "Put the audience first". */
+    for (let d = 0; d < PRESETS.length; d++) {
+      withDensity(PRESETS[d], () => {
+        const s50: SlideInput = { layout: "photo-rail", title: LONG, density: PRESETS[d],
+          resolvedImage: { url: "p.jpg", scrim: 0 },
+          body: "A first point that runs on\nA second point", bodyRight: "A third point" } as any;
+        const els = els50(s50, 2, `c50d${d}`);
+        const title = els.find((e) => e.kind === "text" && String(e.text).indexOf("A title long enough") === 0);
+        const rules = els.filter((e) => e.kind === "rect" && e.h <= RULE.thickness + 0.01
+          && e.y > GRID.eyebrowY + 30 && e.y < GRID.bodyY + 1 && e.w > 20);
+        A50(!!title, `50d ${PRESETS[d]}: the photo rail drew no title`);
+        A50(rules.length >= 2, `50d ${PRESETS[d]}: the under-title rule is ${rules.length} shape(s), not the accent and the hairline`);
+        if (!title || rules.length < 2) return;
+        let ruleLeft = Infinity, ruleRight = -Infinity, ruleY = 0;
+        for (let i = 0; i < rules.length; i++) {
+          ruleLeft = Math.min(ruleLeft, rules[i].x);
+          ruleRight = Math.max(ruleRight, rules[i].x + rules[i].w);
+          ruleY = Math.max(ruleY, rules[i].y);
+        }
+        A50(near(ruleLeft, GRID.margin + PHOTO_RAIL.width, 0.02),
+          `50d ${PRESETS[d]}: the rule starts at ${ruleLeft.toFixed(2)}, not at the picture's right edge`
+          + ` ${(GRID.margin + PHOTO_RAIL.width).toFixed(2)} — a rule from the page margin is drawn across the photograph`);
+        A50(near(ruleRight, RIGHT, 0.02), `50d ${PRESETS[d]}: the rule ends at ${ruleRight.toFixed(2)}, not on the right margin ${RIGHT}`);
+        const ink = inkBottom(title as any);
+        A50(ink <= ruleY + 0.01,
+          `50d ${PRESETS[d]}: the title's ink reaches ${ink.toFixed(2)} and the rule is at ${ruleY.toFixed(2)}`
+          + ` — the hairline is drawn THROUGH the title. image-split's 34pt allowance belongs to a layout with no rule on that line.`);
+      });
+    }
+
+    /* (e) AND NOTHING ON THE PAGE IS PAINTED OVER THE PICTURE.
+     *
+     *     The takeaway bar is drawn last and over everything. Where a picture
+     *     bleeds off the RIGHT the bar narrows and keeps its left edge; here
+     *     the picture is on the LEFT, so the bar has to move. Rendered from the
+     *     page margin it was painted across the photograph's bottom corner. */
+    for (let d = 0; d < PRESETS.length; d++) {
+      withDensity(PRESETS[d], () => {
+        const s50: SlideInput = { layout: "photo-rail", title: "A page with a takeaway", density: PRESETS[d],
+          resolvedImage: { url: "p.jpg", scrim: 0 }, body: "One point", bodyRight: "Another",
+          note: "If in doubt, over-share: we would rather read too much than guess." } as any;
+        const els = els50(s50, 1, `c50e${d}`);
+        const box = photoRailBox(s50)!;
+        const picRight = box.x + box.width;
+        const overlapping = els.filter((e) => typeof e.x === "number" && typeof e.y === "number"
+          && e.x < picRight - 0.01 && e.x + (e.w || 0) > box.x + 0.01
+          && e.y < box.y + box.height - 0.01 && e.y + (e.h || 0) > box.y + 0.01
+          && e.kind !== "image");
+        A50(overlapping.length === 0,
+          `50e ${PRESETS[d]}: ${overlapping.length} element(s) are drawn over the photograph`
+          + ` — ${overlapping.map((e: any) => `${e.kind}${e.text ? ` ${JSON.stringify(String(e.text).slice(0, 28))}` : ""}`).join(", ")}`);
+      });
+    }
+
+    /* (e2) AND THE COLUMNS STOP WHERE THE PICTURE DOES, so the page has ONE
+     *      foot rather than two. The picture is held inside the margins and
+     *      its own foot is the page's; a column allowed down to the takeaway
+     *      bar's line runs 6pt past it, which reads as text that has slipped
+     *      below the photograph rather than as a page with a bottom edge. */
+    for (let d = 0; d < PRESETS.length; d++) {
+      withDensity(PRESETS[d], () => {
+        const many: string[] = [];
+        for (let i = 0; i < 14; i++) many.push(`A point of the argument, number ${i + 1}, long enough to wrap onto a second line`);
+        const s50: SlideInput = { layout: "photo-rail", title: "A full page", density: PRESETS[d],
+          resolvedImage: { url: "p.jpg", scrim: 0 }, body: many.join("\n"), bodyRight: many.join("\n") } as any;
+        const els = els50(s50, 2, `c50e2${d}`);
+        const bodies = els.filter((e) => e.kind === "text" && /^A point of the argument/.test(String(e.text)));
+        A50(bodies.length > 4, `50e2 ${PRESETS[d]} precondition: only ${bodies.length} body boxes drawn — the column never reaches its floor`);
+        let foot = 0;
+        for (let i = 0; i < bodies.length; i++) foot = Math.max(foot, bodies[i].y + bodies[i].h);
+        A50(foot > PHOTO_RAIL.bottom - 40,
+          `50e2 ${PRESETS[d]} precondition: the column ends at ${foot.toFixed(2)}, well short of the picture's foot`
+          + ` ${PHOTO_RAIL.bottom} — a floor it never reaches cannot be tested`);
+        A50(foot <= PHOTO_RAIL.bottom + 0.01,
+          `50e2 ${PRESETS[d]}: the column's last box reaches ${foot.toFixed(2)} and the picture's foot is ${PHOTO_RAIL.bottom}`
+          + ` — the page has two bottom edges`);
+      });
+    }
+
+    /* (f) THE LEAD-IN IS A DIFFERENT WEIGHT, TAKES NO MARKER, AND IS MEASURED
+     *     AS THE FACE IT IS SET IN.
+     *
+     *     Three separate ways to get it wrong, all of them silent. `TypeStyle`
+     *     carries `bold` AND `weight` and the emitter reads
+     *     `weight ?? (bold ? 700 : 400)`, so spreading the body style kept its
+     *     300 and the flag did nothing — rendered, every lead-in came out the
+     *     weight of the column under it. A dot in front of it makes it the
+     *     first item of a list whose remaining items are its own continuation.
+     *     And Roboto's `faceAdvance` is LIGHT's mean: measured with it, a bold
+     *     lead-in near a wrap boundary is counted at one line and drawn at two,
+     *     and every paragraph under it is placed a line high. */
+    for (let d = 0; d < PRESETS.length; d++) {
+      withDensity(PRESETS[d], () => {
+        const s50: SlideInput = { layout: "three-column", title: "Three answers", density: PRESETS[d],
+          body: "Work in progress.\nWhat is live and what is waiting on you",
+          bodyRight: "The calendar.\nWhat is coming up next month",
+          bodyThird: "New ideas.\nWe come prepared with ideas to pitch" } as any;
+        const els = els50(s50, 3, `c50f${d}`);
+        const leads = els.filter((e) => e.kind === "text" && /^(Work in progress|The calendar|New ideas)\.$/.test(String(e.text)));
+        A50(leads.length === 3, `50f ${PRESETS[d]}: ${leads.length} lead-ins drawn, not 3`);
+        for (let i = 0; i < leads.length; i++) {
+          A50((leads[i].weight || 400) >= 600,
+            `50f ${PRESETS[d]}: the lead-in ${JSON.stringify(String(leads[i].text))} is drawn at weight ${leads[i].weight || 400}`
+            + ` — spreading the body style keeps Roboto Light's 300 and \`bold: true\` never reaches the request`);
+          A50(String(leads[i].color || "").toLowerCase() !== String(TYPE.body.color).toLowerCase(),
+            `50f ${PRESETS[d]}: the lead-in is the body's own colour, so it is not a lead-in`);
+          const dots = els.filter((e) => e.kind === "ellipse"
+            && Math.abs(e.y + (e.h || 0) / 2 - (leads[i].y + (leads[i].h || 0) / 2)) < 6
+            && Math.abs(e.x - leads[i].x) < 20);
+          A50(dots.length === 0,
+            `50f ${PRESETS[d]}: the lead-in ${JSON.stringify(String(leads[i].text))} carries a hung dot`
+            + ` — it then reads as the first bullet of a list whose other items are its own continuation`);
+        }
+        // And the bullets under it DO carry one, or the lead-in's exemption is
+        // really the marker being gone from the layout.
+        // AND THE SOURCE'S OWN SHAPE IS STILL ACCENTED WHOLE. "Work in
+        // progress." ends on a stop with no space after it, so the sentence
+        // scan finds nothing and the length fallback answers — which is the
+        // one case the fallback exists for, and the one a first-sentence rule
+        // would otherwise lose.
+        for (let i = 0; i < leads.length; i++) {
+          A50(((leads[i].accents || []) as any[]).length === 0,
+            `50f ${PRESETS[d]}: ${JSON.stringify(String(leads[i].text))} is drawn as a partial accent range`
+            + ` rather than as a box in the accent — a paragraph that IS one sentence is the lead-in whole`);
+        }
+        const bodyLine = els.find((e) => e.kind === "text" && String(e.text).indexOf("What is live") === 0);
+        A50(!!bodyLine, `50f ${PRESETS[d]}: the column's body was not drawn`);
+        if (bodyLine) {
+          const dot = els.find((e) => e.kind === "ellipse" && Math.abs(e.x + (e.w || 0) - bodyLine.x) < HUNG_DOT.offsetX + 2);
+          A50(!!dot, `50f ${PRESETS[d]}: the paragraph under the lead-in has no hung dot`);
+        }
+      });
+    }
+    /* (f3) THE COLUMN COUNT COMES FROM THE CONTENT, not from the layout's
+     *      name. A model that writes two columns must get two full-measure
+     *      ones: drawn as a fixed three, the same words sit in 196pt columns
+     *      with an empty right third, which reads as a column that failed to
+     *      arrive rather than as a page with two. `cards` already takes its
+     *      count from its array and this is the same rule.
+     *
+     *      BOTH PROSE BANDS, and that is the whole point of running it twice.
+     *      The rule was written on one of the two layouts that needed it: the
+     *      photo rail hard-coded `columnBand(2)` whatever it was given, so one
+     *      field was drawn at half the band with 228pt of the page left blank
+     *      — and because the splitter clears `bodyRight` on a continuation,
+     *      EVERY continued photo-rail slide was drawn that way. The rail's fix
+     *      then sat unpinned here for a pass, because this check only ever
+     *      asked the question of `three-column`. A rule stated for a pair and
+     *      asserted of one of them is how the pair drifts apart. */
+    for (let d = 0; d < PRESETS.length; d++) {
+      withDensity(PRESETS[d], () => {
+        const bands: [SlideLayout, { x: number; width: number } | undefined, any][] = [
+          ["three-column", undefined, {}],
+          ["photo-rail", { x: PHOTO_RAIL.textX, width: PHOTO_RAIL.textWidth },
+            { resolvedImage: { url: "p.jpg", scrim: 0 } }],
+        ];
+        for (let b = 0; b < bands.length; b++) {
+          const layout = bands[b][0], band = bands[b][1];
+          // The rail takes `body` and `bodyRight`; only the three-column band
+          // reads a third, so the third count is asked of the band that has one.
+          const counts: [number, any][] = [
+            [1, { body: "First.\nA point" }],
+            [2, { body: "First.\nA point", bodyRight: "Second.\nAnother point" }],
+          ];
+          if (layout === "three-column") {
+            counts.push([3, { body: "First.\nA point", bodyRight: "Second.\nAnother point", bodyThird: "Third.\nOne more point" }]);
+          }
+          for (let c = 0; c < counts.length; c++) {
+            const want = band ? columnBand(counts[c][0], band) : columnBand(counts[c][0]);
+            const s50: SlideInput = { layout, title: "As many as it was given",
+              density: PRESETS[d], ...bands[b][2], ...counts[c][1] } as any;
+            const els = els50(s50, 2, `c50f3${d}x${layout}x${counts[c][0]}`);
+            const leads = els.filter((e) => e.kind === "text" && /^(First|Second|Third)\.$/.test(String(e.text)))
+              .sort((a: any, b2: any) => a.x - b2.x);
+            A50(leads.length === counts[c][0],
+              `50f3 ${PRESETS[d]} ${layout}: ${counts[c][0]} column(s) of copy drew ${leads.length} lead-in(s)`);
+            for (let i = 0; i < Math.min(leads.length, want.x.length); i++) {
+              A50(near(leads[i].x, want.x[i], 0.02) && near(leads[i].w, want.width, 0.02),
+                `50f3 ${PRESETS[d]} ${layout}: with ${counts[c][0]} field(s), column ${i + 1} is drawn at`
+                + ` x=${leads[i].x.toFixed(2)} w=${leads[i].w.toFixed(2)}, not the ${counts[c][0]}-column solve`
+                + ` x=${want.x[i].toFixed(2)} w=${want.width.toFixed(2)} — a count taken from the layout's name`
+                + ` leaves an empty slot and narrows the columns that do exist`);
+            }
+          }
+        }
+        /* AND THE RAIL'S BAND CARRIES TWO, because half the page is a
+         * photograph. Taking the three-column band's key list would draw a
+         * third column 124pt wide — 28 characters of 10pt Roboto, narrower
+         * than the measure this file's own rule calls a column — and would do
+         * it SILENTLY, because a field the builder draws is a field
+         * droppedContent stops reporting. The loss is declared instead, in
+         * the channel that already exists. */
+        const third: SlideInput = { layout: "photo-rail", title: "Three beside a picture", density: PRESETS[d],
+          resolvedImage: { url: "p.jpg", scrim: 0 },
+          body: "First.\nA point", bodyRight: "Second.\nAnother point", bodyThird: "Third.\nOne more point" } as any;
+        const drawnThird = els50(third, 2, `c50f3t${d}`)
+          .filter((e) => e.kind === "text" && /^Third\./.test(String(e.text)));
+        A50(drawnThird.length === 0,
+          `50f3 ${PRESETS[d]}: the photo rail drew a third prose column beside its picture`
+          + ` (x=${drawnThird.map((e: any) => e.x.toFixed(2)).join(", ")} w=${drawnThird.map((e: any) => e.w.toFixed(2)).join(", ")})`);
+        A50(droppedContent(third, 2).join(" ").indexOf("One more point") >= 0,
+          `50f3 ${PRESETS[d]}: the photo rail neither draws \`bodyThird\` nor reports it — droppedContent answers`
+          + ` ${JSON.stringify(droppedContent(third, 2))}, so a column the user wrote is lost in silence`);
+      });
+    }
+
+    {
+      // THE BOLD MEASURE, pinned on a string chosen for the boundary: it is one
+      // line at Roboto Light's mean and two at the bold face's real advances.
+      const COL = columnBand(3).width;
+      const usable = COL - TEXT_INSET_X;
+      const size = TYPE.body.size;
+      let probe = "";
+      for (let k = 0; k < 200 && probe.length < 200; k++) {
+        const cand = (probe ? probe + " " : "") + "measure";
+        const light = Math.max(1, Math.ceil(cand.length / Math.floor(usable / (size * faceAdvance("Roboto")))));
+        const bold = Math.ceil(labelWidthPt(cand, size, { face: "Roboto" }) / usable);
+        if (light === 1 && bold === 2) { probe = cand; break; }
+        if (light > 1) break;
+        probe = cand;
+      }
+      A50(!!probe && Math.ceil(labelWidthPt(probe, size, { face: "Roboto" }) / usable) === 2
+        && Math.max(1, estimateLines(probe, COL, size, false, false, "Roboto")) === 1,
+        `50f precondition: no string was found that is one line at Roboto Light's mean and two at the bold face's`
+        + ` real advances, so the measure below would be vacuous (probe ${JSON.stringify(probe)})`);
+      if (probe) {
+        const s50: SlideInput = { layout: "three-column", title: "A boundary lead-in", density: "read",
+          body: `${probe}\nA following point`, bodyRight: "Second.\nAnother point", bodyThird: "Third.\nAnd another" } as any;
+        const els = els50(s50, 2, "c50f2");
+        const lead = els.find((e) => e.kind === "text" && String(e.text) === probe);
+        const next = els.find((e) => e.kind === "text" && String(e.text) === "A following point");
+        A50(!!lead && !!next, `50f2 the boundary lead-in or the paragraph under it was not drawn`);
+        if (lead && next) {
+          const twoLines = drawnTextHeight(2, size);
+          A50(lead.h >= twoLines - 0.01,
+            `50f2 the bold lead-in is boxed for ${(lead.h).toFixed(2)}pt, which is one line —`
+            + ` measured at Roboto Light's mean it fits and set in bold it does not, so the paragraph under it is placed a line high`);
+          A50(next.y >= lead.y + twoLines - 0.01,
+            `50f2 the paragraph under the bold lead-in starts at ${next.y.toFixed(2)}, inside the lead-in's second line`);
+        }
+      }
+    }
+
+    /* (f4) AND IT DOES NOT OVER-MEASURE EITHER, which is the half (f2) cannot
+     *      see. (f2) pins the ruler against measuring a bold lead-in at the
+     *      LIGHT face's mean — the error that boxes a two-line lead-in for one
+     *      and places the next paragraph inside it. The opposite error is
+     *      silent in every geometric check there is: a lead-in boxed for three
+     *      lines and drawn in two leaves a blank line inside the column, so two
+     *      columns whose lead-ins render to the same depth start their next
+     *      paragraph 14.5pt apart on one slide. Nothing overruns, nothing
+     *      overlaps, nothing leaves the canvas, and the page reads as a
+     *      mistake.
+     *
+     *      It is a live margin and not a hypothetical one: labelWidthPt's 6%
+     *      is sized for a MEAN over a whole line, and `raggedLines` wraps a
+     *      WORD at a time, where a margin is paid at every wrap boundary
+     *      rather than once. RAGGED_KERN is 3% for that reason and the reason
+     *      is only written in a comment.
+     *
+     *      PINNED ON MEASURED NUMBERS, the way (n) is. Each string below was
+     *      rendered through the PDF path in headless Chrome — Roboto 300 with
+     *      the lead-in's own run at 700, both faces awaited, line boxes counted
+     *      off a Range's client rects — at the column width and size the layout
+     *      sets it in. Measured 2026-09-21 over 48 cases: the ruler as it
+     *      stands matches Chrome on 45 and over-counts 3 by a line, never
+     *      under-counts. The seven below are the boundary cases, where the
+     *      ruler agrees with Chrome and a 3% wider one would not. */
+    {
+      /** [density, columns, paragraph, lines Chrome drew]. */
+      const LEAD_PINNED: [Density, number, string, number][] = [
+        ["read", 2, "Work in progress. What is live, what is drafted and what is waiting on you, and anything that has slipped since we last spoke.", 2],
+        ["read", 3, "The calendar. What is coming up in the editorial calendar over the next month, so nothing is commissioned twice.", 3],
+        ["read", 3, "New ideas. We come prepared with story ideas to pitch, and you are welcome to bring your own to the table.", 3],
+        ["read", 3, "Handover. Everything we make is yours, in the formats your team already uses.", 2],
+        ["present", 3, "Work in progress. What is live, what is drafted and what is waiting on you, and anything that has slipped since we last spoke.", 4],
+        ["present", 3, "Second round. Line by line: facts, names, titles and the house style, and anything legal needs to see.", 3],
+        ["present", 3, "Sign-off. Once the second round is closed we book the slot, or leave it pending for further work.", 3],
+      ];
+      for (let i = 0; i < LEAD_PINNED.length; i++) {
+        const d = LEAD_PINNED[i][0], n = LEAD_PINNED[i][1];
+        const para = LEAD_PINNED[i][2], real = LEAD_PINNED[i][3];
+        withDensity(d, () => {
+          const width = columnBand(n).width;
+          const size = TYPE.body.size;
+          const bold = leadInLength(para);
+          A50(bold > 0 && bold < para.length,
+            `50f4 ${d} n=${n} precondition: leadInLength answers ${bold} of ${para.length} characters, so this fixture`
+            + ` is not a bold lead-in followed by body copy and measures nothing about the two faces`);
+          const got = raggedLines(para, width, size, "Roboto", bold);
+          A50(got === real,
+            `50f4 ${d} n=${n}: ${JSON.stringify(para.slice(0, 40))} is measured at ${got} lines in a`
+            + ` ${width.toFixed(2)}pt column and Chrome draws it on ${real} — a lead-in boxed deeper than it renders`
+            + ` opens a blank line inside the column, and the column beside it does not have one`);
+          /* AND THE FIXTURE IS AT THE BOUNDARY, so it can still see the margin.
+           * A 3% wider ruler is arithmetically a 3% narrower usable measure,
+           * which is checked here rather than simulated elsewhere: over the
+           * same 48 cases this reproduces the 1.06 ruler's answer on all 48.
+           * Without this the pins go stale silently — a string the two rulers
+           * agree on asserts that the code compiles. */
+          const narrow = TEXT_INSET_X + (width - TEXT_INSET_X) * (1.03 / 1.06);
+          A50(raggedLines(para, narrow, size, "Roboto", bold) === real + 1,
+            `50f4 ${d} n=${n}: ${JSON.stringify(para.slice(0, 40))} is no longer at a wrap boundary — a 3% wider`
+            + ` ruler still answers ${raggedLines(para, narrow, size, "Roboto", bold)} lines, so this fixture cannot`
+            + ` see the margin it was chosen for and needs re-measuring against Chrome`);
+        });
+      }
+    }
+
+    /* (g) THE SERPENTINE'S PITCH IS SOLVED, AND ITS CAPTIONS CANNOT MEET.
+     *
+     *     The alternation IS the mechanism: two captions on the same side of
+     *     the rule are two pitches apart, which is what lets seven steps have
+     *     the measure five process cards get. So the assertion is the one that
+     *     mechanism has to satisfy — same-side captions a gutter apart, the end
+     *     captions inside the margins — read off the drawn boxes at every count
+     *     the layout offers, rather than off the arithmetic that placed them.
+     *     The source's own pitch of 83.4 is right for seven and wrong for every
+     *     other number, which is why it is solved. */
+    for (let d = 0; d < PRESETS.length; d++) {
+      for (let n = SERPENTINE.minSteps; n <= SERPENTINE.maxSteps; n++) {
+        withDensity(PRESETS[d], () => {
+          const stages: any[] = [];
+          for (let i = 0; i < n; i++) stages.push({ name: `Step ${i + 1}`, caption: "What happens at this step, in a sentence" });
+          const s50: SlideInput = { layout: "serpentine", title: "A way of working", stages, density: PRESETS[d] } as any;
+          const els = els50(s50, 4, `c50g${d}x${n}`);
+          const discs = els.filter((e) => e.kind === "ellipse" && near(e.w, SERPENTINE.disc, 0.01))
+            .sort((a: any, b: any) => a.x - b.x);
+          A50(discs.length === n, `50g ${PRESETS[d]} n=${n}: ${discs.length} discs drawn, not ${n}`);
+          if (discs.length !== n) return;
+          const rule = els.filter((e) => e.kind === "rect" && e.h <= FRAME.thickness + 0.01 && e.w > GRID.contentWidth - 1)
+            .sort((a: any, b: any) => Math.abs(a.y - (discs[0].y + SERPENTINE.disc / 2)) - Math.abs(b.y - (discs[0].y + SERPENTINE.disc / 2)))[0];
+          A50(!!rule, `50g ${PRESETS[d]} n=${n}: no rule was drawn under the discs`);
+          if (rule) {
+            A50(near(rule.y + rule.h / 2, discs[0].y + SERPENTINE.disc / 2, 1),
+              `50g ${PRESETS[d]} n=${n}: the discs are centred at ${(discs[0].y + SERPENTINE.disc / 2).toFixed(2)} and the rule sits at`
+              + ` ${(rule.y + rule.h / 2).toFixed(2)} — they are meant to be one horizontal`);
+          }
+          // EVEN, to the float, which is what "solved" means here.
+          const pitches: number[] = [];
+          for (let i = 1; i < n; i++) pitches.push(discs[i].x - discs[i - 1].x);
+          for (let i = 1; i < pitches.length; i++) {
+            A50(near(pitches[i], pitches[0], 0.02),
+              `50g ${PRESETS[d]} n=${n}: pitch ${i} is ${pitches[i].toFixed(2)} against ${pitches[0].toFixed(2)} — the run is not even`);
+          }
+          const caps = els.filter((e) => e.kind === "text" && /^What happens at this step/.test(String(e.text)))
+            .sort((a: any, b: any) => a.x - b.x);
+          A50(caps.length === n, `50g ${PRESETS[d]} n=${n}: ${caps.length} captions drawn, not ${n}`);
+          if (caps.length !== n) return;
+          A50(caps[0].x >= GRID.margin - 0.02,
+            `50g ${PRESETS[d]} n=${n}: the first caption starts at ${caps[0].x.toFixed(2)}, left of the page margin`);
+          A50(caps[n - 1].x + caps[n - 1].w <= RIGHT + 0.02,
+            `50g ${PRESETS[d]} n=${n}: the last caption ends at ${(caps[n - 1].x + caps[n - 1].w).toFixed(2)}, past the right margin ${RIGHT}`);
+          // SAME-SIDE captions are two pitches apart and may not meet; the
+          // alternating pair share their x and must not share their y.
+          const mid = rule ? rule.y + rule.h / 2 : discs[0].y + SERPENTINE.disc / 2;
+          for (let i = 0; i + 2 < n; i++) {
+            const gap = caps[i + 2].x - (caps[i].x + caps[i].w);
+            A50(gap >= SERPENTINE.gutter - 0.02,
+              `50g ${PRESETS[d]} n=${n}: same-side captions ${i + 1} and ${i + 3} are ${gap.toFixed(2)}pt apart,`
+              + ` under the ${SERPENTINE.gutter}pt gutter — the alternation is what buys the width and it has stopped paying`);
+          }
+          for (let i = 0; i + 1 < n; i++) {
+            const a = caps[i], b = caps[i + 1];
+            const sideA = a.y + a.h <= mid + 0.01, sideB = b.y + b.h <= mid + 0.01;
+            A50(sideA !== sideB,
+              `50g ${PRESETS[d]} n=${n}: captions ${i + 1} and ${i + 2} are on the SAME side of the rule`
+              + ` — the alternation is the mechanism, and without it two captions one pitch apart share their x`);
+          }
+          // AND THE DEVICE IS CENTRED IN ITS BAND, because it is a block and
+          // that is this deck's rule for one. Added after a render: with the
+          // slack poured into the caption BANDS instead of leading the device
+          // into the page, a four-step row top-aligned its upper captions in a
+          // band half again as deep as they needed and opened 140pt between
+          // them and the rule they belong to. Every geometric assertion above
+          // stayed green through it — a survivor, until this.
+          {
+            // THE DEVICE'S OWN BOXES, named rather than filtered by position:
+            // the running head and the folio sit below the band and a
+            // positional filter picks them up, which reports the page's
+            // furniture as part of the diagram.
+            const boxes = discs.concat(els.filter((e) => e.kind === "text"
+              && (/^Step \d+$/.test(String(e.text)) || /^What happens at this step/.test(String(e.text)))));
+            let devTop = Infinity, devBottom = -Infinity;
+            for (let i = 0; i < boxes.length; i++) {
+              devTop = Math.min(devTop, boxes[i].y);
+              devBottom = Math.max(devBottom, boxes[i].y + boxes[i].h);
+            }
+            const bandTop = GRID.bodyY;
+            const bandBottom = Math.min(FRAME.bottomRuleY - FRAME.contentGap, NOTE.bottom);
+            A50(isFinite(devTop) && devBottom - devTop < bandBottom - bandTop - 2,
+              `50g ${PRESETS[d]} n=${n} precondition: the device fills its band, so centring cannot be observed`);
+            A50(Math.abs((devTop - bandTop) - (bandBottom - devBottom)) <= 1.5,
+              `50g ${PRESETS[d]} n=${n}: the serpentine sits ${(devTop - bandTop).toFixed(2)}pt below the top of its band`
+              + ` and ${(bandBottom - devBottom).toFixed(2)}pt above the bottom — a drawn block is centred in the band,`
+              + ` which is what GRID.bandHeight's own header says, and a diagram pinned to the top of it reads as a paragraph`);
+          }
+          // And the numeral is inside its disc and readable on it.
+          for (let i = 0; i < n; i++) {
+            const numeral = els.find((e) => e.kind === "text" && String(e.text) === String(i + 1)
+              && Math.abs(e.x + (e.w || 0) / 2 - (discs[i].x + SERPENTINE.disc / 2)) < 1);
+            A50(!!numeral, `50g ${PRESETS[d]} n=${n}: disc ${i + 1} carries no numeral centred on it`);
+            if (numeral) {
+              A50(ratio50(String(numeral.color || "").replace("#", ""), COLOR.blue) >= 4.5,
+                `50g ${PRESETS[d]} n=${n}: the numeral is ${ratio50(String(numeral.color || "").replace("#", ""), COLOR.blue).toFixed(2)}:1 on its disc`);
+            }
+          }
+        });
+      }
+    }
+
+    /* (h) A SERPENTINE THAT CANNOT HOLD ITS CONTENT SAYS SO ON THE SLIDE.
+     *
+     *     Both degradations, and both asserted on the DRAWN STRING rather than
+     *     on the note alone: a note-free build passes every geometric check
+     *     there is, which is this file's own lesson about the splitter and the
+     *     chart admissions. Ninth step dropped, and the owner row given up
+     *     where the band cannot hold captions and owners both — the fit ladder
+     *     that came from a render, not from reading. */
+    {
+      const many: any[] = [];
+      for (let i = 0; i < SERPENTINE.maxSteps + 2; i++) many.push({ name: `Step ${i + 1}`, caption: "A sentence about it" });
+      withDensity("read", () => {
+        const s50: SlideInput = { layout: "serpentine", title: "More steps than it draws", stages: many, density: "read" } as any;
+        const notes: string[] = [];
+        const els = previewSlideFrom(s50, buildSlideRequests(s50, 2, "c50h", notes) as any[]).elements as any[];
+        const admission = els.find((e) => e.kind === "text" && /Showing \d+ of \d+ steps/.test(String(e.text)));
+        A50(!!admission,
+          `50h a serpentine given ${many.length} steps draws ${SERPENTINE.maxSteps} and says nothing on the slide`
+          + ` — every other diagram here prints "Showing N of M" in that slot`);
+        A50(notes.some((x) => /at most \d+ steps/.test(x)),
+          `50h and the model is not told which steps were left off: ${JSON.stringify(notes)}`);
+      });
+      withDensity("present", () => {
+        const owned: any[] = [];
+        for (let i = 0; i < SERPENTINE.maxSteps; i++) {
+          owned.push({ name: `Step ${i + 1}`, caption: i === 3
+            ? "Written and edited in house, then read again by somebody who was not in the room when it was briefed, which is the only way we catch the assumptions"
+            : "A sentence about it", owner: "Account manager" });
+        }
+        const s50: SlideInput = { layout: "serpentine", title: "Eight owned steps", density: "present",
+          subtitle: "The alternation is what buys the width.", stages: owned } as any;
+        const notes: string[] = [];
+        const reqs = buildSlideRequests(s50, 2, "c50h2", notes) as any[];
+        const els = previewSlideFrom(s50, reqs).elements as any[];
+        A50(!els.some((e) => e.kind === "text" && /^Owner:/.test(String(e.text))),
+          `50h2 precondition: this row still drew its owners, so the rung below is not the one being tested`);
+        A50(els.some((e) => e.kind === "text" && /Owners omitted for room/.test(String(e.text))),
+          `50h2 the owner row was dropped and the slide says nothing — a reader sees seven steps with no ownership and no reason`);
+        A50(notes.some((x) => /Owner lines/.test(x) && /process/.test(x)),
+          `50h2 and the model is not told to reach for \`process\` for a row with owners: ${JSON.stringify(notes)}`);
+        // AND THE PAGE IS SOUND once it has given the owners up.
+        const g = validateDeck([s50] as any, "c50h2");
+        const c = faultCounts(g);
+        A50(c.overrun === 0 && c.overlap === 0 && c["off-canvas"] === 0,
+          `50h2 the row still overruns, overlaps or leaves the canvas after dropping the owners:`
+          + ` ${g.faults.map((f) => `${f.kind} ${f.where}`).join("; ")}`);
+      });
+    }
+
+    /* (h3) THE OWNERS SIT ON ONE BASELINE PER SIDE, AND INSIDE THE BAND.
+     *
+     *      The one a render found, and the one no arithmetic above catches.
+     *      Stacked after the caption the owner line goes wherever the caption
+     *      leaves it: on an eight-step row that drew "Owner: Editor" on the
+     *      FOOTER'S line, beside the running head and under the frame's own
+     *      rule, and on every other row it put the line a client's team scans
+     *      for at four different heights. A field the layout is given may be
+     *      shortened by the band it is in; it may not be relocated into the
+     *      page's chrome. Captions of deliberately different depths on the
+     *      same side, because equal ones cannot tell the two apart. */
+    for (let d = 0; d < PRESETS.length; d++) {
+      withDensity(PRESETS[d], () => {
+        const ragged: any[] = [];
+        for (let i = 0; i < 6; i++) {
+          ragged.push({ name: `Step ${i + 1}`, owner: `Owner ${i + 1}`,
+            caption: i % 4 === 0 ? "A caption that runs to two lines because it is longer than its neighbours" : "Short" });
+        }
+        const s50: SlideInput = { layout: "serpentine", title: "Owners on one line", stages: ragged, density: PRESETS[d] } as any;
+        const els = els50(s50, 2, `c50h3${d}`);
+        const owners = els.filter((e) => e.kind === "text" && /^Owner \d+$/.test(String(e.text).replace(/^Owner: /, "")))
+          .sort((a: any, b: any) => a.x - b.x);
+        A50(owners.length === 6, `50h3 ${PRESETS[d]}: ${owners.length} owner lines drawn, not 6 — the rung below the ladder was taken`);
+        if (owners.length !== 6) return;
+        const bandBottom = Math.min(FRAME.bottomRuleY - FRAME.contentGap, NOTE.bottom);
+        for (let i = 0; i < owners.length; i++) {
+          A50(owners[i].y + owners[i].h <= bandBottom + 0.01,
+            `50h3 ${PRESETS[d]}: owner ${i + 1} reaches ${(owners[i].y + owners[i].h).toFixed(2)}, past the band's foot`
+            + ` ${bandBottom.toFixed(2)} — it has been pushed out of the diagram and into the page's chrome`);
+        }
+        // ONE BASELINE PER SIDE, with the caption depths deliberately unequal.
+        for (let side = 0; side < 2; side++) {
+          const mine = owners.filter((_e, i) => (i % 2 === 0) === (side === 0));
+          for (let i = 1; i < mine.length; i++) {
+            A50(near(mine[i].y, mine[0].y, 0.5),
+              `50h3 ${PRESETS[d]} ${side === 0 ? "above" : "below"}: the owner lines sit at`
+              + ` ${mine.map((e: any) => e.y.toFixed(2)).join(", ")} — they follow their own captions instead of the band's foot,`
+              + ` so the line a client's team scans for is at a different height on every step`);
+          }
+        }
+      });
+    }
+
+    /* (i) THE THREE LAYOUTS DRAW EVERY FIELD THEY ARE GIVEN.
+     *
+     *     droppedContent builds the slide and asks whether each string in the
+     *     spec is in the text the deck will contain, which is the only question
+     *     that catches a field read from the wrong name — and a new layout is
+     *     covered by it the day it is written, as long as somebody asks. */
+    for (let d = 0; d < PRESETS.length; d++) {
+      withDensity(PRESETS[d], () => {
+        const full: [string, SlideInput][] = [
+          ["photo-rail", { layout: "photo-rail", eyebrow: "CASE STUDY", title: "Put the audience first", density: PRESETS[d],
+            subtitle: "Growth happens when you see a story through the audience's eyes.",
+            resolvedImage: { url: "p.jpg", scrim: 0 },
+            body: "We will be your partners in balancing the demands of your organisation",
+            bodyRight: "We will adapt our approach as the evidence comes in",
+            note: "If in doubt, over-share: we would rather read too much." } as any],
+          ["three-column", { layout: "three-column", eyebrow: "HOW WE WORK", title: "We run newsroom-style meetings", density: PRESETS[d],
+            subtitle: "Regular editorial meetings are a key part of how we work together.",
+            body: "Work in progress.\nWhat is live and what is waiting on you",
+            bodyRight: "The calendar.\nWhat is coming up over the next month",
+            bodyThird: "New ideas.\nWe come prepared with story ideas to pitch" } as any],
+          ["serpentine", { layout: "serpentine", eyebrow: "OUR PROCESS", title: "We have a custom process", density: PRESETS[d],
+            subtitle: "Seven steps from commission to publication.",
+            stages: [{ name: "Commission", caption: "Counted against your balance", owner: "Account manager" },
+              { name: "Brief", caption: "We agree the audience question" },
+              { name: "Draft", caption: "Written and edited in house" },
+              { name: "Publish", caption: "Delivered in the format agreed" }] } as any],
+        ];
+        for (let i = 0; i < full.length; i++) {
+          const lost = droppedContent(full[i][1], 2);
+          A50(lost.length === 0,
+            `50i ${PRESETS[d]} ${full[i][0]}: carries ${lost.length} string(s) the layout never draws —`
+            + ` ${lost.map((t) => JSON.stringify(t.slice(0, 44))).join(", ")}`);
+          // AND THE MODEL CAN SEND WHAT THE BUILDER DRAWS.
+          //
+          // The other half of the same fixture, and not a second hand-kept
+          // list: these keys are the ones droppedContent has just proved are
+          // DRAWN, so a field missing from the schema is one the builder
+          // renders and the model has no way to write. That is check 42's
+          // fortnight of drift a level down — `table`, `statement` and
+          // `layers` were renderable and invisible for 15, 14 and 12 days —
+          // and `bodyThird` is a field of exactly that kind: the third column
+          // draws perfectly and nothing in the tool mentions it.
+          const params: any = (SLIDES_GEN_OPENAI_TOOL as any).function.parameters;
+          const itemProps = params?.properties?.slides?.items?.properties || {};
+          const keys = Object.keys(full[i][1] as any);
+          const undeclared: string[] = [];
+          for (let k = 0; k < keys.length; k++) {
+            if (keys[k] === "density" || keys[k] === "resolvedImage" || keys[k] === "step") continue;
+            if (!itemProps[keys[k]]) undeclared.push(keys[k]);
+          }
+          A50(undeclared.length === 0,
+            `50i ${full[i][0]}: the builder draws ${undeclared.join(", ")} and generate_slides does not declare`
+            + ` ${undeclared.length === 1 ? "it" : "them"} on \`slides.items\` — the model cannot write a field it is not offered,`
+            + ` however well it renders`);
+        }
+      });
+    }
+
+    /* (j) AND THE COLUMN FIELDS REACH THE SINGLE-SLIDE EDIT ROUTE.
+     *
+     *     Found while wiring the third column, and it was already broken for
+     *     the second: `applyEditSlide`'s patch branch applied title, subtitle,
+     *     body, the text extras and the payloads, and nothing else. So a patch
+     *     carrying only `bodyRight` was REFUSED as an empty request, and one
+     *     carrying `body` and `bodyRight` was ACCEPTED, changed `body` and kept
+     *     the old `bodyRight` with nothing said — the right-hand column of a
+     *     two-column slide could not be edited at all through the route the
+     *     tool's own description calls the way to change a slide. */
+    {
+      const deck50: any[] = [
+        { layout: "cover", title: "A deck" },
+        { layout: "three-column", title: "Three answers", eyebrow: "ONE", body: "L", bodyRight: "R", bodyThird: "T" },
+      ];
+      const cases: [string, any, string][] = [
+        ["bodyRight", { slideNumber: 2, bodyRight: "R2" }, "R2"],
+        ["bodyThird", { slideNumber: 2, bodyThird: "T2" }, "T2"],
+        ["eyebrow", { slideNumber: 2, eyebrow: "TWO" }, "TWO"],
+      ];
+      for (let i = 0; i < cases.length; i++) {
+        const [field, edit, want] = cases[i];
+        let out: any[] | null = null;
+        try { out = applyEditSlide(deck50 as any, edit) as any[]; }
+        catch (e: any) { A50(false, `50j a patch carrying only \`${field}\` is refused: ${String(e && e.message).slice(0, 120)}`); }
+        if (out) {
+          A50(out[1][field] === want,
+            `50j a patch carrying only \`${field}\` left it as ${JSON.stringify(out[1][field])}`
+            + ` — accepted, and silently discarded`);
+        }
+        // AND ALONGSIDE ANOTHER FIELD, which is the shape that failed silently.
+        const both = applyEditSlide(deck50 as any, { ...edit, body: "L2" }) as any[];
+        A50(both[1][field] === want && both[1].body === "L2",
+          `50j \`${field}\` sent beside \`body\` was dropped: ${JSON.stringify({ [field]: both[1][field], body: both[1].body })}`);
+      }
+      /* AND A LAYOUT ON ITS OWN IS A CHANGE. `editSlide` offers `layout` in
+       * its enum — with these three in it, pinned by check 42 — and the
+       * refusal guard tested every other field and not that one, so "make
+       * slide 3 a photo-rail" was refused as an empty request on every layout
+       * the route offers. The same shape as the `bodyRight` hole above, and it
+       * matters more now, because the tool's own guidance steers the model
+       * towards exactly this conversion. Swept over the whole enum rather than
+       * over the three added here: the guard refused `two-column` and `cards`
+       * identically, and it predates this stage. */
+      for (let i = 0; i < LAYOUTS.length; i++) {
+        const want = LAYOUTS[i];
+        if (want === "three-column") continue;   // the fixture is already one
+        let out: any[] | null = null;
+        try { out = applyEditSlide(deck50 as any, { slideNumber: 2, layout: want } as any) as any[]; }
+        catch (e: any) {
+          A50(false, `50j a patch carrying only \`layout: "${want}"\` is refused: ${String(e && e.message).slice(0, 110)}`);
+        }
+        if (out) {
+          A50(out[1].layout === want,
+            `50j a layout-only patch left slide 2 on ${JSON.stringify(out[1].layout)} rather than ${JSON.stringify(want)}`);
+        }
+      }
+    }
+    /* (k) EVERY EYEBROW GIVES THE STEPPER ITS ROOM — on every layout that
+     *     draws one, not on the three this stage added.
+     *
+     *     `eyebrowRoom` narrows the eyebrow by exactly what the rail measures,
+     *     and every layout passes its box through it except that the photo
+     *     rail composed its own: it started at the picture's right edge and
+     *     kept the UNNARROWED page measure, so a 31-character eyebrow ran
+     *     152pt into a seven-step rail and the numerals were drawn inside the
+     *     word RELATIONSHIP — ink on ink, at both presets and at every step
+     *     count from three to nine. Rendering found it. Nothing above could:
+     *     every assertion this check had was about the photograph and the
+     *     columns, and the whole suite was green while it was live.
+     *
+     *     So it is asserted of the whole deck, because a layout that composes
+     *     its own eyebrow box is the mistake that will be made again — Stage
+     *     5's compositions each have one — and of every count, because the
+     *     collision is the RAIL's width and a check at seven steps says
+     *     nothing about nine.
+     *
+     *     THE GAP IS MEASURED TO THE RAIL'S DRAWN BOX, which is wider than its
+     *     glyphs on purpose (see stepperBox: the slack falls to the left of an
+     *     end-aligned box so the validator's own ruler cannot read the rail as
+     *     two lines). Measured to the ink instead, an eyebrow could be pushed
+     *     into that slack and this would stay green while the validator
+     *     reported the overlap. */
+    {
+      const EYE50 = "WORKING TOGETHER · THE EDITORIAL RELATIONSHIP";
+      const railTextOf = (of: number) => stepperRail({ n: 1, of }).text;
+      /* Which fixtures draw an eyebrow BESIDE a rail at all — probed once,
+       * rather than assumed from a list of layout names, so a layout that
+       * starts drawing one is swept without anybody remembering to add it. */
+      const drawsBoth: number[] = [];
+      for (let i = 0; i < ALL.length; i++) {
+        const s: any = { ...(ALL[i] as any), eyebrow: EYE50, step: { n: 1, of: 7 } };
+        const els = els50(s, 2, `c50kp${i}`);
+        const eye = els.find((e: any) => e.kind === "text" && String(e.text) === EYE50);
+        const rail = els.find((e: any) => e.kind === "text" && String(e.text) === railTextOf(7));
+        if (eye && rail) drawsBoth.push(i);
+      }
+      A50(drawsBoth.length >= 8,
+        `50k precondition: only ${drawsBoth.length} fixture(s) draw an eyebrow beside a rail, so the sweep below`
+        + ` is nearly vacuous — the rail's own ground and layout gates have changed under it`);
+      let railed = false;
+      for (let b = 0; b < drawsBoth.length; b++) if ((ALL[drawsBoth[b]] as any).layout === "photo-rail") railed = true;
+      A50(railed,
+        `50k precondition: the photo rail is not among the layouts drawing an eyebrow beside a rail, and it is the`
+        + ` layout this assertion was written for`);
+      for (let d = 0; d < PRESETS.length; d++) {
+        for (let of = 3; of <= STEPPER.maxSteps; of++) {
+          withDensity(PRESETS[d], () => {
+            for (let b = 0; b < drawsBoth.length; b++) {
+              const i = drawsBoth[b];
+              const s: any = { ...(ALL[i] as any), eyebrow: EYE50, density: PRESETS[d], step: { n: 1, of } };
+              const els = els50(s, 2, `c50k${d}x${of}x${i}`);
+              const eye = els.find((e: any) => e.kind === "text" && String(e.text) === EYE50);
+              const rail = els.find((e: any) => e.kind === "text" && String(e.text) === railTextOf(of));
+              if (!eye || !rail) continue;
+              const gap = rail.x - (eye.x + (eye.w || 0));
+              A50(gap >= STEPPER.gutter - 0.01,
+                `50k ${PRESETS[d]} ${(ALL[i] as any).layout} at ${of} steps: the eyebrow's box ends at`
+                + ` ${(eye.x + (eye.w || 0)).toFixed(2)} and the rail's starts at ${rail.x.toFixed(2)} —`
+                + ` a gap of ${gap.toFixed(2)}pt against the ${STEPPER.gutter}pt this deck gives them,`
+                + ` so the eyebrow did not pass through eyebrowRoom`);
+            }
+          });
+        }
+      }
+    }
+
+    /* (l) THE LEAD-IN IS A SENTENCE, AND A CONTINUATION HAS NONE.
+     *
+     *     (f) pins the source's own shape — a column opening "Work in
+     *     progress." — where the first paragraph IS the sentence and the whole
+     *     box is drawn in the accent. The defect is the other shape: the tool
+     *     tells the model a column opens with one bold accent SENTENCE and
+     *     that a single line "stays as a paragraph", and the code styled
+     *     paragraph 0 with no bound at all. A column written as one paragraph
+     *     — which the schema explicitly permits, and 32 of 298 stored bodies
+     *     are — came out 100% bold brand blue, which is not a lead-in but a
+     *     column set in the wrong face. validateDeck reported nothing: the
+     *     geometry is identical either way.
+     *
+     *     And a CONTINUATION does not start a column. Its first paragraph is a
+     *     bullet from the middle of the list the splitter cut, so accenting it
+     *     promotes an ordinary mid-list point into the opening of an argument
+     *     it is halfway through — rendered, that is what it looked like.
+     *
+     *     Read off the built slide: a partial accent reaches the preview as a
+     *     `FIXED_RANGE` and the preview keeps it as an `accents` range, which
+     *     is the same run the PDF and Slides draw. */
+    {
+      // A first sentence INSIDE the cap, and a paragraph several times its
+      // length: the whole point is that the two are different, so the fixture
+      // asserts its own shape below before it asserts anything about the slide.
+      const ONEPARA = "Growth happens when you see it through the audience's eyes."
+        + " It takes experimentation to know what works, and we will use data to see what is working"
+        + " and adapt our approach accordingly as the contract runs.";
+      const UNBROKEN = "We want to become an extended part of your team and make your lives easier in every week of the contract";
+      const body50 = (e: any) => String(e.text || "");
+      for (let d = 0; d < PRESETS.length; d++) {
+        withDensity(PRESETS[d], () => {
+          const s50: SlideInput = { layout: "three-column", title: "One paragraph each", density: PRESETS[d],
+            body: ONEPARA, bodyRight: UNBROKEN, bodyThird: "Short. And a bullet under it" } as any;
+          const els = els50(s50, 2, `c50l${d}`);
+          const one = els.find((e: any) => e.kind === "text" && body50(e).indexOf("Growth happens") === 0);
+          A50(!!one, `50l ${PRESETS[d]}: the single-paragraph column was not drawn`);
+          if (one) {
+            const want = leadInLength(ONEPARA);
+            A50(want > 0 && want < ONEPARA.length / 2,
+              `50l ${PRESETS[d]} precondition: leadInLength answers ${want} of ${ONEPARA.length} characters, so this`
+              + ` fixture cannot tell a sentence from a paragraph`);
+            A50((one.weight || 400) < 600,
+              `50l ${PRESETS[d]}: a ${ONEPARA.length}-character column written as ONE paragraph is drawn whole at weight`
+              + ` ${one.weight || 400} — the lead-in styled the paragraph instead of its first sentence, so the`
+              + ` column is set in the accent rather than opening with it`);
+            const acc = (one.accents || []) as any[];
+            A50(acc.length === 1,
+              `50l ${PRESETS[d]}: the single-paragraph column carries ${acc.length} accent run(s), not one`);
+            if (acc.length === 1) {
+              A50(acc[0].start === 0 && acc[0].end === want,
+                `50l ${PRESETS[d]}: the accent covers characters ${acc[0].start}..${acc[0].end} of ${ONEPARA.length},`
+                + ` not the first sentence's ${want}`);
+              A50(!!acc[0].bold && String(acc[0].color || "").toLowerCase() !== String(TYPE.body.color).toLowerCase(),
+                `50l ${PRESETS[d]}: the accent run is not drawn bold in a colour of its own, so it is not a lead-in`);
+            }
+          }
+          /* AND A SHORT PARAGRAPH IS NOT A SHORTCUT PAST THE SENTENCE. The
+           * length test used to run FIRST, so any first paragraph inside the
+           * cap was accented whole — right for the source's "Work in
+           * progress." and wrong for everything else that is short. Rendered,
+           * a column reading "Short. One point." came out bold blue end to
+           * end: the same defect as the one above, at a sixth of the length,
+           * and 50f's own fixture could not see it because its first
+           * paragraph IS one sentence. */
+          const two = els.find((e: any) => e.kind === "text" && body50(e).indexOf("Short. And a bullet") === 0);
+          A50(!!two, `50l ${PRESETS[d]}: the short two-sentence column was not drawn`);
+          if (two) {
+            A50((two.weight || 400) < 600,
+              `50l ${PRESETS[d]}: "Short. And a bullet under it" is drawn whole at weight ${two.weight || 400}`
+              + ` — a paragraph inside the cap is accented end to end rather than opening with its first sentence`);
+            const acc2 = (two.accents || []) as any[];
+            A50(acc2.length === 1 && acc2[0].start === 0 && acc2[0].end === "Short.".length,
+              `50l ${PRESETS[d]}: the short column's accent is`
+              + ` ${JSON.stringify(acc2.map((a: any) => [a.start, a.end]))}, not the first sentence's 0..6`);
+          }
+          /* AND IT IS THE FIRST SENTENCE, not every whole sentence that fits
+           * the cap. Taking the last stop inside sixty characters can accent
+           * three sentences, which is a paragraph in blue by another route —
+           * and the tool promises the model ONE. The fixture opens with two
+           * very short ones so the two rules answer different numbers. */
+          const TWOSTOP = "Yes. No. Then the rest of a paragraph that carries on well past the cap"
+            + " and is plainly not the opening sentence of anything.";
+          const s50b: SlideInput = { layout: "three-column", title: "Two stops", density: PRESETS[d],
+            body: TWOSTOP, bodyRight: "Second. A column beside it" } as any;
+          const els2 = els50(s50b, 3, `c50l2${d}`);
+          const twoStops = els2.find((e: any) => e.kind === "text" && body50(e).indexOf("Yes. No.") === 0);
+          A50(!!twoStops, `50l ${PRESETS[d]}: the two-stop column was not drawn`);
+          if (twoStops) {
+            const acc3 = (twoStops.accents || []) as any[];
+            A50(acc3.length === 1 && acc3[0].end === "Yes.".length,
+              `50l ${PRESETS[d]}: the accent on "Yes. No. Then ..." runs to`
+              + ` ${acc3.length ? acc3[0].end : "nothing"} rather than to the FIRST sentence's 4 — every whole`
+              + ` sentence inside the cap is not one sentence`);
+          }
+          /* AND A PARAGRAPH WITH NO SENTENCE BREAK INSIDE THE CAP GETS NONE.
+           * Bolding to the cap would cut a sentence mid-clause, which reads as
+           * a rendering fault rather than as an accent. */
+          const un = els.find((e: any) => e.kind === "text" && body50(e).indexOf("We want to become") === 0);
+          A50(!!un, `50l ${PRESETS[d]}: the unbroken column was not drawn`);
+          if (un) {
+            A50((un.weight || 400) < 600 && ((un.accents || []) as any[]).length === 0,
+              `50l ${PRESETS[d]}: a paragraph with no sentence break inside the cap is accented anyway`
+              + ` (weight ${un.weight || 400}, ${((un.accents || []) as any[]).length} run(s)) — the accent has to`
+              + ` stop at a sentence, and this one has none to stop at`);
+          }
+        });
+      }
+      /* AND THE CONTINUATION OF A SPLIT COLUMN OPENS NOTHING. */
+      // EVERY ONE OF THEM WOULD TAKE A LEAD-IN if it were a column's first
+      // paragraph — an opening clause and then a stop — which is what makes
+      // the continuation's silence an assertion rather than an accident. The
+      // first version used paragraphs with no sentence break in them at all,
+      // so nothing would have been accented either way and the mutation that
+      // draws a lead-in on every continuation survived it.
+      const POINTS14: string[] = [];
+      for (let i = 0; i < 14; i++) {
+        POINTS14.push(`Point number ${i + 1}. What is live on it, and what is still waiting on you this week`);
+      }
+      for (let d = 0; d < PRESETS.length; d++) {
+        withDensity(PRESETS[d], () => {
+          const s50: any = { layout: "three-column", title: "Cut in two", density: PRESETS[d],
+            body: ["Work in progress."].concat(POINTS14).join("\n") };
+          const pieces = splitOverflowingSlides([s50] as any) as any[];
+          A50(pieces.length > 1,
+            `50l ${PRESETS[d]} precondition: the fixture did not split, so no continuation is drawn`);
+          A50(leadInLength(POINTS14[0]) > 0,
+            `50l ${PRESETS[d]} precondition: the continued paragraphs would take no lead-in even as a column's`
+            + ` first — the fixture cannot tell a continuation that refuses one from copy that never had one`);
+          for (let p = 1; p < pieces.length; p++) {
+            const els = els50({ ...pieces[p], density: PRESETS[d] }, p + 1, `c50lc${d}x${p}`);
+            const bodies = els.filter((e: any) => e.kind === "text" && /^Point number \d/.test(body50(e)));
+            A50(bodies.length > 0, `50l ${PRESETS[d]}: continuation ${p} drew no body`);
+            for (let k = 0; k < bodies.length; k++) {
+              A50((bodies[k].weight || 400) < 600 && ((bodies[k].accents || []) as any[]).length === 0,
+                `50l ${PRESETS[d]}: continuation ${p} draws ${JSON.stringify(body50(bodies[k]).slice(0, 34))} as a lead-in`
+                + ` — a mid-list bullet promoted into the opening of an argument it is halfway through`);
+            }
+          }
+        });
+      }
+    }
+
+    /* (m) AND A CONTINUATION CARRIES NONE OF ITS SIBLING COLUMNS.
+     *
+     *     The splitter divides `body` and spreads the rest of the slide, so a
+     *     column field it does not clear is repeated VERBATIM on every piece.
+     *     `bodyRight` was cleared by hand and `bodyThird` was not, so a split
+     *     three-column slide printed its third column four times — and,
+     *     because the field was still there, the continuation drew two columns
+     *     and cut the same copy across four slides where two need three.
+     *
+     *     Asserted off the LIST rather than off three field names: the list is
+     *     derived from TEXT_EXTRAS, and the failure mode recorded twice in
+     *     this file is a second list kept in step by a comment. */
+    {
+      const KEEPS: string[] = [];
+      for (let i = 0; i < CONTINUATION_KEEPS.length; i++) KEEPS.push(CONTINUATION_KEEPS[i]);
+      A50(CONTINUATION_CLEARS.length === TEXT_EXTRAS.length - KEEPS.length,
+        `50m the clear list holds ${CONTINUATION_CLEARS.length} of the ${TEXT_EXTRAS.length} text extras with`
+        + ` ${KEEPS.length} kept — it is not derived from TEXT_EXTRAS, so the next column field can be added to one`
+        + ` list and not the other`);
+      const many: string[] = [];
+      for (let i = 0; i < 16; i++) many.push(`Point number ${i + 1}, written long enough that the column has to give way`);
+      const filled: any = { layout: "three-column", title: "Cut in two", eyebrow: "WORKING TOGETHER",
+        body: many.join("\n"), bodyRight: "Second. A column of its own", bodyThird: "Third. And another",
+        notes: "Say this out loud", today: "2026-09-21" };
+      const pieces = splitOverflowingSlides([filled] as any) as any[];
+      A50(pieces.length > 1, `50m precondition: the fixture did not split, so there is no continuation to read`);
+      for (let p = 1; p < pieces.length; p++) {
+        for (let f = 0; f < CONTINUATION_CLEARS.length; f++) {
+          const field = CONTINUATION_CLEARS[f];
+          A50(pieces[p][field] === undefined,
+            `50m continuation ${p} still carries \`${field}\` = ${JSON.stringify(pieces[p][field])}`
+            + ` — repeated verbatim from the first piece, and on a column field it also narrows every column`
+            + ` on the continuation to make room for one that is a copy`);
+        }
+        for (let k = 0; k < KEEPS.length; k++) {
+          A50(pieces[p][KEEPS[k]] === filled[KEEPS[k]],
+            `50m continuation ${p} lost \`${KEEPS[k]}\`, which a continuation keeps`);
+        }
+      }
+      /* AND THE CONTINUATION IS THEN DRAWN AS THE ONE COLUMN IT HAS. */
+      const els = els50({ ...pieces[1], density: "read" } as any, 2, "c50m");
+      const drawnBodies = els.filter((e: any) => e.kind === "text" && /^Point number \d/.test(String(e.text)));
+      A50(drawnBodies.length > 0, `50m the continuation drew no body`);
+      if (drawnBodies.length) {
+        const want = columnBand(1);
+        A50(near(drawnBodies[0].w, want.width, 0.02),
+          `50m the continuation's column is ${drawnBodies[0].w.toFixed(2)}pt wide against the ${want.width.toFixed(2)}`
+          + ` a single column gets — it is still being drawn beside a sibling it no longer has`);
+      }
+    }
+
+    /* (n) THE NARROW COLUMN IS MEASURED THE WAY IT IS RENDERED.
+     *
+     *     `estimateLines` divides a character count by a MEAN advance, which
+     *     averages out over a 670pt measure and does not over 187. Rendered
+     *     through the PDF path in Chrome, 833 real body paragraphs from the
+     *     stored corpus were counted at each layout's own column width: the
+     *     mean ruler under-counts by a line on 63 of them in a photo rail at
+     *     `read` and on 128 at `present` — 15.4% — against 15 and 22 for the
+     *     inherited two-column pair at the same sizes. A paragraph counted one
+     *     line short is boxed one line short, so the next bullet is placed
+     *     inside it and the blank line between them disappears: one slide
+     *     spaced two different ways when the neighbouring column happens to be
+     *     right. Neither validateDeck nor anything above can see it — the
+     *     drawn box and the measured ink come from the SAME estimator, so they
+     *     agree with each other and with nothing else.
+     *
+     *     So the assertion is pinned on MEASURED numbers rather than computed
+     *     ones. Each fixture below is a real corpus paragraph, with the line
+     *     count Chrome drew it at, at the column width and size the layout
+     *     sets it in; the check asserts the builder gives it at least that
+     *     many lines and starts the next paragraph under it. Recomputing the
+     *     count with the repo's own ruler would be the mistake (49m) is about.
+     *
+     *     Measured 2026-09-21, Roboto 300 from Google Fonts at 6x, line boxes
+     *     counted off a Range's client rects. Over the same 4,998 cases the
+     *     ragged ruler under-counts NOTHING and over-counts 595 — conservative
+     *     in the one direction a box may be wrong in. */
+    {
+      /** [layout, density, paragraph, lines Chrome drew]. */
+      const PINNED: [SlideLayout, Density, string, number][] = [
+        ["photo-rail", "read", "GLEIF LEI — 529900SLCCO6K43P8146", 2],
+        ["photo-rail", "read", "3.5% on 55 prompts that named nobody.", 2],
+        ["photo-rail", "present", "83% named (175 of 210 answers)", 2],
+        ["photo-rail", "present", "GLEIF LEI: 529900SLCCO6K43P8146", 2],
+        ["three-column", "read", "Appendix sources for every number quoted", 2],
+        ["three-column", "read", "175 of 210 answers named the report back.", 2],
+        ["three-column", "present", "GLEIF LEI: 529900SLCCO6K43P8146", 2],
+        ["three-column", "present", "3.5% named (68 of 1,921 answers)", 2],
+      ];
+      const NEXT = "And the point that follows it";
+      for (let i = 0; i < PINNED.length; i++) {
+        const layout = PINNED[i][0], d = PINNED[i][1], para = PINNED[i][2], real = PINNED[i][3];
+        withDensity(d, () => {
+          const s50: any = { layout, title: "A narrow measure", density: d,
+            resolvedImage: layout === "photo-rail" ? { url: "p.jpg", scrim: 0 } : undefined,
+            body: `${para}\n${NEXT}`, bodyRight: "Second. A column beside it",
+            bodyThird: layout === "three-column" ? "Third. And another" : undefined };
+          const els = els50(s50, 2, `c50n${i}`);
+          const first = els.find((e: any) => e.kind === "text" && String(e.text) === para);
+          const next = els.find((e: any) => e.kind === "text" && String(e.text) === NEXT);
+          A50(!!first && !!next, `50n ${layout} ${d}: the pinned paragraph or the one under it was not drawn`);
+          if (!first || !next) return;
+          const size = first.size || TYPE.body.size;
+          // The fixture is only worth running while the mean ruler still gets
+          // it wrong: pinned numbers go stale, and a fixture that both rulers
+          // agree on asserts nothing.
+          const mean = Math.max(1, estimateLines(para, first.w, size, false, false, "Roboto"));
+          A50(mean < real,
+            `50n ${layout} ${d} precondition: the mean ruler now answers ${mean} lines for a paragraph Chrome draws at`
+            + ` ${real} — the fixture no longer distinguishes the two rulers and needs re-measuring`);
+          const want = drawnTextHeight(real, size);
+          A50(first.h >= want - 0.01,
+            `50n ${layout} ${d}: ${JSON.stringify(para)} is boxed for ${first.h.toFixed(2)}pt in a ${first.w.toFixed(2)}pt`
+            + ` column and Chrome draws it on ${real} lines (${want.toFixed(2)}pt) — measured by a mean advance that`
+            + ` does not average out at this measure`);
+          A50(next.y >= first.y + want - 0.01,
+            `50n ${layout} ${d}: the paragraph under it starts at ${next.y.toFixed(2)}, inside`
+            + ` ${JSON.stringify(para)}'s last rendered line — the blank line between two bullets is gone, and the`
+            + ` column beside it keeps its own`);
+        });
+      }
+      /* AND THE RULER IS CHOSEN BY THE MEASURE, not by the layout's name — so
+       * the narrow columns get it and the inherited full-page ones do not,
+       * which is what keeps the 618 stored slides where they are. */
+      for (let d = 0; d < PRESETS.length; d++) {
+        withDensity(PRESETS[d], () => {
+          const size = TYPE.body.size;
+          const narrow: [string, number][] = [
+            ["the photo rail's column", columnBand(2, { x: PHOTO_RAIL.textX, width: PHOTO_RAIL.textWidth }).width],
+            ["the three-column band's", columnBand(3).width],
+          ];
+          for (let i = 0; i < narrow.length; i++) {
+            A50(measuresRagged(narrow[i][1], size, "Roboto"),
+              `50n ${PRESETS[d]}: ${narrow[i][0]} ${narrow[i][1].toFixed(2)}pt measure is wide enough for the mean ruler,`
+              + ` so a new layout at this width would inherit the under-count`);
+          }
+          A50(!measuresRagged(GRID.contentWidth, size, "Roboto"),
+            `50n ${PRESETS[d]}: the FULL measure now takes the ragged ruler too — every stored slide is re-measured`
+            + ` and the corpus will move`);
+        });
+      }
+    }
+
+    /* (o) A PROSE BAND THAT WILL NOT FIT STEPS DOWN, AND THEN SAYS SO.
+     *
+     *     `splitOnce` divides `body` and only `body`. That is right for a
+     *     layout with one column and leaves the siblings with nothing between
+     *     them and the trim: `bodyRight` and `bodyThird` are never split, and
+     *     their measure is half the inherited pair's. Measured, at `present`,
+     *     a photo rail's right-hand field ran off the page at about 50 words
+     *     and a three-column band's third at 50 — with no note on the slide,
+     *     no size tried and the words drawn through the running head and the
+     *     folio. `serpentine` in this same stage has a ladder and two on-slide
+     *     admissions, so the inconsistency was internal to one stage.
+     *
+     *     The two halves are the two failure modes. A band that CAN be made to
+     *     fit is made to fit and says nothing — a note about a slide that is
+     *     fine is how a note stops being read. A band that cannot says so on
+     *     the slide, because a note-free build passes every geometric check
+     *     there is, which is this file's own lesson twice over. */
+    {
+      const SRC5 = "Work in progress. What is live, what is drafted and what is waiting on you,"
+        + " plus anything that has slipped since the last meeting or needs a decision from your"
+        + " side before we can move it on, or leave it pending for further review";
+      const rungs = [SRC5, SRC5, SRC5].join("\n");
+      const floored = [SRC5, SRC5, SRC5, SRC5, SRC5, SRC5].join("\n");
+      const LAYOUTS50: SlideLayout[] = ["photo-rail", "three-column"];
+      for (let d = 0; d < PRESETS.length; d++) {
+        for (let L = 0; L < LAYOUTS50.length; L++) {
+          const layout = LAYOUTS50[L];
+          withDensity(PRESETS[d], () => {
+            const make = (copy: string): any => ({ layout, title: "More than it holds", density: PRESETS[d],
+              resolvedImage: layout === "photo-rail" ? { url: "p.jpg", scrim: 0 } : undefined,
+              body: copy, bodyRight: copy, bodyThird: layout === "three-column" ? copy : undefined });
+            // (i) THE RUNG. It fits, at a size it chose, and says nothing.
+            const fitting = make(rungs);
+            const page = page50(fitting, 2, `c50o${d}x${L}`);
+            const els = page.elements as any[];
+            const drawnBodies = els.filter((e: any) => e.kind === "text" && String(e.text).indexOf("Work in progress") === 0);
+            A50(drawnBodies.length > 0, `50o ${layout} ${PRESETS[d]}: the overfull band drew no body`);
+            const size = drawnBodies.length ? (drawnBodies[0].size || TYPE.body.size) : TYPE.body.size;
+            A50(size < TYPE.body.size,
+              `50o ${layout} ${PRESETS[d]}: a band holding ${rungs.split("\n").length} paragraphs a column is still set at`
+              + ` ${size}pt, the preset's own body size — nothing stepped, so the copy is simply drawn past the band`);
+            const g = validateDeck([fitting], `c50og${d}x${L}`);
+            A50(relayableFaults(g).length === 0,
+              `50o ${layout} ${PRESETS[d]}: the band the ladder says it fitted still reports`
+              + ` ${relayableFaults(g).length} fault(s): ${relayableFaults(g).map((f: any) => `${f.kind} ${f.note.slice(0, 60)}`).join("; ")}`);
+            const quiet = els.filter((e: any) => e.kind === "text" && /clipped for room/i.test(String(e.text)));
+            A50(quiet.length === 0,
+              `50o ${layout} ${PRESETS[d]}: a band that FITTED printed the clipped admission anyway — a note about a`
+              + ` slide that is fine is how a note stops being read`);
+            // (ii) THE FLOOR. It cannot fit, and it says so on the slide.
+            const over = make(floored);
+            const els2 = (page50(over, 2, `c50of${d}x${L}`).elements as any[]);
+            const bodies2 = els2.filter((e: any) => e.kind === "text" && String(e.text).indexOf("Work in progress") === 0);
+            const size2 = bodies2.length ? (bodies2[0].size || TYPE.body.size) : TYPE.body.size;
+            A50(size2 <= size,
+              `50o ${layout} ${PRESETS[d]}: twice the copy is set LARGER (${size2}pt against ${size}pt)`);
+            const said = els2.filter((e: any) => e.kind === "text" && /clipped for room/i.test(String(e.text)));
+            A50(said.length === 1,
+              `50o ${layout} ${PRESETS[d]}: a band that ran out of ladder draws ${said.length} admission(s) on the slide`
+              + ` — every other diagram here prints one in that slot, and a note-free build passes every geometric`
+              + ` check there is`);
+            const warned = deckWarnings([over] as any);
+            A50(String(warned || "").indexOf(layout) >= 0,
+              `50o ${layout} ${PRESETS[d]}: the model is not told which slide overflowed`
+              + ` (deckWarnings: ${JSON.stringify(String(warned || "").slice(0, 90))})`);
+            // AND NOTHING LEAVES THE CANVAS. The words overrun — they are
+            // drawn, declared and reported — but no BOX is placed off the page.
+            const g2 = validateDeck([over], `c50ofg${d}x${L}`);
+            const off = g2.faults.filter((f: any) => f.kind === "off-canvas");
+            A50(off.length === 0,
+              `50o ${layout} ${PRESETS[d]}: the floored band puts ${off.length} box(es) off the canvas`
+              + ` — ${off.map((f: any) => f.note.slice(0, 70)).join("; ")}`);
+          });
+        }
+      }
+    }
+
+    /* (p) CHANGING A SLIDE'S LAYOUT RE-BAKES ITS PICTURE.
+     *
+     *     Resolution crops to `pictureShape(layout)` and stores the result, so
+     *     a slide converted from `content` to `photo-rail` — the conversion
+     *     the tool's own guidance now steers the model towards — kept a 0.79
+     *     landscape crop inside a 0.736 portrait box, 8% too wide at `read`
+     *     and 32% at `present`. The three output paths then disagree about
+     *     what to do with the mismatch: Slides stretches it, the PDF crops it
+     *     and the chat preview letterboxes it, so one deck shows three
+     *     different pictures of the same file. */
+    {
+      const base: any[] = [
+        { layout: "cover", title: "A deck" },
+        { layout: "content", title: "Put the audience first", body: "One point",
+          image: { query: "a newsroom" },
+          resolvedImage: { url: "p.jpg", width: 239.5, height: 301.3, aspect: 0.7949, credit: "A photographer" } },
+      ];
+      const moved = applyEditSlide(base as any, { slideNumber: 2, layout: "photo-rail" } as any) as any[];
+      A50(moved[1].layout === "photo-rail",
+        `50p a layout-only patch left the slide on ${JSON.stringify(moved[1].layout)}`);
+      A50(!moved[1].resolvedImage,
+        `50p the picture is still baked at the old layout's crop after the layout changed —`
+        + ` ${JSON.stringify(moved[1].resolvedImage)} in a box pictureShape gives`
+        + ` ${JSON.stringify(pictureShape("photo-rail"))}`);
+      // AND A LAYOUT CHANGE THAT DOES NOT MOVE ALSO DOES NOT RE-FETCH.
+      const same = applyEditSlide(base as any, { slideNumber: 2, layout: "content", title: "Same page" } as any) as any[];
+      A50(!!same[1].resolvedImage,
+        `50p re-stating a slide's own layout threw its picture away, so an unrelated edit re-fetches the photograph`);
+      // AND A SLIDE WITH NO BRIEF LEFT KEEPS ITS PICTURE, because there is
+      // nothing to resolve again and clearing it would lose the photograph
+      // rather than re-crop it.
+      const orphan: any[] = [base[0], { ...base[1], image: undefined }];
+      const kept = applyEditSlide(orphan as any, { slideNumber: 2, layout: "photo-rail" } as any) as any[];
+      A50(!!kept[1].resolvedImage,
+        `50p a slide whose picture has no brief left lost the picture when its layout changed — there is nothing`
+        + ` to fetch again, so clearing it is a deletion rather than a re-crop`);
+    }
+  }
+
+  if (failures === before50) {
+    pass(`the column band is the inherited pair at two and an equal partition at n, the picture is cropped to the box it is drawn in`
+      + ` at both presets, the rule starts at its edge and the title ends above it, the lead-in is measured as the face it is set in,`
+      + ` the serpentine's pitch is solved and its captions cannot meet, and a row that cannot hold its owners says so on the slide`);
   }
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);

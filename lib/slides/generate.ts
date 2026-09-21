@@ -18,6 +18,7 @@ import {
   COLOR, GRID, CANVAS, TYPE, NOTE, STAT_MAX, STAT_GRID_MIN, STAT_GRID, TIMELINE, TIMELINE_PARALLEL, TRACK_COLORS, IMAGE, CHART,
   SERIES_LIGHT, SERIES_DARK, CARDS, QUOTE, PROCESS, LOGO_WALL, RULE, LAYOUT_STYLE, LOGO_PLACEMENT, SECTION, VENN,
   SHOT, FEATURE_SHOT_STYLE, FRAME, STEPPER, DENSITY, DEFAULT_DENSITY, density, withDensity,
+  PHOTO_RAIL, SERPENTINE, columnBand,
   rgb, logoUrl, textOn, assetUrl, type SlideLayout, type TypeStyle, type LayoutStyle, type Density,
 } from "@/lib/slides/brand";
 import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "@/lib/slides/token";
@@ -27,7 +28,9 @@ import {
   type ImageGenerator, type ImageSource, type ImageRequest, type TextBand,
 } from "@/lib/slides/images";
 import { resolveIcon } from "@/lib/slides/icons";
-import { normaliseSlide, hubHasConnections, stampSteps, STEP_BOUNDS, type SlideStep } from "@/lib/slides/edit";
+import {
+  normaliseSlide, hubHasConnections, stampSteps, CONTINUATION_CLEARS, STEP_BOUNDS, type SlideStep,
+} from "@/lib/slides/edit";
 import { SLIDES_TEXT_INSET, BULLET_INDENT } from "@/lib/slides/preview-style";
 import { refreshSignedMediaUrl } from "@/lib/media/signed";
 
@@ -78,6 +81,13 @@ export interface SlideInput {
   eyebrow?: string;
   body?: string;
   bodyRight?: string;
+  /** The THIRD prose column, on `three-column`. `body` and `bodyRight` were
+   *  the whole of the column vocabulary because the grid held exactly two
+   *  slots; this is the third, and it is a plain field rather than an array
+   *  because that is what the two it joins are — a fields array would have
+   *  been a second way to say the same thing on every layout that reads
+   *  `body`. */
+  bodyThird?: string;
   /** Headers for the two-column comparison — "Before"/"After", "Us"/"Them". */
   columns?: { left?: string; right?: string };
   /** SWOT: four quadrants of bullet lines. */
@@ -261,7 +271,13 @@ export interface SlideInput {
    *  because every SIBLING layout (cards, layers, panel) uses title/body and a
    *  process slide written that way drew four empty blue boxes and said
    *  nothing — the deck shipped with them. */
-  stages?: { name?: string; caption?: string; title?: string; body?: string }[];
+  /** `owner` is drawn as its own "Owner: ..." line — at the foot of a process
+   *  card, and on the serpentine's own baseline per side. It has been in the
+   *  tool schema and read by both layouts since `process` was written, and it
+   *  was simply missing from this type, so every fixture and caller that set
+   *  one had to go through `any` and TypeScript could not have caught a
+   *  misspelling of it. */
+  stages?: { name?: string; caption?: string; title?: string; body?: string; owner?: string }[];
   /** The footer's text — the deck's own name, stamped by the builder. A slide
    *  never chooses this; it is the one line that must read the same on every
    *  page, and a model writing it per slide would not. */
@@ -384,6 +400,22 @@ interface BoxOptions {
    *  row's shared baseline. Bottom-aligning puts the slack ABOVE the heading,
    *  under the chip, where it reads as spacing rather than as a gap. */
   vBottom?: boolean;
+  /** A LEAD-IN: the first `chars` characters set in the accent, inside a box
+   *  whose remaining words stay body copy.
+   *
+   *  A RANGE rather than a box of its own, because a lead-in is the first
+   *  SENTENCE of its column and reads on into the rest of the paragraph — the
+   *  source's own arrangement, where "Work in progress." is blue and the
+   *  sentence after it is not. Styled a paragraph at a time instead, a column
+   *  written as ONE paragraph (which the tool explicitly permits) came out
+   *  entirely bold brand blue, and every continuation of a split slide
+   *  promoted an ordinary mid-list bullet into a lead-in.
+   *
+   *  BOLD AND THE FACE, both. `bold` is what the preview and the PDF read;
+   *  the weighted family is what makes Slides draw Roboto Bold rather than
+   *  synthesising a heavier Light. Sending one without the other is how the
+   *  first version of this drew every lead-in at the body's own weight. */
+  leadRange?: { chars: number; color: string };
 }
 
 /** A positioned text box: create, fill, style. Returns [] for empty text so a
@@ -554,7 +586,10 @@ export function bandHeightFor(slide: Pick<SlideInput, "note">, noteWidth: number
 function noteRequests(
   page: string, id: (s: string) => string, note: string | undefined, onDark: boolean,
   below?: number,
-  width: number = GRID.contentWidth
+  width: number = GRID.contentWidth,
+  /** Where the bar STARTS. The page margin on every layout whose words start
+   *  there, and the type column on one whose picture takes the left. */
+  x: number = GRID.margin
 ): Req[] {
   const text = (note || "").trim();
   if (!text) return [];
@@ -569,11 +604,11 @@ function noteRequests(
   const y = below !== undefined ? Math.min(below, NOTE.bottom - h) : NOTE.bottom - h;
   const out: Req[] = [
     ...filledShape(id("noteBar"), page, "ROUND_RECTANGLE", onDark ? COLOR.white : COLOR.tintBlue, {
-      x: GRID.margin, y, width, height: h,
+      x, y, width, height: h,
     }, onDark ? 0.1 : 1),
     ...textBox(id("noteTxt"), page, text,
       { font: "Roboto", size: NOTE.fontSize, weight: 300, color: onDark ? COLOR.greyLight : COLOR.navy }, {
-        x: GRID.margin + NOTE.pad, y: y + NOTE.pad - 3,
+        x: x + NOTE.pad, y: y + NOTE.pad - 3,
         width: width - NOTE.pad * 2, height: h - NOTE.pad,
       }, { lineSpacing: 1.15 }),
   ];
@@ -750,6 +785,27 @@ function textBox(
         fields: "bold",
       },
     });
+  }
+
+  // The column's lead-in. Clamped to what was actually drawn: the count is
+  // measured on the stripped text and a box that also carried markup would
+  // otherwise index past its own string.
+  if (options.leadRange && options.leadRange.chars > 0) {
+    const end = Math.min(options.leadRange.chars, rendered.length);
+    if (end > 0) {
+      requests.push({
+        updateTextStyle: {
+          objectId,
+          textRange: { type: "FIXED_RANGE", startIndex: 0, endIndex: end },
+          style: {
+            bold: true,
+            weightedFontFamily: { fontFamily: style.font, weight: 700 },
+            foregroundColor: { opaqueColor: { rgbColor: rgb(options.leadRange.color) } },
+          },
+          fields: "bold,weightedFontFamily,foregroundColor",
+        },
+      });
+    }
   }
 
   const accentColor = accentColorFor(style);
@@ -1177,25 +1233,170 @@ function paraGapFloor(size: number, lineSpacing?: number): number {
  *  box, and the top inset of box N+1 sits under the bottom inset of box N. */
 export function bulletBlockHeight(
   text: string | undefined, width: number,
-  style: { size: number; font?: string; caps?: boolean }, gap = 0, lineSpacing?: number
+  style: { size: number; font?: string; caps?: boolean }, gap = 0, lineSpacing?: number,
+  opts: { ragged?: boolean } = {}
 ): number {
   const paras = String(text || "").split("\n").map((l) => l.trim()).filter(Boolean);
   if (!paras.length) return 0;
+  // A NARROW MEASURE PAYS FOR ITS RAGGED EDGE — WHERE IT IS ASKED TO.
+  //
+  // The width decides whether the correction is needed, and the CALLER decides
+  // whether this block is one that takes it. Both gates, and the second one is
+  // not squeamishness: turning the wrap ruler on under every layout moves 298
+  // requests across the 618 stored slides, because a timeline's caption and a
+  // swot panel's list are narrow too and their geometry was measured with the
+  // count model. This stage may not move a stored deck. So the layouts written
+  // against the wrap ruler ask for it, everything else keeps the ruler it was
+  // drawn with, and the open issue says which is which.
+  const ragged = !!opts.ragged && measuresRagged(width, style.size, style.font);
   let lines = 0;
   for (let i = 0; i < paras.length; i++) {
-    lines += Math.max(1, estimateLines(paras[i], width, style.size, false, !!style.caps, style.font));
+    lines += Math.max(1, ragged
+      ? raggedLines(paras[i], width, style.size, style.font)
+      : estimateLines(paras[i], width, style.size, false, !!style.caps, style.font));
   }
   if (paras.length === 1) return drawnTextHeight(lines, style.size, 0, 1, lineSpacing);
   return drawnTextHeight(lines, style.size, TEXT_INSET_Y + gap, paras.length, lineSpacing);
 }
 
+/** HOW MUCH OF A COLUMN'S FIRST PARAGRAPH IS ITS LEAD-IN: one sentence, or
+ *  none at all.
+ *
+ *  The tool tells the model a three-column column opens "with one bold accent
+ *  sentence", and the first version of this styled the whole first PARAGRAPH
+ *  instead. A column written as a single paragraph — which the same tool
+ *  description explicitly permits, and which 32 of the 298 stored bodies are —
+ *  came out entirely bold brand blue, where the source sets three words that
+ *  way and reads on in body copy.
+ *
+ *  THE CAP IS WHAT MAKES IT A LEAD-IN RATHER THAN A LONG SENTENCE IN BLUE. A
+ *  sentence that runs past about sixty characters is most of a narrow column's
+ *  first two lines, so past the cap there is no lead-in at all and the
+ *  paragraph is body copy like any other. Refusing is the right answer here:
+ *  the accent exists to mark the opening of a column, and marking two-thirds
+ *  of one marks nothing.
+ *
+ *  AND THE LENGTH IS NOT A SHORTCUT PAST THE SENTENCE. This returned the whole
+ *  string for any paragraph inside the cap, which is right for the source's own
+ *  shape and wrong for everything else that is short: rendered, a column
+ *  reading "Short. One point." came out bold blue end to end, which is the
+ *  defect this function exists to stop, one size down. The scan runs first and
+ *  the length is only the FALLBACK — for a paragraph with no stop in it at all,
+ *  which is the source's shape exactly: "Work in progress." ends on a full stop
+ *  that has no space after it to be found by. */
+const LEAD_IN_MAX = 60;
+export function leadInLength(para: string | undefined): number {
+  const s = drawnText(String(para ?? "")).trim();
+  if (!s) return 0;
+  // THE FIRST terminal stop, and the closing quote or bracket that may sit on
+  // it. A decimal or an abbreviation is not a sentence end, so the stop has to
+  // be followed by a space and then a capital, and the scan walks past one that
+  // is not rather than stopping there. The FIRST and not the last inside the
+  // cap: the tool promises the model one sentence and this function's own
+  // heading says one sentence, and taking every whole sentence that fitted
+  // sixty characters could accent three of them.
+  const m = /[.!?]["'’”)\]]*(?=\s)/g;
+  for (;;) {
+    const hit = m.exec(s);
+    if (!hit) break;
+    const at = hit.index + hit[0].length;
+    if (at > LEAD_IN_MAX) return 0;
+    const next = s.slice(at).replace(/^\s+/, "");
+    if (next && next[0] === next[0].toLowerCase() && next[0] !== next[0].toUpperCase()) continue;
+    return at;
+  }
+  return s.length <= LEAD_IN_MAX ? s.length : 0;
+}
+
+/** THE SHORTEST BOX A PARAGRAPH MAY BE GIVEN. A text box's height is a claim
+ *  on ground and not a limit on ink — Slides draws a box's text from its top
+ *  and lets it run — so the floor exists only to keep the height positive, and
+ *  it is one constant because two places need the same number: the box's own
+ *  clamp, and the probe that decides which paragraphs get a box at all. Read
+ *  off different numbers they disagreed, and a paragraph starting less than a
+ *  point above its band's foot was drawn as a box ending below it. */
+const MIN_BOX_H = 1;
+
+/** A COLUMN'S LEAD-IN: the first SENTENCE set in the accent, with no dot.
+ *
+ *  The handover deck's three-column pages open every column with one bold blue
+ *  sentence and then set the rest of the column under it. It is NOT a heading
+ *  — it is the first sentence of the column, and it reads on from the title
+ *  rather than labelling what follows — so it takes no marker: a hung disc in
+ *  front of it would make it the first item of a list whose remaining items
+ *  are its own continuation.
+ *
+ *  It steps the WEIGHT and the COLOUR and never the size, which is what keeps
+ *  this a style swap rather than a second layout engine: every height, every
+ *  line count and every gap below is measured exactly as it was, so a column
+ *  with a lead-in and a column without lay out identically.
+ *
+ *  AND IT IS A RANGE INSIDE THE PARAGRAPH, not the paragraph. When the whole
+ *  first paragraph IS one sentence — the source's own shape — the range covers
+ *  it and nothing has changed; when the column is one paragraph of several
+ *  sentences, only the first is accented. See leadInLength. */
 function bulletBlock(
   id: (s: string) => string, key: string, page: string,
   text: string | undefined, style: TypeStyle,
   box: { x: number; y: number; width: number; height: number },
-  opts: { align?: "START" | "CENTER" | "END"; lead?: number } = {}
+  opts: {
+    align?: "START" | "CENTER" | "END"; lead?: number; leadIn?: TypeStyle;
+    /** Measure this block's paragraphs by wrapping them on WORDS when the
+     *  column is narrow enough to need it. See bulletBlockHeight for why the
+     *  caller asks rather than the width alone deciding. */
+    ragged?: boolean;
+  } = {}
 ): { requests: Req[]; bottom: number } {
   const lead = opts.lead;
+  const firstPara = String(text || "").split("\n").map((l) => l.trim()).filter(Boolean)[0];
+  /** How many characters of paragraph 0 the accent covers. Zero means no
+   *  lead-in on this column at all, which is what a first paragraph with no
+   *  sentence break inside the cap gets. */
+  const leadChars = opts.leadIn ? leadInLength(firstPara) : 0;
+  /** Whether the accent covers the WHOLE first paragraph, in which case the
+   *  box is simply drawn in the accent style and no range is needed. */
+  const leadWhole = leadChars > 0 && leadChars >= drawnText(String(firstPara ?? "")).trim().length;
+  /** The style a paragraph is drawn in, and whether it carries a marker. A
+   *  paragraph that OPENS with the accent takes no marker either way: the
+   *  lead-in is the first words of the column, not the first item of a list. */
+  const styleAt = (i: number): TypeStyle => (i === 0 && leadWhole && opts.leadIn ? opts.leadIn : style);
+  const dotAt = (i: number): boolean => !(i === 0 && leadChars > 0);
+  /** The accent range a paragraph carries, for the partial case. */
+  const rangeAt = (i: number): BoxOptions["leadRange"] =>
+    i === 0 && leadChars > 0 && !leadWhole && opts.leadIn
+      ? { chars: leadChars, color: opts.leadIn.color } : undefined;
+  /** HOW MANY LINES A PARAGRAPH TAKES, and the lead-in is not asked the same
+   *  way as the rest.
+   *
+   *  `faceAdvance` answers 0.443 for Roboto, which is LIGHT's mixed-case mean
+   *  plus 6% — the weight every bullet in this deck is set in. A lead-in is
+   *  Roboto Bold, which is wider per glyph, so measured at the body's own
+   *  advance a lead-in near a wrap boundary would be counted at one line and
+   *  drawn at two, and everything below it would be placed a line high.
+   *
+   *  Measured through `labelWidthPt` rather than by inventing a bold mean:
+   *  that sums the REAL per-glyph advances of the bold face, measured off
+   *  Google's own webfont, and its header already gives the reason a mean is
+   *  the wrong ruler here — a lead-in is one sentence, which is too short for
+   *  a mean to average out.
+   *
+   *  BUT SUMMING A WIDTH AND DIVIDING BY THE MEASURE ROUNDS UP AT EVERY
+   *  BOUNDARY, which is the error in the other direction: two columns whose
+   *  lead-ins render to the same depth started their next paragraph 14.5pt
+   *  apart, one boxed for three lines and drawing two. So a narrow column
+   *  wraps its paragraphs WORD BY WORD instead, with the accent's own glyphs
+   *  where the accent reaches — see raggedLines, which answers both errors
+   *  with the renderer's own algorithm. */
+  const ragged = !!opts.ragged && measuresRagged(box.width, style.size, style.font);
+  const linesAt = (i: number, para: string): number => {
+    const bolded = i === 0 ? leadChars : 0;
+    if (ragged) return Math.max(1, raggedLines(para, box.width, style.size, style.font, bolded));
+    if (i === 0 && leadWhole && opts.leadIn) {
+      const usable = Math.max(opts.leadIn.size, box.width - TEXT_INSET_X);
+      return Math.max(1, Math.ceil(labelWidthPt(para, opts.leadIn.size, { face: "Roboto" }) / usable));
+    }
+    return Math.max(1, estimateLines(para, box.width, style.size, false, !!style.caps, style.font));
+  };
   const paras = String(text || "").split("\n").map((l) => l.trim()).filter(Boolean);
   if (!paras.length) return { requests: [], bottom: box.y };
   // THE PROBE GETS THE OLD SHAPE. See the header: the splitter asks this layout
@@ -1211,6 +1412,13 @@ function bulletBlock(
   // slide that would have fitted is a bigger intervention than setting its list
   // tight.
   if (PROBING) {
+    // AND IT TELLS THE PROBE WHICH RULER IT WOULD HAVE USED. bodyBox reads the
+    // size, the face and the paragraph gap back out of the requests, because
+    // they are in them; the choice of ruler is not, and a field wrapped on
+    // words when drawn and divided by a character count when probed splits too
+    // late and runs off the page. Set only on the block holding the sentinel,
+    // so the OTHER fields' blocks on the same probe cannot answer for it.
+    if (ragged && paras.join("\n").indexOf(PROBE) >= 0) PROBE_RAGGED = true;
     return {
       requests: textBox(id(key), page, paras.join("\n"), style, box,
         { align: opts.align, lineSpacing: lead, spaceBelow: paraGapFloor(style.size, lead) + TEXT_INSET_Y }),
@@ -1220,16 +1428,21 @@ function bulletBlock(
   // A single paragraph is not a list. Drawn with a disc it reads as a stray
   // bullet — the same call textBox already makes for Slides' own preset.
   if (paras.length === 1) {
-    const h = drawnTextHeight(
-      Math.max(1, estimateLines(paras[0], box.width, style.size, false, !!style.caps, style.font)), style.size, 0, 1, lead);
+    const h = drawnTextHeight(linesAt(0, paras[0]), styleAt(0).size, 0, 1, lead);
     return {
-      requests: textBox(id(key), page, paras[0], style, box, { align: opts.align, lineSpacing: lead, spaceBelow: 0 }),
+      requests: textBox(id(key), page, paras[0], styleAt(0), box,
+        { align: opts.align, lineSpacing: lead, spaceBelow: 0, leadRange: rangeAt(0) }),
       bottom: box.y + Math.min(box.height, h),
     };
   }
-  const heights = paras.map((p) => drawnTextHeight(
-    Math.max(1, estimateLines(p, box.width, style.size, false, !!style.caps, style.font)), style.size, 0, 1, lead));
-  const natural = bulletBlockHeight(text, box.width, style, 0, lead);
+  const heights = paras.map((p, i) => drawnTextHeight(linesAt(i, p), styleAt(i).size, 0, 1, lead));
+  // The stack's own height, which is what the elastic gap is solved against.
+  // With a lead-in it has to be the sum of the boxes, because the lead-in's
+  // line count is not the one bulletBlockHeight would compute; without one the
+  // two are the same number and the established call is kept, so no existing
+  // list can move by a float.
+  let natural = bulletBlockHeight(text, box.width, style, 0, lead, { ragged: opts.ragged });
+  if (leadChars > 0) { natural = 0; for (let i = 0; i < heights.length; i++) natural += heights[i]; }
   const slack = box.height - natural;
   const gap = Math.max(paraGapFloor(style.size, lead),
     Math.min(paraGapCeiling(style.size, lead), slack / (paras.length - 1)));
@@ -1259,7 +1472,18 @@ function bulletBlock(
   {
     let probe = box.y;
     for (let i = 0; i < paras.length; i++) {
-      if (i > 0 && probe >= foot) { drawn = i; break; }
+      // AND THE TEST IS THE FLOOR'S, NOT THE FOOT'S. The draw loop below gives
+      // every box a positive height — MIN_BOX_H when the band has less than
+      // that left — so a paragraph whose top is inside the band by less than
+      // the floor was drawn as a box that ends OUTSIDE it. On a full photo
+      // rail that was 0.2pt past the foot of the photograph the columns are
+      // squared off against, which is the one place in this deck where a box's
+      // foot is asserted against a drawn edge rather than against the margin.
+      // The two numbers were written a dozen lines apart and disagreed; read
+      // off one constant they cannot, and a paragraph with no room for a box
+      // takes the path this block already exists to take — the tail of the
+      // last one that has.
+      if (i > 0 && probe > foot - MIN_BOX_H) { drawn = i; break; }
       probe += heights[i] + gap;
     }
   }
@@ -1268,7 +1492,7 @@ function bulletBlock(
     paras.length = drawn;
     paras[drawn - 1] = tail;
     heights[drawn - 1] = drawnTextHeight(
-      Math.max(1, estimateLines(tail, box.width, style.size, false, !!style.caps, style.font)), style.size, 0, 1, lead);
+      linesAt(drawn - 1, tail), styleAt(drawn - 1).size, 0, 1, lead);
     heights.length = drawn;
   }
 
@@ -1300,15 +1524,101 @@ function bulletBlock(
     // and lets it run whatever the box's height is, so a short box loses no
     // glyph; it only stops the BOX making a claim on ground the layout did not
     // give this field.
-    const room = Math.max(1, foot - y);
-    requests.push(...textBox(id(i === 0 ? key : `${key}${i}`), page, paras[i], style,
+    const room = Math.max(MIN_BOX_H, foot - y);
+    requests.push(...textBox(id(i === 0 ? key : `${key}${i}`), page, paras[i], styleAt(i),
       { x: box.x, y, width: box.width, height: Math.min(heights[i], room) },
-      { align: opts.align, lineSpacing: lead, spaceBelow: 0 }));
-    requests.push(...hungDot(id(`${key}dot${i}`), page, { x: box.x, y }, style.size, dot,
+      { align: opts.align, lineSpacing: lead, spaceBelow: 0, leadRange: rangeAt(i) }));
+    if (dotAt(i)) requests.push(...hungDot(id(`${key}dot${i}`), page, { x: box.x, y }, style.size, dot,
       hungDotSize(style.size), leadOf(lead)));
     y += heights[i] + (i < paras.length - 1 ? gap : 0);
   }
   return { requests, bottom: y };
+}
+
+/** WHICH OF A LAYOUT'S COLUMN FIELDS ACTUALLY CARRY WORDS, in the order the
+ *  layout draws them.
+ *
+ *  One function for both prose bands, because the rule is one rule: the count
+ *  comes from the CONTENT. Written twice it was followed once — the
+ *  three-column band derived its count and the photo rail hard-coded two, so a
+ *  photo-rail slide with a single column of copy drew it at half the band, and
+ *  every continuation of a split one did the same because the splitter clears
+ *  `bodyRight`. A slide with none of them still gets one column, which is what
+ *  `droppedContent` reports against. */
+function columnFields(
+  slide: SlideInput, keys: readonly string[]
+): { key: string; text: string | undefined }[] {
+  const out: { key: string; text: string | undefined }[] = [];
+  for (let i = 0; i < keys.length; i++) {
+    const text = (slide as any)[keys[i]] as string | undefined;
+    if (String(text || "").trim()) out.push({ key: keys[i], text });
+  }
+  return out.length ? out : [{ key: keys[0], text: (slide as any)[keys[0]] }];
+}
+
+/** The size a prose column may be set at before it stops being body copy. The
+ *  deck's own caption floor, and the size the footer sits at. */
+const COLUMN_MIN_SIZE = 8;
+
+/** A FIT LADDER FOR A BAND OF PROSE COLUMNS, and an admission when the ladder
+ *  runs out.
+ *
+ *  `splitOnce` divides `body` and only `body`, which is right for a layout
+ *  with one column and leaves the sibling columns with nothing between them
+ *  and the trim: `bodyRight` and `bodyThird` are never split, and their
+ *  measure is half the inherited pair's, so the threshold roughly halves
+ *  twice over. Measured, at `present`: a two-column right-hand field runs off
+ *  the page at about 70 words, a photo rail's at 50, and a three-column band's
+ *  third field at 50 — with no note printed, no size tried and the words drawn
+ *  straight through the footer.
+ *
+ *  `serpentine` in the same stage has a ladder and two on-slide admissions,
+ *  and the inconsistency was internal to one stage. So the band steps down a
+ *  point at a time to the caption floor, and when the floor will not hold it
+ *  either the slide SAYS SO — in the slot every other diagram here uses — and
+ *  the model is told which way to fix it. A note-free build passes every
+ *  geometric check there is.
+ *
+ *  THE WHOLE BAND STEPS TOGETHER. Setting only the offending column smaller
+ *  would make one column of three a different size from its neighbours, which
+ *  reads as a mistake rather than as a fit. */
+function columnFit(
+  shown: { key: string; text: string | undefined }[],
+  width: number, room: number, style: TypeStyle
+): { style: TypeStyle; over: number; size: number } {
+  const need = (size: number): number => {
+    let worst = 0;
+    for (let i = 0; i < shown.length; i++) {
+      worst = Math.max(worst, bulletBlockHeight(shown[i].text, width, { ...style, size }, 0, undefined,
+        { ragged: true }));
+    }
+    return worst;
+  };
+  let size = style.size;
+  let over = need(size) - room;
+  while (over > 0.5 && size > COLUMN_MIN_SIZE) {
+    size = Math.max(COLUMN_MIN_SIZE, size - 1);
+    over = need(size) - room;
+  }
+  return { style: size === style.size ? style : { ...style, size }, over: Math.max(0, over), size };
+}
+
+/** What a column band that still does not fit says on the slide, and to the
+ *  model. See columnFit: nothing is DROPPED — bulletBlock draws the tail of a
+ *  list that has run out of band as the last box's own continuation, so every
+ *  word is on the page and some of it is past the design. "Showing N of M"
+ *  would be a claim about missing content and this is a claim about the
+ *  measure, so it does not borrow that sentence. */
+function columnOverfullNote(
+  objectId: string, page: string, fit: { over: number; size: number },
+  note: ((s: string) => void) | undefined, layout: string
+): Req[] {
+  if (fit.over <= 0.5) return [];
+  if (note) {
+    note(`this ${layout} slide's columns hold ${Math.ceil(fit.over)}pt more copy than the band has room for,`
+      + ` even set at ${fit.size}pt — shorten a column, or move the longest one onto a second slide`);
+  }
+  return noteBox(objectId, page, "Column copy clipped for room", CANVAS.height - GRID.margin - 16);
 }
 
 /** The CTA pill: a label in a filled capsule — "Book a session", "Read the
@@ -1751,6 +2061,287 @@ function timelineRequests(
     ));
   }
   return requests;
+}
+
+/** THE SERPENTINE: numbered discs on one rule, captions alternating above and
+ *  below it.
+ *
+ *  `timeline` with three changes, and written beside it for that reason: the
+ *  numeral goes INSIDE the marker, the captions alternate, and seven steps fit
+ *  where five cards do not. It is not a second timeline engine — the axis, the
+ *  evenly solved centres, the measure-then-place order and the "showing N of M"
+ *  admission are all the ones above, and the three differences are the whole of
+ *  the new code.
+ *
+ *  IT READS `stages`, which is what a seven-step way of working is, and what
+ *  `process` already asks the model for. A serpentine is that content drawn at
+ *  a count `process` refuses: its cards are laid across the width so a sixth is
+ *  100pt wide with a two-word caption in it, and MAX_STAGES says so out loud.
+ *  Alternation is what buys the width back — two captions on the SAME side of
+ *  the rule are two pitches apart — so the same steps that do not fit as cards
+ *  fit here, and the model needs no new payload to say so.
+ *
+ *  THE PITCH IS SOLVED. See SERPENTINE's header: both constraints bind at once
+ *  and give `pitch = (contentWidth + gutter) / (n + 1)`, which lands within
+ *  1.7pt of the source's hand-set 83.4 at seven steps. Copying 83.4 would have
+ *  been right for seven and wrong for every other count.
+ */
+function serpentineRequests(
+  page: string, id: (s: string) => string, stages: NonNullable<SlideInput["stages"]>,
+  onDark: boolean,
+  top: number = GRID.bodyY, room: number = GRID.bandHeight,
+  note?: (s: string) => void
+): Req[] {
+  // The same synonyms processRequests reads, and read here for the same
+  // reason: a stage written as { title, text } beside a slide `title` is what
+  // a model writes first, and a field that has to be REPORTED as dropped is a
+  // field the renderer should have read.
+  const stageName = (st: any) => String(st?.name ?? st?.title ?? "").trim();
+  const stageCaption = (st: any) => String(st?.caption ?? st?.body ?? st?.text ?? "").trim();
+  const usable = stages.filter((st) => st && stageName(st));
+  const shown = usable.slice(0, SERPENTINE.maxSteps);
+  const n = shown.length;
+  if (n < 2) return [];
+
+  // ── THE HORIZONTAL SOLVE ────────────────────────────────────────────────
+  const W = GRID.contentWidth;
+  const g = SERPENTINE.gutter;
+  let pitch = (W + g) / (n + 1);
+  let capW = 2 * pitch - g;
+  if (capW > SERPENTINE.captionMax) {
+    // A short run would give every caption a measure nobody wants to read —
+    // 330pt is 73 characters of 9pt Roboto, and this file's own rule is that
+    // past about 100 a line stops being a column and starts being a document.
+    // Capped, the pitch is re-solved so the last caption still lands on the
+    // right margin rather than leaving the run bunched at the left.
+    capW = SERPENTINE.captionMax;
+    pitch = (W - capW) / (n - 1);
+  }
+  // The FIRST caption's left edge is the left margin and the LAST caption's
+  // right edge is the right one, which is what forced the pitch above.
+  const firstX = GRID.margin + capW / 2;
+  const centreOf = (i: number) => firstX + i * pitch;
+
+  // ── THE VERTICAL SOLVE, MEASURED ────────────────────────────────────────
+  // Which side each caption is on. The first is above, as the source's is, and
+  // the alternation from there is what the whole layout rests on.
+  const above = (i: number) => i % 2 === 0;
+  const parts = shown.map((st: any) => {
+    const split = splitStageOwner(stageCaption(st), st?.owner);
+    return { name: stageName(st), caption: split.caption, owner: split.owner };
+  });
+  const nameStyle = onDark ? { ...TYPE.stageName, color: COLOR.white } : TYPE.stageName;
+  const ownerStyle = onDark ? { ...TYPE.stageOwner, color: COLOR.greyLight } : TYPE.stageOwner;
+  const STACK_GAP = 3;
+  // A FIT LADDER, which is processRequests' own device and its own reason: the
+  // name is the reference's size and the owner is this deck's floor, so
+  // neither steps, and the caption is the one thing on the block that can
+  // give. Two rungs under the source's 9pt, stopping at the deck's 7.5 floor —
+  // below that a caption is smaller than the footer.
+  //
+  // AND A FOURTH RUNG THAT DROPS THE OWNER ROW, which came from a render and
+  // not from reading. Eight owned steps under a standfirst at `present` have
+  // 172pt of band for 166pt of captions: every rung "fitted" by arithmetic and
+  // the page showed captions touching their own owner lines and one caption
+  // drawn straight through its. `process` is the layout that exists for
+  // ownership — it draws an Owner line under five cards and says so — so the
+  // owner is what a serpentine gives up when the room runs out, and the slide
+  // SAYS which of the two it dropped rather than crowding both.
+  const RUNGS: { size: number; owners: boolean }[] = [
+    { size: SERPENTINE.captionSize, owners: true }, { size: 8, owners: true },
+    { size: 7.5, owners: true }, { size: 7.5, owners: false },
+  ];
+  const measureAt = (rung: { size: number; owners: boolean }) => {
+    const size = rung.size;
+    const ink = onDark
+      ? { ...TYPE.stageCaption, size, color: COLOR.greyLight }
+      : { ...TYPE.stageCaption, size };
+    const hs = parts.map((p) => {
+      const nameH = drawnTextHeight(estimateLines(p.name, capW, nameStyle.size), nameStyle.size);
+      const capH = p.caption
+        ? STACK_GAP + drawnTextHeight(estimateLines(p.caption, capW, size), size) : 0;
+      const ownH = p.owner && rung.owners ? drawnTextHeight(1, ownerStyle.size) : 0;
+      return { nameH, capH, ownH, total: nameH + capH + (ownH ? STACK_GAP + ownH : 0) };
+    });
+    // A SIDE'S DEPTH IS THE DEEPEST NAME PLUS THE DEEPEST CAPTION, not the
+    // deepest step. The two need not belong to the same step, and the captions
+    // on a side share one top — see `an`/`bn` below — so measuring the deepest
+    // BLOCK would under-measure a row whose longest name and longest caption
+    // sit at different pitches.
+    let a = 0, b = 0, ao = 0, bo = 0, an = 0, bn = 0, ac = 0, bc = 0;
+    for (let i = 0; i < n; i++) {
+      if (above(i)) { an = Math.max(an, hs[i].nameH); ac = Math.max(ac, hs[i].capH); ao = Math.max(ao, hs[i].ownH); }
+      else { bn = Math.max(bn, hs[i].nameH); bc = Math.max(bc, hs[i].capH); bo = Math.max(bo, hs[i].ownH); }
+    }
+    a = an + ac + (ao ? STACK_GAP + ao : 0);
+    b = bn + bc + (bo ? STACK_GAP + bo : 0);
+    return { ink, hs, a, b, ao, bo, an, bn, owners: rung.owners, need: a + b + SERPENTINE.disc + SERPENTINE.capGap * 2 };
+  };
+  let anyOwner = false;
+  for (let i = 0; i < parts.length; i++) if (parts[i].owner) anyOwner = true;
+  let plan = measureAt(RUNGS[0]);
+  for (let k = 1; k < RUNGS.length && plan.need > room + 0.5; k++) {
+    // The owner rung is not taken on a row that has no owners: it would be the
+    // same measurement twice and would report a loss of nothing.
+    if (!RUNGS[k].owners && !anyOwner) break;
+    plan = measureAt(RUNGS[k]);
+  }
+  const inkStyle = plan.ink;
+  const heights = plan.hs;
+  const drawOwners = plan.owners;
+  const aboveNeed = plan.a, belowNeed = plan.b, aboveOwner = plan.ao, belowOwner = plan.bo;
+  // The name band each side shares, which is where its captions start. See
+  // the caption placement below.
+  const aboveName = plan.an, belowName = plan.bn;
+  // The run the two caption bands share, once the disc and its air are paid.
+  const available = Math.max(20, room - SERPENTINE.disc - SERPENTINE.capGap * 2);
+  // THE DEVICE IS A BLOCK, AND A BLOCK IS CENTRED IN ITS BAND. That is this
+  // deck's own rule, written on GRID.bandHeight: a self-contained figure is
+  // centred so five bars sit balanced and eight fill the page, while prose is
+  // not, because a list centred in its band floats away from the title it
+  // belongs to. Rendered without this the rule sat at 221 with the captions
+  // ending at 300 and seventy points of empty paper under them — the diagram
+  // pinned to the top of the band like a paragraph.
+  //
+  // aboveShare is what decides the split only when the captions DO NOT fit,
+  // which is the one case where something has to give: the source gives its
+  // upper band 86pt to its lower band's 119, because the page reads downward
+  // and the deeper half is the lower one.
+  //
+  // THE SLACK MOVES THE DEVICE; IT DOES NOT STRETCH THE BANDS. Pouring it into
+  // the caption bands instead is the inverted rhythm Stage 3 found in the
+  // bullet gaps, in a different place: a four-step row then top-aligned its
+  // upper captions in a band half again as deep as they needed and opened 140
+  // points between the captions and the rule they belong to. So the band a
+  // block gets is exactly what the deepest block on that side needs, and the
+  // whole assembly is led into the page by half the slack.
+  const slack = room - (aboveNeed + belowNeed + SERPENTINE.disc + SERPENTINE.capGap * 2);
+  const fits = slack > 0;
+  const aboveBand = fits ? aboveNeed : Math.max(0, Math.min(available, available * SERPENTINE.aboveShare));
+  const lead = fits ? slack / 2 : 0;
+  const ruleY = top + lead + aboveBand + SERPENTINE.capGap + SERPENTINE.disc / 2;
+  const belowTop = ruleY + SERPENTINE.disc / 2 + SERPENTINE.capGap;
+  const belowBand = fits ? belowNeed : Math.max(20, top + room - belowTop);
+  // EVERY CAPTION ON A SIDE STARTS ON ONE LINE, which is the source's own
+  // arrangement — its above captions share a y and so do its below ones — and
+  // the reason is the reason processRequests gives for its head block: the
+  // slack belongs under a short caption, not above it. Bottom-aligning the
+  // upper captions to the rule instead was tried and rendered: the names then
+  // sit at four different heights across seven steps and the row stops reading
+  // as a row.
+  const aboveTop = top + lead;
+
+  // Wide enough for one numeral ON ONE LINE, inset included — processRequests'
+  // own arithmetic, for the same reason: a text box the circle's own size
+  // leaves the glyph a few points of room and wraps a two-digit step.
+  const numeralW = Math.ceil(TEXT_INSET_X + SERPENTINE.numeralSize * PER_CHAR * CAPS_WIDEN * 2);
+
+  const out: Req[] = [];
+  out.push(...hairline(id("axis"), page, "content", ruleY, onDark));
+
+  let clipped = 0;
+  for (let i = 0; i < n; i++) {
+    const p = parts[i];
+    const cx = centreOf(i);
+    const capX = cx - capW / 2;
+    const h = heights[i];
+    const up = above(i);
+    const bandTop = up ? aboveTop : belowTop;
+    const band = up ? aboveBand : belowBand;
+    const ownerRow = up ? aboveOwner : belowOwner;
+    // THE OWNER IS ANCHORED TO THE FOOT OF THE BAND, not to the end of the
+    // caption above it, and the caption is what gives way. Stacked the other
+    // way round a long caption pushed its own owner line clean off the band:
+    // rendered, step 4 of an eight-step row drew "Owner: Editor" on the
+    // footer's line, beside the running head and under the frame's own rule.
+    // A field the layout is given may be shortened by the band it is in; it
+    // may not be relocated into the page's chrome. This is processRequests'
+    // rule and its reason both — the owners sit on one baseline across the
+    // row, which is the line a client's team scans for.
+    const ownerTop = bandTop + band - ownerRow;
+    // THE CAPTIONS ON A SIDE SHARE ONE TOP, exactly as the owner lines do, and
+    // for the same reason: a row is read across. Stacked under each name's own
+    // estimated box, a name the estimator thinks wraps and that renders on one
+    // line pushed only ITS caption down — measured in the browser, two
+    // captions of one row sat 20pt below the third with a hole of empty ground
+    // under the short name, and validateDeck reported nothing because every
+    // box was exactly where the builder put it. The deepest name on the side
+    // sets the line; a shorter name simply leaves air under itself, which is
+    // what the source does.
+    const capTop = bandTop + (up ? aboveName : belowName) + STACK_GAP;
+    const capRoom = Math.max(10, (p.owner && drawOwners ? ownerTop - STACK_GAP : bandTop + band) - capTop);
+    // A caption that does not fit WHAT IS LEFT FOR IT is clipped and counted,
+    // never silently shortened: the box stops at its room and Slides draws the
+    // words on from its top, so the overrun is visible in the preview and
+    // reported by the validator rather than disappearing.
+    //
+    // MEASURED AGAINST THE ROOM, NOT AGAINST THE BAND'S SHARE. Comparing the
+    // whole block to `band` counted six captions on an eight-step row that
+    // were each perfectly drawn — the share is what the crowded case splits
+    // the run on, not a promise about any one block — and a warning that names
+    // five slides that are fine is how a warning stops being read.
+    if ((p.caption && h.capH - STACK_GAP > capRoom + 0.5) || h.nameH > band + 0.5) clipped += 1;
+    out.push(...textBox(id(`sn${i}`), page, p.name, nameStyle, {
+      x: capX, y: bandTop, width: capW, height: Math.min(h.nameH, band),
+    }, { align: "CENTER", spaceBelow: 0 }));
+    if (p.caption) {
+      out.push(...textBox(id(`sc${i}`), page, p.caption, inkStyle, {
+        x: capX, y: capTop, width: capW,
+        height: Math.max(10, Math.min(h.capH - STACK_GAP, capRoom)),
+      }, { align: "CENTER", spaceBelow: 0 }));
+    }
+    if (p.owner && drawOwners) {
+      out.push(...textBox(id(`so${i}`), page, `Owner: ${p.owner}`, ownerStyle, {
+        x: capX, y: ownerTop, width: capW, height: Math.max(9, ownerRow),
+      }, { align: "CENTER", spaceBelow: 0 }));
+    }
+    // THE DISC LAST, so it is drawn over the rule rather than under it: a
+    // hairline crossing a filled circle reads as a scratch on the circle.
+    out.push(...filledShape(id(`sd${i}`), page, "ELLIPSE", COLOR.blue, {
+      x: cx - SERPENTINE.disc / 2, y: ruleY - SERPENTINE.disc / 2,
+      width: SERPENTINE.disc, height: SERPENTINE.disc,
+    }));
+    // textOn, never a written-down white: a palette edit that lightened the
+    // disc would otherwise leave the numeral unreadable and nothing would say.
+    out.push(...textBox(id(`sdn${i}`), page, String(i + 1),
+      { font: "Playfair Display", size: SERPENTINE.numeralSize, color: textOn(COLOR.blue) }, {
+        x: cx - numeralW / 2, y: ruleY - SERPENTINE.disc / 2,
+        width: numeralW, height: SERPENTINE.disc,
+      }, { align: "CENTER", vCenter: true, spaceBelow: 0 }));
+  }
+
+  // SAID ON THE SLIDE, not only in a note to the model: a note-free build
+  // passes every geometric check there is, which is Stage 3's lesson and the
+  // reason every other diagram here draws its own admission.
+  // SAID ON THE SLIDE, in the slot every other diagram uses, and named to the
+  // model with the fix rather than only with the fact. droppedContent reports
+  // the owners' own words as well, which is right: they ARE dropped, and its
+  // generic advice — put it in a field this layout uses — is the one thing
+  // that would not help here, because the field was right and the room was
+  // not.
+  if (anyOwner && !drawOwners) {
+    out.push(...noteBox(id("sown"), page, "Owners omitted for room", CANVAS.height - GRID.margin - 16));
+    if (note) note(`this serpentine had no room for its Owner lines at ${n} steps and was drawn without them`
+      + ` — use \`process\` for a row of up to ${MAX_STAGES} steps with owners, or shorten the captions`);
+  }
+  const dropped = usable.length - n;
+  if (dropped > 0) {
+    out.push(...noteBox(id("sdrop"), page,
+      `Showing ${n} of ${usable.length} steps`, CANVAS.height - GRID.margin - 16));
+    if (note) note(`a serpentine draws at most ${SERPENTINE.maxSteps} steps and this slide has ${usable.length}` +
+      ` — ${dropped} ${dropped === 1 ? "was" : "were"} left off; split them across two slides`);
+  }
+  // NOTHING IS CLIPPED IN SILENCE. The ladder has already stepped as far as it
+  // will, so a caption still over its band is one the slide cannot hold: the
+  // box stops at the band, Slides draws the words on from its top, the
+  // validator reports the overrun, and the model is told which way to fix it.
+  if (clipped > 0 && note) {
+    note(`${clipped} serpentine caption${clipped === 1 ? "" : "s"} ${clipped === 1 ? "is" : "are"} deeper than the band`
+      + ` between the rule and the edge of the page, even at ${inkStyle.size}pt — shorten them to about`
+      + ` ${Math.max(10, Math.floor((capW - TEXT_INSET_X) / (inkStyle.size * faceAdvance("Roboto"))) * 2)} characters,`
+      + ` or split the steps across two slides`);
+  }
+  return out;
 }
 
 /** Parse an ISO date to a UTC timestamp. UTC deliberately: these are calendar
@@ -3285,6 +3876,41 @@ const PLAYFAIR_ADVANCE = [
 ];
 const PLAYFAIR_UNKNOWN = 642;
 
+/** Roboto LIGHT's advance for every printable ASCII glyph (32–126), in
+ *  thousandths of an em — weight 300, which is what every bullet in this deck
+ *  is set in.
+ *
+ *  Measured 2026-09-21, the same way the bold table above was: a 1000px span
+ *  in headless Chrome against Google's own Roboto webfont, on the deck's own
+ *  rendered page so the face is certainly the one Slides will draw, with
+ *  `document.fonts.check` asserted before anything was read.
+ *
+ *  WHY A TABLE HERE WHEN faceAdvance ALREADY HAS A ROBOTO MEAN. Because the
+ *  mean is not Roboto's. FACE_ADVANCE records 0.418 for Roboto Light; the four
+ *  real body lines of this deck measure 0.4467, 0.4582, 0.4607 and 0.4656 in
+ *  the actual face. They measure 0.4113, 0.4192, 0.4199 and 0.4363 — a mean of
+ *  0.4217 — in Chrome's FALLBACK serif, which is what a canvas measures when
+ *  the webfont has not been awaited with `document.fonts.load`. So the deck's
+ *  body ruler is about 3% narrow before its 6% margin is applied, and the net
+ *  slack a wrap has to live on is nearer 3% than 6%.
+ *
+ *  THAT IS NOT FIXED HERE, and deliberately. faceAdvance's 0.443 is what all
+ *  618 stored slides were laid out on, and the splitter's thresholds are
+ *  pinned to it — the same sentence labelWidthPt's own header ends with. This
+ *  table is used only by raggedLines, which only the layouts written against
+ *  it ask for, so nothing already drawn moves. The open issue says the rest. */
+const ROBOTO_LIGHT_ADVANCE = [
+  244, 226, 287, 582, 555, 739, 615, 170, 319, 326, 424, 565, 192, 286, 239, 397, 555, 555, 555,
+  555, 555, 555, 555, 555, 555, 555, 210, 195, 511, 553, 519, 454, 913, 625, 613, 649, 655, 569,
+  563, 684, 708, 266, 551, 631, 527, 865, 710, 677, 616, 677, 635, 593, 597, 657, 617, 896, 612,
+  599, 598, 240, 394, 240, 416, 432, 286, 536, 554, 515, 556, 517, 331, 555, 549, 225, 228, 490,
+  225, 887, 550, 560, 554, 558, 337, 507, 322, 549, 481, 754, 487, 475, 487, 330, 221, 330, 685,
+];
+/** A glyph outside the light table, taken as its mean capital, for the same
+ *  reason the bold table takes one: an accented letter should over-measure
+ *  rather than wrap. */
+const ROBOTO_LIGHT_UNKNOWN = 655;
+
 /** A code point drawn a full em wide whatever the face: CJK, kana, Hangul,
  *  fullwidth forms, and emoji. Roboto and Playfair carry none of these, so the
  *  fallback face draws them, at 1000 (東 1004, オ 1000, ✅ 1000, 🚀 1000 —
@@ -3398,6 +4024,129 @@ export function estimateLines(
   let lines = 0;
   for (let i = 0; i < paras.length; i++) {
     lines += Math.max(1, Math.ceil(paras[i].trim().length / perLine));
+  }
+  return lines;
+}
+
+/** THE RAGGED RIGHT EDGE, AND THE MEASURE AT WHICH IT STOPS BEING FREE.
+ *
+ *  estimateLines divides a character COUNT by a characters-per-line figure,
+ *  which is a model of a paragraph that may break anywhere. Slides breaks on
+ *  words, so every line ends short by however much of the next word did not
+ *  fit, and that waste is what the count model does not pay for.
+ *
+ *  It is free on a wide measure and it is not free on a narrow one, because
+ *  the waste is ABSOLUTE — about half a word, whatever the column — while the
+ *  6% margin baked into faceAdvance is PROPORTIONAL to the line. Setting the
+ *  two equal is where the threshold below comes from: half of a 5.5-character
+ *  word is 2.75 characters, and 0.06 * usable = 2.75 * size * advance solves
+ *  to a line of about 46 characters. It is expressed as characters rather than
+ *  as points because it has to hold at both density presets, where the same
+ *  column carries a different size.
+ *
+ *  Measured, not reasoned: 240 real body paragraphs from the stored corpus
+ *  rendered through the PDF path in headless Chrome and compared with the box
+ *  the builder sized for them. At a 315pt two-column measure 5 of 240 render
+ *  taller than their box; at the photo rail's 187pt it is 43, and at the
+ *  three-column band's 196pt it is 39. The consequence is not an overrun —
+ *  it is the paragraph gap beneath, which the block solves against the stack's
+ *  natural height: a paragraph that draws a line more than it was measured for
+ *  eats the blank line under it, and two bullets read as one run-on paragraph
+ *  while the column beside it keeps its gap. */
+const RAGGED_BELOW_CHARS = 46;
+
+/** The margin on a summed word width. Per-glyph advances are exact to within
+ *  kerning, which labelWidthPt measured at 0.0–1.2% on real strings and 2.8%
+ *  on the worst pair-heavy case it could find. Three per cent covers the
+ *  measured range with room, and it is deliberately NOT labelWidthPt's 6%:
+ *  that margin is sized for a mean, and applied to a word-by-word wrap it
+ *  bought a whole extra line at every boundary — two columns whose lead-ins
+ *  render to the same depth started their next paragraph 14.5pt apart. */
+const RAGGED_KERN = 1.03;
+
+/** Whether a measure is narrow enough that the ragged edge has to be paid for.
+ *  ONE PLACE, because the splitter's probe and the block that draws the words
+ *  have to agree: a field measured ragged when drawn and smooth when probed
+ *  splits too late and runs off the page, which is the disagreement that made
+ *  the builder and the validator argue about the frame. */
+export function measuresRagged(boxWidth: number, size: number, font?: string): boolean {
+  const usable = Math.max(size, boxWidth - TEXT_INSET_X);
+  return usable / (size * faceAdvance(font)) < RAGGED_BELOW_CHARS;
+}
+
+/** How many lines a paragraph takes when it is WRAPPED ON WORDS, at the face's
+ *  own mean advance — and at the bold face's real per-glyph advances for a
+ *  prefix drawn in bold, which is what a column's lead-in is.
+ *
+ *  `boldPrefix` is a count of characters at the head of the string, not a
+ *  separate string, because the wrap does not care where the run boundary is:
+ *  a word that straddles it is measured in both faces and wrapped once.
+ *
+ *  This is also the answer to the OPPOSITE error. A lead-in measured as
+ *  `ceil(totalBoldAdvance / usable)` rounds up at every boundary — a sum over
+ *  a width always does — so two columns whose lead-ins render to the same
+ *  depth started their next paragraph 14.5pt apart. Wrapping word by word is
+ *  the renderer's own algorithm and has no boundary to round at. */
+export function raggedLines(
+  text: string | undefined, boxWidth: number, size: number, font?: string, boldPrefix = 0
+): number {
+  const s = drawnText(text ?? "").trim();
+  if (!s) return 0;
+  const usable = Math.max(size, boxWidth - TEXT_INSET_X);
+  /** A MEAN IS THE WRONG RULER FOR A WORD, which is labelWidthPt's own
+   *  argument one function up: a word is far too short for the averaging to
+   *  work, and this wraps a word at a time. So both faces are summed glyph by
+   *  glyph — the light table for body copy, the bold one where the lead-in
+   *  reaches — and the only error left is kerning, which RAGGED_KERN pays for.
+   *  A face this has no table for falls back to the mean it has always used. */
+  const light = !font || font === "Roboto";
+  const mean = size * faceAdvance(font);
+  const sumOf = (slice: string, table: number[], unknown: number): number => {
+    let em = 0;
+    for (let i = 0; i < slice.length;) {
+      const cp = slice.codePointAt(i) as number;
+      i += cp > 0xffff ? 2 : 1;
+      if (cp === 0x200d || (cp >= 0xfe00 && cp <= 0xfe0f)) continue;
+      em += cp >= 32 && cp <= 126 ? table[cp - 32] : drawsFullWidth(cp) ? 1000 : unknown;
+    }
+    return (em / 1000) * size * RAGGED_KERN;
+  };
+  /** A slice's width: the bold table where the lead-in reaches, the body face
+   *  where it does not. */
+  const widthOf = (from: number, to: number): number => {
+    const boldTo = Math.max(from, Math.min(to, boldPrefix));
+    const bold = boldTo > from
+      ? sumOf(s.slice(from, boldTo), ROBOTO_BOLD_ADVANCE, ROBOTO_BOLD_UNKNOWN) : 0;
+    const rest = s.slice(Math.max(from, boldTo), Math.max(from, to));
+    return bold + (light ? sumOf(rest, ROBOTO_LIGHT_ADVANCE, ROBOTO_LIGHT_UNKNOWN) : rest.length * mean);
+  };
+  const paras = s.split("\n");
+  let lines = 0;
+  let at = 0;
+  for (let p = 0; p < paras.length; p++) {
+    const para = paras[p];
+    const base = at;
+    at += para.length + 1;
+    const trimmed = para.trim();
+    if (!trimmed) { lines += 1; continue; }
+    // Greedy, exactly as a renderer breaks: take words while they fit, and
+    // start a new line at the first that does not. A single word wider than
+    // the measure takes its own line and overhangs, which is what Slides does
+    // with it too.
+    const words = para.split(/\s+/);
+    let cursor = base + (para.length - para.replace(/^\s+/, "").length);
+    let used = 0;
+    let onLine = 0;
+    for (let w = 0; w < words.length; w++) {
+      const word = words[w];
+      if (!word) { cursor += 1; continue; }
+      const ww = widthOf(cursor, cursor + word.length);
+      const space = onLine ? widthOf(cursor - 1, cursor) : 0;
+      if (onLine && used + space + ww > usable) { lines += 1; used = ww; onLine = 1; }
+      else { used += space + ww; onLine += 1; }
+      cursor += word.length + 1;
+    }
+    lines += 1;
   }
   return lines;
 }
@@ -4548,19 +5297,87 @@ export function railBox(
   return { url, x, y, width: CANVAS.width - x, height: CANVAS.height - y };
 }
 
-/** The rule under a title: a short accent segment, then a hairline. */
+/** THE PHOTO RAIL'S PICTURE: portrait, inset down the left, on `photo-rail`.
+ *
+ *  The sibling of `railBox` above and deliberately not a variant of it. That
+ *  one bleeds a picture off the right and bottom trim of a prose page and
+ *  hangs it from the title's own rule, so its box moves with the density and
+ *  its shape is whatever is left of the canvas. This one is held inside all
+ *  four margins at a fixed crop, which is why the page keeps its chrome and
+ *  why the two text columns beside it have the same measure at both presets.
+ *
+ *  ONE RULER, and it has to be: this box decides the CROP at resolution time
+ *  and the PLACEMENT at draw time, the same contract `cardGeometry` keeps. A
+ *  picture baked to one shape and drawn in another letterboxes, which is the
+ *  bug `railShape` exists to have closed for the bleeding rail. */
+export function photoRailBox(
+  slide: Pick<SlideInput, "layout" | "resolvedImage">
+): { url: string; x: number; y: number; width: number; height: number } | null {
+  if (slide.layout !== "photo-rail") return null;
+  const url = slide.resolvedImage?.url;
+  if (!url) return null;
+  return {
+    url, x: GRID.margin, y: PHOTO_RAIL.top,
+    width: PHOTO_RAIL.width, height: PHOTO_RAIL.height,
+  };
+}
+
+/** THE SHAPE A SLIDE'S PICTURE IS DRAWN IN, and therefore the shape it has to
+ *  be CROPPED to. Null when the picture is a backdrop rather than a region.
+ *
+ *  Written once because it was written twice: the attachment path and the
+ *  query path each carried their own copy of the bleeding rail's arithmetic,
+ *  and a third copy for the photo rail would be a third chance for the crop
+ *  and the placement to disagree. A picture baked to one shape and drawn in
+ *  another letterboxes, which is the whole reason `railShape` exists.
+ *
+ *  THE PHOTO RAIL'S SHAPE IS DENSITY-FREE and the bleeding rail's is not.
+ *  Images resolve outside `withDensity`, so the bleeding rail — whose box is
+ *  measured from GRID.bodyY — is cropped at the default preset whatever the
+ *  deck is set to, and at `present` the box it lands in is 54.72pt shorter
+ *  than the crop assumed. The inset rail cannot have that fault: its box is
+ *  derived from the frame, which does not move. */
+export function pictureShape(layout: string | undefined): { width: number; height: number } | null {
+  if (layout === "photo-rail") return { width: PHOTO_RAIL.width, height: PHOTO_RAIL.height };
+  if (layout === "content" || layout === "case-study") {
+    return {
+      width: CANVAS.width - (GRID.margin + GRID.proseNarrow + IMAGE.railGap),
+      height: CANVAS.height - GRID.bodyY,
+    };
+  }
+  return null;
+}
+
+/** The rule under a title: a short accent segment, then a hairline.
+ *
+ *  IT TAKES A REACH RATHER THAN A WIDTH, because the handover deck's own rule
+ *  does not always start at the margin. On its three-column pages it runs the
+ *  full measure; on its photo-rail pages it starts at the PICTURE'S RIGHT EDGE
+ *  and runs to the right margin, which is the detail that makes those slides
+ *  look like theirs rather than like ours with a photograph on them. That is
+ *  the same vocabulary `hairline` already speaks — `hairlineSpan`'s own header
+ *  names these two slides — so the two rules in this deck are one device with
+ *  one span type between them, not a rule and a special case.
+ *
+ *  A width is still what every caller before Stage 4 passes, expressed as the
+ *  reach it always meant: from the margin, for that width. */
 function ruleRequests(
-  objectId: string, page: string, y: number, width: number, onDark: boolean
+  objectId: string, page: string, y: number, reach: HairlineReach, onDark: boolean
 ): Req[] {
   const accent = onDark ? COLOR.tealSoft : COLOR.blue;
   const hair = onDark ? COLOR.greyLight : COLOR.navy;
+  const span = hairlineSpan(reach);
+  // Nothing to run across: the same refusal `hairline` makes, and for the same
+  // reason — Slides rejects a zero-width shape and takes the whole deck with
+  // it over a rule nobody would have seen.
+  if (span.length <= 0) return [];
   return [
     ...filledShape(`${objectId}a`, page, "RECTANGLE", accent, {
-      x: GRID.margin, y, width: RULE.accentWidth, height: RULE.thickness,
+      x: span.x, y, width: Math.min(RULE.accentWidth, span.length), height: RULE.thickness,
     }),
     ...filledShape(`${objectId}b`, page, "RECTANGLE", hair, {
-      x: GRID.margin + RULE.accentWidth, y: y + (RULE.thickness - RULE.hairlineThickness) / 2,
-      width: Math.max(0, width - RULE.accentWidth), height: RULE.hairlineThickness,
+      x: span.x + RULE.accentWidth, y: y + (RULE.thickness - RULE.hairlineThickness) / 2,
+      width: Math.max(0, span.length - RULE.accentWidth), height: RULE.hairlineThickness,
     }, RULE.hairlineAlpha),
   ];
 }
@@ -7527,17 +8344,36 @@ function buildSlideRequestsAt(
   const proseColumn = isProse
     ? (rightColumnTaken ? GRID.proseNarrow : GRID.proseWidth)
     : GRID.contentWidth;
-  const noteWidth = rightColumnTaken ? GRID.proseNarrow : GRID.contentWidth;
+  // THE TAKEAWAY BAR SITS ON THE MEASURE THIS PAGE'S WORDS HAVE, which is not
+  // always the content measure. Where a picture bleeds off the RIGHT the bar
+  // narrows and keeps its left edge; on the photo rail the picture is on the
+  // LEFT, so the bar has to MOVE — drawn from the page margin it was painted
+  // across the bottom corner of the photograph, which is the same fault the
+  // chrome span already fixes for the bleeding rail one band down.
+  const noteX = layout === "photo-rail" ? PHOTO_RAIL.textX : GRID.margin;
+  const noteWidth = layout === "photo-rail" ? PHOTO_RAIL.textWidth
+    : rightColumnTaken ? GRID.proseNarrow : GRID.contentWidth;
   // After the width is known: the band is shortened by the note's height AT
   // that width, so the prose above leaves room for the bar it actually gets.
   const band = bandHeightFor(slide, noteWidth);
-  const titleWidth = layout === "image-split" ? IMAGE.splitTextWidth : proseColumn;
+  const titleWidth = layout === "image-split" ? IMAGE.splitTextWidth
+    : layout === "photo-rail" ? PHOTO_RAIL.textWidth : proseColumn;
   // image-split sets its title in a HALF-WIDTH column, so the same words take
   // roughly twice the lines. Measuring it against the full-width title band
   // was survivable while that band was tall; once it tightened, a two-line
   // title in a narrow column ran out of its box and onto the body beneath.
   // Its body starts under the title rather than at a fixed y, so the extra
   // room costs nothing.
+  // THE ALLOWANCE BELONGS TO A LAYOUT WITH NO RULE UNDER ITS TITLE, and
+  // `photo-rail` was given it for one render before the render showed why not.
+  // image-split sets its heading in a 315pt column and lets it reach 34pt past
+  // GRID.bodyY, which costs nothing there because its body starts under the
+  // title and nothing else is drawn on that line. The photo rail has a rule on
+  // that line — the one that starts at the picture's right edge and is the
+  // whole reason its pages look like the source's — so the same allowance drew
+  // a hairline straight through "Put the audience first". Its title is fitted
+  // to end above the rule like every other ruled layout; the narrow measure is
+  // already handled by `titleWidth` below, which is what decides the SIZE.
   const split = layout === "image-split";
   // THE LADDER IS THE PRESET'S, not this call site's. At `read` every one of
   // these four is what it has always been — the floor is TITLE_MIN_SIZE, the
@@ -8708,7 +9544,8 @@ function buildSlideRequestsAt(
       ...textBox(id("title"), page, slide.title, titleStyle, {
         x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
       }),
-      ...ruleRequests(id("rule"), page, GRID.bodyY - RULE.gapAbove, GRID.contentWidth, onDark),
+      ...ruleRequests(id("rule"), page, GRID.bodyY - RULE.gapAbove,
+        { from: GRID.margin, to: GRID.margin + GRID.contentWidth }, onDark),
     );
 
     let colTop = GRID.columnY;
@@ -8831,6 +9668,222 @@ function buildSlideRequestsAt(
       }).requests,
     );
     contentBottom = colTop + panelH;
+  } else if (layout === "photo-rail") {
+    /* C — THE PHOTO RAIL: a portrait picture inset down the left, two prose
+     * columns beside it. Four of the handover deck's ten slides, and the one
+     * page `image-split` cannot make: that layout bleeds the picture off the
+     * trim and gives the words ONE half-width column, and the difference is
+     * not a matter of degree. See PHOTO_RAIL for why insetting is what lets
+     * this page keep the whole frame and the stepper rail.
+     *
+     * BUILT AS A COMPOSITION, NOT AS AN ARCHETYPE, and that is deliberate:
+     * the picture region is `photoRailBox` and the words are `columnBand(2)`
+     * over the band the picture leaves. Stage 5 expresses this and the
+     * three-column band below as ONE composition — a figure on one side, n
+     * prose columns on the other — and a hard-coded twin would have to be
+     * unpicked to get there.
+     */
+    const photo = photoRailBox(slide);
+    // THE COUNT COMES FROM THE CONTENT, never from the layout's name — the
+    // rule the three-column band below states and this layout did not follow.
+    // A photo rail with one column of copy drew it at half the band and left
+    // 228pt of the page blank, and because the splitter clears `bodyRight` on
+    // a continuation, EVERY continued photo-rail slide was drawn that way.
+    const railShown = columnFields(slide, ["body", "bodyRight"]);
+    const cols = columnBand(railShown.length, { x: PHOTO_RAIL.textX, width: PHOTO_RAIL.textWidth });
+    if (photo) {
+      requests.push({
+        createImage: {
+          objectId: id("rail"),
+          url: photo.url,
+          elementProperties: {
+            pageObjectId: page,
+            size: { width: pt(photo.width), height: pt(photo.height) },
+            transform: { scaleX: 1, scaleY: 1, translateX: photo.x, translateY: photo.y, unit: "PT" },
+          },
+        },
+      });
+    }
+    requests.push(
+      // THE EYEBROW IS DRAWN WHERE EVERY OTHER PAPER PAGE DRAWS IT: at the
+      // margin, in the room the stepper rail leaves.
+      //
+      // It began at the picture's left edge, on the reasoning that the words
+      // start there — and the picture never reaches this line. The eyebrow
+      // band is y=21.6 to 39.6, entirely above the frame's top rule at 46.8
+      // and above the picture's own top at 52, so nothing about the photograph
+      // touches it. What it DID touch was the stepper: this was the one layout
+      // whose eyebrow kept the full page measure instead of `eyebrowRoom`'s,
+      // so a 44-character eyebrow ran 152pt into a seven-step rail and the
+      // numerals were drawn inside the word RELATIONSHIP, at both presets and
+      // at every step count from three to nine. Narrowing the old box instead
+      // of moving it trades the overlap for a wrap: from about 30 characters
+      // the eyebrow then took two lines and ran through the title.
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY, width: eyebrowW, height: GRID.eyebrowHeight,
+      }),
+      // THE TITLE'S TOP EDGE IS THE PICTURE'S TOP EDGE, where there is room
+      // for it to be. fitHeading anchors a title to the FOOT of its band so it
+      // ends above the rule, which is right everywhere else and leaves a hole
+      // here: at `present` the band is deeper, so a one-line title dropped to
+      // y=95.7 against a picture starting at 52 and opened 44pt of empty
+      // ground beside the photograph's top corner. The source sets the title's
+      // cap-line level with the top of its picture. A title too tall to start
+      // there keeps the fitted position, so it still ends above the rule.
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: PHOTO_RAIL.textX, y: Math.min(PHOTO_RAIL.top, titleBox.y),
+        width: PHOTO_RAIL.textWidth, height: titleBox.height,
+      }),
+      // THE RULE STARTS AT THE PICTURE'S RIGHT EDGE, not at the page margin,
+      // and that single detail is what makes this read as the source's page.
+      // A full-measure rule here would be drawn straight across a photograph
+      // that is holding all four of its own edges.
+      ...ruleRequests(id("rule"), page, GRID.bodyY - RULE.gapAbove,
+        { from: GRID.margin + PHOTO_RAIL.width, to: GRID.margin + GRID.contentWidth }, onDark),
+    );
+
+    let colTop = GRID.bodyY;
+    if (slide.subtitle?.trim()) {
+      // The source's own photo-rail pages carry no standfirst, but the field
+      // exists and droppedContent reports one that is not drawn — so it is
+      // drawn, across the type band, and the columns start under it. A line
+      // the layout refuses is a line somebody has to be told about.
+      const standStyle = onDark ? TYPE.standfirstDark : TYPE.standfirst;
+      const standH = drawnTextHeight(
+        estimateLines(slide.subtitle, PHOTO_RAIL.textWidth, standStyle.size), standStyle.size);
+      requests.push(...textBox(id("sub"), page, slide.subtitle, standStyle, {
+        x: PHOTO_RAIL.textX, y: colTop, width: PHOTO_RAIL.textWidth, height: standH,
+      }));
+      colTop = colTop + standH + 12;
+    }
+    // THE COLUMNS STOP WHERE THE PICTURE DOES, so the page has one foot rather
+    // than two. The takeaway bar, when there is one, takes its own room off
+    // this the way it does on every other layout.
+    const colFloor = Math.min(
+      PHOTO_RAIL.bottom,
+      NOTE.bottom - noteHeight(slide.note, noteWidth) - (slide.note?.trim() ? NOTE.gap : 0),
+    );
+    const colH = Math.max(30, colFloor - colTop);
+    const railFit = columnFit(railShown, cols.width, colH, bodyStyle);
+    for (let i = 0; i < railShown.length; i++) {
+      requests.push(...bulletBlock(id, railShown[i].key, page, railShown[i].text, railFit.style, {
+        x: cols.x[i], y: colTop, width: cols.width, height: colH,
+      }, { ragged: true }).requests);
+    }
+    requests.push(...columnOverfullNote(id("colclip"), page, railFit, shotNote, "photo-rail"));
+    requests.push(...creditRequests(id("credit"), page, slide.resolvedImage?.credit,
+      { x: PHOTO_RAIL.textX, width: PHOTO_RAIL.textWidth }, onDark, chrome.to));
+    contentBottom = colFloor;
+  } else if (layout === "three-column") {
+    /* D — THE THREE-COLUMN BAND. Two of the handover deck's ten slides.
+     *
+     * The column geometry was three constants and exactly two slots; it is
+     * `columnBand(n)` now, which is what this needs and what Stage 5 needs.
+     * The source's own gutters are 30.24 and 53.28 — hand-set and unequal by
+     * 23pt between columns about 180pt wide — and they are SOLVED EQUAL here
+     * rather than copied: reproducing the deck exactly would reproduce a slip.
+     *
+     * A COLUMN IS PROSE WITH A LEAD-IN, not a card. `cards` can put three
+     * blocks across the band, but a card is a panel with a marker chip and a
+     * heading; this is a column of body copy whose first sentence is set in
+     * the accent and reads on into the rest. The difference is what the source
+     * uses to make a page of argument rather than a page of parts.
+     */
+    // THE COUNT COMES FROM THE CONTENT, never from the layout's name. A model
+    // that writes two columns gets two full-width ones rather than three with
+    // an empty slot, which is the shape `cards` already takes from its array.
+    const shown = columnFields(slide, ["body", "bodyRight", "bodyThird"]);
+    const cols = columnBand(shown.length);
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY, width: eyebrowW, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
+      }),
+      // FULL WIDTH, unlike the photo rail's. There is no picture to stop at.
+      ...ruleRequests(id("rule"), page, GRID.bodyY - RULE.gapAbove,
+        { from: GRID.margin, to: GRID.margin + GRID.contentWidth }, onDark),
+    );
+
+    let colTop = GRID.bodyY;
+    if (slide.subtitle?.trim()) {
+      // The standfirst runs the FULL measure above the columns, which is the
+      // source's own arrangement: it is the sentence the three columns are
+      // three answers to, so it belongs to the page and not to a column.
+      const standStyle = onDark ? TYPE.standfirstDark : TYPE.standfirst;
+      const standH = drawnTextHeight(
+        estimateLines(slide.subtitle, GRID.contentWidth, standStyle.size), standStyle.size);
+      requests.push(...textBox(id("sub"), page, slide.subtitle, standStyle, {
+        x: GRID.margin, y: colTop, width: GRID.contentWidth, height: standH,
+      }));
+      colTop = colTop + standH + 12;
+    }
+    const colFloor = NOTE.bottom - noteHeight(slide.note, noteWidth) - (slide.note?.trim() ? NOTE.gap : 0);
+    const colH = Math.max(30, colFloor - colTop);
+    // The lead-in: the accent on a dark ground is the teal, for the same
+    // reason the rule's accent is — brand blue on navy is 2.39:1.
+    // WEIGHT, NOT `bold`. TypeStyle carries both and the emitter reads
+    // `style.weight ?? (style.bold ? 700 : 400)` — so spreading the body
+    // style, which is Roboto Light at weight 300, kept the 300 and the flag
+    // did nothing. Rendered, every lead-in came out the same weight as the
+    // column under it and the device was invisible.
+    //
+    // AND NOT ON A CONTINUATION. A continuation by definition does not start a
+    // column — its first paragraph is a bullet from the middle of the list the
+    // splitter cut — so accenting it promotes an ordinary point into the
+    // opening of an argument it is halfway through. The eyebrow and the
+    // standfirst are dropped from a continuation for exactly this reason, and
+    // the lead-in is the same decision one field along.
+    const colFit = columnFit(shown, cols.width, colH, bodyStyle);
+    const leadIn = slide.continuation
+      ? undefined
+      : { ...colFit.style, weight: 700, bold: true, color: onDark ? COLOR.tealSoft : COLOR.blue };
+    for (let i = 0; i < shown.length; i++) {
+      requests.push(...bulletBlock(id, shown[i].key, page, shown[i].text, colFit.style, {
+        x: cols.x[i], y: colTop, width: cols.width, height: colH,
+      }, { leadIn, ragged: true }).requests);
+    }
+    requests.push(...columnOverfullNote(id("colclip"), page, colFit, shotNote, "three-column"));
+    contentBottom = colFloor;
+  } else if (layout === "serpentine") {
+    /* E — THE SERPENTINE. The handover deck's slide 8: seven steps, against
+     * `process`'s cap of five. See SERPENTINE and serpentineRequests — this is
+     * `timeline` with the numeral inside the marker, the captions alternating,
+     * and a seventh slot, not a new engine.
+     */
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY, width: eyebrowW, height: GRID.eyebrowHeight,
+      }),
+      // CENTRED, as the source's is: the device below it is symmetrical about
+      // the page, and a title hard left over a centred rule reads as two
+      // decisions rather than one.
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
+      }, { align: "CENTER" }),
+    );
+    let top = GRID.bodyY;
+    if (slide.subtitle?.trim()) {
+      const standStyle = onDark ? TYPE.standfirstDark : TYPE.standfirst;
+      const standH = drawnTextHeight(
+        estimateLines(slide.subtitle, GRID.contentWidth, standStyle.size), standStyle.size);
+      requests.push(...textBox(id("sub"), page, slide.subtitle, standStyle, {
+        x: GRID.margin, y: top, width: GRID.contentWidth, height: standH,
+      }, { align: "CENTER" }));
+      top = top + standH + 12;
+    }
+    // A DRAWN BLOCK STOPS ABOVE THE FRAME'S OWN RULE. NOTE.bottom is 374.4 and
+    // the hairline is at 376, so a band floored on the takeaway bar's line
+    // alone puts the lowest owner 1.6pt off a rule the frame would then have
+    // to yield — which is the swot-and-venn fault Stage 3 closed with
+    // FRAME.contentGap. The furniture does not move for content; content stops
+    // above it.
+    const floor = Math.min(FRAME.bottomRuleY - FRAME.contentGap, NOTE.bottom)
+      - noteHeight(slide.note, noteWidth) - (slide.note?.trim() ? NOTE.gap : 0);
+    requests.push(...serpentineRequests(page, id, slide.stages || [], onDark,
+      top, Math.max(60, floor - top), shotNote));
+    contentBottom = floor;
   } else {
     // content, case-study, dark-index all share the title + body skeleton;
     // the eyebrow is what makes a case study read as one.
@@ -8884,7 +9937,7 @@ function buildSlideRequestsAt(
       // horizontal across the page rather than a short rule and a floating
       // rectangle with a gap between them.
       ...ruleRequests(id("rule"), page, GRID.bodyY - RULE.gapAbove,
-        rail ? rail.x - GRID.margin : proseWidth, onDark),
+        { from: GRID.margin, to: GRID.margin + (rail ? rail.x - GRID.margin : proseWidth) }, onDark),
     );
 
     // The standfirst takes the room it needs and the bullets start under it.
@@ -8922,7 +9975,7 @@ function buildSlideRequestsAt(
   // The takeaway bar, on every layout. Drawn after the content so it sits on
   // top of nothing — the band above was already shortened to make room.
   if (!noteDrawn) requests.push(...noteRequests(page, id, slide.note, onDark,
-    contentBottom !== undefined ? contentBottom + NOTE.gap : undefined, noteWidth));
+    contentBottom !== undefined ? contentBottom + NOTE.gap : undefined, noteWidth, noteX));
 
   requests.push(...logoRequests(id("logo"), page, style, slide));
 
@@ -9132,9 +10185,18 @@ const PROBE = "\u241E";
  *  judged to overflow and a 39-slide deck came back as 53. */
 let PROBING = false;
 
+/** Whether the block holding the probe's sentinel wraps its paragraphs on
+ *  words. Written by bulletBlock during the probe and read once by bodyBox —
+ *  the same shape as PROBING above, and for the same reason: it is an answer
+ *  the request stream cannot carry. */
+let PROBE_RAGGED = false;
+
 function bodyBox(
   slide: SlideInput, index: number, field: "body" | "bodyRight"
-): { width: number; height: number; size: number; bullets: boolean; spaceBelow: number; font?: string } | undefined {
+): {
+  width: number; height: number; size: number; bullets: boolean; spaceBelow: number;
+  font?: string; ragged?: boolean;
+} | undefined {
   // The probe must measure the box this slide will END UP with, not the box it
   // has right now. On content/case-study a picture becomes a RIGHT-HAND RAIL
   // that narrows the body from 540pt to 432pt — but splitting runs BEFORE image
@@ -9151,8 +10213,10 @@ function bodyBox(
   };
   probe[field] = `${PROBE}\n${PROBE}`;
   PROBING = true;
+  PROBE_RAGGED = false;
   let reqs: any[];
   try { reqs = buildSlideRequests(probe, index, "m") as any[]; } finally { PROBING = false; }
+  const ragged = PROBE_RAGGED;
   let id: string | undefined;
   for (const r of reqs) {
     if (r.insertText && String(r.insertText.text).indexOf(PROBE) >= 0) { id = r.insertText.objectId; break; }
@@ -9185,18 +10249,28 @@ function bodyBox(
       spaceBelow = r.updateParagraphStyle.style.spaceBelow.magnitude;
     }
   }
-  return { width, height, size, bullets, spaceBelow, font };
+  return { width, height, size, bullets, spaceBelow, font, ragged };
 }
 
 /** How much room a block of paragraphs needs in a given box. */
 const SPACE_BELOW = 6;
 
 function blockHeight(
-  paras: string[], box: { width: number; size: number; bullets: boolean; spaceBelow?: number; font?: string }
+  paras: string[],
+  box: { width: number; size: number; bullets: boolean; spaceBelow?: number; font?: string; ragged?: boolean }
 ): number {
+  // THE SPLITTER MEASURES WITH THE RULER THE BLOCK WILL BE DRAWN WITH, and the
+  // probe is what says which one that is. Left on the count model here, a
+  // photo rail's 187pt column would be judged to fit a body the block then
+  // draws a line taller per paragraph, so the slide that most needed splitting
+  // is the one never split — the same two-rulers failure bodyBox itself was
+  // written to end.
+  const ragged = !!box.ragged;
   let lines = 0;
   for (let i = 0; i < paras.length; i++) {
-    lines += Math.max(1, estimateLines(paras[i], box.width, box.size, box.bullets, false, box.font));
+    lines += Math.max(1, ragged
+      ? raggedLines(paras[i], box.width, box.size, box.font)
+      : estimateLines(paras[i], box.width, box.size, box.bullets, false, box.font));
   }
   return drawnTextHeight(lines, box.size, box.spaceBelow ?? SPACE_BELOW, paras.length);
 }
@@ -9247,6 +10321,8 @@ function splitOnce(slide: SlideInput, index: number): SlideInput[] {
     if (middle < take && blockHeight(paras.slice(0, middle), box) <= box.height) take = middle;
   }
 
+  const cleared: Record<string, undefined> = {};
+  for (let i = 0; i < CONTINUATION_CLEARS.length; i++) cleared[CONTINUATION_CLEARS[i]] = undefined;
   return [
     { ...slide, body: paras.slice(0, take).join("\n") },
     {
@@ -9265,9 +10341,15 @@ function splitOnce(slide: SlideInput, index: number): SlideInput[] {
       // would buy a second, different photograph for the same point. See
       // inheritContinuationImages, which runs after resolution — splitting
       // happens BEFORE it, so there is nothing to copy yet at this moment.
-      // bodyRight goes with the eyebrow: the spread copies it, so a two-column
-      // slide whose LEFT column overflowed repeated its whole right column on
-      // the continuation.
+      // THE COLUMN FIELDS AND THE EYEBROW GO WITH IT, and the list is DERIVED
+      // rather than written here: the spread copies every field, so a
+      // two-column slide whose LEFT column overflowed repeated its whole right
+      // column on the continuation. Written by hand the list was followed
+      // once — `bodyThird` was added to the builder and to the edit path's
+      // TEXT_EXTRAS and not here, so the third column of a split three-column
+      // slide was repeated verbatim on all four pieces. See
+      // CONTINUATION_CLEARS: one list, so the next column field cannot be
+      // added to one of them and not the other.
       // The standfirst and the takeaway belong to the FIRST half too. A real
       // conversion produced a continuation carrying one leftover sentence,
       // padded to a full slide by the intro and the takeaway repeated verbatim
@@ -9281,7 +10363,7 @@ function splitOnce(slide: SlideInput, index: number): SlideInput[] {
       // along. The callouts do NOT come with it: the pins and their numbered
       // lines belong to the half of the body that explains them.
       image: isScreenshot(slide) ? { screenshot: true } : undefined,
-      eyebrow: undefined, notes: undefined, bodyRight: undefined,
+      ...cleared,
       subtitle: undefined, note: undefined, strip: undefined, tones: undefined,
       continuation: true,
     },
@@ -9467,10 +10549,7 @@ export async function resolveDeckImages(
         if (file) {
           const src = await attachmentImageSource(file.bytes, file.contentType, slide.image.region);
           if (src) {
-            const railShape = slide.layout === "content" || slide.layout === "case-study"
-              ? { width: CANVAS.width - (GRID.margin + GRID.proseNarrow + IMAGE.railGap),
-                  height: CANVAS.height - GRID.bodyY }
-              : null;
+            const railShape = pictureShape(slide.layout);
             const split = slide.layout === "image-split";
             if (drawsRawScreenshot(slide, slideIndex)) {
               // NOT BAKED AT ALL. The upload is already a signed, Google-
@@ -9525,10 +10604,7 @@ export async function resolveDeckImages(
         // A prose slide's picture is a rail down the right, not a backdrop, so
         // it is cropped to the rail's own shape. Baking it 16:9 and dropping it
         // into a 239x272 box is the letterboxing every other path fixed.
-        const railShape = slide.layout === "content" || slide.layout === "case-study"
-          ? { width: CANVAS.width - (GRID.margin + GRID.proseNarrow + IMAGE.railGap),
-              height: CANVAS.height - GRID.bodyY }
-          : null;
+        const railShape = pictureShape(slide.layout);
         // Tell the baker where this layout's lockup will land, so it measures
         // the part of the picture the mark actually sits on.
         const style = slideStyle(slide, slideIndex);

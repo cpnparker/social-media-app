@@ -33,6 +33,12 @@ const REQUIRED_PAYLOAD: { [layout: string]: string } = {
   timeline: "milestones",
   "timeline-parallel": "tracks",
   process: "stages",
+  // The SAME payload as `process`, because it is the same content at a count
+  // process refuses: its cards are laid across the width, so a sixth is 100pt
+  // wide with a two-word caption in it. A serpentine alternates its captions
+  // above and below one rule and fits seven. A new field here would have made
+  // the model choose a payload to choose a drawing.
+  serpentine: "stages",
   "logo-wall": "logos",
   quote: "quote",
   "image-grid": "images",
@@ -476,6 +482,10 @@ function scanBlank(slides: any[]): { message: string; fault: SlideFault }[] {
 const TEXT_LAYOUTS = [
   "content", "section", "cover", "case-study", "dark-index",
   "image-split", "feature", "closing", "two-column", "statement",
+  // `photo-rail` needs a picture the way `image-split` does, and is listed
+  // here for the same reason that one is: an `image` is a brief, not a
+  // payload, and a slide whose picture cannot be found still draws its words.
+  "photo-rail", "three-column",
 ];
 
 /**
@@ -508,8 +518,31 @@ export const PAYLOAD_FIELDS: string[] = Object.keys(REQUIRED_PAYLOAD)
 
 /** Plain-string fields a single-slide insert or patch carries beside the text
  *  ones: speaker notes and the parallel timeline's "today". Strings, not
- *  payloads — an empty one is still a deliberate value. */
-const TEXT_EXTRAS = ["notes", "today"];
+ *  payloads — an empty one is still a deliberate value.
+ *
+ *  THE COLUMN FIELDS AND THE EYEBROW WERE MISSING, AND THEY FAILED SILENTLY.
+ *  The patch branch applied `title`, `subtitle`, `body`, these extras and the
+ *  payloads, and nothing else — so `{ slideNumber: 2, bodyRight: "..." }` was
+ *  REFUSED as "no change was given", and `{ slideNumber: 2, body, bodyRight }`
+ *  was ACCEPTED, changed `body`, and kept the old `bodyRight` with nothing
+ *  said. The right-hand column of a two-column slide could not be edited at
+ *  all through the route the tool's own description calls the way to change a
+ *  slide; only resending the whole slide reached it. Found while wiring the
+ *  three-column band, whose third column would have inherited the same hole —
+ *  and `eyebrow` is the same one word, in the same array, so it is fixed
+ *  beside them rather than left as the next person's surprise. */
+export const TEXT_EXTRAS = ["notes", "today", "bodyRight", "bodyThird", "eyebrow"];
+
+/** The text extras a CONTINUATION keeps. Everything else on the list above is
+ *  cleared when the splitter cuts a slide in two, and the list is derived from
+ *  one place for the reason the patch branch already reads `changesExtra` off
+ *  TEXT_EXTRAS: written out by hand it was followed once. `bodyRight` was
+ *  cleared and `bodyThird` was not, so the third column of a split
+ *  three-column slide was repeated verbatim on every piece — and because it
+ *  was still there, the continuation drew TWO columns and split the same copy
+ *  across four slides where two-column needs three. */
+export const CONTINUATION_KEEPS = ["today"];
+export const CONTINUATION_CLEARS = TEXT_EXTRAS.filter((f) => CONTINUATION_KEEPS.indexOf(f) < 0);
 
 /** Can this layout be inserted with the fields given? Exported because it is
  *  the whole rule, and a rule worth enforcing is worth being able to run. */
@@ -964,13 +997,28 @@ function applyEditSlideTo(
     }
   }
   const changesPayload = PAYLOAD_FIELDS.some((f) => !isEmptyPayload(edit[f]));
+  // WHAT THIS BRANCH APPLIES IS WHAT IT ACCEPTS. `notes` used to be named here
+  // by hand while the other extras were not, so a patch carrying only
+  // `bodyRight` was refused as an empty request — an honest refusal of a field
+  // the code a dozen lines below would have applied perfectly well. Read off
+  // TEXT_EXTRAS so the two cannot disagree again.
+  const changesExtra = TEXT_EXTRAS.some((f) => typeof edit[f] === "string");
+  // A LAYOUT ON ITS OWN IS A CHANGE. The branch below applies `edit.layout`
+  // perfectly well, and the guard did not count it — so "make slide 3 a
+  // photo-rail" was refused as an empty request, on every layout in the enum
+  // this route offers. The same shape as the `bodyRight` hole one function
+  // above, and it matters more now: the tool's own guidance steers the model
+  // towards converting a `content` slide to a photo rail, and the one-call way
+  // to say it did not work.
+  const changesLayout = typeof edit.layout === "string" && !!edit.layout.trim();
   if (
     !edit.imageQuery?.trim() &&
     !isObj(edit.image) &&
     typeof edit.title !== "string" &&
     typeof edit.subtitle !== "string" &&
     typeof edit.body !== "string" &&
-    typeof edit.notes !== "string" &&
+    !changesExtra &&
+    !changesLayout &&
     !changesPayload
   ) {
     throw new SlideCallRefusal(
@@ -1005,7 +1053,27 @@ function applyEditSlideTo(
     for (const f of TEXT_EXTRAS) if (typeof edit[f] === "string") next[f] = edit[f];
     // A payload change carries its layout with it: replacing a slide's `table`
     // without moving it off `content` leaves the table stored and undrawn.
-    if (typeof edit.layout === "string" && edit.layout.trim()) next.layout = edit.layout.trim();
+    if (changesLayout) {
+      const wanted = String(edit.layout).trim();
+      // A PICTURE IS BAKED TO THE BOX THE OLD LAYOUT DREW IT IN. Resolution
+      // crops to `pictureShape(layout)`, so a slide converted from `content`
+      // to `photo-rail` — which is exactly the conversion this tool now steers
+      // the model towards — keeps a 0.79 landscape crop inside a 0.736
+      // portrait box. The three output paths then disagree about what to do
+      // with the mismatch: Slides stretches it, the PDF crops it and the chat
+      // preview letterboxes it, so one deck shows three different pictures.
+      // Cleared here so resolution re-bakes to the new box, exactly as a new
+      // `image` brief does above — and ONLY while there is still a brief to
+      // re-resolve from, because a slide carrying a resolved picture and no
+      // brief has nothing to fetch again and clearing it would lose the
+      // photograph rather than re-crop it.
+      if (wanted !== next.layout && (isObj(next.image) || typeof next.image === "string")) {
+        delete next.resolvedImage;
+        delete next.imageUnavailable;
+        delete next.imageError;
+      }
+      next.layout = wanted;
+    }
     for (const f of PAYLOAD_FIELDS) {
       if (!isEmptyPayload(edit[f])) next[f] = edit[f];
     }

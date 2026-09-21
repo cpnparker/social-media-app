@@ -480,6 +480,51 @@ export const GRID = {
   columnRightX: 5.28 * IN,
 } as const;
 
+/* ─────────────── The prose column band, for n columns ─────────────── */
+
+/** The gutter between two prose columns, read off the pair rather than
+ *  written down a fourth time: 41.04, and the only place it exists. */
+const COLUMN_GUTTER = GRID.columnRightX - (GRID.columnLeftX + GRID.columnWidth);
+
+/** The band those two columns span, likewise read off them: 670.32, which is
+ *  NOT `GRID.contentWidth`. The pair was written in inches and 4.37 + 0.57 +
+ *  4.37 is 9.31, a hundredth of an inch inside the 9.32in measure, so the
+ *  right column stops 0.72pt short of the right margin. */
+const COLUMN_BAND_WIDTH = GRID.columnRightX + GRID.columnWidth - GRID.columnLeftX;
+
+/** n prose columns across a band, as an EQUAL partition.
+ *
+ *  The column geometry was three constants and exactly two slots. The
+ *  three-column band needs three, the photo-rail needs two inside a band the
+ *  picture has already taken a third of, and the composition engine needs n —
+ *  so it is solved here instead of written down, and every caller asks for the
+ *  count it wants.
+ *
+ *  AT n = 2 IT IS THE INHERITED PAIR, to the float, and that is the point
+ *  rather than a coincidence: 618 stored slides are drawn on those three
+ *  numbers and the bar for this stage is that none of them moves. The band and
+ *  the gutter are derived from the constants above, so the arithmetic at n = 2
+ *  is the identity — an equal partition of `GRID.contentWidth` instead would
+ *  have widened both columns by 0.36pt and moved the right one, on every
+ *  two-column slide in the corpus, for a tidier-looking formula.
+ *
+ *  THE SOURCE'S OWN THREE-COLUMN GUTTERS ARE 30.24 AND 53.28 — hand-set, and
+ *  unequal by 23pt between columns about 180pt wide. That is a slip rather
+ *  than a grid: reproducing the deck exactly would reproduce it, so the
+ *  gutters are solved equal and the source's arithmetic is not copied.
+ */
+export function columnBand(
+  n: number,
+  band: { x: number; width: number } = { x: GRID.columnLeftX, width: COLUMN_BAND_WIDTH },
+  gutter: number = COLUMN_GUTTER
+): { x: number[]; width: number; gutter: number } {
+  const cols = Math.max(1, Math.round(n));
+  const width = (band.width - gutter * (cols - 1)) / cols;
+  const x: number[] = [];
+  for (let i = 0; i < cols; i++) x.push(band.x + i * (width + gutter));
+  return { x, width, gutter };
+}
+
 /** The rule under a title on a prose slide.
  *
  *  The measured problem it answers: a content slide carried 12.5% ink and NOT
@@ -989,10 +1034,13 @@ export type SlideLayout =
   | "quote"
   | "process"
   | "logo-wall"
+  | "photo-rail"
+  | "three-column"
+  | "serpentine"
   | "closing";
 
 export const LAYOUTS: SlideLayout[] = [
-  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "line-chart", "swot", "matrix", "comparison", "table", "statement", "scatter", "venn", "cards", "quote", "process", "logo-wall", "layers", "hub", "closing",
+  "cover", "section", "content", "two-column", "case-study", "dark-index", "timeline", "timeline-parallel", "image-split", "image-grid", "feature", "stat", "bar-chart", "stacked-bar", "line-chart", "swot", "matrix", "comparison", "table", "statement", "scatter", "venn", "cards", "quote", "process", "logo-wall", "layers", "hub", "photo-rail", "three-column", "serpentine", "closing",
 ];
 
 /** Horizontal timeline: an axis rule with evenly spaced milestone markers.
@@ -1089,6 +1137,98 @@ export const IMAGE = {
   get gridHeight() { return bandScaled(3.2 * IN); },
   gridGap: 0.12 * IN,
   gridCaptionHeight: 0.22 * IN,
+} as const;
+
+/** THE PHOTO RAIL: a portrait picture INSET down the left of a prose page.
+ *
+ *  The handover deck's workhorse — four of its ten slides — and the one shape
+ *  `image-split` cannot express. image-split bleeds its picture off the LEFT
+ *  trim and gives the words ONE half-width column; this insets the picture
+ *  inside the margin and gives them TWO, which is a different page and not a
+ *  bigger version of the same one.
+ *
+ *  INSET RATHER THAN BLED, AND THAT IS WHAT BUYS THE CHROME BACK. A bleeding
+ *  picture takes the page's furniture with it: image-split moves the rules and
+ *  the running head into the type column and takes no stepper at all, because
+ *  a 6pt grey line over an unknown photograph is legible on a pale tower and
+ *  invisible on a dark one. A picture held inside the margins leaves both
+ *  hairlines, the running head, the folio AND the stepper rail exactly where
+ *  they are on every other paper page — so the deck's most-used layout is also
+ *  the one that says where you are.
+ *
+ *  THE PICTURE IS PAGE FURNITURE, NOT BAND CONTENT. It hangs between the
+ *  frame's two hairlines and clears each by the frame's own token, so it is
+ *  the same box at both presets. A picture that shrank at `present` would
+ *  re-crop and re-upload on a preset change and hand the text a different
+ *  measure on the same deck — the density moves the TYPE's rhythm, and a
+ *  photograph is not type.
+ */
+export const PHOTO_RAIL = {
+  /** The crop, measured off the source: 226.8 x 308.16pt, a portrait cut hard
+   *  out of landscape originals. Ours keeps the RATIO and takes its height
+   *  from the page, which lands within 6pt of the source's own width. */
+  aspect: 0.736,
+  /** Under the top hairline by the clearance the title block already uses. */
+  get top() { return FRAME.topRuleY + FRAME.topRuleClear; },
+  /** And above the bottom one by the air the frame demands of any drawn block:
+   *  a rule touching a photograph reads as a photograph somebody cropped. */
+  get bottom() { return FRAME.bottomRuleY - FRAME.contentGap; },
+  get height() { return PHOTO_RAIL.bottom - PHOTO_RAIL.top; },
+  get width() { return PHOTO_RAIL.height * PHOTO_RAIL.aspect; },
+  /** Picture to type. The source sets 18pt between the trim and its title and
+   *  38.88 between the trim and its first body column — the two do not agree,
+   *  which is the same hand-set-not-solved slip its three-column gutters have.
+   *  One gutter, and it is the rail's own, so a photograph inset here and one
+   *  bled on `content` hold the words off by the same distance. */
+  get gutter() { return IMAGE.railGap; },
+  /** The band left for the words once the picture and its gutter are paid. */
+  get textX() { return GRID.margin + PHOTO_RAIL.width + PHOTO_RAIL.gutter; },
+  get textWidth() { return GRID.margin + GRID.contentWidth - PHOTO_RAIL.textX; },
+} as const;
+
+/** THE SERPENTINE: numbered steps on one rule, captions alternating above and
+ *  below it.
+ *
+ *  `process` caps at five because a sixth card is 100pt wide with a two-word
+ *  caption in it, and the handover deck's own process slide has SEVEN steps.
+ *  The alternation is not decoration — it is the whole mechanism. Two captions
+ *  on the same side of the rule are TWO pitches apart, so a caption may be
+ *  twice as wide as the step it belongs to, and seven steps get the measure
+ *  five cards get.
+ *
+ *  THE PITCH IS SOLVED, NOT COPIED. The source's seven centres run 109.44 to
+ *  609.84 at a pitch of 83.4, even to within 1.4pt — which says it was meant
+ *  to be even and set by hand. Both constraints bind at once: a caption is
+ *  `2 * pitch - gutter` wide, and the last caption's outer edge lands on the
+ *  right margin, so `pitch = (contentWidth + gutter) / (n + 1)`. At n = 7 that
+ *  is 85.13 against the source's 83.4, and centres of 104.61 to 615.39 against
+ *  its 109.44 to 609.84.
+ */
+export const SERPENTINE = {
+  /** Seven is the source's, eight is where a caption is back to the width a
+   *  process card gets and the layout stops earning its keep. */
+  maxSteps: 8,
+  /** Under three there is no alternation to see and `process` draws a better
+   *  slide: three cards with owners beat three discs on a rule. */
+  minSteps: 3,
+  /** The numbered disc (0.44in in the source), and the numeral inside it. */
+  disc: 31.68,
+  numeralSize: 17,
+  /** Air between the disc's edge and the caption above or below it. */
+  capGap: 8,
+  /** Gutter between two captions on the SAME side of the rule — the sibling of
+   *  TIMELINE.slotGutter, which does the same job on a layout where every
+   *  label is on one side and the slot is therefore the pitch. */
+  gutter: 10,
+  /** A caption may be two pitches wide, but not wider than a measure anyone
+   *  wants to read: 187.2 is about 41 characters of 9pt Roboto. Past this the
+   *  pitch is re-solved so the run still ends on the right margin. */
+  captionMax: 2.6 * IN,
+  captionSize: 9,
+  /** How the run is split about the rule when the captions do not decide it.
+   *  The source gives its above band 86pt and its below band 119 — the slide
+   *  reads downward, so the deeper half is the lower one. */
+  aboveShare: 0.42,
 } as const;
 
 /** A SCREENSHOT, which is not a photograph.
@@ -1374,6 +1514,22 @@ export const LAYOUT_STYLE: Record<SlideLayout, {
   quote:         { background: COLOR.navy,     logo: "white", logoPlacement: "content", onDark: true },
   process:       { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   "logo-wall":   { background: COLOR.white,    logo: "navy",  logoPlacement: "content", onDark: false },
+  // The handover deck's three. All three are PAPER pages — they keep the whole
+  // frame, the stepper included, which is the argument for insetting the
+  // photo-rail's picture rather than bleeding it the way image-split does.
+  //
+  // `onDark: false` here and nothing in `slideStyle` overrides it, so no slide
+  // spec can put these three on a dark ground today. Their onDark branches are
+  // therefore unreachable, and they are kept CONSISTENT rather than deleted:
+  // Stage 5's compositions will copy whichever treatment is written here, and
+  // an unreachable branch that is wrong is worse than one that is merely
+  // unused. One of them WAS wrong — the photo rail handed its picture credit a
+  // written-down `false` where every other decision on the same slide read
+  // `onDark`, so forcing the layout to navy drew the credit in light-ground
+  // ink on navy and it disappeared.
+  "photo-rail":  { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
+  "three-column": { background: COLOR.offWhite, logo: "navy", logoPlacement: "content", onDark: false },
+  "serpentine":  { background: COLOR.offWhite, logo: "navy",  logoPlacement: "content", onDark: false },
   closing:      { background: null,           logo: "white", logoPlacement: "closing", onDark: true },
 };
 
