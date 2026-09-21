@@ -291,7 +291,7 @@ function PointParagraph({
 
   return (
     <div className="group/point">
-      <p className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{text}</p>
+      <p className="text-[12.5px] leading-relaxed whitespace-pre-wrap break-anywhere">{text}</p>
       <div className="mt-0.5 flex items-center gap-2.5">
         {actionable && (
           <button
@@ -356,7 +356,7 @@ function InlineStream({
           // partial sentence would insert a partial sentence.
           <DraftBlock key={i} text={seg.text} hasSelection={hasSelection} onApply={onApply} pending />
         ) : seg.type === "anchor" ? null : (
-          <p key={i} className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{seg.text}</p>
+          <p key={i} className="text-[12.5px] leading-relaxed whitespace-pre-wrap break-anywhere">{seg.text}</p>
         )
       )}
       {live.partial !== null && (
@@ -465,7 +465,7 @@ function DraftBlock({
           autoFocus
         />
       ) : (
-        <p className="px-2.5 py-2 text-[12.5px] leading-relaxed whitespace-pre-wrap">{body}</p>
+        <p className="px-2.5 py-2 text-[12.5px] leading-relaxed whitespace-pre-wrap break-anywhere">{body}</p>
       )}
 
       {!pending && (
@@ -1117,7 +1117,7 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
               <div className={cn(superseded && "opacity-55 hover:opacity-100 transition-opacity")}>
                 {t.role === "user" ? (
                   <div className="flex justify-end">
-                    <p className="max-w-[85%] rounded-xl rounded-br-sm bg-muted px-2.5 py-1.5 text-[12.5px] leading-relaxed whitespace-pre-wrap">
+                    <p className="max-w-[85%] rounded-xl rounded-br-sm bg-muted px-2.5 py-1.5 text-[12.5px] leading-relaxed whitespace-pre-wrap break-anywhere">
                       {t.content}
                     </p>
                   </div>
@@ -1162,7 +1162,7 @@ export default function DiscussPanel({ sessionId, workspaceId, getDraftHtml, res
                     anchorFound={!!seg.anchor && resolveQuote(seg.anchor)}
                   />
                 ) : (
-                  <p className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{seg.text}</p>
+                  <p className="text-[12.5px] leading-relaxed whitespace-pre-wrap break-anywhere">{seg.text}</p>
                 )}
               </div>
             ))}

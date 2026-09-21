@@ -181,9 +181,9 @@ export default function ScheduledProposalCard({
               Next{isMonitor ? " check" : ""}: {fmtRun(next1)}{next2 ? ` · then ${fmtRun(next2)}` : ""}
             </p>
           )}
-          <p className="text-xs text-muted-foreground/80 mt-1.5 line-clamp-2">{proposal.prompt}</p>
+          <p className="text-xs text-muted-foreground/80 mt-1.5 line-clamp-2 break-anywhere">{proposal.prompt}</p>
           {isUpdate && proposal.promptChanged && proposal.oldPrompt && (
-            <p className="text-[11px] text-muted-foreground/60 mt-1 line-clamp-1">
+            <p className="text-[11px] text-muted-foreground/60 mt-1 line-clamp-1 break-anywhere">
               was: <span className="line-through decoration-muted-foreground/40">{proposal.oldPrompt}</span>
             </p>
           )}

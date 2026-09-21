@@ -7,16 +7,22 @@ import { fenceUntrusted } from "@/lib/ai/providers";
 
 export type DetailLevel = "off" | "summary" | "full-week" | "full-month" | "full-year";
 
+/**
+ * HOW MUCH CLIENT DATA IS RESIDENT IN THE PROMPT, and nothing else.
+ *
+ * It used to carry five more keys — webSearch, imageGeneration, memory,
+ * meetingBrain and incognito — because a composer switch wrote each of them
+ * into the POST body of every message. Those switches are gone (see the
+ * capability note in lib/ai/providers.ts), so the keys have gone with them,
+ * and removing them from the TYPE is the point rather than a tidy-up: a field
+ * nobody can write but everybody still reads is exactly how a stale value
+ * turns into a capability nobody can switch back on.
+ */
 export interface NormalizedContextConfig {
   contracts: DetailLevel;
   contentPipeline: DetailLevel;
   socialPresence: DetailLevel;
   ideas: DetailLevel;
-  webSearch: "on" | "off";
-  imageGeneration: "on" | "off";
-  incognito: "on" | "off";
-  memory: "on" | "off";
-  meetingBrain: "on" | "off";
 }
 
 /** Check if a detail level is any "full" variant */
@@ -44,23 +50,43 @@ export function normalizeDetailLevel(value: any): DetailLevel {
   return "summary";
 }
 
-/** Normalize a full context config (handles both legacy boolean and new string formats) */
+/**
+ * Normalize a full context config (handles both legacy boolean and new string
+ * formats).
+ *
+ * THE CHOKE POINT FOR THE CAPABILITY KEYS, which is why it drops them rather
+ * than defaulting them on. `intelligence.ai_settings.config_context` and
+ * `ai_scheduled_prompts.config_context` are both stored JSON written by a UI
+ * that no longer exists: the TCE row still says `imageGeneration: "on",
+ * webSearch: "on", memory: "on", meetingBrain: "on"` and a row written on a
+ * different day could just as easily say "off". With the switches gone, an
+ * "off" in one of those rows would switch a capability off for a whole
+ * workspace with nothing on anyone's screen to switch it back — the incident
+ * of 20 September with the fix removed and the escape hatch removed too.
+ *
+ * IGNORED, NOT STRIPPED. No migration runs over the stored rows: reading them
+ * is the only thing that could hurt, so the reader stops producing the keys
+ * and every row becomes inert in the same instant on every deploy. A migration
+ * would have to be right about rows written between writing it and running it;
+ * this cannot be wrong about any row at all. The settings PATCH normalises on
+ * write, so the keys also disappear from each row the next time an admin
+ * saves — a strip that costs nothing and that nothing depends on.
+ *
+ * What remains are the four DETAIL LEVELS, which say how much client data is
+ * resident in the prompt. They stay a stored workspace setting, read from the
+ * row on every turn.
+ */
 export function normalizeContextConfig(config: any): NormalizedContextConfig {
   // contentPipeline defaulted to "off" while contracts defaulted to "summary",
   // so the only client data resident in the prompt was commercial — which is
   // exactly why answers about a client read as contract recitals. Recent work
   // shipped for a client is at least as relevant to a conversation about them.
-  if (!config) return { contracts: "summary", contentPipeline: "summary", socialPresence: "summary", ideas: "off", webSearch: "on", imageGeneration: "on", incognito: "off", memory: "on", meetingBrain: "on" };
+  if (!config) return { contracts: "summary", contentPipeline: "summary", socialPresence: "summary", ideas: "off" };
   return {
     contracts: normalizeDetailLevel(config.contracts),
     contentPipeline: normalizeDetailLevel(config.contentPipeline),
     socialPresence: normalizeDetailLevel(config.socialPresence),
     ideas: normalizeDetailLevel(config.ideas),
-    webSearch: config.webSearch === "off" ? "off" : "on",
-    imageGeneration: config.imageGeneration === "off" ? "off" : "on",
-    incognito: config.incognito === "on" ? "on" : "off",
-    memory: config.memory === "off" ? "off" : "on",
-    meetingBrain: config.meetingBrain === "off" ? "off" : "on",
   };
 }
 
@@ -201,8 +227,43 @@ export function buildSystemPrompt(ctx: {
   userName?: string | null;
   userEmail?: string | null;
   userEngineId?: number | null;
+  /**
+   * Whether the five generation tools — generate_image, generate_chart,
+   * generate_slides, generate_word_document, generate_document — are actually
+   * REGISTERED for this turn.
+   *
+   * Passed in rather than read off contextConfig, because the two never
+   * agreed. This builder gated on `contextConfig.imageGeneration`; the tools
+   * gate on the AIProviderConfig flag of the same name, which the scheduled
+   * runner, the meeting brief, the fact-checker and the optimiser routes each
+   * set to false on their own. Every one of those turns was told in prose that
+   * it had a generate_image tool and then handed none — the same fault as the
+   * incident the off-branch below exists for, pointing the other way.
+   *
+   * It is now a per-ROUTE fact and no longer a per-user one: a chat turn
+   * always has the five tools, and only a headless caller that produces text
+   * and nothing else passes false. Omitted therefore means TRUE, which is what
+   * every user-facing turn means.
+   */
+  generationTools?: boolean;
   /** When true, activates the Design Mode persona + tool workflows (video + Artlist). */
   designMode?: boolean;
+  /**
+   * Whether search_artlist and license_artlist_asset are REGISTERED this turn.
+   *
+   * They are gated on ARTLIST_API_KEY being set (lib/ai/providers.ts, via
+   * artlistConfigured()), while this file described both of them in every
+   * Design Mode prompt — the same prompt/tool disagreement the generation
+   * off-branch exists for, one file away, and the registration's own comment
+   * had already written down why it is wrong: unregistered, they "invite the
+   * model to promise a search that always throws". The key is absent from
+   * .env.local, so locally the disagreement was total.
+   *
+   * Omitted means absent, which is the safe direction: a designer told nothing
+   * about stock footage loses a suggestion; a designer promised a search that
+   * throws loses the turn.
+   */
+  artlistTools?: boolean;
   /** When set, activates Studio mode — Design Mode v2's shot-aware persona with the full shot CRUD tool layer. */
   studioMode?: boolean;
   /** "team" = thread visible to all workspace members. Personal-scope tools
@@ -233,6 +294,20 @@ export function buildSystemPrompt(ctx: {
   episodeLedger?: string;
 }): string {
   const { workspaceConfig, clientContext, contentDetail } = ctx;
+
+  /**
+   * Whether the generation tools are registered this turn. Resolved ONCE,
+   * here, so the three prose blocks below and the off-branch cannot drift
+   * apart from each other the way the prose and the tool array did.
+   *
+   * Omitted is ON. It used to fall back to `contextConfig.imageGeneration !==
+   * "off"`, which was the last thing in this file that could read a capability
+   * off a stored row; with that key gone there is nothing left to read, and a
+   * caller that means "no tools this turn" says so.
+   */
+  const generationOn = ctx.generationTools !== false;
+  // Same shape, one file over: describe a tool only when it is registered.
+  const artlistOn = ctx.artlistTools === true;
 
   /**
    * Sections that change from TURN TO TURN, held back and appended last.
@@ -268,6 +343,13 @@ Tool calls — SAY NOTHING FIRST, this one is not negotiable:
 - When you need a tool, CALL IT. Do not write a line before the call. No "I'll pull the contract", no "Let me check the meeting record", no paragraph setting out what you are about to do. While a tool runs the screen already names the service being reached, so a sentence describing it tells the user what they can already see — and it is the first thing they have to scroll past to reach the answer.
 - When the result is back, say what you DID: past tense, one short line at most ("Pulled the contract and both meeting records."), or nothing at all. Never what you are ABOUT to do.
 - This is not a rule about length. A briefing assembled from twenty tool calls is legitimately long. It is about ORDER: the first screen belongs to the answer, not to your intentions. A turn that runs four tools and opens with three paragraphs of plan has spent the reader's whole first screen on itself.
+
+Capabilities — OWN THE LIMIT, NEVER REPORT AN ABSENCE:
+- You are one product with one settled set of features. You are not "an environment", you do not have a "setup" or a "configuration", and there is no other "session" of you where the same request would work. Never write that something is "not available in this environment", that you "don't have access to that here", or that a different session — or a person with a different setup — could do it instead. A sentence like that describes a machine the user cannot see and cannot act on; they read it as the product being broken, close the tab and do the job somewhere else.
+- If a tool IS in your tool list, YOU HAVE IT — use it, and never hedge about whether it will work. That is the sentence this rule exists for: the worst replies this product has given came from a model that held the tool and told the user it did not.
+- A tool you cannot find is one of two things, and you are not required to know which. It may be a part of EngineAI this user's account has not been granted — the mailbox, the calendar, resourcing, finance — which an admin opens for them: say it is not enabled for their account, and that an admin can enable it. Or it may be something that was never part of this product. There is no third case, and in particular nothing the user can press takes a feature away from you, so never tell anyone to find a switch, a toggle or a setting that would turn one back on. Neither case is a reason to narrate your own internals to the user.
+- Read back what you already said in this thread before you refuse. Offering to build something and then, a message later, saying you have no way to build it is the worst reply this product gives — the user sees a feature disappear mid-conversation and has no idea why. If you offered it, you can do it, so do it.
+- When you genuinely cannot do a thing, spend one plain line on it: what is off, and what opens it — an admin, when it is a permission on this account, or nothing at all when it is simply not something EngineAI does. Then get on with the part you CAN do, in the same reply. Never spend a reply on the limit, and never turn a limit into a lecture about how you are put together.
 
 Response format — CRITICAL, follow strictly:
 
@@ -392,13 +474,20 @@ Steps for "my work" queries:
 5. State which filter was used (e.g. "Filtered by user_account_manager = ${ctx.userEngineId || "?"}")`;
   }
 
-  // ── Web search disabled warning ──
-  if (ctx.contextConfig?.webSearch === "off") {
-    prompt += `\n\nWEB SEARCH IS CURRENTLY DISABLED. Since you cannot verify external claims, you MUST:
-- Flag ALL factual claims about companies, industries, regulations, trends, statistics, or current events with [unverified — web search disabled].
-- Do not present any external facts as confirmed. State them as "based on general knowledge" or "this may be outdated."
-- Be extra conservative — when in doubt, say you cannot verify without web search.`;
-  }
+  // ── A "WEB SEARCH IS CURRENTLY DISABLED" BLOCK LIVED HERE ──
+  //
+  // It fired on `contextConfig.webSearch === "off"` and told the model to mark
+  // every external claim "[unverified — web search disabled]". The Web switch
+  // is gone, so the condition is gone with it; leaving the block behind on a
+  // key nothing can write would have left a paragraph that could never fire
+  // and a reader who believes it can.
+  //
+  // Nothing is lost. Whether the turn actually searches is decided per request
+  // by lib/ai/query-router.ts, which is the market pattern and was already the
+  // stronger signal — the explicit-web override was written precisely because
+  // a persistent toggle the user had forgotten about was beating a direct ask.
+  // The "don't present training data as evidence" half of the warning is in
+  // FORMATTING_GUIDELINES and applies on every turn, searched or not.
 
   // ── Conversation continuity ──
   prompt += `\n\n## Conversation Continuity
@@ -409,7 +498,7 @@ Steps for "my work" queries:
 - Never re-ask for information the user has already provided in this conversation.`;
 
   // ── Image generation capability ──
-  if (ctx.contextConfig?.imageGeneration === "on") {
+  if (generationOn) {
     prompt += `\n\n## Image Generation
 You have a generate_image tool. When the user asks you to create, generate, design, make, or produce an image, graphic, visual, infographic, or carousel — USE the generate_image tool immediately. Do not describe what you would create instead of generating it. Act on the request.
 
@@ -419,6 +508,56 @@ Rules:
 - Do NOT generate images unsolicited — only when the user asks for visual content.
 - NEVER fabricate image URLs or write image markdown yourself. Only reference URLs returned by the generate_image tool. The tool automatically embeds the image in the conversation — do NOT write additional ![alt](url) markdown for the same image or any other image.
 - After generating, briefly describe the result in text. Do NOT repeat the image as another markdown image link.`;
+  } else {
+    // ── The capability is OFF, and the model has to be able to SAY so ──
+    //
+    // 2026-09-20: a user asked for a roadmap graphic, was told "I'll build it
+    // as a one-slide matrix roadmap deck… say so and I'll generate it now",
+    // said so — and got "I don't have an image/slide-generation tool available
+    // in this environment". She asked for a Google Slides deck twelve minutes
+    // later and got the same answer. She built it in Figma instead and asked
+    // which setting to change. She was looking for the "Image" switch under the
+    // message box, one button that gated all five generation tools.
+    //
+    // Which is why this branch is only half the fix. The rule that would have
+    // caught HER turn is in FORMATTING_GUIDELINES, present in every assembly on
+    // or off: never report an absence, own the limit. This branch is the other
+    // half — the turns where the limit is real, and the model has nothing
+    // telling it the difference between a feature that is off and a feature
+    // that does not exist.
+    //
+    // IT USED TO HAVE TWO FORMS and now has one. The first named the switch,
+    // because there was a switch; there is not any more, and a prompt that
+    // sends a user hunting for a control nobody can press is the same class of
+    // sentence as one that names an environment nobody can see. The remaining
+    // form is the HEADLESS turn — a scheduled brief, a meeting brief, a
+    // fact-check, an optimiser pass — which produces text and nothing else and
+    // never had a control to name in the first place.
+    //
+    // A capability can still be off for a user by ADMIN PERMISSION — the
+    // mailbox, the calendar, Microsoft, resourcing, finance. That case is not
+    // here, deliberately: it is handled by the always-on rule above, which says
+    // the honest thing about it — not enabled for this account, an admin opens
+    // it — and a rule the model carries on every turn is the right home for a
+    // permission that can differ per user.
+    //
+    // ONLY ONE OF THOSE SECTIONS IS ACTUALLY GATED, and pretending otherwise
+    // is how a rule gets contradicted by a louder instruction. query_resourcing
+    // is emitted under `resourcingAccess`; the mailbox, calendar, Microsoft and
+    // Slack prose further down is UNCONDITIONAL, so a user whose account has
+    // none of them still reads "For 'my email' with no provider named, prefer
+    // query_gmail" — an instruction to call a tool their chain never registers.
+    // The always-on rule is what stops the model reporting that as a broken
+    // feature, but the prose is residue, recorded in §17 of
+    // scripts/verify-incident-fixes.ts rather than left to be rediscovered.
+    // Gating those sections is the fix; it is a separate change, because it
+    // moves what the prompt says for real users rather than what it says about
+    // a control that no longer exists.
+    const offNouns = "an image, a graphic, a chart, a deck, a presentation, a Word document or a .pptx";
+    prompt += `\n\n## Making things — not what this kind of turn produces
+This turn writes text and nothing else. Nothing here builds ${offNouns}, and nothing on anyone's screen changes that — this is not a chat conversation, it is a piece of writing being produced for someone to read.
+
+Nothing is broken and nothing is missing: in a chat conversation you build all of these. So write the thing out in full — the copy, the slide-by-slide content, the document text, the figures a chart would plot — and do not tell the reader that a tool is unavailable or describe your own internals to them. If a file is genuinely the point, one closing line saying it can be built in a chat conversation is enough.`;
   }
 
   // ── Google Drive: how someone actually grants access ──
@@ -511,7 +650,7 @@ Volumes are Content Units (CUs) unless a field says hours or CHF. Money is in CH
   }
 
   // ── Document generation capability ──
-  if (ctx.contextConfig?.imageGeneration === "on") {
+  if (generationOn) {
     prompt += `\n\n## Document Generation
 **DO IT, DO NOT OFFER TO DO IT.** When you have the tool and the request, the answer is the work, not an offer to start it. "Would you like me to pull the details from that meeting?" is not an answer to "summarise the meeting" — it is the same question handed back, and it costs the user a second turn to say the yes they already said. Two flagged answers were exactly this: a deck that was described but never built, and a meeting that was never looked up because the reply offered to look it up. Ask only when the fork is REAL and you cannot resolve it — two different deliverables, a destructive action, a genuine ambiguity about who or what they mean. Needing permission to begin is not a fork. If you can see a way to do most of it, do that and say what you could not reach; a partial answer with its gaps named beats a question every time.
 
@@ -602,7 +741,7 @@ When the user specifically wants a .pptx file rather than a Google Slides link:
   }
 
   // ── Chart generation capability ──
-  if (ctx.contextConfig?.imageGeneration === "on") {
+  if (generationOn) {
     prompt += `\n\n### Editing an image you already made
 When the user reacts to an image you generated — "make it warmer", "lose the text", "same but portrait", or a comment sent from the image itself — call generate_image again with \`source_image_url\` set to that image's URL. That EDITS it, so everything they did not ask you to change stays as it was. Generating afresh instead hands them a different image and loses the one they were happy with, which reads as ignoring them.
 
@@ -626,11 +765,11 @@ Example for daily CUs: query_engine({ report: "commissioned_units", date_from: "
   if (ctx.designMode) {
     prompt += `\n\n## Design Mode — you are a creative director for The Content Engine's designers
 
-You're operating in Design Mode at \`/engineai/design\`. The user is a designer who needs visual / video assets fast and on-brand. Your job is to help them go from blank brief to finished asset with the minimum friction. You have three specialist tools beyond the normal toolset:
+You're operating in Design Mode at \`/engineai/design\`. The user is a designer who needs visual / video assets fast and on-brand. Your job is to help them go from blank brief to finished asset with the minimum friction. You have ${artlistOn ? "three" : "two"} specialist tools beyond the normal toolset:
 
 - **generate_image** — stills (DALL-E 3 under the hood). Use for hero images, social tiles, illustrations, mockups, infographics.
-- **generate_video** — short clips (Runway Gen-4 Turbo). 5 or 10 seconds. Supports text-to-video AND image-to-video (pass image_url from a prior generate_image result to animate it).
-- **search_artlist** — licensed stock footage (Artgrid). Use when the brief calls for real-world b-roll the user doesn't need to generate from scratch. Then \`license_artlist_asset\` once the user picks one.
+- **generate_video** — short clips (Runway Gen-4 Turbo). 5 or 10 seconds. Supports text-to-video AND image-to-video (pass image_url from a prior generate_image result to animate it).${artlistOn ? `
+- **search_artlist** — licensed stock footage (Artgrid). Use when the brief calls for real-world b-roll the user doesn't need to generate from scratch. Then \`license_artlist_asset\` once the user picks one.` : ""}
 
 ### How to work with a designer
 
@@ -638,8 +777,8 @@ You're operating in Design Mode at \`/engineai/design\`. The user is a designer 
 2. **Only ask clarifying questions when the brief is genuinely ambiguous** — and ask 1–2 max. A designer wants forward motion, not a Socratic dialogue.
 3. **Think in shot lists for video.** Put the shot in plain English INSIDE the generate_video prompt — subject, motion, camera (push-in / pan / static), lighting, mood. Think it through in the prompt you send, not in a paragraph to the user before you call it.
 4. **Iterate, don't restart.** If the first generation isn't right, refine the prompt — don't throw it out. Carry colour palette / style decisions across generations in the session.
-5. **Use Artlist when it's faster.** For real-world b-roll (city streets, nature, lifestyle, abstract textures, drone shots) — search Artlist first. Reserve generate_video for things stock can't deliver (specific brand scenes, surreal/conceptual, exact composition control).
-6. **Image → video is a power move.** When the designer generates a still they like, suggest animating it: call generate_video with image_url set to that image's URL and a motion prompt.
+${artlistOn ? `5. **Use Artlist when it's faster.** For real-world b-roll (city streets, nature, lifestyle, abstract textures, drone shots) — search Artlist first. Reserve generate_video for things stock can't deliver (specific brand scenes, surreal/conceptual, exact composition control).
+` : ""}${artlistOn ? "6" : "5"}. **Image → video is a power move.** When the designer generates a still they like, suggest animating it: call generate_video with image_url set to that image's URL and a motion prompt.
 
 ### Brand context
 
@@ -648,14 +787,14 @@ When a client is selected (see the workspace context above), the system **automa
 ### Output rendering
 
 - Generated images and videos appear automatically in chat AND in the designer's canvas on the right of the screen. Don't re-write image/video URLs in your text.
-- For Artlist results, the catalogue thumbnails appear in chat with selection chips. Present the options clearly with title + duration + a one-line vibe, then wait for the designer to pick before licensing.
-- After every generation, follow up with one short suggestion for a next step ("Want me to animate this?", "Try a portrait variant for stories?", "Find b-roll to intercut?"). Keep momentum.
+${artlistOn ? `- For Artlist results, the catalogue thumbnails appear in chat with selection chips. Present the options clearly with title + duration + a one-line vibe, then wait for the designer to pick before licensing.
+` : ""}- After every generation, follow up with one short suggestion for a next step ("Want me to animate this?", "Try a portrait variant for stories?"${artlistOn ? ', "Find b-roll to intercut?"' : ""}). Keep momentum.
 
 ### Licensing & cost discipline
 
 - generate_video is not free (~$0.05/sec). Don't generate variations the designer didn't ask for.
-- license_artlist_asset commits to a licensed download. Always wait for the designer to explicitly pick from search_artlist results before calling license_artlist_asset. When you call it, surface the license terms back to the designer in your reply.
-
+${artlistOn ? `- license_artlist_asset commits to a licensed download. Always wait for the designer to explicitly pick from search_artlist results before calling license_artlist_asset. When you call it, surface the license terms back to the designer in your reply.
+` : ""}
 ### Tone
 
 Direct, confident, opinionated. Designers want a peer, not a customer-service voice. Skip filler ("Great question!", "Sure, I can do that!"). Lead with the creative choice. Reference craft (composition, palette, motion, pacing, rhythm) — not generic adjectives.`;
@@ -678,7 +817,7 @@ You have four shot-CRUD tools in addition to the generic image/video tools:
 - **design_save_prompt(name, prompt?, model_hint?, team?)** — bookmark a prompt to the workspace library. Use when the user says "save this prompt as X" or after a great-looking generation when capturing the recipe is worth it. If prompt is omitted, the focused shot's prompt is used.
 - **design_recall_prompts(q?, limit?)** — search the workspace's saved prompt library. Use when the user says "use my editorial landscape prompt", "what prompts have I saved", or you want to reach for a known-good recipe. Then call design_update_shot to apply.
 
-You ALSO have the generic generate_image / generate_video / search_artlist tools — those create assets that auto-attach to the focused shot (or create a new shot). Use them when the designer asks for a quick ad-hoc generation without specifying a shot structure.
+You ALSO have the generic generate_image / generate_video${artlistOn ? " / search_artlist" : ""} tools — those create assets that auto-attach to the focused shot (or create a new shot). Use them when the designer asks for a quick ad-hoc generation without specifying a shot structure.
 
 ### Workflow patterns
 
@@ -1075,7 +1214,9 @@ If internal specifics genuinely belong in the draft — sometimes they do — as
         }
       }
 
-      // Ideas submitted (within content pipeline, controlled by ideas config toggle)
+      // Ideas submitted (within content pipeline, controlled by the ideas
+      // DETAIL LEVEL — an admin setting, and the last of the four dials that
+      // still has a user-visible control anywhere)
       if (hasIdeas) {
         const weekAgo = new Date();
         weekAgo.setDate(weekAgo.getDate() - 7);

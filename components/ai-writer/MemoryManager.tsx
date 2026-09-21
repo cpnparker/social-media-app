@@ -518,7 +518,7 @@ export default function MemoryManager({
             </DialogDescription>
           </DialogHeader>
           <div className="mt-2">
-            <p className="text-sm leading-relaxed whitespace-pre-wrap">
+            <p className="text-sm leading-relaxed whitespace-pre-wrap break-anywhere">
               {selectedSummary?.summary}
             </p>
           </div>

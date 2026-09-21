@@ -210,7 +210,7 @@ export default function CoveragePanel({ sessionId, workspaceId, onReveal }: Prop
               <summary className="text-[11.5px] text-muted-foreground cursor-pointer">
                 What the model said without your article
               </summary>
-              <p className="text-[11.5px] text-muted-foreground/80 leading-relaxed mt-2 whitespace-pre-wrap">
+              <p className="text-[11.5px] text-muted-foreground/80 leading-relaxed mt-2 whitespace-pre-wrap break-anywhere">
                 {novelty.parametricAnswer}
               </p>
             </details>

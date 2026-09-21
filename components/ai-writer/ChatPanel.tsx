@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback, Fragment } from "react";
-import { Lock, Users, MoreHorizontal, Download, Trash2, Pencil, Globe, ArrowLeft, Building2, Link2, Bug, ChevronRight, Menu, Upload, ScrollText, Newspaper, Share2, Lightbulb, SlidersHorizontal, Check, Brain, ListChecks, UserPlus, ChevronsUpDown, ImageIcon, X, ShieldCheck, FileText, Database, BrainCircuit, ChevronDown, Search, Sparkles, ArrowDown, Gauge, Pin, PinOff } from "lucide-react";
+import { Lock, Users, MoreHorizontal, Download, Trash2, Pencil, Globe, ArrowLeft, Building2, Link2, Bug, ChevronRight, Menu, Upload, Check, UserPlus, ChevronsUpDown, ImageIcon, X, ShieldCheck, FileText, Database, BrainCircuit, ChevronDown, Search, Sparkles, ArrowDown, Gauge, Pin, PinOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   Popover,
@@ -51,7 +51,11 @@ interface ChatPanelProps {
   onBack?: () => void;
   initialMessage?: string;
   initialAttachments?: Attachment[];
-  contextConfig?: { contracts: string; contentPipeline: string; socialPresence: string; ideas: string; incognito?: string; webSearch?: string; memory?: string; meetingBrain?: string; imageGeneration?: string };
+  /** Whether this thread is incognito — nothing is saved, no memories are
+   *  written. The LAST survivor of what used to be a nine-key context config
+   *  posted with every message; it is a privacy control, not a capability
+   *  dial, so it stayed when the capability switches were removed. */
+  incognito?: boolean;
   debugMode?: boolean;
   onCopyLink?: () => void;
   onMenuClick?: () => void;
@@ -73,8 +77,6 @@ interface ChatPanelProps {
   onMakeRecurring?: (seed: { title: string; prompt: string }) => void;
 }
 
-type ContextConfig = { contracts: string; contentPipeline: string; socialPresence: string; ideas: string; incognito?: string; webSearch: string; memory: string; meetingBrain: string; imageGeneration: string };
-
 export default function ChatPanel({
   conversationId,
   onConversationDeleted,
@@ -82,7 +84,7 @@ export default function ChatPanel({
   onBack,
   initialMessage,
   initialAttachments,
-  contextConfig: initialContextConfig,
+  incognito,
   debugMode,
   onCopyLink,
   onMenuClick,
@@ -193,17 +195,6 @@ export default function ChatPanel({
   const [isFactChecking, setIsFactChecking] = useState(false);
   const [debugContext, setDebugContext] = useState<string | null>(null);
   const [debugExpanded, setDebugExpanded] = useState(false);
-  const [localContextConfig, setLocalContextConfig] = useState<ContextConfig>({
-    contracts: initialContextConfig?.contracts || "summary",
-    contentPipeline: initialContextConfig?.contentPipeline || "summary",
-    socialPresence: initialContextConfig?.socialPresence || "summary",
-    ideas: initialContextConfig?.ideas || "summary",
-    incognito: initialContextConfig?.incognito,
-    webSearch: initialContextConfig?.webSearch || "on",
-    memory: initialContextConfig?.memory || "on",
-    meetingBrain: initialContextConfig?.meetingBrain || "on",
-    imageGeneration: initialContextConfig?.imageGeneration || "on",
-  });
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -847,7 +838,7 @@ export default function ChatPanel({
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content, attachments, contextConfig: localContextConfig, debugMode }),
+          body: JSON.stringify({ content, attachments, incognito: incognito ? "on" : "off", debugMode }),
           signal: abortController.signal,
         }
       );
@@ -1960,7 +1951,17 @@ export default function ChatPanel({
       </div>
 
       {/* Messages */}
-      <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-y-auto relative">
+      {/* overflow-x-hidden, not auto: once prose wraps, the only things wider
+          than the column are the ones carrying their own horizontal scroller
+          (a table, a code block), so a scrollbar HERE can only ever be a bug
+          showing through — and a loud one, because dragging it takes the
+          whole conversation sideways to read one line.
+          Not `clip`, which would be the better word for this: css-overflow-3
+          says clip beside an axis that scrolls computes to hidden, and
+          overflow-y is auto, so `overflow-x-clip` here would BE hidden while
+          reading as something stronger. Measured: computed overflow-x
+          "hidden". */}
+      <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden relative">
         {messages.length === 0 && !isStreaming ? (
           <div className="flex flex-col items-center justify-center h-full px-4 sm:px-8 text-center">
             <div className="h-12 w-12 rounded-full bg-foreground/[0.05] flex items-center justify-center mb-4">
@@ -2440,158 +2441,6 @@ export default function ChatPanel({
           disabled={isStreaming || isFactChecking || myPermission === "view"}
           endSlot={inputEndSlot}
           bottomSlot={
-            <>
-            <Popover>
-              <PopoverTrigger asChild>
-                <button className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-muted-foreground/60 hover:text-muted-foreground/80 hover:bg-muted/50 transition-colors">
-                  <SlidersHorizontal className="h-2.5 w-2.5" />
-                  <span className="hidden sm:inline">Context</span>
-                </button>
-              </PopoverTrigger>
-              <PopoverContent align="start" side="top" className="w-[200px] p-1.5">
-                <div className="space-y-0.5">
-                  {[
-                    { key: "contracts" as const, label: "Contracts", Icon: ScrollText },
-                    { key: "contentPipeline" as const, label: "Content", Icon: Newspaper },
-                    { key: "socialPresence" as const, label: "Social", Icon: Share2 },
-                    { key: "ideas" as const, label: "Ideas", Icon: Lightbulb },
-                  ].map((item) => {
-                    const level = localContextConfig[item.key];
-                    const isOn = level !== "off";
-                    const isFull = level.startsWith("full");
-                    const nextLevel = level === "off" ? "summary" : level === "summary" ? "full-month" : "off";
-                    const levelLabel = level === "off" ? "Off" : level === "summary" ? "Summary" : "Full";
-                    return (
-                      <button
-                        key={item.key}
-                        onClick={() =>
-                          setLocalContextConfig((prev) => ({
-                            ...prev,
-                            [item.key]: nextLevel,
-                          }))
-                        }
-                        className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted/50 transition-colors"
-                      >
-                        <item.Icon className={cn(
-                          "h-3 w-3 shrink-0",
-                          isOn ? "text-foreground/60" : "text-muted-foreground/50"
-                        )} />
-                        <span className={cn(
-                          "flex-1",
-                          isOn ? "text-foreground/80" : "text-muted-foreground/50"
-                        )}>
-                          {item.label}
-                        </span>
-                        <span className={cn(
-                          "text-[9px] font-medium",
-                          isOn ? "text-muted-foreground/60" : "text-muted-foreground/50"
-                        )}>
-                          {levelLabel}
-                        </span>
-                        {isOn && (
-                          <Check className="h-3 w-3 text-foreground/50 shrink-0" />
-                        )}
-                      </button>
-                    );
-                  })}
-                  <div className="h-px bg-border/40 my-1" />
-                  <button
-                    onClick={() =>
-                      setLocalContextConfig((prev) => ({
-                        ...prev,
-                        webSearch: prev.webSearch === "on" ? "off" : "on",
-                      }))
-                    }
-                    className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted/50 transition-colors"
-                  >
-                    <Globe className={cn(
-                      "h-3 w-3 shrink-0",
-                      localContextConfig.webSearch === "on" ? "text-foreground/60" : "text-muted-foreground/50"
-                    )} />
-                    <span className={cn(
-                      "flex-1",
-                      localContextConfig.webSearch === "on" ? "text-foreground/80" : "text-muted-foreground/50"
-                    )}>
-                      Web Search
-                    </span>
-                    {localContextConfig.webSearch === "on" && (
-                      <Check className="h-3 w-3 text-foreground/50 shrink-0" />
-                    )}
-                  </button>
-                  <button
-                    onClick={() =>
-                      setLocalContextConfig((prev) => ({
-                        ...prev,
-                        memory: prev.memory === "on" ? "off" : "on",
-                      }))
-                    }
-                    className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted/50 transition-colors"
-                  >
-                    <Brain className={cn(
-                      "h-3 w-3 shrink-0",
-                      localContextConfig.memory === "on" ? "text-foreground/60" : "text-muted-foreground/50"
-                    )} />
-                    <span className={cn(
-                      "flex-1",
-                      localContextConfig.memory === "on" ? "text-foreground/80" : "text-muted-foreground/50"
-                    )}>
-                      Memory
-                    </span>
-                    {localContextConfig.memory === "on" && (
-                      <Check className="h-3 w-3 text-foreground/50 shrink-0" />
-                    )}
-                  </button>
-                  {conversation?.visibility !== "team" && (
-                    <button
-                      onClick={() =>
-                        setLocalContextConfig((prev) => ({
-                          ...prev,
-                          meetingBrain: prev.meetingBrain === "on" ? "off" : "on",
-                        }))
-                      }
-                      className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted/50 transition-colors"
-                    >
-                      <ListChecks className={cn(
-                        "h-3 w-3 shrink-0",
-                        localContextConfig.meetingBrain === "on" ? "text-foreground/60" : "text-muted-foreground/50"
-                      )} />
-                      <span className={cn(
-                        "flex-1",
-                        localContextConfig.meetingBrain === "on" ? "text-foreground/80" : "text-muted-foreground/50"
-                      )}>
-                        MeetingBrain
-                      </span>
-                      {localContextConfig.meetingBrain === "on" && (
-                        <Check className="h-3 w-3 text-foreground/50 shrink-0" />
-                      )}
-                    </button>
-                  )}
-                  <button
-                    onClick={() =>
-                      setLocalContextConfig((prev) => ({
-                        ...prev,
-                        imageGeneration: prev.imageGeneration === "on" ? "off" : "on",
-                      }))
-                    }
-                    className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted/50 transition-colors"
-                  >
-                    <ImageIcon className={cn(
-                      "h-3 w-3 shrink-0",
-                      localContextConfig.imageGeneration === "on" ? "text-violet-400" : "text-muted-foreground/50"
-                    )} />
-                    <span className={cn(
-                      "flex-1",
-                      localContextConfig.imageGeneration === "on" ? "text-foreground/80" : "text-muted-foreground/50"
-                    )}>
-                      Image
-                    </span>
-                    {localContextConfig.imageGeneration === "on" && (
-                      <Check className="h-3 w-3 text-foreground/50 shrink-0" />
-                    )}
-                  </button>
-                </div>
-              </PopoverContent>
-            </Popover>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-muted-foreground/60 hover:text-muted-foreground/80 hover:bg-muted/50 transition-colors">
@@ -2622,7 +2471,6 @@ export default function ChatPanel({
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
-            </>
           }
           placeholder={
             myPermission === "view"

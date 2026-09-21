@@ -109,7 +109,7 @@ export default function PageAuditCard({ data }: { data: PageAuditData }) {
             ) : (
               <AlertTriangle className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
             )}
-            <span className="flex-1 min-w-0">
+            <span className="flex-1 min-w-0 break-anywhere">
               <span className="block text-[12.5px] font-medium leading-snug">{f.name}</span>
               <span className="block text-[11.5px] text-muted-foreground leading-snug">{f.detail}</span>
               {f.remedy && (
@@ -127,7 +127,7 @@ export default function PageAuditCard({ data }: { data: PageAuditData }) {
               rows are worded to avoid making, and it was landing in the "not
               measured" line below, blamed on a render. */}
           {noted.map((n) => (
-            <p key={n.name} className="text-[11.5px] text-muted-foreground leading-snug">
+            <p key={n.name} className="text-[11.5px] text-muted-foreground leading-snug break-anywhere">
               <span className="text-foreground font-medium">{n.name}.</span> {n.detail}
               {n.remedy && <span className="text-foreground/80"> {n.remedy}</span>}
             </p>

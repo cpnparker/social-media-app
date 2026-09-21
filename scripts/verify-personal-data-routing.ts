@@ -100,7 +100,6 @@ import {
   OWN_MEETING_REFERENCE,
 } from "../lib/ai/personal-data-intent";
 import { routeQuery, textNeedsMailbox } from "../lib/ai/query-router";
-import { normalizeContextConfig } from "../lib/ai/system-prompts";
 import { readFileSync } from "fs";
 
 let failures = 0;
@@ -115,7 +114,7 @@ const ON_GROK = {
 
 /** Run a real phrasing through the real router, then the real predicate. */
 function escalates(text: string, opts?: Partial<typeof ON_GROK>): boolean {
-  const route = routeQuery(text, normalizeContextConfig({}) as any);
+  const route = routeQuery(text);
   return needsClaudeForPersonalData({
     userMessage: text,
     intent: route.intent,
@@ -123,14 +122,14 @@ function escalates(text: string, opts?: Partial<typeof ON_GROK>): boolean {
     ...(opts || {}),
   });
 }
-const intentOf = (t: string) => routeQuery(t, normalizeContextConfig({}) as any).intent;
+const intentOf = (t: string) => routeQuery(t).intent;
 
 // The 2026-09-15 message, verbatim. Every meeting word in it is slide copy.
 const DECK_EDIT_0915 = "Update the MeetingBrain part of this deck. Remove slide 9 (\"MeetingBrain writes up your meetings\") and put these two slides in its place, as new slides 9 and 10. Keep every other slide exactly as it is. The old slide 9 overstated two things (no bot joins calls, and prep briefs are on request, not automatic), so it goes rather than being kept. Use hyphens, never em or en dashes.\n\nNew slide 9. two-column - title \"MeetingBrain: meetings in, {actions} out\", subtitle \"Your calendar is checked every 15 minutes. No bot joins your calls.\", columns left \"What goes in\" and right \"What comes out\", tones [\"blue\", \"teal\"]. body, four lines: \"Gemini or Google Docs notes on the invite, read automatically\" / \"A recording made in Chrome or Edge\" / \"An uploaded audio or video file, up to 500 MB\" / \"A pasted transcript\". bodyRight, four lines: \"A summary, key topics and next steps\" / \"A client-ready summary you edit and copy\" / \"Action items pulled from meetings, email and Slack\" / \"The transcript, shared with colleagues who were there\".\n\nNew slide 10. cards - title \"MeetingBrain and EngineAI, {together}\", subtitle \"Your meetings feed straight into EngineAI\". cards: \"Prepare me\" body \"One click before a meeting: where things stand, who is coming, open actions.\" icon sparkles tone blue; \"Ask about your meetings\" body \"In a private chat, EngineAI reads your meetings, transcripts and open tasks.\" icon message-square tone teal; \"The secure bridge\" body \"Your Google, Microsoft and Slack connections live in MeetingBrain. EngineAI borrows them.\" icon lock tone amber. note \"Invite-only: an admin adds you at meetingbrain.ai/admin. Your own meetings and tasks only show in private chats.\"";
 const QUOTED_PROMPTS_DECK = "Build a deck of example prompts: \"check my gmail\", \"what's on my calendar tomorrow?\", \"prep me for my next meeting\"";
 
 console.log("\nPreconditions");
-const probe = routeQuery("Did Carol send the kick off meeting invite?", normalizeContextConfig({}) as any);
+const probe = routeQuery("Did Carol send the kick off meeting invite?");
 probe && typeof probe.intent === "string"
   ? pass(`router reachable — that question classifies as "${probe.intent}"`)
   : fail("routeQuery did not return an intent — this check is testing nothing");
@@ -396,7 +395,7 @@ cond.indexOf("isPersonalMeetingQuestion(") >= 0 && cond.indexOf("\"meeting_data\
   ? pass("no bare meeting_data comparison left in the route")
   : fail("the route still compares intent === \"meeting_data\" somewhere — a third consumer that reads deck copy as a calendar question");
 // Behavioural, through the router: the mailbox override reads the same ask text.
-!textNeedsMailbox(QUOTED_PROMPTS_DECK) && !routeQuery(QUOTED_PROMPTS_DECK, normalizeContextConfig({}) as any).needsMailbox
+!textNeedsMailbox(QUOTED_PROMPTS_DECK) && !routeQuery(QUOTED_PROMPTS_DECK).needsMailbox
   ? pass("a quoted \"check my gmail\" on a slide does not open the mailbox door either")
   : fail("textNeedsMailbox fires on quoted slide copy — the deck reaches Claude through the mailbox override instead");
 textNeedsMailbox("check my gmail")

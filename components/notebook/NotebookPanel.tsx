@@ -306,7 +306,7 @@ export default function NotebookPanel({ workspaceId, onJumpToSource, onAskAbout 
               <div key={entry.id} className="rounded-xl border bg-card p-2.5 group">
                 <div className="flex items-start gap-2">
                   <Icon className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0 mt-0.5" />
-                  <p className="flex-1 min-w-0 text-[13px] leading-relaxed text-foreground/90 line-clamp-6 whitespace-pre-wrap">
+                  <p className="flex-1 min-w-0 text-[13px] leading-relaxed text-foreground/90 line-clamp-6 whitespace-pre-wrap break-anywhere">
                     {entry.quote}
                   </p>
                   <DropdownMenu>

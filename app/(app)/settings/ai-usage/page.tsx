@@ -11,7 +11,6 @@ import {
   ExternalLink,
   Search,
   Bug,
-  Globe,
   User,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -54,7 +53,6 @@ interface ContextConfig {
   contentPipeline: DetailLevel;
   socialPresence: DetailLevel;
   ideas: DetailLevel;
-  webSearch?: "on" | "off";
 }
 
 interface UsageSummaryPeriod {
@@ -309,7 +307,6 @@ export default function AIUsagePage() {
     contentPipeline: "off",
     socialPresence: "summary",
     ideas: "off",
-    webSearch: "on",
   });
   const [maxTokens, setMaxTokens] = useState(4096);
   const [debugMode, setDebugMode] = useState(false);

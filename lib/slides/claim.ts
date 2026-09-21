@@ -375,6 +375,15 @@ export const DECK_NOT_CHANGED_NOTICE =
   "\n\n---\n\n⚠ **The deck was not changed.** No slides were added, removed or edited in this reply, so the deck on screen is as it was before your message. Ask again to make the change.";
 export const NO_DECK_BUILT_NOTICE =
   "\n\n---\n\n⚠ **No deck was built or changed.** No slides were drawn in this reply, even if the reply above describes a deck. Ask again to make it.";
+// A THIRD NOTICE LIVED HERE and has been removed with the switch that needed
+// it. It fired when generate_slides was not in the turn's tool array at all,
+// and it closed by naming the "Image" switch instead of saying "Ask again",
+// because with the capability off the second ask reached a turn with no
+// builder either. The five generation tools are now registered on every chat
+// turn, so the only turns without a builder are the headless ones — a brief, a
+// fact-check — and none of those sets `asked`, which is the first gate below.
+// Keeping it would have meant shipping a notice that names a control nobody
+// can press, for a state nothing can reach.
 
 export interface DeckClaimRetryInput {
   text: string; asked: boolean; turn: SlidesTurnState | null | undefined; offered: boolean;
@@ -391,7 +400,8 @@ export interface DeckClaimRetryInput {
  * the narration becomes true.
  *
  * Not when generate_slides was not offered this round (a tainted Anthropic
- * round, imageGeneration off), not twice, not on the last round (nothing could
+ * round, or a headless caller that registers no generation tools), not twice,
+ * not on the last round (nothing could
  * follow the call), not past the time budget (a retried deck with images takes
  * about a minute), not when another deliverable was made this turn, and not
  * when the claiming round wrote no text: the claim then came from an earlier
@@ -421,5 +431,16 @@ export function unmadeDeckChangeNotice(
   if (turn && turn.lastOutcome) return "";
   if (madeAnotherDeliverable(o.toolsUsed)) return "";
   if (!deckChangeClaim(text)) return "";
+  // BOTH NOTICES END "Ask again", and that is now always the right advice.
+  // This function used to take an `offered` flag as well — was generate_slides
+  // in this turn's tool array at all — because a user behind a switched-off
+  // capability would ask again into another turn with no builder. The switch
+  // is gone and the tools are registered on every chat turn, so the only thing
+  // that can stop a call this turn is a taint, which lasts exactly one turn.
+  // Asking again is precisely what clears it.
+  //
+  // shouldRetryDeckClaim keeps ITS `offered`, and that is not an inconsistency:
+  // it reads the ROUND's tool list, which the Anthropic chain narrows mid-turn
+  // on taint, and it decides whether another round could possibly help.
   return o.deckInConversation ? DECK_NOT_CHANGED_NOTICE : NO_DECK_BUILT_NOTICE;
 }

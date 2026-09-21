@@ -285,7 +285,7 @@ function MessageRow({ msg, streaming }: { msg: DesignMessage; streaming: boolean
   if (msg.role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-[hsl(var(--design-accent))] px-3.5 py-2 text-[13.5px] leading-relaxed text-white whitespace-pre-wrap shadow-sm">
+        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-[hsl(var(--design-accent))] px-3.5 py-2 text-[13.5px] leading-relaxed text-white whitespace-pre-wrap break-anywhere shadow-sm">
           {msg.content}
         </div>
       </div>
@@ -299,7 +299,7 @@ function MessageRow({ msg, streaming }: { msg: DesignMessage; streaming: boolean
         {parsed?.map((part, i) => {
           if (part.kind === "text") {
             const html = DOMPurify.sanitize(renderLightMarkdown(part.value));
-            return <div key={i} className="ai-prose leading-relaxed" dangerouslySetInnerHTML={{ __html: html }} />;
+            return <div key={i} className="ai-prose leading-relaxed break-anywhere" dangerouslySetInnerHTML={{ __html: html }} />;
           }
           if (part.kind === "image") {
             return (

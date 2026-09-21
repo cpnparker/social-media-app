@@ -107,6 +107,10 @@ export async function POST(req: NextRequest) {
     clientContext: null,
     contentDetail: null,
     contextConfig,
+    // Same fact the provider config carries below (imageGeneration: false).
+    // Built from contextConfig this prompt claimed a generate_image tool the
+    // brief was never given.
+    generationTools: false,
     resourcingAccess,
   } as any);
 

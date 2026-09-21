@@ -146,7 +146,16 @@ export async function PATCH(req: NextRequest) {
       date_updated: new Date().toISOString(),
     };
     if (model !== undefined) updateData.name_model = model;
-    if (contextConfig !== undefined) updateData.config_context = contextConfig;
+    // Normalise on WRITE, not only on read. Both settings pages hold a
+    // ContextConfig that omits imageGeneration, memory, meetingBrain and
+    // incognito entirely (settings/ai-context, settings/ai-usage) and PATCH the
+    // whole object, so an admin pressing Save DROPPED those four keys from the
+    // row. It failed safe only because normalizeContextConfig defaults them on
+    // — one edit to that function away from a stored false nobody chose. A row
+    // that says what it means also makes the next person's diagnosis possible:
+    // the three pre-March rows carry three boolean keys and nothing else, and
+    // reading them tells you nothing about what the turn actually did.
+    if (contextConfig !== undefined) updateData.config_context = normalizeContextConfig(contextConfig);
     if (cuDescription !== undefined) updateData.information_cu_description = cuDescription;
     // Refuse rather than truncate. This used to .slice(0, 8000) silently, which
     // is the worst of the three options: the writer believed it was saved, and

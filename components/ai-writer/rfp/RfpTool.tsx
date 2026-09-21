@@ -2514,7 +2514,7 @@ function ResponseEditor({
                   <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">
                     Scope &amp; Requirements
                   </p>
-                  <div className="text-sm leading-relaxed whitespace-pre-wrap bg-background border rounded-lg p-3">
+                  <div className="text-sm leading-relaxed whitespace-pre-wrap break-anywhere bg-background border rounded-lg p-3">
                     {opportunity.document_scope}
                   </div>
                 </div>
@@ -2554,7 +2554,7 @@ function ResponseEditor({
                   <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">
                     Notes
                   </p>
-                  <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                  <p className="text-sm leading-relaxed whitespace-pre-wrap break-anywhere">
                     {opportunity.document_notes}
                   </p>
                 </div>

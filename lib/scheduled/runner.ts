@@ -135,7 +135,7 @@ export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunR
     // defaults, so a meta-only object must behave exactly like null.
     const { proposalId: _meta, ...ctxRest } = (task.config_context || {}) as Record<string, any>;
     const contextConfig = normalizeContextConfig(Object.keys(ctxRest).length ? ctxRest : null);
-    const queryRoute = routeQuery(task.document_prompt, contextConfig);
+    const queryRoute = routeQuery(task.document_prompt);
 
     // Model: resolve 'auto' like the chat route (incl. the grounded-search override),
     // but FLOOR auto at the reasoning tier: scheduled runs are unattended — nobody
@@ -155,6 +155,14 @@ export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunR
       clientContext: null,
       contentDetail: null,
       contextConfig,
+      // Declared, not inferred. This runner sets imageGeneration:false on the
+      // provider config below, so the prompt has to be built from the same
+      // fact — it used to be built from contextConfig, which resolves to "on",
+      // and every scheduled brief was told it had a generate_image tool it had
+      // not been given. A brief writes text and nothing else; the off-branch
+      // in system-prompts.ts says exactly that and points at no control,
+      // because there is no screen here for a control to be on.
+      generationTools: false,
       latestUserMessage: task.document_prompt,
       resourcingAccess: !!(resourcingRes?.data as any)?.flag_access_resourcing,
     });

@@ -305,7 +305,7 @@ export default function PromoDraftsSection({
                         </div>
                       </div>
                     ) : (
-                      <p className="text-xs leading-relaxed text-foreground/90 whitespace-pre-wrap">
+                      <p className="text-xs leading-relaxed text-foreground/90 whitespace-pre-wrap break-anywhere">
                         {draft.content}
                       </p>
                     )}

@@ -3,6 +3,7 @@ import { applyEditSlide, unrenderableSlides, undrawnTableSlides, undrawnTableFau
 import { slidesFailure, parseSlidesArguments, type SlidesTurnState } from "@/lib/slides/failure";
 import { shouldRetryDeckClaim, unmadeDeckChangeNotice, DECK_CLAIM_NUDGE } from "@/lib/slides/claim";
 import { splitVolatile } from "@/lib/ai/prompt-cache";
+import { artlistConfigured } from "@/lib/ai/capability-control";
 import { logAiUsage } from "@/lib/ai/usage-logger";
 import OpenAI from "openai";
 import { put } from "@vercel/blob";
@@ -8706,7 +8707,8 @@ export function createStreamingResponse(
             () => streamOpenAI(messages, config, modelInfo.apiModel, controller, encoder));
         } else if (modelInfo.provider === "deepseek") {
           // DeepSeek is OpenAI-compatible — reuse streamOpenAI with a different client.
-          // Image generation isn't supported, so force it off regardless of UI toggle.
+          // Image generation isn't supported, so force it off regardless of what
+          // the calling route asked for.
           // Mutate the SAME config object rather than cloning: the tool
           // executors write taint flags onto it during the turn, and the
           // route reads them afterwards to decide whether to run memory
@@ -9260,6 +9262,40 @@ async function streamAnthropic(
   if (config.webSearch) {
     tools.push({ type: "web_search_20250305", name: "web_search", max_uses: 5 });
   }
+  // ONE FLAG, FIVE TOOLS, and it is no longer a preference. It gates
+  // generate_image, generate_document, generate_slides, generate_word_document
+  // and generate_chart together, on this chain and its three twins (xAI
+  // ~:11010, Gemini ~:12232, OpenAI ~:13326).
+  //
+  // IT USED TO BE A BUTTON, labelled "Image", under the message box on both
+  // composers — one label for five tools, four of which are not images. On 20
+  // September a user lost deck generation to it, was told the tools were "not
+  // available in this environment", and went to Figma. THE BUTTON IS GONE.
+  // Capability EXISTENCE is an admin setting and capability INVOCATION is per
+  // request; no mainstream assistant ships an end-user off switch for a
+  // generation capability, and Anthropic deleted its own per-chat web-search
+  // toggle for the same reason.
+  //
+  // WHAT THE FLAG IS NOW: a per-ROUTE tool set, which is the lever the removal
+  // note asked for — "never a per-user preference: a preference makes the
+  // payload non-deterministic". The chat route passes true on every turn. The
+  // headless callers that produce text and nothing else pass false and mean
+  // it: lib/scheduled/runner.ts, the meeting brief, the fact-checker, and the
+  // two optimiser routes. buildSystemPrompt takes the SAME boolean as
+  // `generationTools`, so no turn is ever described a tool it was not given.
+  //
+  // WHAT IT COSTS, measured 2026-09-21 before the removal: +18,351 tokens of
+  // tool payload per request on this chain (23,062 with the tools on against
+  // 4,711 with them off) plus the 25,200 chars of prose the three
+  // system-prompt blocks add — about $0.025 a turn blended at the observed 36%
+  // cold-cache rate, roughly $18/month against a $222/month bill. That is the
+  // price of the failure it prevents, paid deliberately.
+  //
+  // WATCH THE CEILING: SLIDES_GEN_TOOL alone serialises to ~52,900 chars
+  // against the TOOL_CEILING of 55,000 asserted in
+  // scripts/verify-slide-layouts.ts. Always-on does not change the per-tool
+  // size, but it does mean every chat turn on every chain carries it, so the
+  // next layout added is the one that breaches it.
   if (config.imageGeneration) {
     tools.push(IMAGE_GEN_TOOL);
     tools.push(DOCUMENT_GEN_TOOL);
@@ -9268,13 +9304,25 @@ async function streamAnthropic(
     tools.push(CHART_GEN_TOOL);
   }
   if (config.designMode) {
-    // Design mode also gets image gen (force-enable even if toggle is off) + video + artlist.
-    if (!config.imageGeneration) tools.push(IMAGE_GEN_TOOL);
+    // Design mode adds video, and stock footage when there is a key for it.
+    //
+    // It used to re-push IMAGE_GEN_TOOL here when `imageGeneration` was false,
+    // because a designer who had switched the Image control off still needed
+    // image generation — a design surface without it is not a design surface.
+    // With the control gone there is no caller that reaches this branch with
+    // the flag false: the chat route is the only one that sets designMode and
+    // it registers the five generation tools every turn. A line that can no
+    // longer run, whose comment names a deleted button, is the half-removal
+    // this change exists to stop, so it is gone. A future headless design
+    // caller that genuinely wants no generation tools now gets what it asked
+    // for instead of one pushed back in behind its back.
     tools.push(VIDEO_GEN_TOOL);
     // Only offer stock footage when there is a key to fetch it with. Registered
     // unconditionally, these invite the model to promise a search that always
     // throws "ARTLIST_API_KEY is not set" — a capability that does not exist.
-    if (process.env.ARTLIST_API_KEY?.trim()) {
+    // Same predicate the chat route passes into buildSystemPrompt, so the
+    // registration and the prose that describes it cannot disagree.
+    if (artlistConfigured()) {
       tools.push(ARTLIST_SEARCH_TOOL);
       tools.push(ARTLIST_LICENSE_TOOL);
     }
@@ -11006,7 +11054,9 @@ async function streamXAIChatCompletions(
   const effort = Object.values(MODEL_REGISTRY).find((m) => m.apiModel === apiModel)?.reasoningEffort;
   const reasoningParam = effort ? { reasoning_effort: effort } : {};
 
-  // Build tools array if image generation is enabled
+  // The five generation tools, on the same per-ROUTE flag the Anthropic chain
+  // documents at length (~:9259). Registered on every chat turn; false only
+  // from a headless caller that produces text and nothing else.
   const tools: OpenAI.Chat.ChatCompletionTool[] = [];
   if (config.imageGeneration) {
     tools.push(IMAGE_GEN_OPENAI_TOOL);
@@ -12228,7 +12278,9 @@ async function streamGemini(
     } as any);
   }
 
-  // Build tools array if image generation is enabled
+  // The five generation tools, on the same per-ROUTE flag the Anthropic chain
+  // documents at length (~:9259). Registered on every chat turn; false only
+  // from a headless caller that produces text and nothing else.
   const tools: OpenAI.Chat.ChatCompletionTool[] = [];
   if (config.imageGeneration) {
     tools.push(IMAGE_GEN_OPENAI_TOOL);
@@ -13322,7 +13374,9 @@ async function streamOpenAI(
     } as any);
   }
 
-  // Build tools array if image generation is enabled
+  // The five generation tools, on the same per-ROUTE flag the Anthropic chain
+  // documents at length (~:9259). Registered on every chat turn; false only
+  // from a headless caller that produces text and nothing else.
   const tools: OpenAI.Chat.ChatCompletionTool[] = [];
   if (config.imageGeneration) {
     tools.push(IMAGE_GEN_OPENAI_TOOL);

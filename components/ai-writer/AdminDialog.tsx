@@ -8,7 +8,6 @@ import {
   ChevronRight,
   Search,
   Bug,
-  Globe,
   Plus,
   Pencil,
   Trash2,
@@ -79,7 +78,6 @@ interface ContextConfig {
   contentPipeline: DetailLevel;
   socialPresence: DetailLevel;
   ideas: DetailLevel;
-  webSearch?: "on" | "off";
 }
 
 interface UsageSummaryPeriod {
@@ -653,7 +651,6 @@ function ContextTab({ workspaceId }: { workspaceId: string }) {
     contentPipeline: "summary",
     socialPresence: "summary",
     ideas: "summary",
-    webSearch: "on",
   });
   const [maxTokens, setMaxTokens] = useState(4096);
   const [debugMode, setDebugMode] = useState(false);
@@ -838,39 +835,6 @@ function ContextTab({ workspaceId }: { workspaceId: string }) {
               </div>
             );
           })}
-        </CardContent>
-      </Card>
-
-      {/* Web Search */}
-      <Card className="border-0 shadow-sm">
-        <CardContent className="py-3 px-4 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3 min-w-0">
-            <Globe className="h-4 w-4 text-emerald-500 shrink-0" />
-            <div className="min-w-0">
-              <p className="text-sm font-medium">Web Search</p>
-              <p className="text-xs text-muted-foreground">Enable web search by default</p>
-            </div>
-          </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={contextConfig.webSearch === "on"}
-            onClick={() =>
-              setContextConfig((prev) => ({
-                ...prev,
-                webSearch: prev.webSearch === "on" ? "off" : "on",
-              }))
-            }
-            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-              contextConfig.webSearch === "on" ? "bg-emerald-500" : "bg-muted"
-            }`}
-          >
-            <span
-              className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-sm transform transition-transform ${
-                contextConfig.webSearch === "on" ? "translate-x-4" : "translate-x-0"
-              }`}
-            />
-          </button>
         </CardContent>
       </Card>
 

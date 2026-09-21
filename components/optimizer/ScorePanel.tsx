@@ -361,7 +361,7 @@ export default function ScorePanel({ input, muted, onAddQuery, hasLivePage, audi
               if (block) {
                 return (
                   <div className="mt-2 rounded-lg border border-primary/30 bg-primary/[0.04] overflow-hidden">
-                    <p className="px-2 py-1.5 text-[11.5px] leading-relaxed whitespace-pre-wrap">{block}</p>
+                    <p className="px-2 py-1.5 text-[11.5px] leading-relaxed whitespace-pre-wrap break-anywhere">{block}</p>
                     <div className="px-2 pb-2 flex items-center gap-2">
                       <button
                         onClick={() => {
