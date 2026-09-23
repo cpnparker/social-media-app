@@ -28,6 +28,7 @@ import { publisherFor } from "@/lib/optimizer/url-import";
 import { parseDraft } from "@/lib/optimizer/parse";
 import { analysisAllowed, bandCopy, contentTypeKeyPart, DEFAULT_CONTENT_TYPE } from "@/lib/optimizer/content-types";
 import { computeDraftScores } from "@/lib/optimizer/engine";
+import { structureUnseenOfBrief } from "@/lib/optimizer/import-structure";
 import {
   buildJudgePrompt, parseJudgeResponse, scoreJudgeResponse,
   anchorJudgeFindings, assessmentKey, deriveVerdictFindings, JUDGE_MODEL,
@@ -294,6 +295,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       brandName: canon.brandName,
     publisherName: publisherFor(canon, session.document_source_ref),
       brandAliases: canon.brandAliases,
+      // The import's record that it could not see the source's headings. The
+      // live panel reads the same field from the same brief through the same
+      // function, so the stored assessment and the number on screen skip the
+      // same criteria.
+      structureUnseen: structureUnseenOfBrief(brief),
     });
 
     const passing: string[] = [];

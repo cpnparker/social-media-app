@@ -10,16 +10,22 @@
  * paste was a link in a sentence.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Editor } from "@tiptap/react";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { offeredTypes } from "@/lib/optimizer/content-types";
 import ClientSelector from "@/components/engineai/ClientSelector";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
-import { ArrowRight, ClipboardPaste, FileText, Building2, Globe, Loader2, PenLine, Info, Upload, FileUp } from "lucide-react";
+import TiptapEditor from "@/components/content/TiptapEditor";
+import { ImportPaste, pasteRecordOf } from "@/lib/optimizer/paste-extension";
+import {
+  headingCountOf, headingsUnseen, likelyQuestionHeadings, sectionHeadingCountOf, structureUnseenAdvice,
+  type StructureUnseenReason,
+} from "@/lib/optimizer/import-structure";
+import { ArrowRight, ClipboardPaste, FileText, Building2, Globe, Loader2, PenLine, Info, Upload, FileUp, AlertTriangle } from "lucide-react";
 
 export interface ImportSources {
   docs: { id: string; name: string; modified: string }[];
@@ -54,6 +60,10 @@ interface Props {
 type Tab = "paste" | "upload" | "url" | "gdoc" | "engine";
 type ImportSource = "pasted" | "gdoc" | "gdoc-link" | "url" | "engine" | "file";
 const SOURCE_FOR_TAB: { [k in Tab]: ImportSource } = { paste: "pasted", upload: "file", url: "url", gdoc: "gdoc", engine: "engine" };
+
+/** The paste box's extensions. A module constant because TiptapEditor's
+ *  extraExtensions must be referentially stable — see its prop comment. */
+const PASTE_EXTENSIONS = [ImportPaste];
 
 /** What importFile in lib/optimizer/file-import.ts will actually accept. Kept
  *  next to the picker so the dialog and the server cannot drift apart. */
@@ -91,21 +101,34 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
   const [sources, setSources] = useState<ImportSources | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [pasted, setPasted] = useState("");
   /**
-   * The clipboard's text/html flavour, when the source offered one.
+   * What the paste box holds, as editor HTML.
    *
-   * A textarea only ever receives text/plain, so pasting an article from Google
-   * Docs threw away every heading, list and bold run before the server saw it —
-   * and heading structure is SCORED, so the piece was then marked down for
-   * problems the paste had introduced. The paste event still carries the rich
-   * flavour, so it is captured here and sent alongside.
+   * The box used to be a <textarea> with the clipboard's HTML kept beside it,
+   * used only while the textarea still EQUALLED the clipboard's text/plain.
+   * That rule dropped every heading on any edit — and, measured on 2026-09-23,
+   * on NO edit at all whenever the source wrote \r\n line endings, which the
+   * textarea normalises and getData does not. A writer pasted a feature
+   * article twice, both arrived as plain text, and the studio told her the
+   * article had no headings. The box is now the studio's own editor with one
+   * paste door in front of it; lib/optimizer/paste-extension.ts has the
+   * mechanism and the alternatives it was chosen over.
    */
-  const [pastedHtml, setPastedHtml] = useState<string | null>(null);
+  const [pasteHtml, setPasteHtml] = useState("");
+  /**
+   * A MIRROR, for rendering, of the box's record: whether its content could
+   * not have carried the source's headings (the clipboard offered text only,
+   * or HTML converted from RTF, which has no headings to convert). The record
+   * itself is an attribute of the editor's document, written by the paste's
+   * own transaction — see lib/optimizer/paste-extension.ts — so undo and redo
+   * restore it with the content. It was React state set from paste
+   * transactions, and an undo that brought a plain paste back brought it
+   * back unrecorded. Synced from the document on every transaction.
+   */
+  const [pasteUnseen, setPasteUnseen] = useState<StructureUnseenReason | null>(null);
+  const pasteEditorRef = useRef<Editor | null>(null);
   const [pasteTitle, setPasteTitle] = useState("");
   const [filter, setFilter] = useState("");
-  /** The plain text that arrived with the captured html, so an edit can be detected. */
-  const pastedPlainRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -165,10 +188,8 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
             workspaceId, clientId,
             source: sourceOverride || SOURCE_FOR_TAB[tab],
             ref, title,
-            // Prefer the rich flavour when the clipboard offered one AND the
-            // writer has not since typed over it: `pasted` is the source of
-            // truth for what is on screen, so if it no longer matches what was
-            // pasted, the html is stale and must not be used.
+            // The paste box always sends editor HTML (see importPaste); the
+            // flag still travels WITH the text so the two cannot disagree.
             content: content ? content.text : undefined,
             contentIsHtml: content ? content.isHtml : undefined,
             ...(extra || {}),
@@ -246,9 +267,61 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
     [workspaceId, doImport]
   );
 
-  /** The captured html is only valid while the textarea still shows the text it
-   *  came from. Any edit invalidates it, silently and correctly. */
-  const usingRichPaste = pastedHtml !== null && pasted === pastedPlainRef.current;
+  /**
+   * The record is read from the document after every transaction — a paste,
+   * an undo, a redo, the delete that empties the box — so the warning can
+   * only ever show what the document says. Subscribed once per editor
+   * instance; the instance is destroyed with the component, and its
+   * listeners with it.
+   */
+  const onPasteEditorReady = useCallback((ed: Editor) => {
+    pasteEditorRef.current = ed;
+    const sync = () => setPasteUnseen(pasteRecordOf(ed.state.doc));
+    ed.on("transaction", sync);
+    sync();
+  }, []);
+
+  const pasteWords = useMemo(() => (pasteHtml.replace(/<[^>]+>/g, " ").match(/\S+/g) || []).length, [pasteHtml]);
+  const pasteHeadings = useMemo(() => headingCountOf(pasteHtml), [pasteHtml]);
+  /**
+   * The warning's condition is the engine's: a record AND no SECTION heading
+   * (a lone H1 is the title, and the criteria would read "0 of 0" on it). Once
+   * the writer has marked a section heading the warning gives way to a
+   * quieter line counting the question-shaped lines still unmarked — the
+   * record is still sent, so the studio goes on offering them.
+   */
+  const pasteSections = useMemo(() => sectionHeadingCountOf(pasteHtml), [pasteHtml]);
+  const pasteBlind = headingsUnseen(pasteUnseen, pasteSections);
+  const pasteNotice = pasteUnseen && pasteBlind ? structureUnseenAdvice(pasteUnseen) : null;
+  const pasteOffers = useMemo(
+    () => (pasteUnseen && !pasteBlind ? likelyQuestionHeadings(pasteHtml).length : 0),
+    [pasteUnseen, pasteBlind, pasteHtml]
+  );
+
+  const importPaste = useCallback(() => {
+    // Read from the editor at the moment of the click, not from pasteHtml:
+    // that is debounced, and the last keystroke before pressing Open would
+    // otherwise be missing from the import.
+    const ed = pasteEditorRef.current;
+    const html = ed ? ed.getHTML() : pasteHtml;
+    // The record goes whenever the document holds one, headings or not. It
+    // used to go only while the box held NO heading, so a writer who marked
+    // one storytelling line — as the warning told her to — imported with no
+    // record, and the studio read "0 of 1 headings are question-shaped" with
+    // nothing offering the five question lines still left as paragraphs.
+    // Whether the heading criteria are measured is decided when the draft is
+    // scored (headingsUnseen), not here.
+    const unseen = ed ? pasteRecordOf(ed.state.doc) : pasteUnseen;
+    // Always HTML now: the box holds editor HTML whichever flavour arrived, so
+    // the route's plain-text sniffing never runs on a paste from this screen.
+    // contentIsEditorHtml tells the route it has been converted once already,
+    // so it is re-sanitised but not re-inferred: what the box shows is what
+    // is stored.
+    doImport("paste", undefined, pasteTitle, { text: html, isHtml: true }, undefined, {
+      contentIsEditorHtml: true,
+      ...(unseen ? { structureUnseen: unseen } : {}),
+    });
+  }, [doImport, pasteHtml, pasteTitle, pasteUnseen]);
 
   const docs = (sources?.docs || []).filter((d) =>
     !filter.trim() || d.name.toLowerCase().indexOf(filter.trim().toLowerCase()) >= 0
@@ -429,41 +502,71 @@ export default function StartScreen({ workspaceId, clientId, clientName, onImpor
                 placeholder="Give it a title"
                 className="h-9"
               />
-              <Textarea
-                value={pasted}
-                onChange={(e) => setPasted(e.target.value)}
-                onPaste={(e) => {
-                  const html = e.clipboardData.getData("text/html");
-                  const text = e.clipboardData.getData("text/plain");
-                  if (html && html.trim()) {
-                    // Let the textarea take the plain text as normal — it is
-                    // what the writer sees and edits — and keep the rich
-                    // flavour beside it for the server.
-                    setPastedHtml(html);
-                    pastedPlainRef.current = text;
-                  } else {
-                    setPastedHtml(null);
-                    pastedPlainRef.current = null;
-                  }
-                }}
-                rows={7}
-                placeholder="Paste the content here…"
-              />
+              {/* THE BOX IS AN EDITOR — the studio's own, so its headings show
+                  as headings before the writer presses Open, and trimming a
+                  title or a stray line is an edit to structured content rather
+                  than to a copy of the text beside it. Height-capped so a long
+                  paste scrolls inside the box instead of pushing the button
+                  off the screen. */}
+              <div
+                data-paste-box=""
+                className="[&_.ProseMirror]:min-h-[176px] [&_.ProseMirror]:max-h-[420px] [&_.ProseMirror]:overflow-y-auto"
+              >
+                <TiptapEditor
+                  content={pasteHtml}
+                  onChange={setPasteHtml}
+                  onReady={onPasteEditorReady}
+                  debounceMs={150}
+                  extraExtensions={PASTE_EXTENSIONS}
+                  placeholder="Paste the content here…"
+                />
+              </div>
+              {/* NOT GREY HINT TEXT. The previous signal that a paste had lost
+                  its headings was the words "plain text" in muted 11px type
+                  under the box, and a writer read the resulting score as a
+                  verdict on her article. This sits between the box and the
+                  button, in the warning colour, and says what happened, what it
+                  does to the score, and what to do instead. */}
+              {!pasteNotice && pasteOffers > 0 && (
+                <p className="text-[12.5px] leading-relaxed text-muted-foreground" role="status" data-structure-remaining="">
+                  Part of this paste came in without its headings, and{" "}
+                  {pasteOffers === 1 ? "one more line reads" : `${pasteOffers} more lines read`} like a question heading.
+                  The heading criteria score the headings marked so far; the editor offers the rest above the draft.
+                </p>
+              )}
+              {pasteNotice && (
+                <div
+                  role="alert"
+                  data-structure-notice=""
+                  className="rounded-xl border border-amber-500/40 bg-amber-500/[0.08] px-3 py-2.5 flex items-start gap-2.5"
+                >
+                  <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                  <div className="flex flex-col gap-1 min-w-0">
+                    <span className="text-[13px] font-semibold">{pasteNotice.title}</span>
+                    <p className="text-[12.5px] leading-relaxed">{pasteNotice.body}</p>
+                    <p className="text-[12.5px] leading-relaxed">
+                      {pasteNotice.remedy}{" "}
+                      <button
+                        type="button"
+                        onClick={() => setTab("upload")}
+                        className="font-medium text-primary underline underline-offset-2"
+                      >
+                        Upload a file instead
+                      </button>
+                    </p>
+                  </div>
+                </div>
+              )}
               <div className="flex items-center justify-between">
-                <span className="text-[11.5px] text-muted-foreground">
-                  {!pasted.trim()
+                <span className="text-[11.5px] text-muted-foreground" data-paste-hint="">
+                  {pasteWords === 0
                     ? "Paste from a doc and the headings come with it"
-                    : usingRichPaste
-                      ? `${(pasted.match(/\S+/g) || []).length} words · headings and formatting kept`
-                      : `${(pasted.match(/\S+/g) || []).length} words · plain text`}
+                    : `${pasteWords} words · ${pasteHeadings === 0 ? "no headings" : pasteHeadings === 1 ? "1 heading" : `${pasteHeadings} headings`}`}
                 </span>
                 <Button
                   size="sm"
-                  disabled={busy || !pasted.trim()}
-                  onClick={() =>
-                    // Both halves read in the SAME render, so they cannot disagree.
-                    doImport("paste", undefined, pasteTitle, { text: usingRichPaste ? pastedHtml! : pasted, isHtml: usingRichPaste })
-                  }
+                  disabled={busy || pasteWords === 0}
+                  onClick={importPaste}
                 >
                   {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                   Open in the editor

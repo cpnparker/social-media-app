@@ -21,7 +21,8 @@ import { canAccessClient, requireAuth } from "@/lib/permissions";
 import { checkConversationAccess } from "@/lib/ai/access";
 import { detectContentType, DEFAULT_CONTENT_TYPE } from "@/lib/optimizer/content-types";
 import { RUBRIC_VERSION } from "@/lib/optimizer/rubric";
-import { toEditorHtml } from "@/lib/optimizer/import-html";
+import { importsAsPlainText, resanitizeEditorHtml, toEditorHtml } from "@/lib/optimizer/import-html";
+import { briefStructureFields, structureUnseenForImport } from "@/lib/optimizer/import-structure";
 
 export const maxDuration = 60;
 
@@ -492,9 +493,43 @@ export async function POST(req: NextRequest) {
   if (source === "chat" && chatText) {
     content = chatText;
   }
+  //
+  // Which door the conversion took is recorded on the way through, because it
+  // is the one fact about the import that cannot be recovered afterwards: once
+  // plainTextToHtml has run, a heading the source had and a heading it never
+  // had are the same ordinary paragraph.
+  let convertedFromPlainText = false;
+  const rawBeforeConversion = content;
   if (source !== "gdoc-link" && source !== "file") {
-    content = toEditorHtml(content, source === "pasted" ? body.contentIsHtml === true : undefined);
+    const isHtml = source === "pasted" ? body.contentIsHtml === true : undefined;
+    convertedFromPlainText = importsAsPlainText(content, isHtml);
+    // The paste box sends its editor's HTML, already converted from the
+    // clipboard once. It is sanitised again — the client is not trusted — but
+    // not re-inferred, or a bold line the box showed as a paragraph is stored
+    // as a heading (see resanitizeEditorHtml). An older client sending raw
+    // clipboard HTML carries no such flag and gets the full conversion.
+    content = source === "pasted" && isHtml && body.contentIsEditorHtml === true
+      ? resanitizeEditorHtml(content)
+      : toEditorHtml(content, isHtml);
   }
+
+  // DID THIS IMPORT SEE THE SOURCE'S HEADINGS? Recorded on the session so
+  // the rubric can tell "the writer wrote no headings" from "the import could
+  // not see them" — two claims the stored HTML cannot separate, and the
+  // confusion behind the 2026-09-23 incident, where a paste that lost five
+  // question headings was scored "0 of 0" and read as a verdict on the
+  // article. Decided from the door the content came through, never from
+  // what it holds: a writer who marked one heading before importing still
+  // lost the others. The rule, every branch of it, is
+  // structureUnseenForImport in lib/optimizer/import-structure.ts, and
+  // verify-optimizer-paste drives this POST to see what it stores.
+  const structureUnseen = structureUnseenForImport({
+    source,
+    convertedFromPlainText,
+    raw: rawBeforeConversion,
+    claimed: body.structureUnseen,
+    fileName: typeof body.fileName === "string" ? body.fileName : "",
+  });
 
   // Detected on the text that will be STORED — after conversion, so the
   // detector sees the same structure the editor and the rubric will.
@@ -564,6 +599,13 @@ export async function POST(req: NextRequest) {
         // that means it rather than borrowing `goal`, which is what the READER
         // should take away — a different thing that happened to be free.
         commission: engineBrief,
+        // Provenance, not a preference: the import's own record that it could
+        // not see the source's headings. Carried in the brief for the reason
+        // the lens is — no new column, no hand-run migration — and preserved
+        // by every PATCH of the brief, which spreads the existing object.
+        // Written through the helper whose twin (structureUnseenOfBrief) is
+        // how the page and the assess route read it back.
+        ...briefStructureFields(structureUnseen),
       },
       // A page imported with no client still has a publisher, and its own
       // figures should read as attributed to it. Never overwrites a real
@@ -610,5 +652,6 @@ export async function POST(req: NextRequest) {
     title,
     words: (content.match(/\S+/g) || []).length,
     warnings: importWarnings.length ? importWarnings : undefined,
+    structureUnseen: structureUnseen || undefined,
   });
 }

@@ -29,6 +29,7 @@ import { parseDraft } from "@/lib/optimizer/parse";
 import { buildShipChecklist, SHIP_CHECKLIST_SOURCE } from "@/lib/optimizer/ship-checklist";
 import { MIN_MARKABLE_WORDS } from "@/lib/optimizer/mark-policy";
 import { computeDraftScores } from "@/lib/optimizer/engine";
+import { structureUnseenInScores, structureUnseenAdvice } from "@/lib/optimizer/import-structure";
 import type { DraftInput } from "@/lib/optimizer/engine";
 import type { CriterionResult } from "@/lib/optimizer/types";
 import { cn } from "@/lib/utils";
@@ -90,7 +91,17 @@ export default function ScorePanel({ input, muted, onAddQuery, hasLivePage, audi
     } catch {
       return null;
     }
-  }, [input.body, input.title, input.targetQueries, input.format, input.brandName, input.unattributed]);
+  }, [input.body, input.title, input.targetQueries, input.format, input.brandName, input.unattributed, input.structureUnseen]);
+
+  /**
+   * The heading criteria this score skipped because the import could not see
+   * the source's headings. Read from the score itself — see
+   * structureUnseenInScores — because a skipped criterion is otherwise
+   * INVISIBLE here: the list below shows only criteria that were scored and
+   * missed, so five criteria would simply vanish and the number would look
+   * complete. A view that drops data must say so.
+   */
+  const headingsNotScored = useMemo(() => structureUnseenInScores(scores, input.structureUnseen), [scores, input.structureUnseen]);
 
   const [shipOpen, setShipOpen] = useState(false);
   /** Drafted blocks, keyed by criterion. Held here rather than fetched on
@@ -273,6 +284,17 @@ export default function ScorePanel({ input, muted, onAddQuery, hasLivePage, audi
               </button>
             </div>
           )}
+        </div>
+      )}
+
+      {headingsNotScored && (
+        <div className="shrink-0 px-4 py-2.5 border-b bg-amber-500/[0.07]" data-headings-not-scored="">
+          <p className="text-[11.5px] leading-relaxed">
+            <span className="font-semibold">Headings not scored.</span>{" "}
+            {structureUnseenAdvice(headingsNotScored.reason).title} — {headingsNotScored.criteria.length} heading
+            {headingsNotScored.criteria.length === 1 ? " criterion is" : " criteria are"} left out of this number rather
+            than scored as zero, until the draft has headings. The note above the draft says what to do.
+          </p>
         </div>
       )}
 

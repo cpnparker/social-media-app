@@ -30,6 +30,7 @@ import {  SUPERLATIVE_TERMS, SUPERLATIVE_TIERS, ANON_FACT_TIERS,
 import { parseDraft, sliceByWords, countTerm, containsAny, sectionLevels, sentenceIsSourced, isSentenceLike } from "./parse";
 import type { ParsedDraft, Chunk } from "./parse";
 import { validateHeadingHierarchy } from "./heading-hierarchy";
+import { headingsUnseen, normaliseStructureUnseen, sectionHeadingCount, structureUnseenSkipReason } from "./import-structure";
 import type { CriterionSpan, CriterionResult, DraftScores, PillarScore } from "./types";
 
 
@@ -60,6 +61,14 @@ export interface DraftInput {
   publishedDate?: string;
   /** Set when the piece is deliberately unattributed, so the author criteria skip rather than fail. */
   unattributed?: boolean;
+  /**
+   * The import's own record that it could not see the source's headings —
+   * config_brief.structureUnseen, set by the import route and never inferred
+   * here. While the draft holds no heading, the criteria that measure headings
+   * SKIP with the reason instead of scoring an absence the paste created. See
+   * lib/optimizer/import-structure.ts, which owns the predicate.
+   */
+  structureUnseen?: string | null;
   /** Injected clock. Defaults to real time only at the top-level entry point. */
   now?: Date;
 }
@@ -150,6 +159,23 @@ function skip(key: string, reason: string): CriterionResult {
   };
 }
 
+/**
+ * Why the heading criteria cannot be measured on this draft, or null when
+ * they can. Every heading criterion asks THIS, so they switch together — a
+ * piece whose hierarchy is "not scored" while its question headings read
+ * "0 of 0" would be the incident again, in one criterion instead of five.
+ *
+ * Counted in SECTION headings, the number the criteria below divide by. It
+ * was every heading, and a plain paste whose first line was "# Title" then
+ * held one — the title, which sectionLevels sets aside — so the criteria
+ * switched back on and question-headings read "0 of 0 headings are
+ * question-shaped", word for word the verdict the record exists to stop.
+ */
+function headingsBlindReason(p: ParsedDraft, input: DraftInput): string | null {
+  const reason = normaliseStructureUnseen(input.structureUnseen);
+  return reason && headingsUnseen(reason, sectionHeadingCount(p.headings)) ? structureUnseenSkipReason(reason) : null;
+}
+
 // ── The criteria ─────────────────────────────────────────────────────────
 
 function pillar1(p: ParsedDraft, input: DraftInput): CriterionResult[] {
@@ -195,11 +221,14 @@ function pillar1(p: ParsedDraft, input: DraftInput): CriterionResult[] {
 
   const bestHeadings = headingSum / scored;
   const bestBody = bodySum / scored;
+  const blind = headingsBlindReason(p, input);
 
   const titlePts = tieredScore(bestTitle, TITLE_ALIGNMENT_TIERS);
   return [
     score("title-query-alignment", titlePts, titlePts > 0, Math.round(bestTitle) + "% of query terms in the title"),
-    score("query-terms-in-headings", tieredScore(bestHeadings, HEADING_QUERY_TIERS), bestHeadings >= 50, Math.round(bestHeadings) + "% coverage"),
+    blind
+      ? skip("query-terms-in-headings", blind)
+      : score("query-terms-in-headings", tieredScore(bestHeadings, HEADING_QUERY_TIERS), bestHeadings >= 50, Math.round(bestHeadings) + "% coverage"),
     score("query-terms-in-body", tieredScore(bestBody, BODY_QUERY_TIERS), bestBody >= 80, Math.round(bestBody) + "% coverage"),
   ];
 }
@@ -488,6 +517,12 @@ function pillar3(p: ParsedDraft, input: DraftInput): CriterionResult[] {
   // Question headings. AuthorityOn wanted 25 raw question marks for full marks
   // across concatenated SITE text — the poster child for recalibration. Here it
   // counts question-shaped HEADINGS, the structural unit extraction matches.
+  //
+  // Unless the import could not see the headings. "0 of 0 headings are
+  // question-shaped" is what a writer was shown for a pasted article whose
+  // five question headings the clipboard had dropped, and she took it as a
+  // verdict on the article's structure. It was a measurement of the paste.
+  const headingBlind = headingsBlindReason(p, input);
   const secLv = sectionLevels(p.headings);
   const sectionHeads = p.headings.filter(function (h) { return h.level === secLv[0] || h.level === secLv[1]; });
   const qHeads = sectionHeads.filter(function (h) { return h.isInterrogativeShaped; });
@@ -503,12 +538,19 @@ function pillar3(p: ParsedDraft, input: DraftInput): CriterionResult[] {
     .map(function (h): CriterionSpan {
       return { start: h.start, end: h.end, note: "not question-shaped" };
     });
-  out.push(score("question-headings", qhPts, qhPts >= 10,
-    qHeads.length + " of " + sectionHeads.length + " headings are question-shaped", flatHeads));
-
-  if (qHeads.length === 0) {
-    out.push(skip("heading-answer-adjacency", "No question headings to answer"));
+  if (headingBlind) {
+    out.push(skip("question-headings", headingBlind));
+    // With the import's reason, not "no question headings to answer", which
+    // would be the same false claim in other words.
+    out.push(skip("heading-answer-adjacency", headingBlind));
   } else {
+    out.push(score("question-headings", qhPts, qhPts >= 10,
+      qHeads.length + " of " + sectionHeads.length + " headings are question-shaped", flatHeads));
+  }
+
+  if (!headingBlind && qHeads.length === 0) {
+    out.push(skip("heading-answer-adjacency", "No question headings to answer"));
+  } else if (!headingBlind) {
     let answered = 0;
     const unansweredHeads: CriterionSpan[] = [];
     for (let i = 0; i < qHeads.length; i++) {
@@ -1120,6 +1162,7 @@ function pillar6(p: ParsedDraft, input: DraftInput, now: Date): CriterionResult[
       full ? "ranked list or table present" : partial ? "unordered list only" : "no list or table"));
   }
 
+  const headingBlind = headingsBlindReason(p, input);
   const hier = validateHeadingHierarchy(p.headings, !!input.title);
   const secLv = sectionLevels(p.headings);
   const sectionHeads = p.headings.filter(function (h) { return h.level === secLv[0] || h.level === secLv[1]; });
@@ -1131,11 +1174,19 @@ function pillar6(p: ParsedDraft, input: DraftInput, now: Date): CriterionResult[
     hierScore = Math.max(0, hierScore - 3);
     hierNote = "no subheadings in a long draft" + (hier.issues.length ? "; " + hierNote : "");
   }
-  out.push(score("heading-hierarchy", hierScore, hierScore === 15, hierNote));
-
   const density = sectionHeads.length * per1k;
   const hdPts = (density >= 2 && density <= 8) ? 5 : ((density >= 1 && density < 2) || (density > 8 && density <= 12)) ? 3 : 0;
-  out.push(score("heading-density", hdPts, hdPts === 5, density.toFixed(1) + " headings per 1,000 words"));
+  if (headingBlind) {
+    // Both, not just density: hierarchy's 12/15 for "no subheadings in a long
+    // draft" is a heading verdict too, and the one that happens to be
+    // generous. Skipping one and scoring the other would let a paste that
+    // lost its headings still move the pillar in either direction.
+    out.push(skip("heading-hierarchy", headingBlind));
+    out.push(skip("heading-density", headingBlind));
+  } else {
+    out.push(score("heading-hierarchy", hierScore, hierScore === 15, hierNote));
+    out.push(score("heading-density", hdPts, hdPts === 5, density.toFixed(1) + " headings per 1,000 words"));
+  }
 
   // Production placeholders. Five "[Professional headshot image]" notes rode
   // the founder's own draft into the scorer, scored as ordinary prose, and

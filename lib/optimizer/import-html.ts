@@ -73,10 +73,98 @@ const NUKE = ["script", "style", "head", "meta", "link", "noscript", "iframe", "
  * is a third-party document.
  */
 export function sanitizeImportedHtml(html: string): string {
+  return sanitize(html, true);
+}
+
+/**
+ * The whitelist again, WITHOUT the inferences, for HTML that has already been
+ * through the door once: the Optimizer's paste box sends its own editor's
+ * HTML, which classifyPaste built from the clipboard with sanitizeImportedHtml.
+ *
+ * The client is not trusted, so the whitelist runs again. The inferences —
+ * the house-template and layout-table unwraps and bold-line heading promotion
+ * — do not, because they already ran on the source's OWN markup, and running
+ * them on the editor's re-serialisation of it guesses again from different
+ * evidence. Measured on 2026-09-23: Word and Pages mark bold with <b>, which
+ * promoteBoldLineHeadings deliberately does not read; the editor writes every
+ * bold run back out as <strong>, which it does — so a short bold line from
+ * Word showed in the box as a bold paragraph and was STORED as an <h2> the
+ * writer never saw. An invented heading is the score a writer cannot explain;
+ * what the box shows is what the import stores.
+ */
+export function resanitizeEditorHtml(html: string): string {
+  return sanitize(html, false);
+}
+
+function sanitize(html: string, infer: boolean): string {
   let s = html || "";
 
   // Comments first — a comment can contain anything, including "<script>".
   s = s.replace(/<!--[\s\S]*?-->/g, "");
+
+  // Word's list paragraphs, BEFORE the conditional markers below are removed:
+  // the marker is the only place a Word list says whether it is numbered.
+  s = wordListParagraphs(s);
+
+  // MARKUP DECLARATIONS AND WORD'S DOWNLEVEL CONDITIONALS, which are not tags
+  // and were not comments, so nothing above removed them — and the balancer
+  // below keeps only runs of text and whitelisted tags, which means it quietly
+  // dropped their "<" and kept the rest AS PROSE. Measured on 2026-09-23 with
+  // the real clipboard payloads: a Pages or TextEdit paste (RTF converted by
+  // Chrome's Cocoa writer) opened with a paragraph reading
+  // `!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN" …>`, and every item of a
+  // Word desktop bullet list carried `![if !supportLists]>· ![endif]>` into the
+  // article, where it was scored as the writer's words.
+  //
+  // The HTML tokenizer ends a declaration, a processing instruction and a
+  // CDATA-shaped bogus comment at the first ">", so these patterns do too —
+  // anything longer would be a guess about where the browser stops. Inside a
+  // list paragraph the `!supportLists` block has already gone WITH its
+  // contents, above: there it is the bullet or number, and the list now says
+  // that structurally. Everywhere else a conditional loses only its markers,
+  // because its contents are what a browser is MEANT to show — the figure in
+  // `!vml`, the break in `!supportLineBreakNewLine`, and the "1." of a
+  // numbered heading, which is the heading's visible number and has no
+  // structure to live in instead. Its spacer run of &nbsp; becomes one space.
+  s = s.replace(/<!\[if\s+!supportLists\]>([\s\S]*?)<!\[endif\]>/gi, (_m, inner) =>
+    String(inner).replace(/(?:&nbsp;|\u00a0)+/gi, " "));
+  s = s.replace(/<![^>]*>/g, "");
+  s = s.replace(/<\?[^>]*>/g, "");
+
+  // A bold wrapper that says it is NOT bold. Google Docs wraps every copied
+  // selection in `<b style="font-weight:normal" id="docs-internal-guid-…">`,
+  // and the whitelist below keeps <b> while dropping its style — so the one
+  // attribute saying "this is not bold" was the one thrown away, and every word
+  // of a pasted Google Doc arrived bold (131 of 131 in the measured payload).
+  // Tiptap's own Bold extension refuses this exact wrapper for this exact
+  // reason; the sanitiser runs first and has to know it too. Unwrapped rather
+  // than dropped — the whole document is inside it — and the orphaned </b> is
+  // the balancer's to discard.
+  s = s.replace(/<(b|strong)\b([^>]*)>/gi, (m, _tag, attrs) => {
+    const style = (String(attrs).match(/style\s*=\s*["']([^"']*)["']/i) || [])[1] || "";
+    return /font-weight\s*:\s*(normal|lighter|[1-4]00)\b/i.test(style) ? "" : m;
+  });
+
+  // ARIA HEADINGS ARE HEADINGS. Word for the web does not emit <h1>-<h6> on
+  // copy: a heading paragraph arrives as `<p role="heading" aria-level="2">`,
+  // and the whitelist kept the <p> and dropped both attributes — so every
+  // heading in a Word Online paste became a paragraph and question-headings
+  // read 0/10 on a document with five. This is NOT inference of the kind the
+  // font-size note below refuses: role="heading" with an aria-level is the
+  // document stating, in the accessibility vocabulary, exactly what <h2>
+  // states in the HTML one. Restricted to <p>, which cannot nest, so the lazy
+  // match to its own close tag is exact.
+  // Gated on the attribute appearing at all: the lazy scan to </p> is cheap on
+  // well-formed markup, and there is no reason to pay for it on the 500k
+  // characters of a page that has no ARIA headings.
+  if (/role\s*=\s*["']?heading/i.test(s)) s = s.replace(/<p\b([^>]*)>([\s\S]*?)<\/p\s*>/gi, (m, attrs, inner) => {
+    // Anchored on whitespace, not \b: Word for the web also writes
+    // data-aria-level on list items, and \b would read that as aria-level.
+    if (!/(?:^|\s)role\s*=\s*["']?heading\b/i.test(String(attrs))) return m;
+    const lv = Number((String(attrs).match(/(?:^|\s)aria-level\s*=\s*["']?(\d)/i) || [])[1] || 2);
+    const level = lv >= 1 && lv <= 6 ? lv : 2;
+    return `<h${level}>${inner}</h${level}>`;
+  });
 
   // Resolve CSS classes BEFORE the <style> block is nuked.
   //
@@ -196,6 +284,13 @@ export function sanitizeImportedHtml(html: string): string {
     .replace(/>\s+</g, "><")
     .replace(/<(p|h[1-6]|li|td|th|blockquote)>\s+/gi, "<$1>")
     .replace(/\s+<\/(p|h[1-6]|li|td|th|blockquote)>/gi, "</$1>")
+    // A <br> standing BETWEEN two blocks is a blank line in the source, not a
+    // line break inside anything. Google Docs puts one between every block it
+    // copies, and the editor wraps each in an empty paragraph of its own —
+    // which is the shape unwrapLayoutTables below documents costing a real
+    // piece its heading-answer score. Only between block boundaries; a <br>
+    // inside a paragraph is the writer's.
+    .replace(/(^|<\/(?:p|h[1-6]|ul|ol|table|blockquote|pre)>)(?:<br>)+(?=<(?:p|h[1-6]|ul|ol|table|blockquote|pre|hr)\b|$)/gi, "$1")
     .trim();
 
   // AFTER normalisation, deliberately. Both transforms pattern-match on tag
@@ -203,6 +298,7 @@ export function sanitizeImportedHtml(html: string): string {
   // unwrapped tag left a space — made their guards fail quietly on real
   // documents while passing on tidy fixtures. The final form is the only one
   // with a stable shape to match against.
+  if (!infer) return out;
   out = unwrapTemplateTable(out);
   // After the house-template unwrap, which recognises only the label/value
   // shape, and before heading promotion — a heading freed from a layout cell
@@ -210,6 +306,53 @@ export function sanitizeImportedHtml(html: string): string {
   out = unwrapLayoutTables(out);
   out = promoteBoldLineHeadings(out);
   return out;
+}
+
+/**
+ * Rebuild Word's lists from its list PARAGRAPHS.
+ *
+ * Word desktop (and Outlook, which uses Word's engine) does not copy a list as
+ * <ul>/<li>. Each item is a paragraph carrying `mso-list:l0 level1 lfo1` in its
+ * style, with the bullet or number it renders sitting inside a
+ * `<![if !supportLists]>…<![endif]>` block at its start. The whitelist kept
+ * the paragraphs and dropped the style, so a three-item list arrived as three
+ * paragraphs each opening on a "·" — no list for the rubric's list criteria to
+ * find, and the glyph scored as prose.
+ *
+ * The marker decides the list type, because it is the only place the
+ * clipboard says: "1." / "a)" / "iv." is numbered, a glyph ("·", "o", "§",
+ * "-") is not. Levels are flattened into one list — nesting would need Word's
+ * list definitions from the <style> block, which a rebuilt list would then
+ * have to trust, and a flat list keeps every item and every word. Headings
+ * with numbering (`<h2 style="mso-list:…">`) are deliberately not touched:
+ * a numbered heading is still a heading.
+ */
+function wordListParagraphs(html: string): string {
+  if (!/mso-list\s*:\s*l\d/i.test(html)) return html;
+  const PARA = /<p\b[^>]*mso-list\s*:\s*l\d+[^>]*>[\s\S]*?<\/p\s*>/gi;
+  return html.replace(/(?:<p\b[^>]*mso-list\s*:\s*l\d+[^>]*>[\s\S]*?<\/p\s*>\s*)+/gi, (run) => {
+    const paras = run.match(PARA) || [];
+    let out = "";
+    let open: "ul" | "ol" | null = null;
+    for (let i = 0; i < paras.length; i++) {
+      const para = paras[i];
+      const markerHtml = (para.match(/<!\[if\s+!supportLists\]>([\s\S]*?)<!\[endif\]>/i) || [])[1] || "";
+      const marker = markerHtml.replace(/<[^>]+>/g, "").replace(/&nbsp;|\u00a0/gi, " ").trim();
+      const kind: "ul" | "ol" = /^\(?(\d{1,3}|[a-z]|[ivxlc]{1,6})[.)]$/i.test(marker) ? "ol" : "ul";
+      const inner = para
+        .replace(/^<p\b[^>]*>/i, "")
+        .replace(/<\/p\s*>$/i, "")
+        .replace(/<!\[if\s+!supportLists\]>[\s\S]*?<!\[endif\]>/gi, "");
+      if (open !== kind) {
+        if (open) out += `</${open}>`;
+        out += `<${kind}>`;
+        open = kind;
+      }
+      out += `<li><p>${inner}</p></li>`;
+    }
+    if (open) out += `</${open}>`;
+    return out;
+  });
 }
 
 /**
@@ -512,8 +655,18 @@ export function unwrapLayoutTables(html: string): string {
 export function toEditorHtml(content: string, contentIsHtml?: boolean): string {
   const s = content || "";
   if (!s.trim()) return "";
-  const looksLikeHtml =
-    contentIsHtml === true ||
-    (contentIsHtml !== false && /<(p|div|h[1-6]|ul|ol|li|table|span|br|strong|em|b|i|a)\b[^>]*>/i.test(s));
-  return looksLikeHtml ? sanitizeImportedHtml(s) : plainTextToHtml(s);
+  return importsAsPlainText(s, contentIsHtml) ? plainTextToHtml(s) : sanitizeImportedHtml(s);
+}
+
+/**
+ * Which door toEditorHtml will send this content through — exported so a
+ * caller that must SAY an import could not see the source's headings asks the
+ * same question the conversion answers, rather than re-deriving it and
+ * drifting. A plain-text import is one whose headings, if it had any, were
+ * lost before this code ran: plainTextToHtml marks only what the text marks.
+ */
+export function importsAsPlainText(content: string, contentIsHtml?: boolean): boolean {
+  if (contentIsHtml === true) return false;
+  if (contentIsHtml === false) return true;
+  return !/<(p|div|h[1-6]|ul|ol|li|table|span|br|strong|em|b|i|a)\b[^>]*>/i.test(content || "");
 }

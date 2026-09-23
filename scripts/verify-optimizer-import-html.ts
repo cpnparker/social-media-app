@@ -61,6 +61,31 @@
  * failed to apply through shell escaping. A mutation that does not apply looks
  * exactly like one the check missed, so every entry here asserts the edit
  * changed the file before drawing a conclusion.
+ *
+ * MUTATION LOG (2026-09-23), section 8 — real clipboard shapes. Run in a
+ * throwaway detached worktree.
+ *   role="heading" paragraphs no longer become headings  -> KILLED
+ *   Word list paragraphs not rebuilt                      -> KILLED
+ *   Word list type ignores the marker (always <ul>)       -> KILLED
+ *   Google Docs not-bold <b> wrapper kept as bold         -> KILLED
+ *   declarations / PIs left for the balancer              -> KILLED
+ *   every conditional removed WITH its contents (!vml)    -> KILLED
+ *   <br> between blocks kept                              -> KILLED
+ *   !supportLists removed with its contents everywhere    -> KILLED
+ *   aria-level read unanchored (data-aria-level)          -> KILLED
+ *   role read with \b (data-role)                         -> KILLED
+ *   (baseline: exit 0)
+ *
+ * Two SURVIVED the first run and changed the code, not just the check:
+ *   - keeping !supportLists contents outside list paragraphs survived, because
+ *     the fixture had no numbered HEADING — the one place Word puts the
+ *     conditional outside a list. Adding one showed the first version was
+ *     wrong in the other direction: it deleted the heading's visible "3.".
+ *     A numbered heading now keeps its number (there is no structure to move
+ *     it into) and the list marker alone is removed with its list.
+ *   - the data-role / data-aria-level anchoring survived, because no fixture
+ *     put a data- attribute on a <p>. One now does, with a conflicting
+ *     aria-level, and both anchors are pinned.
  */
 import { plainTextToHtml, sanitizeImportedHtml, toEditorHtml } from "../lib/optimizer/import-html";
 
@@ -383,6 +408,129 @@ console.log(`\nLayout tables, empty headings and empty paragraphs`);
   /<h1>What is MAXtect\?<\/h1><p>MAXtect is a concrete\.<\/p>/.test(gap)
     ? pass("a question heading ends up adjacent to its answer")
     : fail(`an empty block still separates the heading from its answer: ${gap}`);
+}
+
+// ── 8. What four real clipboards hand the sanitiser ─────────────────────
+//
+// Each fixture is the MARKUP SHAPE a source puts on the clipboard, with
+// neutral words. The shapes come from the 2026-09-23 paste investigation:
+// Word desktop and Google Docs as captured in CKEditor's paste-from-office
+// fixtures, Word for the web from its documented role="heading" convention,
+// and Pages/TextEdit from Chrome's real Cocoa conversion of an RTF. Every one
+// of them lost structure or added junk before this section existed, and the
+// failures are asymmetric in the usual way: a lost heading scores 0 without
+// saying why, while junk text is at least visible.
+console.log(`\n8. Real clipboard shapes: Word desktop, Word for the web, Google Docs, Pages`);
+{
+  const text = (h: string) => h.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+  // A call, not the file's `cond ? pass() : fail()` statement idiom, which
+  // eslint's no-unused-expressions reports as an error.
+  const expect = (cond: boolean, ok: string, bad: string) => { if (cond) pass(ok); else fail(bad); };
+
+  // WORD DESKTOP. Lists are paragraphs with mso-list in their style and the
+  // rendered bullet inside a downlevel-revealed conditional.
+  const word = `<html xmlns:o="urn:schemas-microsoft-com:office:office"><head><meta name=Generator content="Microsoft Word 15"><!--[if gte mso 9]><xml><o:OfficeDocumentSettings></o:OfficeDocumentSettings></xml><![endif]--><style><!-- p.MsoNormal {margin:0} --></style></head><body lang=EN-GB><!--StartFragment-->
+<p class=MsoNormal>Intro line.<o:p></o:p></p>
+<p class=MsoListParagraphCxSpFirst style='text-indent:-18.0pt;mso-list:l0 level1 lfo1'><![if !supportLists]><span style='font-family:Symbol'><span style='mso-list:Ignore'>·<span style='font:7.0pt "Times New Roman"'>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; </span></span></span><![endif]>First bullet.<o:p></o:p></p>
+<p class=MsoListParagraphCxSpLast style='text-indent:-18.0pt;mso-list:l0 level1 lfo1'><![if !supportLists]><span style='font-family:Symbol'><span style='mso-list:Ignore'>·<span style='font:7.0pt "Times New Roman"'>&nbsp;&nbsp;&nbsp; </span></span></span><![endif]>Second bullet.<o:p></o:p></p>
+<h2>What is a question heading?<o:p></o:p></h2>
+<h2 style='mso-list:l2 level1 lfo3'><![if !supportLists]><span><span style='mso-list:Ignore'>3.<span style='font:7.0pt "Times New Roman"'>&nbsp;&nbsp;&nbsp;&nbsp; </span></span></span><![endif]>Why does a numbered heading keep its number?<o:p></o:p></h2>
+<p class=MsoListParagraphCxSpFirst style='mso-list:l1 level1 lfo2'><![if !supportLists]><span><span style='mso-list:Ignore'>1.<span>&nbsp;&nbsp; </span></span></span><![endif]>Step one.<o:p></o:p></p>
+<p class=MsoListParagraphCxSpLast style='mso-list:l1 level1 lfo2'><![if !supportLists]><span><span style='mso-list:Ignore'>2.<span>&nbsp;&nbsp; </span></span></span><![endif]>Step two.<o:p></o:p></p>
+<p class=MsoNormal><![if !vml]><img width=10 height=10 src="https://example.com/figure.png" alt="A figure"><![endif]>After the figure.</p>
+<!--EndFragment--></body></html>`;
+  const w = toEditorHtml(word, true);
+  expect(
+    !/supportLists|endif|!\[|\]>/.test(text(w)),
+    "Word's downlevel conditionals leave no markup behind as prose",
+    `literal conditional markup reached the article: ${JSON.stringify(text(w).slice(0, 160))}`
+  );
+  expect(
+    /<ul><li><p>First bullet\.<\/p><\/li><li><p>Second bullet\.<\/p><\/li><\/ul>/.test(w),
+    "a Word bullet list comes back as a list, without its glyph",
+    `Word bullets were not rebuilt as a list: ${w.slice(0, 220)}`
+  );
+  expect(
+    /<ol><li><p>Step one\.<\/p><\/li><li><p>Step two\.<\/p><\/li><\/ol>/.test(w),
+    "...and a numbered one as an ORDERED list — the marker is the only place Word says which",
+    `Word numbering was not rebuilt as an ordered list: ${w.slice(0, 400)}`
+  );
+  expect(
+    /<h2>What is a question heading\?<\/h2>/.test(w),
+    "the heading between the two lists is untouched",
+    "the heading between Word's lists was damaged"
+  );
+  expect(
+    /<h2>3\. Why does a numbered heading keep its number\?<\/h2>/.test(w),
+    "a NUMBERED Word heading stays a heading and keeps its visible number — there is no structure to move it into",
+    `the numbered heading lost its number or its level: ${w.slice(0, 500)}`
+  );
+  expect(
+    /<img src="https:\/\/example\.com\/figure\.png"/.test(w) && /After the figure\./.test(w),
+    "a non-list conditional (!vml) loses its markers and KEEPS its contents — the figure",
+    `the !vml fallback image was removed with its markers: ${w.slice(-200)}`
+  );
+  // Precondition, so this block cannot pass by testing nothing: the fixture
+  // really carries every shape the assertions above are about.
+  expect(
+    /mso-list:l0/.test(word) && /mso-list:l1/.test(word) && /<!\[if !supportLists\]>/.test(word) && /<!\[if !vml\]>/.test(word),
+    "the Word fixture carries bulleted and numbered mso-list paragraphs and both conditional kinds",
+    "the Word fixture lost the shapes it exists to test"
+  );
+
+  // WORD FOR THE WEB. Headings are ARIA headings on <p>.
+  const wordWeb = `<div class="OutlineElement Ltr"><p class="Paragraph" paraid="1" role="heading" aria-level="1" style="font-weight:normal"><span class="TextRun"><span class="NormalTextRun">Storytelling section heading</span></span><span class="EOP">&nbsp;</span></p></div><div class="OutlineElement Ltr"><p class="Paragraph" role="heading" aria-level="2"><span class="TextRun">What does the question heading ask?</span></p></div><div class="ListContainerWrapper"><ul role="list"><li data-aria-level="1" role="listitem"><p class="Paragraph"><span>A list item that is not a heading.</span></p></li></ul></div><p class="Paragraph"><span>An ordinary paragraph.</span></p><p class="Paragraph" data-role="heading"><span>A paragraph whose DATA attribute says heading.</span></p><p class="Paragraph" data-aria-level="1" role="heading" aria-level="3"><span>A third-level heading</span></p>`;
+  const ww = toEditorHtml(wordWeb, true);
+  expect(
+    /<h1>Storytelling section heading/.test(ww) && /<h2>What does the question heading ask\?<\/h2>/.test(ww),
+    "Word for the web's role=\"heading\" paragraphs become H1 and H2 at their aria-level",
+    `Word Online headings arrived as paragraphs: ${ww.slice(0, 200)}`
+  );
+  expect(
+    /<p>A paragraph whose DATA attribute says heading\.<\/p>/.test(ww) && /<h3>A third-level heading<\/h3>/.test(ww),
+    "role and aria-level are read as attributes, not as the tail of data-role / data-aria-level",
+    `a data- attribute was read as the ARIA one: ${ww}`
+  );
+  expect(
+    /<li><p>A list item that is not a heading\.<\/p><\/li>/.test(ww) && /<p>An ordinary paragraph\.<\/p>/.test(ww),
+    "...while its list item (data-aria-level) and plain paragraph stay what they are",
+    `Word Online non-headings were promoted: ${ww}`
+  );
+
+  // GOOGLE DOCS. The whole selection sits inside a <b> that declares itself
+  // NOT bold, and real bold is a span with font-weight:700.
+  const gdocs = `<meta charset="utf-8"><b style="font-weight:normal;" id="docs-internal-guid-00000000-7fff-0000-0000-000000000000"><p dir="ltr"><span style="font-weight:400;">Plain words here, and </span><span style="font-weight:700;">these two</span><span style="font-weight:400;"> are bold.</span></p><br /><h2 dir="ltr"><span style="font-weight:400;">A heading from Docs</span></h2><br /><p dir="ltr"><span style="font-weight:400;">More plain words.</span></p></b>`;
+  const g = toEditorHtml(gdocs, true);
+  const boldWords = ((g.match(/<(strong|b)>[\s\S]*?<\/\1>/g) || []).join(" ").replace(/<[^>]+>/g, " ").match(/\S+/g) || []).length;
+  expect(
+    boldWords === 2,
+    "the Docs wrapper that says font-weight:normal is not turned into bold — only the two bold words are",
+    `${boldWords} words came out bold (expected 2 — the wrapper made everything bold): ${g}`
+  );
+  expect(
+    /<h2>A heading from Docs<\/h2>/.test(g) && !/<br>/.test(g),
+    "...its heading survives, and the <br> Docs puts between blocks does not become an empty paragraph",
+    `Docs block structure damaged: ${g}`
+  );
+
+  // PAGES / TEXTEDIT, via Chrome's Cocoa conversion of RTF.
+  const cocoa = `<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"><meta name="Generator" content="Cocoa HTML Writer"><style type="text/css">p.p1 {margin: 0.0px; font: 12.0px Times}</style></head>
+<body><p class="p1"><span class="s1">First paragraph of the article.</span></p><?xml version="1.0"?></body></html>`;
+  const c = toEditorHtml(cocoa, true);
+  expect(
+    !/DOCTYPE|W3C|xml version/.test(text(c)) && /^<p>First paragraph of the article\.<\/p>$/.test(c),
+    "a Cocoa paste no longer opens on a paragraph reading \"!DOCTYPE html PUBLIC …\"",
+    `declaration text reached the article: ${JSON.stringify(c)}`
+  );
+
+  // The door did not get wider. The whitelist still rules on what is left.
+  const hostile = toEditorHtml(`<p role="heading" aria-level="2" onclick="x()">Safe words</p><b style="font-weight:normal" onmouseover="y()"><a href="javascript:z()">link</a></b><![if !x]><script>alert(1)</script><![endif]>`, true);
+  expect(
+    !/on[a-z]+=|javascript:|<script|alert/i.test(hostile) && /<h2>Safe words<\/h2>/.test(hostile),
+    "none of the four rewrites lets an attribute, a script or a javascript: URL through",
+    `a rewrite widened the sanitiser: ${hostile}`
+  );
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);

@@ -52,6 +52,9 @@ import VersionHistory from "@/components/optimizer/VersionHistory";
 import SelectionActions from "@/components/optimizer/SelectionActions";
 import DeliveryView from "@/components/optimizer/DeliveryView";
 import SourcesPanel from "@/components/optimizer/SourcesPanel";
+import StructureNotice from "@/components/optimizer/StructureNotice";
+import { structureUnseenOfBrief, type HeadingOffer, type StructureUnseenReason } from "@/lib/optimizer/import-structure";
+import { applyHeadingOffer } from "@/lib/optimizer/paste-extension";
 import { draftBlockToHtml, draftBlockToInlineHtml } from "@/lib/optimizer/discuss";
 import { railTabsFor, defaultRailTab, type RailTabKey } from "@/lib/optimizer/rail-tabs";
 import EngineAISidebar from "@/components/engineai/EngineAISidebar";
@@ -240,6 +243,14 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
    */
   const [studioView, setStudioView] = useState<"optimise" | "audit" | "delivery">("optimise");
   const [sourceInfo, setSourceInfo] = useState<{ source: string; ref: string | null }>({ source: "generated", ref: null });
+  /**
+   * The import's record that it could not see the source's headings
+   * (config_brief.structureUnseen). Read once at hydration and passed to EVERY
+   * scorer on this page — the Score tab, the live marks — so a criterion the
+   * assessment skipped is not scored beside it. See StructureNotice for what
+   * the writer is told, and lib/optimizer/import-structure.ts for the rule.
+   */
+  const [structureUnseen, setStructureUnseen] = useState<StructureUnseenReason | null>(null);
   const [navSearch, setNavSearch] = useState("");
   const [navTab, setNavTab] = useState<"private" | "team">("private");
   /** Conversations, listed read-only. Clicking one leaves for the chat surface,
@@ -346,6 +357,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
     // with no page, and the streaming draft wrote into a hidden editor.
     setStudioView("optimise");
     setSourceInfo({ source: "generated", ref: null });
+    setStructureUnseen(null);
   }, [router, surfaceRoute]);
 
   // Hydrate whatever the URL names. Runs on mount and on every change of the
@@ -394,6 +406,9 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
         // Narrowed through the same function the route uses, so a hand-edited
         // jsonb value cannot put an unknown lens into the policy.
         setLensOverride(normaliseLens(brief.lens));
+        // Narrowed for the same reason: an unknown value must not switch the
+        // heading criteria off for a reason nobody can read.
+        setStructureUnseen(structureUnseenOfBrief(brief));
         setAudience(brief.audience || "");
         setGoal(brief.goal || "");
         // streamBufferRef feeds the live score while streaming; keep it in step
@@ -500,6 +515,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
       setDiagnostics(null);
       setStudioView("optimise");
       setSourceInfo({ source: "generated", ref: null });
+      setStructureUnseen(null);
       if (created.canon?.clientName) setCanon(created.canon);
       setSessionId(created.sessionId);
       // Hydration would otherwise fetch this straight back and overwrite the
@@ -744,6 +760,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
       setSessionId(created.sessionId);
       setStudioView("optimise");
       setSourceInfo({ source: "generated", ref: null });
+      setStructureUnseen(null);
       if (created.canon?.clientName) setCanon(created.canon);
       // Mark it hydrated before the URL changes: the piece is already in state
       // and the hydration effect would otherwise fetch it back mid-stream and
@@ -1426,6 +1443,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
       const scores = computeDraftScores({
         body: html, title, targetQueries: queries, format,
         brandName: canon?.brandName, brandAliases: canon?.brandAliases,
+        structureUnseen,
       });
       // parsed.text is passed explicitly because the spans index into it. A
       // differently-derived string produces quotes that never match, and the
@@ -1455,7 +1473,7 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
       // A parse failure must not take the editor down with it. The score panel
       // shows the same failure through its own try/catch.
     }
-  }, [streaming, title, queries, format, canon, policy.lens]);
+  }, [streaming, title, queries, format, canon, policy.lens, structureUnseen]);
 
   // REPAINT WHEN THE LENS FLIPS.
   //
@@ -1548,9 +1566,20 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
       format,
       brandName: canon?.brandName,
       brandAliases: canon?.brandAliases,
+      structureUnseen,
     }),
-    [body, streaming, title, queries, format, canon]
+    [body, streaming, title, queries, format, canon, structureUnseen]
   );
+
+  /**
+   * Accept one offered question heading. Scoped to the paragraph that holds
+   * it (see applyHeadingOffer), so judge findings elsewhere keep their marks.
+   */
+  const makeHeading = useCallback((offer: HeadingOffer): boolean => {
+    const editor = editorRef.current;
+    if (!editor || streaming) return false;
+    return applyHeadingOffer(editor, offer);
+  }, [streaming]);
 
   const shell = (inner: React.ReactNode) => (
     <>
@@ -2103,6 +2132,10 @@ function OptimizerStudio({ surface }: { surface: Surface }) {
               aria-label="Title"
               className="w-full mb-3 bg-transparent border-0 px-0 text-[26px] font-bold tracking-tight placeholder:text-muted-foreground/40 focus:outline-none"
             />
+            {/* Said above the draft, where it cannot be missed, when the import
+                could not see the source's headings — and where the offered
+                question lines sit next to the text they would change. */}
+            <StructureNotice reason={structureUnseen} html={body} onMakeHeading={makeHeading} />
             {/* Actions at the passage, not only in the rail. Rendered beside the
                 editor rather than inside the shared TiptapEditor, which serves
                 other surfaces that should not grow a writing toolbar. */}
