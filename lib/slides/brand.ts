@@ -822,6 +822,13 @@ export const LOGO_PLACEMENT = {
  * seven slides of one layout in that deck do not read as seven of the same
  * slide.
  *
+ * THE PAPER IS THE ONE PIECE WE DO NOT TAKE (retired 2026-09-23). It shipped
+ * as a stretched picture fill and read as marble in Google Slides — a 3:2 file
+ * stretched unevenly over a 16:9 page, lit darker at its foot — while the
+ * preview, which never drew it, showed flat off-white. The ground is the flat
+ * off-white again; generate.ts's frameRequests says what a texture would need
+ * to come back.
+ *
  * THE HAIRLINE IS A RECT, NOT AN ASSET (decided 2026-09-17). The deck's own
  * hairline is a 1920x101 PNG with exactly one opaque row of flat #707070 — a
  * rectangle drawn the long way round, because PowerPoint made that easy.
@@ -877,17 +884,6 @@ export const FRAME = {
    *  rule touching a shape reads as a clipped shape. */
   contentGap: 8,
 
-  /** The paper ground, as a stretched picture fill on the page rather than as
-   *  an element: a background cannot be selected, nudged or reordered in
-   *  Drive, and it adds nothing for validate.ts, pathOf or droppedContent to
-   *  walk. Light grounds only — the sheet is near-white, and a near-white
-   *  texture under navy is not a texture, it is a missing background.
-   *
-   *  1024px at q68 and 47KB (decided 2026-09-17). Measured pixel by pixel on
-   *  the shipped file: luminance 205-255, mean 247.3 — grain on near-white —
-   *  so the 1.8MB source PNG is 1.8MB of nothing anyone can see, and this is a
-   *  background on EVERY slide, which makes weight the thing that matters. */
-  paperPath: "/assets/deck_paper_ground.jpg",
 
   /** THE PAGE NUMBER, and the slot the footer line gives up for it.
    *

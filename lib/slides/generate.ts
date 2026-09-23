@@ -19,7 +19,7 @@ import {
   SERIES_LIGHT, SERIES_DARK, CARDS, QUOTE, PROCESS, LOGO_WALL, RULE, LAYOUT_STYLE, LOGO_PLACEMENT, SECTION, VENN,
   SHOT, FEATURE_SHOT_STYLE, FRAME, STEPPER, DENSITY, DEFAULT_DENSITY, density, withDensity,
   PHOTO_RAIL, SERPENTINE, columnBand,
-  rgb, logoUrl, textOn, assetUrl, layoutOf, type SlideLayout, type TypeStyle, type LayoutStyle, type Density,
+  rgb, logoUrl, textOn, layoutOf, type SlideLayout, type TypeStyle, type LayoutStyle, type Density,
 } from "@/lib/slides/brand";
 import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "@/lib/slides/token";
 import { captureThumbnails } from "@/lib/slides/preview";
@@ -1966,23 +1966,23 @@ function frameRequests(
 ): Req[] {
   const out: Req[] = [];
   const onDark = style.onDark;
-  // A photo-led slide sets no ground of its own (background === null) and the
-  // backdrop covers the page; a dark slide's ground is the point of it. The
-  // paper sheet is near-white, so it belongs to the light grounds and nowhere
-  // else — under navy it is not a texture, it is a missing background.
-  if (!onDark && style.background != null) {
-    out.push({
-      updatePageProperties: {
-        objectId: page,
-        pageProperties: {
-          pageBackgroundFill: {
-            stretchedPictureFill: { contentUrl: assetUrl(FRAME.paperPath) },
-          },
-        },
-        fields: "pageBackgroundFill.stretchedPictureFill",
-      },
-    });
-  }
+  // NO PAPER TEXTURE, ON ANY GROUND (retired 2026-09-23). The frame used to lay
+  // the handover deck's paper grain under every light page as a stretched
+  // picture fill, and Chris saw what it did in the decks people actually open:
+  // "a marble background instead of white". The file was 1024x682 — a 3:2
+  // sheet — so Slides stretched it 1.88x across and 1.58x down to fill a 16:9
+  // page, smearing the grain sideways into streaks, and the sheet is not evenly
+  // lit (mean luminance 251 in the top half, 243 in the bottom), so every light
+  // slide greyed towards its foot. Measured on the FILE it was "grain on
+  // near-white"; measured as DRAWN it was stone.
+  //
+  // It survived review because nothing that reviewed it could see it: the
+  // preview never drew the fill (preview-model reads only a solid ground, on
+  // purpose — see the comment there), so every render and every check showed
+  // the flat off-white that is the ground again now. A background the preview
+  // cannot show is a background nobody has approved; if a texture ever comes
+  // back it needs a 16:9 file, even light, and a preview that draws it. Check
+  // 47f asserts that no page carries a picture fill.
   // THE RAIL BEFORE THE RULES, so its numerals are in the ink ledger when the
   // top hairline decides whether it has a band to draw in. They are designed
   // not to meet — the rail's foot is 46.20 and the rule is at 46.80 — and a

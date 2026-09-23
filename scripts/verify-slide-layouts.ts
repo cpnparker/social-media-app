@@ -50,7 +50,7 @@ import { join } from "path";
 import { gradientProfileFor, CONTRAST } from "../lib/slides/images";
 import { signedMediaUrl } from "../lib/media/signed";
 import { CANVAS, LAYOUT_STYLE, COLOR, GRID, LAYOUTS, NOTE, SECTION, TYPE, PROCESS, SHOT, IMAGE, FEATURE_SHOT_STYLE, LOGO_PLACEMENT,
-  DENSITY, DEFAULT_DENSITY, FRAME, STEPPER, BAND_BOTTOM, TIMELINE, TIMELINE_PARALLEL, LOGO_WALL, withDensity, assetUrl, textOn,
+  DENSITY, DEFAULT_DENSITY, FRAME, STEPPER, BAND_BOTTOM, TIMELINE, TIMELINE_PARALLEL, LOGO_WALL, withDensity, textOn,
   columnBand, PHOTO_RAIL, SERPENTINE, RULE, LAYOUT_ALIASES, layoutOf,
   type Density, type SlideLayout } from "../lib/slides/brand";
 
@@ -10054,6 +10054,11 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
    *    ground. hex() of an absent rgbColor is #000000, so every light slide in
    *    the chat preview and the PDF goes black while the deck itself is fine.
    *  - KILLED (47f): the paper sheet laid under every ground, including navy.
+   *    (Superseded 2026-09-23: the paper is retired, and 47f now asserts that
+   *    NO page carries a picture fill — see the mutation below.)
+   *  - KILLED (47f, 2026-09-23): the retired paper fill restored to the frame,
+   *    exactly as it shipped in b3a70e1. The sweep over every fixture layout
+   *    names each light page that carries it, at both densities.
    *  - KILLED (47h and 47i): onBand stopped scaling. The image grid's first row
    *    is then drawn 13.2pt over the foot of the title box at present and
    *    STAGE 1'S VALIDATOR REPORTS NOTHING, because those cells are createImage.
@@ -10739,48 +10744,54 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       A47(intruders === 0, `47e ${intruders} boxes share the folio's slot`);
     }
 
-    // (f) THE PAPER IS A PAGE BACKGROUND, AND THE PREVIEW KEEPS ITS GROUND.
+    // (f) NO PAGE CARRIES A PICTURE FILL, AND THE PREVIEW KEEPS ITS GROUND.
     //
-    // hex() of an absent rgbColor is #000000, so a preview that read the frame's
-    // second updatePageProperties would turn every light slide black while the
-    // deck itself was fine. Driven rather than reasoned about.
+    // The paper texture shipped as a stretched picture fill and read as MARBLE in
+    // Google Slides (2026-09-23): a 3:2 file stretched over a 16:9 page, darker at
+    // its foot. The preview never drew it, so nothing that reviewed a deck could
+    // see it. It is retired, and this asserts it stays retired — over EVERY
+    // layout in the fixture deck at BOTH densities, not three hand-picked pages,
+    // because the fill was laid by the frame and the frame runs on all of them.
+    // A texture that comes back must come back with a preview that draws it.
     {
-      const paperOf = (s: SlideInput) => {
-        const reqs = buildSlideRequests(s, 1, "p47") as any[];
-        let paper = 0, solid = 0;
+      const fillsOf = (reqs: any[]) => {
+        let picture = 0, solid = 0;
         for (let i = 0; i < reqs.length; i++) {
           const u = reqs[i].updatePageProperties;
           if (!u) continue;
-          if (u.pageProperties?.pageBackgroundFill?.stretchedPictureFill) paper++;
+          if (u.pageProperties?.pageBackgroundFill?.stretchedPictureFill) picture++;
           if (u.pageProperties?.pageBackgroundFill?.solidFill) solid++;
         }
-        return { paper, solid, reqs };
+        return { picture, solid };
       };
+      const withFill: string[] = [];
+      const presets: Density[] = ["read", "present"];
+      for (let d = 0; d < presets.length; d++) {
+        withDensity(presets[d], () => {
+          for (let i = 0; i < ALL.length; i++) {
+            const one: any = { ...(ALL[i] as any), density: presets[d] };
+            if (fillsOf(buildSlideRequests(one, i, "p47") as any[]).picture > 0) {
+              withFill.push(`${presets[d]}:${one.layout || "content"}`);
+            }
+          }
+        });
+      }
+      A47(withFill.length === 0, `47f ${withFill.length} page(s) carry a picture fill as their ground`
+        + ` (${withFill.slice(0, 6).join(", ")}) — the retired paper texture, or a new one the preview cannot draw`);
       const light: SlideInput = { layout: "content", title: "A light page", body: "One\nTwo" };
-      const dark: SlideInput = { layout: "dark-index", title: "A dark page", body: "One\nTwo" };
-      const photo: SlideInput = { layout: "cover", title: "A photograph", resolvedImage: PHOTO_DARK };
-      const L = paperOf(light), D = paperOf(dark), P2 = paperOf(photo);
-      A47(L.paper === 1 && L.solid === 1, `47f a light page carries ${L.paper} paper fills and ${L.solid} solid ones`);
-      A47(D.paper === 0, `47f the paper sheet — a near-white texture — was laid under a dark ground`);
-      A47(P2.paper === 0, `47f the paper sheet was laid under a photograph that covers the page`);
-      A47(String(L.reqs.map((r: any) => r.updatePageProperties?.pageProperties?.pageBackgroundFill
-        ?.stretchedPictureFill?.contentUrl).filter(Boolean)[0]) === assetUrl(FRAME.paperPath),
-        `47f the paper is not fetched from the public asset origin, so Slides cannot reach it`);
+      const L = { reqs: buildSlideRequests(light, 1, "p47") as any[] };
+      A47(fillsOf(L.reqs).solid === 1, `47f a light page carries ${fillsOf(L.reqs).solid} solid grounds, not 1`);
       const preview = previewSlideFrom(light, L.reqs);
       A47(preview.background.toUpperCase() === `#${COLOR.offWhite}`,
-        `47f the preview's ground is ${preview.background} rather than the off-white the deck draws` +
-        ` — the frame's picture fill has been read as a colour`);
-      // And it adds NO ELEMENT: that is the whole argument for a background
-      // over a full-bleed image, and it is what keeps validate.ts's sweeps,
-      // pathOf and droppedContent counting what they counted before. Measured
-      // as "no element covers the page" rather than "no images at all", because
-      // the lockup is a createImage and always was.
+        `47f the preview's ground is ${preview.background} rather than the off-white the deck draws`);
+      // And no ELEMENT covers the page in its place: a texture moved from the
+      // background to a full-bleed picture would pass the fill sweep above.
       let bleeds = 0;
       for (let i = 0; i < L.reqs.length; i++) {
         const c = L.reqs[i].createImage;
         if (c && c.elementProperties?.size?.width?.magnitude >= CANVAS.width - 1) bleeds++;
       }
-      A47(bleeds === 0, `47f the paper was drawn as a full-bleed element, not as a page background`);
+      A47(bleeds === 0, `47f a full-bleed picture covers a light page — a texture drawn as an element`);
       A47(previewSlideFrom(light, L.reqs).elements.length
         === previewSlideFrom(light, L.reqs.filter((r: any) => !r.updatePageProperties)).elements.length,
         `47f the page background adds an element to the preview`);
