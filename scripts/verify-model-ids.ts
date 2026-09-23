@@ -154,6 +154,18 @@ type Verdict = { state: "expired" | "applied" | "soon" | "valid"; days: number; 
 export function expiryVerdict(todayIso: string, e: Expiry, row: { inputPer1M: number; outputPer1M: number } | undefined): Verdict {
   const days = Math.ceil((Date.parse(e.until) - Date.parse(todayIso)) / 86_400_000);
   if (!row) return { state: "expired", days, message: `${e.model} has an expiry recorded but no rate row` };
+  // A null `then` is a rate whose END the provider dated without naming a
+  // successor. It can never read as "already applied" — there is nothing to
+  // compare against — so past its date it always fails, and the message says
+  // to go and read the page rather than printing a number nobody published.
+  if (e.then === null) {
+    if (todayIso > e.until) {
+      return { state: "expired", days, message: `${e.model} rate expired on ${e.until} and the replacement is UNPUBLISHED — read the provider's page and set it. ${e.why}` };
+    }
+    return days <= 14
+      ? { state: "soon", days, message: `${e.model} rate changes in ${days} day(s), on ${e.until}; the new rate is unpublished — check the provider's page` }
+      : { state: "valid", days, message: `${e.model} rate valid until ${e.until} (${days} days)` };
+  }
   const applied = row.inputPer1M === e.then.inputPer1M && row.outputPer1M === e.then.outputPer1M;
   if (todayIso > e.until) {
     return applied
@@ -202,15 +214,31 @@ if (process.argv.indexOf("--self-test") >= 0) {
 
   // The expiry check, driven past its own date. This is the one detector that
   // cannot be proven by waiting, so it is proven by argument instead.
-  const gem = RATE_EXPIRIES.filter((e) => e.model === "gemini-3-flash")[0];
-  if (!gem) { selfFails++; console.log("  FAIL no gemini-3-flash expiry to test against"); }
+  // Driven against gemini-3.8-flash: its doubling on 2027-01-01 is confirmed
+  // on Google's own page. It used to be driven against gemini-3-flash, whose
+  // entry turned out to be an alarm for a day nothing happens on — a detector
+  // proven against a fictional entry proves nothing.
+  const gem = RATE_EXPIRIES.filter((e) => e.model === "gemini-3.8-flash")[0];
+  if (!gem || gem.then === null) { selfFails++; console.log("  FAIL no dated gemini-3.8-flash expiry to test against"); }
   else {
-    const row = MODEL_COSTS["gemini-3-flash"];
+    const row = MODEL_COSTS["gemini-3.8-flash"];
     st("a rate still inside its window", expiryVerdict("2026-08-24", gem, row).state === "valid");
     st("a rate one day past expiry", expiryVerdict("2027-01-01", gem, row).state === "expired");
     st("an expiry already actioned (asks for removal, not a failure)",
       expiryVerdict("2027-01-01", gem, { inputPer1M: gem.then.inputPer1M, outputPer1M: gem.then.outputPer1M }).state === "applied");
     st("the 14-day notice", expiryVerdict("2026-12-20", gem, row).state === "soon");
+
+    // And the null case, which cannot be "already applied" at any rate.
+    const open = RATE_EXPIRIES.filter((e) => e.then === null)[0];
+    if (!open) { selfFails++; console.log("  FAIL no unpublished-successor expiry to test against"); }
+    else {
+      const anyRow = { inputPer1M: 1, outputPer1M: 2 };
+      st("an unpublished successor still inside its window", expiryVerdict("2026-09-23", open, anyRow).state === "valid");
+      st("an unpublished successor past its date fails rather than reading as applied",
+        expiryVerdict("2027-01-01", open, anyRow).state === "expired");
+      st("an unpublished successor says to read the page, and prints no invented rate",
+        /UNPUBLISHED/.test(expiryVerdict("2027-01-01", open, anyRow).message));
+    }
   }
 
   // The real assertion behind check 1: Luna priced as Luna, not as Sonnet.

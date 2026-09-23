@@ -12,7 +12,7 @@
  * reseller table, and not recalled — both have been wrong here this month.
  * Re-verify and move this date when you touch a number.
  */
-export const RATES_VERIFIED_ON = "2026-08-17";
+export const RATES_VERIFIED_ON = "2026-09-23";
 
 export const MODEL_COSTS: Record<
   string,
@@ -69,7 +69,9 @@ export const MODEL_COSTS: Record<
   // No cachedInputPer1M: no verified cached rate for this model, and an
   // absent one bills reads at full input price, which overstates on purpose.
   "gpt-5-6-luna": { inputPer1M: 20, outputPer1M: 120 },              // $0.20/$1.20
-  "gpt-5.6-sol": { inputPer1M: 500, outputPer1M: 3000 },             // $5/$30
+  // $4/$20, and PROMOTIONAL: OpenAI's pricing page says "promotional pricing
+  // through November 21, 2026". Was recorded at $5/$30. See RATE_EXPIRIES.
+  "gpt-5.6-sol": { inputPer1M: 400, outputPer1M: 2000, cachedInputPer1M: 40 },
   "gpt-4o": { inputPer1M: 250, outputPer1M: 1000 },                  // $2.50/$10 (retired; historic rows only)
   "gpt-4o-mini": { inputPer1M: 15, outputPer1M: 60 },                // $0.15/$0.60
   "gpt-4.1": { inputPer1M: 200, outputPer1M: 800 },                  // $2/$8
@@ -94,22 +96,46 @@ export const MODEL_COSTS: Record<
   "grok-4.6": { inputPer1M: 200, outputPer1M: 600, cachedInputPer1M: 50 },        // $2/$6, cache $0.50
   "claude-haiku-4-5-20251001": { inputPer1M: 100, outputPer1M: 500, cachedInputPer1M: 10, cacheWriteMultiplier: 1.25 }, // $1/$5
   "grok-4-6": { inputPer1M: 200, outputPer1M: 600, cachedInputPer1M: 50 },        // $2/$6, cache $0.50
-  "grok-4-5": { inputPer1M: 200, outputPer1M: 600, cachedInputPer1M: 50 },        // $2/$6, cache $0.50
-  "grok-3": { inputPer1M: 300, outputPer1M: 1500 },                  // $3/$15
+  "grok-4-5": { inputPer1M: 200, outputPer1M: 600, cachedInputPer1M: 30 },        // $2/$6, cache $0.30
+  // grok-3 and grok-4 are ALIASES: xAI redirects both to grok-4.3 and bills
+  // them at its rate. Priced at $3/$15 and $2/$10 they overstated every row
+  // logged under either id.
+  "grok-3": { inputPer1M: 125, outputPer1M: 250, cachedInputPer1M: 20 },          // serves grok-4.3
   "grok-3-mini": { inputPer1M: 30, outputPer1M: 50 },                // $0.30/$0.50
-  "grok-4": { inputPer1M: 200, outputPer1M: 1000 },                  // $2/$10
+  "grok-4": { inputPer1M: 125, outputPer1M: 250, cachedInputPer1M: 20 },          // serves grok-4.3
   "mistral-large-latest": { inputPer1M: 200, outputPer1M: 600 },     // $2/$6
-  "gemini-2.5-flash": { inputPer1M: 15, outputPer1M: 60 },           // $0.15/$0.60
+  // ── Added 2026-09-23. Priced BEFORE any routing constant names them, which
+  // is the order that matters: getModelInfo answers an unknown id with
+  // claude-sonnet-5 and calculateCostTenths prices one at the sonnet-4-6
+  // fallback, both silently, so a half-added model routes somewhere else at
+  // the wrong price and reports nothing.
+  "claude-opus-5-5": { inputPer1M: 400, outputPer1M: 2000, cachedInputPer1M: 20, cacheWriteMultiplier: 1.25 }, // $4/$20, cache $0.20
+  "grok-4.7": { inputPer1M: 200, outputPer1M: 600, cachedInputPer1M: 50 },        // $2/$6, cache $0.50 — same as 4.6
+  "gpt-6-luna": { inputPer1M: 10, outputPer1M: 50, cachedInputPer1M: 1 },         // $0.10/$0.50, cache $0.01
+  "gpt-6-sol": { inputPer1M: 200, outputPer1M: 1000, cachedInputPer1M: 20 },      // $2/$10, cache $0.20
+  // $0.30/$2.50 on ai.google.dev. Was recorded at $0.15/$0.60 — understated
+  // 2x on input and 4.2x on output, in the direction this file calls unsafe,
+  // because the ledger it feeds backs a hard spend cap.
+  // RETIRING: Google limits 2.5 access to existing callers and retires the
+  // series no earlier than 2026-10-16.
+  "gemini-2.5-flash": { inputPer1M: 30, outputPer1M: 250 },          // $0.30/$2.50
   "gemini-2.5-pro": { inputPer1M: 125, outputPer1M: 1000 },          // $1.25/$10
-  // $0.75/$3.75 promotional through 2026-12-31, DOUBLING to $1.50/$7.50 on
-  // 2027-01-01. Was recorded at $0.50/$3, understating it.
-  "gemini-3-flash": { inputPer1M: 75, outputPer1M: 375, cachedInputPer1M: 7.5 },   // cache $0.075
+  // $0.50/$3.00, cache $0.05 — verified on ai.google.dev 2026-09-23, where it
+  // is listed as "Gemini 3 Flash Preview".
+  //
+  // THIS ROW WAS "CORRECTED" TO THE WRONG VALUE. It read $0.50/$3, was changed
+  // to $0.75/$3.75 as an understatement, and $0.50/$3 was right all along: the
+  // edit conflated this id with gemini-3.8-flash, which genuinely is $0.75/$3.75
+  // promotional. Google publishes NO promotional end date for gemini-3-flash, so
+  // its RATE_EXPIRIES entry was an alarm set for a day nothing happens on, and
+  // has been removed.
+  "gemini-3-flash": { inputPer1M: 50, outputPer1M: 300, cachedInputPer1M: 5 },
   "gemini-3.8-flash": { inputPer1M: 75, outputPer1M: 375, cachedInputPer1M: 7.5 }, // $0.75/$3.75 intro, DOUBLES 2027-01-01
   // The WIRE slug as well as the registry id. calculateCostTenths is called
   // with whichever string the caller holds, and an unknown one prices at the
   // claude-sonnet-4-6 fallback without a word — so a row keyed only by the
   // dashed id leaves every actual Gemini call mispriced.
-  "gemini-3-flash-preview": { inputPer1M: 75, outputPer1M: 375, cachedInputPer1M: 7.5 },
+  "gemini-3-flash-preview": { inputPer1M: 50, outputPer1M: 300, cachedInputPer1M: 5 },
   "gemini-3.1-flash-lite": { inputPer1M: 25, outputPer1M: 150, cachedInputPer1M: 2.5 }, // $0.25/$1.50, cache $0.025
   "deepseek-chat": { inputPer1M: 27, outputPer1M: 110 },             // $0.27/$1.10
   "sonar": { inputPer1M: 100, outputPer1M: 100 },                    // $1/$1
@@ -169,7 +195,17 @@ export const RATE_EXPIRIES: {
   model: string;
   /** Last day the current rate is correct, inclusive. ISO date. */
   until: string;
-  then: { inputPer1M: number; outputPer1M: number };
+  /** The rate that replaces it, where the provider has published one.
+   *
+   *  NULL when the provider says a rate ENDS but not what succeeds it. That
+   *  is a real and common case — OpenAI dates the end of GPT-5.6 Sol's
+   *  promotion and names no successor rate — and the table could not express
+   *  it before, which left two bad options: invent a number, or record no
+   *  expiry and rely on somebody's memory. This file exists because the
+   *  second one does not work, and the first is how a check starts crying
+   *  wolf. Null says "on this date, go and read the provider's page", and the
+   *  verifier prints exactly that. */
+  then: { inputPer1M: number; outputPer1M: number } | null;
   why: string;
 }[] = [
   {
@@ -179,11 +215,25 @@ export const RATE_EXPIRIES: {
     why: "Google's introductory rate for Gemini 3.8 Flash runs to 2026-12-31; from 2027-01-01 it doubles to $1.50/$7.50. Verified on ai.google.dev 2026-09-05.",
   },
   {
-    model: "gemini-3-flash",
-    until: "2026-12-31",
-    then: { inputPer1M: 150, outputPer1M: 750 },
-    why: "Google promotional pricing. $0.75/$3.75 doubles to $1.50/$7.50 on 2027-01-01.",
+    model: "gpt-5.6-sol",
+    until: "2026-11-21",
+    then: null,
+    why:
+      "OpenAI's pricing page marks GPT-5.6 Sol's $4/$20 as 'promotional pricing " +
+      "through November 21, 2026' and does NOT publish what replaces it " +
+      "(developers.openai.com/api/docs/pricing, verified 2026-09-23). There is no " +
+      "number to pre-apply, so this entry carries none — on that date, read the page.",
   },
+  // REMOVED 2026-09-23: gemini-3-flash. It recorded a doubling on 2027-01-01
+  // that Google does not publish for that id — the entry was written against
+  // gemini-3.8-flash's promotion and attached to the wrong model, and the rate
+  // row was edited to match the wrong entry. Both are now the provider's own
+  // figures ($0.50/$3.00, no promotional end date).
+  //
+  // This is the same near-miss as the claude-sonnet-5 note below, and it got
+  // further: the alarm was set AND the rate was changed to fit it. An expiry
+  // is a claim about the provider's schedule, so it needs the provider's page,
+  // not a sibling row that looks similar.
   // NOT claude-sonnet-5. Its $2/$10 reads like an introductory rate and was
   // one, but Anthropic made it permanent on 2026-08-10 and the 1 Sep rise to
   // $3/$15 will not occur. An expiry was added here on the strength of a

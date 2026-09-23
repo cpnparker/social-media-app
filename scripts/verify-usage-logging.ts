@@ -417,6 +417,30 @@ if (process.argv.indexOf("--self-test") >= 0) {
 
   detects("an unpriced model id", !Object.prototype.hasOwnProperty.call(MODEL_COSTS, "gpt-5-6-not-a-model"));
 
+  // The reasoning-token check, both directions. Driven against synthetic
+  // bodies rather than by editing providers.ts: this tree is shared with
+  // other sessions and it deploys.
+  detects("an xAI site still adding bare completion_tokens", (() => {
+    const body = "async function streamXAIChatCompletions(a) { totalOutputTokens += u.completion_tokens || 0; }";
+    const bare = (body.match(/totalOutputTokens \+= u\.completion_tokens/g) || []).length;
+    const viaHelper = (body.match(/totalOutputTokens \+= xaiBilledOutputTokens\(/g) || []).length;
+    return viaHelper < 1 || bare > 0;
+  })());
+  detects("a helper that exists but is never called on the xAI chain", (() => {
+    const body = "async function streamXAIChatCompletions(a) { const x = 1; }";
+    return (body.match(/totalOutputTokens \+= xaiBilledOutputTokens\(/g) || []).length < 1;
+  })());
+  detects("reasoning_tokens added on a vendor that already includes them", (() => {
+    const body = "async function streamOpenAI(a) { totalOutputTokens += u.completion_tokens + u.completion_tokens_details?.reasoning_tokens; }";
+    return /reasoning_tokens/.test(body);
+  })());
+  detects("the correct xAI shape is NOT flagged", (() => {
+    const body = "async function streamXAIChatCompletions(a) { totalOutputTokens += xaiBilledOutputTokens(u); }";
+    const bare = (body.match(/totalOutputTokens \+= u\.completion_tokens/g) || []).length;
+    const viaHelper = (body.match(/totalOutputTokens \+= xaiBilledOutputTokens\(/g) || []).length;
+    return !(viaHelper < 1 || bare > 0);
+  })());
+
   detects("a model call with no usage insert", (() => {
     const blob = 'const res = await anthropic.messages.create({ model: "claude-sonnet-5" });';
     return blob.indexOf("messages.create(") >= 0 && blob.indexOf('from("ai_usage")') < 0;
@@ -424,6 +448,55 @@ if (process.argv.indexOf("--self-test") >= 0) {
 
   if (selfFails) { console.log(`\n  ${selfFails} detector(s) do not work — nothing above can be trusted.\n`); process.exit(2); }
   console.log("  — all detectors confirmed working");
+}
+
+// ── Reasoning tokens are counted on the xAI chain, and ONLY there ────────
+//
+// xAI reports `completion_tokens_details.reasoning_tokens` IN ADDITION to
+// `completion_tokens`; OpenAI reports it as a breakdown INSIDE the output
+// count, and Gemini is reached through Google's `/v1beta/openai/` layer so it
+// follows OpenAI. Both conventions were read on the providers' own pages,
+// 2026-09-23. Six call sites in providers.ts share the shape
+// `totalOutputTokens += u.completion_tokens`, and the correct fix differs by
+// which function the site is in — so this check is two-sided on purpose.
+//
+// Getting it wrong in the other direction is the expensive mistake: adding
+// reasoning on the OpenAI or Gemini chain double-counts output on every
+// reasoning call, and a ledger that OVER-reports looks exactly like heavy
+// usage. The original plan for this fix said "add it at all six sites".
+console.log("\nReasoning tokens: added on the xAI chain, and not on the others");
+{
+  const src = fs.readFileSync(path.join(ROOT, "lib/ai/providers.ts"), "utf8");
+  // Slice the file by function so a site is judged by the chain it is in.
+  const span = (name: string): string => {
+    const start = src.indexOf(`async function ${name}(`);
+    if (start < 0) return "";
+    let depth = 0, seen = false;
+    for (let i = start; i < src.length; i++) {
+      if (src[i] === "{") { depth++; seen = true; }
+      else if (src[i] === "}") { depth--; if (seen && depth === 0) return src.slice(start, i + 1); }
+    }
+    return src.slice(start);
+  };
+  const xai = span("streamXAIChatCompletions");
+  if (!xai) fail("streamXAIChatCompletions not found — this check tested nothing");
+  else {
+    // Assert USE, not presence: every output accumulation inside the xAI
+    // chain must go through the helper. A helper that exists and is called
+    // nowhere is the failure this repo has shipped before.
+    const bare = (xai.match(/totalOutputTokens \+= u\.completion_tokens/g) || []).length;
+    const viaHelper = (xai.match(/totalOutputTokens \+= xaiBilledOutputTokens\(/g) || []).length;
+    if (viaHelper < 1) fail("the xAI chain never calls xaiBilledOutputTokens — reasoning tokens go unbilled");
+    else if (bare > 0) fail(`${bare} site(s) in streamXAIChatCompletions still add bare completion_tokens — those rows under-report by up to 2.6x`);
+    else pass(`xAI output accumulation goes through the helper at all ${viaHelper} site(s)`);
+  }
+  for (const other of ["streamOpenAI", "streamGemini"]) {
+    const body = span(other);
+    if (!body) fail(`${other} not found — this check tested nothing`);
+    else if (/reasoning_tokens/.test(body)) {
+      fail(`${other} reads reasoning_tokens — that vendor already counts them inside completion_tokens, so this DOUBLE-COUNTS output`);
+    } else pass(`${other} does not add reasoning tokens (its vendor already includes them)`);
+  }
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
