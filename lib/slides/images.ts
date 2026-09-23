@@ -238,10 +238,14 @@ async function bakeBackdrop(
      *  because only the layout knows: a cover writes across the foot, a closing
      *  slide across the middle, a feature slide starts at the very top. */
     textBands?: TextBand[];
-  }
+  },
+  /** The bytes, when the caller has already fetched them to MEASURE the file
+   *  (recutImageSource). Fetched twice, a re-cut is two requests for one
+   *  photograph, and the second may not return the first one's bytes. */
+  fetched?: Buffer
 ): Promise<{ ok: true; url: string; logo: "white" | "navy" } | { ok: false; reason: string }> {
   try {
-    const input = await safeFetchBuffer(imageUrl, 15_000);
+    const input = fetched || await safeFetchBuffer(imageUrl, 15_000);
     if (!input) return { ok: false, reason: "the image could not be fetched" };
     const sharp = (await import("sharp")).default;
 
@@ -636,6 +640,57 @@ export async function attachmentImageSource(
     console.warn(`[SlideImages] attachment image failed: ${err?.message}`);
     return null;
   }
+}
+
+/** How far a file's shape may sit from its box's before it is re-cut, as a
+ *  fraction of the box's aspect. The bake itself rounds a 1600-wide file to a
+ *  whole pixel height, which moves the aspect by under 0.05%; the smallest
+ *  real mismatch found so far is the bleeding rail's 2.6% (a crop measured
+ *  from GRID.bodyY into a box hung 8pt higher). Half a percent is well clear
+ *  of both, and far below what a letterbox bar needs to be seen. */
+export const CUT_TOLERANCE = 0.005;
+
+/**
+ * A picture ALREADY RESOLVED for a slide, re-cut to the box it is drawn in —
+ * THE SAME FILE, never a new search — or, when it measures as that shape
+ * already, left exactly as it is.
+ *
+ * FETCHED ONCE AND MEASURED FIRST. A file whose shape nothing recorded (every
+ * picture baked before 2026-09-23, and every one the preview's own image
+ * route bakes at 16:9) can only be judged by its pixels, and re-baking one
+ * that is already right would re-encode a JPEG and upload a copy for nothing.
+ * So the bytes are measured, and only a file of the wrong shape goes on to
+ * the bake — from those same bytes, never a second request.
+ *
+ * `aspect` comes back either way: the measured shape when the file fits, the
+ * box's when it was re-cut. The caller records it on the resolved picture, so
+ * the next build knows without fetching.
+ */
+export async function recutImageSource(
+  src: ImageSource, treatment: ImageTreatment
+): Promise<ResolvedImage & { aspect?: number; fits?: boolean }> {
+  let input: Buffer | null = null;
+  try { input = await safeFetchBuffer(src.url, 15_000); } catch { input = null; }
+  if (!input) {
+    return { url: src.url, source: src.source, credit: src.credit, scrim: 0, degraded: "the image could not be fetched" };
+  }
+  try {
+    const sharp = (await import("sharp")).default;
+    const meta = await sharp(input).metadata();
+    const have = meta.width && meta.height ? meta.width / meta.height : 0;
+    if (have && Math.abs(have - treatment.aspect) / treatment.aspect <= CUT_TOLERANCE) {
+      return { url: src.url, source: src.source, credit: src.credit, scrim: 0, fits: true, aspect: have };
+    }
+  } catch {
+    // Unmeasurable bytes go on to the bake, which says so if it cannot use them.
+  }
+  const baked = await bakeBackdrop(src.url, treatment, input);
+  if (baked.ok) {
+    return { url: baked.url, source: src.source, credit: src.credit, scrim: 0, logo: baked.logo, aspect: treatment.aspect };
+  }
+  return treatment.gradient
+    ? { url: src.url, source: src.source, credit: src.credit, scrim: 0, unusable: baked.reason }
+    : { url: src.url, source: src.source, credit: src.credit, scrim: 0, degraded: baked.reason };
 }
 
 /** Choose a picture and prepare it. Kept as a literal composition of the two

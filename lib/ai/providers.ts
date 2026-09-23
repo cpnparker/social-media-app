@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { applyEditSlide, unrenderableSlides, undrawnTableSlides, undrawnTableFaults, normaliseSlide, textReadySlides, PAYLOAD_FIELDS, SlideCallRefusal, blankSlideFaults, type RefusalScope } from "@/lib/slides/edit";
+import { applyEditSlide, unrenderableSlides, undrawnTableSlides, undrawnTableFaults, normaliseSlideForWrite, retireDeclaredBriefs, textReadySlides, PAYLOAD_FIELDS, SlideCallRefusal, blankSlideFaults, type RefusalScope } from "@/lib/slides/edit";
 import { slidesFailure, parseSlidesArguments, type SlidesTurnState } from "@/lib/slides/failure";
 import { shouldRetryDeckClaim, unmadeDeckChangeNotice, DECK_CLAIM_NUDGE, DECK_ASK_WINDOW } from "@/lib/slides/claim";
 import { splitVolatile } from "@/lib/ai/prompt-cache";
@@ -5202,7 +5202,7 @@ export async function prepareSlidesForBuild(
   // Every refusal here is a SlideCallRefusal: the messages tell the MODEL what
   // to send, and the class is what keeps them off the user's screen. `scope`
   // and the structured faults are what the user is told if the turn ends here.
-  const guard = (given: any[], scope: RefusalScope) => {
+  const guard = (given: any[], scope: RefusalScope, stored?: any[]) => {
     // MISPLACED HUB FIELDS ARE REPAIRED BEFORE ANYTHING IS JUDGED. On
     // 2026-09-15 the first call of a new deck put a hub's `caption` and
     // `groups` beside the slide's title; the intent was unambiguous, the slide
@@ -5214,7 +5214,16 @@ export async function prepareSlidesForBuild(
     // Text where text belongs FIRST: a `null` slide or a title sent as an
     // object used to throw a TypeError further in, which reached the user as
     // an internal error for a call the model could simply have resent.
-    const slides = Array.isArray(given) ? textReadySlides(given, scope).map(normaliseSlide) : [];
+    //
+    // THE WRITE NORMALISE, the one that folds `imageQuery` into a picture:
+    // this is a write path, and a resolution with the generator and a fresh
+    // preview follow it, so a picture it asks for is shown before it can be
+    // published (see normaliseSlideForWrite). And a brief nothing will fetch
+    // that the STORED deck already carried was declared when that deck was
+    // built, so it is dropped here rather than announced again.
+    const slides = Array.isArray(given)
+      ? retireDeclaredBriefs(textReadySlides(given, scope).map(normaliseSlideForWrite), stored)
+      : [];
     // AN EMPTY DECK IS NEVER BUILT. This is the hole that destroyed a deck in
     // production twice: whatever the model got wrong about the shape of its
     // call, `slides` arrived as [] and a 0-slide deck REPLACED the twelve
@@ -5334,7 +5343,7 @@ export async function prepareSlidesForBuild(
     const inherited = densityOf(deck.slides[0]);
     const out = {
       title: deck.title,
-      slides: stampDensity(guard(applyEditSlide(deck.slides, edit), editScope), inherited),
+      slides: stampDensity(guard(applyEditSlide(deck.slides, edit), editScope, deck.slides), inherited),
       // NO presentationId, EVER. A published deck is the user's file — they
       // hand-edit it — and the in-place update replaced every slide of one
       // Chris had already edited. Edits continue on the DRAFT; publishing
@@ -5372,7 +5381,7 @@ export async function prepareSlidesForBuild(
     // is how a folder fills with files nobody can tell apart. The cover
     // slide's own title stands in before the generic word does.
     title: input?.title || String((input?.slides || [])[0]?.title || "").trim() || "Presentation",
-    slides: stampDensity(guard(input?.slides || [], "build"), density),
+    slides: stampDensity(guard(input?.slides || [], "build", existing.deck?.slides), density),
     presentationId: undefined,
     edited: false,
     density,

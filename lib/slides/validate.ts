@@ -424,15 +424,93 @@ const INK_TOLERANCE = 1;
  *  It is typed structurally there, so a PreviewElement still satisfies it. */
 export { inkBottom };
 
+/** The thickest filled rectangle that is a RULE rather than a block: the
+ *  title's accent segment is 3pt, every hairline is 1pt, and a panel, a bar or
+ *  a tint is tens of points. And it has to be a line — four times as long as
+ *  it is thick — so a small square marker is not a rule. */
+const RULE_MAX_THICKNESS = 3;
+
+/** How far past a rule the measured ink must reach before it is a crossing, in
+ *  ems of the text's own size. The ruler measures LINE BOXES, and the bottom
+ *  third of a last line's box — its descenders and half its leading — holds no
+ *  ink for most words and none at all for a figure or a caps label. Measured
+ *  on the fixtures and the 94 stored drafts: every label that SITS on its rule
+ *  by design (a line chart's benchmark label, its last point's value above the
+ *  zero rule, 7-9pt, 1.3-2.6pt into the box's foot) is inside 0.35em, and every
+ *  real crossing — a wrapped second line, 10-11pt past — is well outside it. */
+const RULE_CLEAR_EM = 0.35;
+
+/** Text that runs out of its box and through a RULE drawn under it.
+ *
+ *  The sweep below compares text with TEXT, so a line of copy drawn through a
+ *  hairline was invisible to it: a comparison cell that wrapped ran its second
+ *  line straight through the rule under its row — "N - no brand, no keyword",
+ *  the Amrize scorecard, 2026-09-23 — and validateDeck reported slide 18's one
+ *  text-on-text overrun and nothing for slide 17, whose rows were crossed three
+ *  times. A rule is a shape, and it is drawn precisely where the next row
+ *  starts, so it is the first thing an overrun lands on. The same gates as
+ *  the text sweep: the ink must leave its own box, and the rule must sit at
+ *  or below the box's foot, under the words rather than beside them.
+ *
+ *  AND OVER THEM, for a box drawn MIDDLE-anchored. Its block is centred on
+ *  the box's middle, so a block taller than the box leaves it by the TOP as
+ *  far as by the foot, and the rule above a comparison row is exactly as close
+ *  as the rule below it. Looking only downwards, the last row of a scorecard —
+ *  which has no row rule beneath it — could run through the rule above it and
+ *  be reported by nothing. The head of a first line box is leading and the
+ *  room above the ascenders, about as deep as the foot of a last line with no
+ *  descenders, so the same clearance is allowed at both ends — and Chrome
+ *  agrees where it was put to the test: a first-row cell whose block reaches
+ *  1.8pt past the header rule by this measure draws clear of it (check 54e),
+ *  while a third-row cell, 5.8pt past the rule above it, draws through.
+ *
+ *  Each crossing comes back with how far past the rule the ink reaches, and
+ *  which side of the box it is on. */
+function ruleCrossings(
+  el: PreviewElement, bottom: number, rects: PreviewElement[]
+): { rule: PreviewElement; over: number; above: boolean }[] {
+  const hit: { rule: PreviewElement; over: number; above: boolean }[] = [];
+  const clear = Math.max(INK_TOLERANCE, RULE_CLEAR_EM * (el.size || 10));
+  // Where a centred block's first line starts: as far above the middle as its
+  // foot is below it. A box anchored at the top cannot leave it upwards.
+  const centred = !!el.vCenter && el.h > 0;
+  const top = centred ? 2 * el.y + el.h - bottom : el.y;
+  for (let r = 0; r < rects.length; r++) {
+    const rule = rects[r];
+    if (rule.h > RULE_MAX_THICKNESS || rule.w < 4 * rule.h) continue;
+    const beside = el.x + el.w <= rule.x + 1 || rule.x + rule.w <= el.x + 1;
+    if (beside) continue;
+    if (rule.y >= el.y + el.h - INK_TOLERANCE) {
+      if (bottom > rule.y + clear) hit.push({ rule, over: bottom - rule.y, above: false });
+    } else if (centred && rule.y + rule.h <= el.y + INK_TOLERANCE) {
+      if (top < rule.y + rule.h - clear) hit.push({ rule, over: rule.y + rule.h - top, above: true });
+    }
+  }
+  return hit;
+}
+
+/** THE BOXES MEASURED ON WORDS: a comparison's middle-anchored cells and
+ *  labels, which the builder FITS to their rows on the wrap ruler
+ *  (fitComparisonCell). Measured here with anything else, a cell the builder
+ *  wrapped to four lines is read as three, and a cell the builder never
+ *  fitted — the shape this sweep exists to catch — is read as fitting. Every
+ *  other box keeps the ruler it was drawn with, which is the builder's own
+ *  rule for the same ruler: it is taken where it is asked for. */
+function measuredOnWords(el: PreviewElement, layout: string): boolean {
+  return layout === "comparison" && !!el.vCenter;
+}
+
 export function overrunFaults(
   page: PreviewSlide, slide: SlideInput, index: number
 ): { faults: GeometryFault[]; measured: number } {
   const layout = String(slide.layout || "content");
   const faults: GeometryFault[] = [];
   const texts: PreviewElement[] = [];
+  const rects: PreviewElement[] = [];
   for (let i = 0; i < page.elements.length; i++) {
     const e = page.elements[i];
     if (e.kind === "text" && e.text) texts.push(e);
+    else if (e.kind === "rect" && !e.transform) rects.push(e);
   }
   let measured = 0;
   for (let i = 0; i < texts.length; i++) {
@@ -442,7 +520,7 @@ export function overrunFaults(
     // collides with everything under it, which it visibly does not.
     if (String(el.text).trim().length <= 1) continue;
     measured++;
-    const bottom = inkBottom(el);
+    const bottom = inkBottom(measuredOnWords(el, layout) ? { ...el, ragged: true } : el);
     if (bottom <= el.y + el.h + INK_TOLERANCE) continue;   // stays inside its own box
     for (let j = 0; j < texts.length; j++) {
       const other = texts[j];
@@ -458,6 +536,26 @@ export function overrunFaults(
             ` — "${clip(el.text, 28)}" over "${clip(other.text, 28)}"`,
         });
       }
+    }
+    // ONE fault per box for the rules it crosses, measured to the first: a
+    // cell that runs through its row's hairline and the next one is one
+    // sentence, not two — and a centred cell through the rules above AND
+    // below it is one sentence that names both.
+    const crossed = ruleCrossings(el, bottom, rects);
+    if (crossed.length) {
+      let first = crossed[0];
+      let up = false, down = false;
+      for (let c = 0; c < crossed.length; c++) {
+        if (crossed[c].over > first.over) first = crossed[c];
+        if (crossed[c].above) up = true; else down = true;
+      }
+      const where = up && down ? "the rules above and beneath it" : up ? "the rule above it" : "the rule beneath it";
+      faults.push({
+        kind: "overrun", slide: index + 1, layout, where: `${clip(el.text, 24)} onto a rule`,
+        overBy: first.over,
+        note: `slide ${index + 1}: ${field(el, "the text")} runs ${Math.round(first.over)}pt past its box` +
+          ` and is drawn through ${where} — "${clip(el.text, 28)}"`,
+      });
     }
   }
   return { faults, measured };

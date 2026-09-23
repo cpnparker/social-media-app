@@ -34,6 +34,25 @@
  * none of those seven conversations holds a deck, so no stored deck would
  * have been built differently by any of them.
  *
+ * AND A FOURTH, 2026-09-23 again, for the hyphenated modifier, the question
+ * test and the reading veto (MODIFIERS, heldStatement and READING, below),
+ * and HELD's clause-ending alternative taken back out,
+ * over 2,991 stored user messages (2,987 with text) and the same 45
+ * conversations holding a deck. Every message: 73 `present` before (2.44%),
+ * 74 after (2.48%), none lost. Creations: 8 of 45 before (17.8%), 9 of 45
+ * after (20.0%). Every user turn read as a hypothetical creation: 152 of
+ * 2,991 before, 153 after. ONE flip, the same one in all three counts, and it
+ * is the ask the widening was written for — 9fc715be, 2026-09-22 13:17 UTC:
+ * "I am preparing a deck for a follow-up meeting will who is leading the
+ * North American corporate comms team at BeOne Medicines … Ed will also be
+ * attending", read before, present after, and missed only because of the
+ * hyphen. Its deck already exists at read and stays read: density is
+ * decided once. The question test changes no stored message (no HELD match
+ * in the corpus sits in a sentence ending in "?"), the veto changes none (it
+ * matches four openings, all already read), and neither does removing the
+ * clause-ending alternative (nothing stored needed it). Measured against
+ * d1c7faf, the code before any of the four.
+ *
  *   - "presentation" IS NOT A TRIGGER. It is a plain synonym for deck in this
  *     corpus ("Can you make this presentation in TCE format", "can you make me
  *     a 10 slide presentation on this") and appears in 12 of 42 asks. Trigger
@@ -174,8 +193,23 @@ const WHEN = "(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorr
  */
 const OCCASION_NOUN = "(?:meeting|briefing|workshop|all-hands|all hands|off-?site|stand-?up|webinar|conference|keynote|session|kick-?off|away ?day|demo|pitch(?:es)?|talk)";
 
+/**
+ * THE WORDS ALLOWED BETWEEN THE DETERMINER AND THE OCCASION NOUN, up to three
+ * of them: "my 10am meeting", "a half-day workshop". A word, or a hyphenated,
+ * ampersanded or slashed compound — the ordinary spelling of a workshop's or
+ * a meeting's modifier, which `\w+` could not step over. So "a half-day
+ * workshop", "a kick-off meeting", "a Q&A session", "a GEO/AEO workshop" and
+ * "a 90-minute session" all read as `read`, while the same asks unhyphenated
+ * read `present` — and it cost a real deck: 9fc715be (2026-09-22) was asked
+ * for as "a deck for a follow-up meeting … Ed will also be attending and
+ * presenting a few slides" and built at read, where "follow up meeting"
+ * would have been present. Measured over every stored message, the widening
+ * changes that one ask and no other (the header of this file has the count).
+ */
+const MODIFIERS = "(?:[\\w&/-]+\\s+){0,3}?";
+
 const OCCASION = new RegExp(
-  "\\b(?:for|at|ahead of|before)\\s+(?:my|our|the|this|next|" + WHEN + "(?:'s|’s)?)?\\s*(?:\\w+\\s+){0,3}?" +
+  "\\b(?:for|at|ahead of|before)\\s+(?:my|our|the|this|next|" + WHEN + "(?:'s|’s)?)?\\s*" + MODIFIERS +
   OCCASION_NOUN + "\\b",
   "i"
 );
@@ -217,11 +251,16 @@ const OCCASION = new RegExp(
  *     perfect tense about something over, and with the determiner optional
  *     "finished" is one of the three words allowed before the noun.
  *   - THE NOUN MUST BE THE HEAD, followed by what follows an event — with,
- *     for, to, on, a day — or ending the clause. "we have the meeting notes
- *     from Tuesday" is a document, and MeetingBrain means this workspace
- *     writes that sentence every week.
+ *     for, to, on, a day. "we have the meeting notes from Tuesday" is a
+ *     document, and MeetingBrain means this workspace writes that sentence
+ *     every week. A noun ENDING its clause ("we have a workshop.") was
+ *     admitted too, and taken back out on 2026-09-23: no stored message of
+ *     the 2,970 needed it — removed, not one answer changed — so it was a
+ *     trigger with no sentence behind it, which this file does not admit.
  *   - A QUESTION IS NOT A STATEMENT: "do we have a meeting with Siemens
  *     tomorrow?" is the shape of the calendar questions this app answers.
+ *     Asked of the sentence's own punctuation (heldStatement, below), not of
+ *     the word before the subject.
  * The last three are NOT demanded by any stored message — measured, each can
  * be removed on its own and no message of the 2,970 changes its answer (the
  * real near-miss, "I have attached the briefing document for SCOPE", is
@@ -231,12 +270,81 @@ const OCCASION = new RegExp(
  * to be synthetic there, for the reason the clamp's word-boundary fixture is.
  */
 const HELD = new RegExp(
-  "(?<!\\b(?:do|did)\\s)\\b(?:we|i)" +
+  "\\b(?:we|i)" +
   "(?:\\s+have(?:\\s+got)?|(?:'ve|’ve)\\s+got|(?:'re|’re|'m|’m|\\s+are|\\s+am)\\s+(?:having|holding))" +
-  "\\s+(?:a|an|the|our|my|this)\\s+(?:\\w+\\s+){0,3}?" + OCCASION_NOUN +
-  "(?=\\s+(?:with|for|at|on|in|to|about|tomorrow|today|tonight|this|next|later)\\b|\\s*(?:[.,;:!?]|$))",
-  "i"
+  "\\s+(?:a|an|the|our|my|this)\\s+" + MODIFIERS + OCCASION_NOUN +
+  "(?=\\s+(?:with|for|at|on|in|to|about|tomorrow|today|tonight|this|next|later)\\b)",
+  "gi"
 );
+
+/**
+ * THE POSSESSION FORM, STATED — not asked. A HELD match counts only when the
+ * sentence it sits in does not end in a question mark.
+ *
+ * This replaces a lookbehind for "do" or "did" directly before the subject,
+ * which the docblock above described as "a question is not a statement" and
+ * which caught one shape of question with exactly one space in it. "Didn't we
+ * have a meeting with Siemens last week?", "Will we have a meeting with
+ * Siemens next week?", "Do you know if we have a meeting with Siemens
+ * tomorrow?" and "Do  we have …" all read `present` through it — and the first
+ * is past tense as well as a question, both of the exclusions it claimed.
+ * The sentence's own punctuation is what makes it a question, whatever words
+ * open it. Measured over every stored message: this changes none of them
+ * (the header has the count), so it is pinned by synthetic fixtures in check
+ * 16a, said to be synthetic there.
+ */
+function heldStatement(opening: string): boolean {
+  HELD.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = HELD.exec(opening)) !== null) {
+    const rest = opening.slice(m.index + m[0].length);
+    const end = rest.search(/[.!?\n]/);
+    if (end < 0 || rest.charAt(end) !== "?") { HELD.lastIndex = 0; return true; }
+  }
+  return false;
+}
+
+/**
+ * THE DECK IS FOR READING, SAID IN SO MANY WORDS — and a sentence that says so
+ * outranks every rule that would make it `present`.
+ *
+ * HELD keys on the first person — "we have a meeting with" — which is also
+ * the voice of emails and transcripts, and a false `present` can never be
+ * undone: a deck keeps the density it was created at. "I have a meeting with
+ * Siemens, summarise the notes into slides for me to read before it" is a
+ * deck for READING about a meeting, and it read `present`. So an explicit
+ * reading purpose — to read, a read-ahead or pre-read, to send round or out,
+ * a leave-behind — is a veto that runs before the present rules.
+ *
+ * IT NARROWS, IT DOES NOT WIDEN, so the file's rule for triggers — a real
+ * sentence behind every pattern — is not what it answers to; what it answers
+ * to is that it costs no stored `present` ask. Measured over every stored user
+ * message it matches four openings, every one of them already `read` ("for me
+ * to read and provide a list", "encouraging the audience to read the longer
+ * article"), and removes none of the 73 `present` ones. An exception for "you
+ * to read" — the model asked to read a document — was drafted and taken back
+ * out: it changed no stored message either way, and an exception to a veto is
+ * a trigger by another name, which this file does not admit without a
+ * sentence behind it. Read is the default a doubtful ask falls back to.
+ */
+const READING = /\bto\s+read\b|\bread-?ahead\b|\bpre-?read\b|\bto\s+send\s+(?:it\s+|this\s+|them\s+)?(?:round|out)\b|\bleave-?behind\b/i;
+
+/** What ONE turn says about the deck's use: spoken, read, or nothing either
+ *  way. Three answers, because the window below needs to know which turns
+ *  said nothing — a reading purpose stated in the newest turn is not undone
+ *  by an occasion mentioned two turns back, and the other way round. */
+function askIntent(text: string | undefined): Density | null {
+  const opening = askOpening(text);
+  if (!opening) return null;
+  if (READING.test(opening)) return "read";
+  for (let i = 0; i < SPOKEN.length; i++) {
+    if (SPOKEN[i].test(opening)) return "present";
+  }
+  if (OCCASION.test(opening)) return "present";
+  if (heldStatement(opening)) return "present";
+  if (TIMED_CALL.test(opening)) return "present";
+  return null;
+}
 
 /**
  * "a deck for Thursday's call", "slides for the 10am call" — the plan's own
@@ -253,15 +361,7 @@ const TIMED_CALL = new RegExp(
  * reads a few turns of them through densityFromAsks.
  */
 export function densityFromAsk(text: string | undefined): Density {
-  const opening = askOpening(text);
-  if (!opening) return "read";
-  for (let i = 0; i < SPOKEN.length; i++) {
-    if (SPOKEN[i].test(opening)) return "present";
-  }
-  if (OCCASION.test(opening)) return "present";
-  if (HELD.test(opening)) return "present";
-  if (TIMED_CALL.test(opening)) return "present";
-  return "read";
+  return askIntent(text) === "present" ? "present" : "read";
 }
 
 /**
@@ -291,8 +391,13 @@ export function densityFromAsk(text: string | undefined): Density {
 export function densityFromAsks(texts: (string | undefined)[] | undefined): Density {
   const all = texts || [];
   const n = Math.min(all.length, DECK_ASK_WINDOW);
+  // NEWEST DECISIVE TURN WINS. A turn that says the deck is for reading ends
+  // the search exactly as one that says it will be spoken does: "I have a
+  // meeting with Siemens" one turn and "summarise the notes into slides for
+  // me to read before it" the next is a deck to read.
   for (let i = 0; i < n; i++) {
-    if (densityFromAsk(all[i]) === "present") return "present";
+    const intent = askIntent(all[i]);
+    if (intent) return intent;
   }
   return "read";
 }

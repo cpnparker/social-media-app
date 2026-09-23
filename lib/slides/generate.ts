@@ -17,19 +17,20 @@
 import {
   COLOR, GRID, CANVAS, TYPE, NOTE, STAT_MAX, STAT_GRID_MIN, STAT_GRID, TIMELINE, TIMELINE_PARALLEL, TRACK_COLORS, IMAGE, CHART,
   SERIES_LIGHT, SERIES_DARK, CARDS, QUOTE, PROCESS, LOGO_WALL, RULE, LAYOUT_STYLE, LOGO_PLACEMENT, SECTION, VENN,
-  SHOT, FEATURE_SHOT_STYLE, FRAME, STEPPER, DENSITY, DEFAULT_DENSITY, density, withDensity,
+  SHOT, FEATURE_SHOT_STYLE, FRAME, STEPPER, DENSITY, DEFAULT_DENSITY, density, densityName, withDensity,
   PHOTO_RAIL, SERPENTINE, columnBand,
   rgb, logoUrl, textOn, layoutOf, type SlideLayout, type TypeStyle, type LayoutStyle, type Density,
 } from "@/lib/slides/brand";
 import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "@/lib/slides/token";
 import { captureThumbnails } from "@/lib/slides/preview";
 import {
-  resolveImage, selectImageSource, bakeImageSource, attachmentImageSource,
+  resolveImage, selectImageSource, bakeImageSource, attachmentImageSource, recutImageSource, CUT_TOLERANCE,
   type ImageGenerator, type ImageSource, type ImageRequest, type TextBand,
 } from "@/lib/slides/images";
 import { resolveIcon } from "@/lib/slides/icons";
 import {
   normaliseSlide, hubHasConnections, stampSteps, isScreenshotImage, CONTINUATION_CLEARS, STEP_BOUNDS, type SlideStep,
+  namesAPicture as briefNamesAPicture, payloadOf, drawsSlidePicture, PAYLOAD_FIELDS,
 } from "@/lib/slides/edit";
 import { SLIDES_TEXT_INSET, BULLET_INDENT } from "@/lib/slides/preview-style";
 import { refreshSignedMediaUrl } from "@/lib/media/signed";
@@ -222,16 +223,23 @@ export interface SlideInput {
     callouts?: { x: number; y: number; text: string }[];
   };
   /** The name editSlide takes for `image: { query }`, which the model also
-   *  carries into a full `slides` build. normaliseSlide folds it into `image`
-   *  on every layout that draws a picture; it is still here only on one that
-   *  draws none, where it is declared rather than fetched. */
+   *  carries into a full `slides` build. normaliseSlideForWrite folds it into
+   *  `image` on every layout that draws a picture, on the write paths only;
+   *  after a write it is still here only on a layout that draws none, where it
+   *  is declared once rather than fetched. A stored draft older than the fold
+   *  may still carry one on a picture layout: it is drawn without a picture,
+   *  and neither reopening nor publishing that draft buys one. */
   imageQuery?: string;
   /** Filled in by resolution — not supplied by the model. */
   resolvedImage?: {
     url: string; scrim: number; credit?: string; logo?: "white" | "navy";
     /** width/height of the PREPARED file. A screenshot is drawn at its own
      *  shape rather than baked to a box, so the layout has to be told what
-     *  that shape is; a photograph is baked and leaves these unset. */
+     *  that shape is. A photograph cut for a FIXED box — the two rails — now
+     *  records it too, so a build can tell a file cut for this box from one
+     *  cut for another without fetching it; a rail picture WITHOUT it was
+     *  baked by code that wrote none, and is measured before it is trusted
+     *  (rebakeShape). Full-bleed photographs still leave it unset. */
     aspect?: number;
     /** Its pixel width, for the legibility note — how much interface is being
      *  asked to survive being drawn at 295 points. */
@@ -239,7 +247,8 @@ export interface SlideInput {
     /** The layout whose box this file was CROPPED for, when that is not the
      *  layout now drawing it. Set only by normaliseSlide's image-split →
      *  photo-rail promotion (lib/slides/edit.ts), read by resolveDeckImages,
-     *  which re-bakes the same file to the new box and drops the mark. */
+     *  which re-bakes the same file to the new box, drops the mark and records
+     *  the new `aspect`. */
     bakedFor?: string;
   };
   /** Set when resolution ran and found nothing, so publishing does not quietly
@@ -2943,7 +2952,10 @@ export function fitAspect(inner: ShotBox, aspect: number | undefined): ShotBox {
  *  that to the resolver is asking it to find nothing, which it reports back as
  *  a picture the user asked for and did not get. */
 export function namesAPicture(image: SlideInput["image"]): image is NonNullable<SlideInput["image"]> {
-  return !!(image && (image.url || image.query || image.attachment));
+  // The predicate lives in lib/slides/edit.ts, because the write path's fold
+  // decides which of `image` and `imageQuery` wins with it, and that file
+  // cannot import this one. One question, one answer.
+  return briefNamesAPicture(image);
 }
 
 /** Is this slide's picture a UI CAPTURE rather than a photograph?
@@ -4218,14 +4230,35 @@ const BULLET_GAP = 6;
 export function inkBottom(el: {
   y: number; w: number; text?: string; size?: number;
   font?: string; weight?: number; bullets?: boolean; caps?: boolean;
+  /** A box drawn MIDDLE-anchored, and its height: its ink is centred on the
+   *  box's middle, and overflows it evenly above and below. */
+  h?: number; vCenter?: boolean;
+  /** A box whose words were FITTED on the wrap ruler — a comparison cell —
+   *  and so has to be measured on it: wrapped word by word wherever the
+   *  measure is narrow enough for the ragged edge to cost a line. */
+  ragged?: boolean;
 }): number {
   const size = el.size || 10;
   const paras = String(el.text || "").split("\n");
   let lines = 0;
   const bold = el.font === "Roboto" && (el.weight || 400) >= 600 && !el.bullets;
+  // THE COUNT MODEL UNDER-COUNTS A NARROW MEASURE, and a fitter that fills
+  // its row to the count has no line to spare when it does. A four-column
+  // comparison cell is about 25 characters wide at 9pt, and there a
+  // character count came back a line short on 15-21% of the multi-line cells
+  // Chrome drew (722 cells, 2026-09-23): "Absent: neither the brand nor the
+  // keyword, just a generic news headline" was fitted to three lines, drew
+  // four, and put "headline" across the rule and onto the row beneath —
+  // which nothing reported, because the validator measured it with the same
+  // count. Opt-in, like the builder's own blocks (see bulletBlockHeight): the
+  // box that was fitted on words says so, and every other box keeps the
+  // ruler it was drawn with.
+  const ragged = !!el.ragged && !el.bullets && measuresRagged(el.w, size, el.font);
   for (let i = 0; i < paras.length; i++) {
     const para = paras[i];
-    lines += bold
+    lines += ragged
+      ? Math.max(1, raggedLines(el.caps ? para.toUpperCase() : para, el.w, size, el.font, bold ? para.length : 0))
+      : bold
       ? Math.max(1, Math.ceil(labelWidthPt(para, size) / 1.06 / Math.max(1, el.w - TEXT_INSET_X) - 1e-9))
       // MEASURED IN THE FACE THE BOX IS DRAWN IN, which the branch above
       // already does and this one did not. faceAdvance falls back to the
@@ -4240,9 +4273,18 @@ export function inkBottom(el: {
       // its widest, and the preview's text is already upper-cased when it does.
       : Math.max(1, estimateLines(para, el.w, size, el.bullets, !!el.caps, el.font));
   }
+  const block = lines * size * INK_LEAD + Math.max(0, paras.length - 1) * (el.bullets ? BULLET_GAP : 0);
+  // A MIDDLE-ANCHORED BOX CENTRES ITS LINES. Measured from the top, a one-line
+  // comparison cell centred in a 12pt row read as running 2.7pt out of its
+  // box when its ink sat inside it with a point and a half to spare, so the
+  // cell fitter — which asks this — cut words that fitted. Slides sets the
+  // block on the box's middle whatever its height, and a block taller than
+  // the box overflows it evenly, top and bottom, so its foot is half the
+  // block below the middle either way. This can only ever measure LESS
+  // overrun than the top-anchored rule did, never more.
+  if (el.vCenter && typeof el.h === "number" && el.h > 0) return el.y + el.h / 2 + block / 2;
   // One inset — the top. The box's own y is the top of the box, not of the ink.
-  return el.y + SLIDES_TEXT_INSET.y + lines * size * INK_LEAD
-    + Math.max(0, paras.length - 1) * (el.bullets ? BULLET_GAP : 0);
+  return el.y + SLIDES_TEXT_INSET.y + block;
 }
 
 /* ── What this slide has drawn so far ───────────────────────────────────── */
@@ -5564,6 +5606,20 @@ export function railBox(
   const url = slide.resolvedImage?.url;
   const layout = slide.layout;
   if (!url || (layout !== "content" && layout !== "case-study")) return null;
+  return { url, ...bleedRailFrame() };
+}
+
+/** The bleeding rail's rectangle at the density in force — the ONE ruler both
+ *  its placement (railBox) and its crop (pictureShape) read.
+ *
+ *  They were two rulers. railBox hung the picture from the title's rule;
+ *  pictureShape cropped it from GRID.bodyY, 8pt lower, so every rail picture
+ *  was baked 2.6% shorter than the box it was drawn in, and Slides and the
+ *  chat preview — which fit, they do not crop — showed a strip of page above
+ *  and below it (3ec51a09's slides 2, 4, 14 and 16, the day the fold gave them
+ *  their first photographs). One function, so the crop cannot drift from the
+ *  placement again. */
+function bleedRailFrame(): { x: number; y: number; width: number; height: number } {
   const x = GRID.margin + GRID.proseNarrow + IMAGE.railGap;
   // THE TOP EDGE IS THE TITLE'S RULE, not an arbitrary line 10pt under it. The
   // picture bleeds off the right and the bottom trim; the one edge it has is
@@ -5573,7 +5629,7 @@ export function railBox(
   // horizontal instead, which is what three bled edges and one drawn one is
   // supposed to mean.
   const y = GRID.bodyY - RULE.gapAbove;
-  return { url, x, y, width: CANVAS.width - x, height: CANVAS.height - y };
+  return { x, y, width: CANVAS.width - x, height: CANVAS.height - y };
 }
 
 /** THE PHOTO RAIL'S PICTURE: portrait, inset down the left, on `photo-rail`.
@@ -5612,17 +5668,18 @@ export function photoRailBox(
  *
  *  THE PHOTO RAIL'S SHAPE IS DENSITY-FREE and the bleeding rail's is not.
  *  Images resolve outside `withDensity`, so the bleeding rail — whose box is
- *  measured from GRID.bodyY — is cropped at the default preset whatever the
+ *  measured from GRID.bodyY — was cropped at the default preset whatever the
  *  deck is set to, and at `present` the box it lands in is 54.72pt shorter
- *  than the crop assumed. The inset rail cannot have that fault: its box is
- *  derived from the frame, which does not move. */
-export function pictureShape(layout: string | undefined): { width: number; height: number } | null {
+ *  than that crop. So the density is PASSED: resolution hands in the slide's
+ *  own (densityOf), and the bleeding rail is measured inside it, off the very
+ *  frame railBox draws (bleedRailFrame). Left out, it is the density in
+ *  force, which is what every other reader of GRID gets. The inset rail needs
+ *  none of this: its box is derived from the frame, which does not move. */
+export function pictureShape(layout: string | undefined, at?: Density): { width: number; height: number } | null {
   if (layout === "photo-rail") return { width: PHOTO_RAIL.width, height: PHOTO_RAIL.height };
   if (layout === "content" || layout === "case-study") {
-    return {
-      width: CANVAS.width - (GRID.margin + GRID.proseNarrow + IMAGE.railGap),
-      height: CANVAS.height - GRID.bodyY,
-    };
+    const frame = withDensity(at || densityName(), bleedRailFrame);
+    return { width: frame.width, height: frame.height };
   }
   return null;
 }
@@ -7800,11 +7857,83 @@ function matrixRequests(
   return out;
 }
 
+/** How far a comparison cell's box stands off the rules above and below its
+ *  row, and the smallest a cell's words may be set to fit it — the deck's
+ *  7.5pt floor, the one the table stops at. */
+const COMPARISON_CELL_CLEAR = 1;
+const COMPARISON_MIN_SIZE = 7.5;
+
+/**
+ * A comparison cell's words FITTED TO THE ROW THEY ARE DRAWN IN.
+ *
+ * Every cell was a one-line 16pt box, and a cell that wrapped simply ran on:
+ * "N - no brand, no keyword" and "P - intro does some of the job" drew their
+ * second line straight through the hairline under the row (the Amrize
+ * scorecard, 2026-09-23), and nothing said so, because the rule is a shape
+ * and the overrun sweep compared text with text. The row's height is set by
+ * the band and the row count, so it cannot grow without pushing the last row
+ * off the slide: the words come down instead, a half point at a time to the
+ * deck's floor, and past that they are cut on a word with an ellipsis and
+ * the cut is REPORTED — a cell that lost words says so, like a table that
+ * lost rows.
+ *
+ * MEASURED WITH THE VALIDATOR'S RULER (inkBottom), face, weight and caps, and
+ * centred, as the cell is drawn, so the two cannot disagree about whether a
+ * cell fits: a fit this accepts is one validateDeck cannot report as running
+ * out of its box.
+ *
+ * AND WRAPPED ON WORDS, because agreeing with the validator is only worth
+ * what the validator's ruler is worth. Both counted characters, a four-column
+ * cell is narrow enough for that to come back a line short, and a fitter that
+ * fills the row to the count has no line to spare: five cells of a real
+ * qualifier-sentence scorecard were fitted to three lines and drew four
+ * across the rules, and validateDeck reported nothing, because it asked the
+ * same count. So the cell is measured `ragged`, and validate.ts measures a
+ * comparison's cells the same way.
+ *
+ * A ROW TOO SHORT FOR ONE LINE AT THE FLOOR IS NOT FIXED BY CUTTING WORDS: a
+ * shorter line is the same height. The first cut of this measured the one
+ * line from the top of its box, found it 2.7pt too tall for a 12pt row at
+ * `present`, and chopped every cell of a seven-row scorecard to "Y…" and
+ * "5…" — words that fitted, destroyed. So the cut is by WIDTH only, down to
+ * the lines the row holds and never fewer than one, and a row shorter than
+ * that one line is flagged `short`, for the builder to say the table needs
+ * more room rather than fewer words.
+ */
+function fitComparisonCell(
+  text: string, width: number, style: TypeStyle, room: number
+): { text: string; size: number; cut: boolean; short: boolean } {
+  const weight = style.bold ? Math.max(700, style.weight ?? 700) : (style.weight ?? 400);
+  const face = { w: width, font: style.font, weight, caps: !!style.caps, ragged: true };
+  const inkOf = (t: string, size: number) => inkBottom({ ...face, y: 0, h: room, vCenter: true, text: t, size });
+  const linesOf = (t: string, size: number) =>
+    Math.round((inkBottom({ ...face, y: 0, text: t, size }) - SLIDES_TEXT_INSET.y) / (size * INK_LEAD));
+  let size = style.size;
+  while (inkOf(text, size) > room && size > COMPARISON_MIN_SIZE) size = Math.max(COMPARISON_MIN_SIZE, size - 0.5);
+  if (inkOf(text, size) <= room) return { text, size, cut: false, short: false };
+  // As many lines as the row holds at the floor, at least one, then the
+  // ellipsis — re-measured, because fitCell counts characters and the ruler
+  // above wraps words.
+  const lines = Math.max(1, Math.floor(room / (size * INK_LEAD) + 1e-9));
+  const short = size * INK_LEAD > room;
+  if (linesOf(text, size) <= lines) return { text, size, cut: false, short };
+  let shown = fitCell(text, width, size, lines);
+  for (let chop = 1; linesOf(shown, size) > lines && chop < 40; chop++) {
+    shown = fitCell(text, width - chop * size * PER_CHAR, size, lines);
+  }
+  return { text: shown, size, cut: shown !== text, short };
+}
+
 /** A comparison table: a header row of options, then criterion rows. A cell of
- *  "yes"/"no" draws a tick or cross; anything else prints as text. */
+ *  "yes"/"no" draws a tick or cross; anything else prints as text.
+ *
+ *  `cut` collects the cells and labels that had to be shortened to fit their
+ *  row, and `short` is set when a row is too shallow for one line of the
+ *  deck's smallest type — both for the builder to name to the model. */
 function comparisonRequests(
   page: string, id: (s: string) => string,
-  cmp: NonNullable<SlideInput["comparison"]>, bandTop: number, bandBottom?: number
+  cmp: NonNullable<SlideInput["comparison"]>, bandTop: number, bandBottom?: number,
+  cut?: string[], short?: { rowH: number }
 ): Req[] {
   const cols = (cmp.columns || []).slice(0, COMPARISON_MAX_COLS);
   const rows = (cmp.rows || []).slice(0, COMPARISON_MAX_ROWS);
@@ -7815,7 +7944,11 @@ function comparisonRequests(
   const colW = (GRID.contentWidth - labelW) / cols.length;
   const headH = 28;
   const bottom = floorBand(CANVAS.height - GRID.margin, bandBottom);
-  const rowH = Math.min(40, (bottom - top - headH) / rows.length);
+  // THE 4pt UNDER THE HEADER RULE COUNTS. The rows start 4pt below it and
+  // were sized as if they did not, so the last one always ended 4pt past the
+  // band — under a one-line 16pt cell that was invisible; under a cell that
+  // fills its row, the last row's boxes crossed the footer's rule.
+  const rowH = Math.min(40, (bottom - top - headH - 4) / rows.length);
 
   // Header: option names across the top, over a rule.
   cols.forEach((c, j) => {
@@ -7827,33 +7960,47 @@ function comparisonRequests(
     x: GRID.margin, y: top + headH, width: GRID.contentWidth, height: RULE.hairlineThickness,
   }, 0.4));
 
+  // ONE BOX FOR EVERY CELL OF A ROW — the tick, the cross, the letter and
+  // the label alike: the whole row less a point off each rule, with the words
+  // centred in it. The glyphs had a box of their own (row middle less 9, 18pt
+  // tall) beside the letters' (less 8, 16pt), both anchored at the top, so a
+  // 13pt tick sat about 3pt below the "P" in the next column of the same row.
+  // Centred in one box, every mark in a row shares one middle whatever its
+  // size.
+  const cellH = Math.max(1, rowH - 2 * COMPARISON_CELL_CLEAR);
+  const fitted = (t: string, w: number, style: TypeStyle) => {
+    const f = fitComparisonCell(t, w, style, cellH);
+    if (f.cut && cut) cut.push(t.trim());
+    if (f.short && short) short.rowH = rowH;
+    return { text: f.text, style: f.size === style.size ? style : { ...style, size: f.size } };
+  };
   rows.forEach((r, i) => {
     const ry = top + headH + 4 + i * rowH;
+    const cy = ry + COMPARISON_CELL_CLEAR;
     if (r.highlight) {
       out.push(...filledShape(id(`crb${i}`), page, "RECTANGLE", COLOR.tintBlue, {
         x: GRID.margin, y: ry, width: GRID.contentWidth, height: rowH,
       }, 0.6));
     }
-    out.push(...textBox(id(`crl${i}`), page, r.label, { ...TYPE.cellText, bold: true }, {
-      x: GRID.margin + 6, y: ry + rowH / 2 - 8, width: labelW - 12, height: 16,
-    }));
+    const label = fitted(String(r.label ?? ""), labelW - 12, { ...TYPE.cellText, bold: true });
+    out.push(...textBox(id(`crl${i}`), page, label.text, label.style, {
+      x: GRID.margin + 6, y: cy, width: labelW - 12, height: cellH,
+    }, { vCenter: true }));
     (r.cells || []).slice(0, cols.length).forEach((cell, j) => {
       const cx = GRID.margin + labelW + j * colW;
+      const box = { x: cx, y: cy, width: colW, height: cellH };
       // The vocabulary is shared with the scorecard recount (TICK_CELLS), so a
       // total is checked against exactly the marks this draws.
       const v = cell.trim().toLowerCase();
       if (TICK_CELLS.indexOf(v) >= 0) {
-        out.push(...textBox(id(`cc${i}_${j}`), page, "\u2713", { ...TYPE.cellText, size: 13, bold: true, color: COLOR.inkTeal }, {
-          x: cx, y: ry + rowH / 2 - 9, width: colW, height: 18,
-        }, { align: "CENTER" }));
+        out.push(...textBox(id(`cc${i}_${j}`), page, "\u2713", { ...TYPE.cellText, size: 13, bold: true, color: COLOR.inkTeal }, box,
+          { align: "CENTER", vCenter: true }));
       } else if (CROSS_CELLS.indexOf(v) >= 0) {
-        out.push(...textBox(id(`cc${i}_${j}`), page, "\u2717", { ...TYPE.cellText, size: 13, bold: true, color: COLOR.inkCoral }, {
-          x: cx, y: ry + rowH / 2 - 9, width: colW, height: 18,
-        }, { align: "CENTER" }));
+        out.push(...textBox(id(`cc${i}_${j}`), page, "\u2717", { ...TYPE.cellText, size: 13, bold: true, color: COLOR.inkCoral }, box,
+          { align: "CENTER", vCenter: true }));
       } else {
-        out.push(...textBox(id(`cc${i}_${j}`), page, cell, TYPE.cellText, {
-          x: cx, y: ry + rowH / 2 - 8, width: colW, height: 16,
-        }, { align: "CENTER" }));
+        const f = fitted(cell, colW, TYPE.cellText);
+        out.push(...textBox(id(`cc${i}_${j}`), page, f.text, f.style, box, { align: "CENTER", vCenter: true }));
       }
     });
     // A hairline between rows.
@@ -8623,16 +8770,59 @@ function buildSlideRequestsAt(
     }
   }
   // A PHOTOGRAPH ASKED FOR ON A LAYOUT THAT DRAWS NONE, declared the same way.
-  // normaliseSlide folds `imageQuery` into `image` only where a picture is
-  // drawn, because on a stat or a table the fold would buy a search or a
-  // generation for nothing; so a brief still standing here, after the slide
-  // was normalised above, is one nothing will fetch. Said, because the model
-  // asked for a picture and will describe one unless it is told otherwise.
-  {
+  // normaliseSlideForWrite folds `imageQuery` into `image` only where a
+  // picture is drawn, because on a stat or a table the fold would buy a
+  // search or a generation for nothing; so a brief still standing here on a
+  // deck that was just written is one nothing will fetch. Said, because the
+  // model asked for a picture and will describe one unless it is told
+  // otherwise — and said ONCE: the next write drops the brief
+  // (retireDeclaredBriefs), so it is not replayed and re-announced on every
+  // build of the deck, which is what it did for its first day.
+  //
+  // WORDED BY CASE, because the one sentence that covered all of them gave
+  // advice that was impossible, wrong or destructive. "Move it to content"
+  // on a cards slide told the model to trade the cards for a picture — the
+  // guard accepted exactly that on 277e13cb's slide 7, and six strings went
+  // undrawn — and on a content slide with a panel it said "this content slide
+  // draws none … move it to content". So the reason is named (the payload,
+  // or the panel the picture's column went to), and a layout is offered only
+  // when the slide carries no payload of any kind AND building it on that
+  // layout keeps every string it carries, measured the way droppedContent
+  // measures. The advice can then never cost the slide what it is for.
+  //
+  // AND ONLY WHERE THE LAYOUT REALLY DRAWS NONE. A stored draft older than the
+  // fold carries its brief unfolded on a CONTENT slide, which draws a picture
+  // perfectly well — it was simply never asked to find one — and since the
+  // fold moved to the write path such a slide can reach a build unfolded. "A
+  // content slide draws no photograph" would be false about it.
+  if (notes) {
     const q = typeof slide.imageQuery === "string" ? slide.imageQuery.trim() : "";
-    if (q) {
-      shotNote(`a photograph was asked for (${quoteClip(q)}) and this ${layout} slide draws none, so none was fetched;` +
-        ` move it to content, photo-rail or image-split to show one, or drop imageQuery`);
+    if (q && !drawsSlidePicture(slide, index)) {
+      const payload = payloadOf(layout);
+      const panel: any = (slide as any).panel;
+      const panelled = (layout === "content" || layout === "case-study") && !!panel && typeof panel === "object"
+        && ((Array.isArray(panel.items) && panel.items.length > 0) || (typeof panel.title === "string" && panel.title.trim() !== ""));
+      const why = panelled
+        ? `this ${layout} slide's picture column is taken by its panel, and the two never share it`
+        : payload ? `a ${layout} slide draws its \`${payload}\` and no photograph`
+          : `a ${layout} slide draws no photograph`;
+      let move = "";
+      const has = (v: any) => Array.isArray(v) ? v.length > 0
+        : v && typeof v === "object" ? Object.keys(v).length > 0
+          : typeof v === "string" ? v.trim() !== "" : v != null;
+      const carriesPayload = PAYLOAD_FIELDS.some((f) => f !== "note" && has((slide as any)[f]));
+      if (!payload && !panelled && !carriesPayload) {
+        const candidates = ["photo-rail", "content"];
+        for (let c = 0; c < candidates.length && !move; c++) {
+          const tried = { ...slide, layout: candidates[c], imageQuery: undefined, image: { query: q } } as SlideInput;
+          if (droppedContent(tried, index).length === 0) move = candidates[c];
+        }
+      }
+      shotNote(`a photograph was asked for (${quoteClip(q)}), and ${why}, so none was fetched — do not describe a picture on this slide.` +
+        (move
+          ? ` If the picture matters, ${move} draws every word this slide carries beside one.`
+          : ` If the deck needs that picture, give it a content or photo-rail slide of its own; do not move this slide off ${layout} to get one.`) +
+        ` The brief is dropped after this build and will not be repeated`);
     }
   }
   /** Where this slide's content ENDS, set by layouts that size their boxes to
@@ -9277,7 +9467,24 @@ function buildSlideRequestsAt(
     if (layout === "swot" && slide.swot) requests.push(...swotRequests(page, id, slide.swot, aTop, GRID.bodyY + band));
     else if (layout === "matrix" && slide.matrix) requests.push(...matrixRequests(page, id, slide.matrix, aTop, GRID.bodyY + band));
     else if (layout === "comparison" && slide.comparison) {
-      requests.push(...comparisonRequests(page, id, slide.comparison, aTop, GRID.bodyY + band));
+      const cut: string[] = [];
+      const short = { rowH: 0 };
+      requests.push(...comparisonRequests(page, id, slide.comparison, aTop, GRID.bodyY + band, cut, short));
+      // ROWS TOO SHALLOW FOR A LINE OF TYPE: the words are drawn whole, on one
+      // line at the floor, and overhang their row. Fewer words would not help
+      // — the fix is room, and only the model can give it some.
+      if (short.rowH) {
+        shotNote(`the comparison's rows are ${short.rowH.toFixed(0)}pt apart, too shallow for a line of its smallest type, so its words overhang their rows;` +
+          ` split the rows across two comparison slides, or drop the subtitle or the note to give them room`);
+      }
+      // A CELL TOO LONG FOR ITS ROW is drawn smaller and then cut, and the cut
+      // is SAID: the words that are missing are the qualifier the model wrote
+      // ("P - intro does some of the job"), and only it knows whether they
+      // matter.
+      if (cut.length) {
+        shotNote(`in the comparison, ${namedList(cut, "cell")} too long for ${cut.length === 1 ? "its row" : "their rows"} and drawn cut short with an ellipsis;` +
+          ` shorten ${cut.length === 1 ? "it" : "them"} to a word or a mark (Y, P, N), or move the qualifiers into the slide's body`);
+      }
       // A comparison cut to four options and eight criteria used to say
       // NOTHING. droppedContent caught a lost label only when it ran past ten
       // characters, so a 13-row scorecard lost five rows and the model was told
@@ -10873,15 +11080,36 @@ export type AttachmentSupplier = (
   index: number
 ) => Promise<{ bytes: Buffer; contentType: string } | null>;
 
-/** The box a slide's resolved picture has to be re-cut to, or null when it
- *  was cut for the box it is drawn in. Only a picture marked `bakedFor` — the
- *  image-split → photo-rail promotion — and only where the layout draws a
- *  picture of a fixed shape. A continuation inherits its parent's instead. */
+/** The box a slide's resolved picture has to be RE-CUT to, or null when it
+ *  was cut for the box it is drawn in. Only where the layout draws a picture
+ *  of a fixed shape — the two rails — at the slide's own density, and never
+ *  on a continuation, which inherits its parent's instead.
+ *
+ *  THREE WAYS A FILE IS KNOWN, OR SUSPECTED, TO BE THE WRONG SHAPE:
+ *    - `bakedFor`: the promotion kept a file cut for image-split's box.
+ *    - an `aspect` off the box by more than CUT_TOLERANCE: cut by a ruler that
+ *      has since moved.
+ *    - NO `aspect` at all: cut by code that recorded none. That is every rail
+ *      picture resolved before 2026-09-23 — and every BLEEDING-rail picture
+ *      among them was cropped from GRID.bodyY at read into a box hung 8pt
+ *      higher, 2.6% short at read and 15% at present — and every picture the
+ *      preview's own image route supplies, which it bakes at 16:9 whatever
+ *      the layout. A CANDIDATE, not a verdict: the re-cut measures the file
+ *      first (recutImageSource), leaves one that is already right exactly as
+ *      it is, and records its shape so the next build does not fetch it to
+ *      find that out again. */
 export function rebakeShape(slide: SlideInput): { width: number; height: number } | null {
   const r = slide.resolvedImage;
-  if (!r || !r.bakedFor || !r.url || slide.continuation || isScreenshot(slide)) return null;
-  if (r.bakedFor === slide.layout) return null;
-  return pictureShape(slide.layout);
+  if (!r || !r.url || slide.continuation || isScreenshot(slide)) return null;
+  if (r.bakedFor && r.bakedFor === slide.layout) return null;
+  const shape = pictureShape(slide.layout, densityOf(slide));
+  if (!shape) return null;
+  if (r.bakedFor) return shape;
+  if (typeof r.aspect === "number" && isFinite(r.aspect) && r.aspect > 0) {
+    const want = shape.width / shape.height;
+    return Math.abs(r.aspect - want) / want > CUT_TOLERANCE ? shape : null;
+  }
+  return shape;
 }
 
 export async function resolveDeckImages(
@@ -10930,15 +11158,24 @@ export async function resolveDeckImages(
     return { ...req, query: `${req.query}. ${deckStyle}` };
   };
 
-  // A CONTINUATION OF A PROMOTED SLIDE takes its parent's re-baked picture
-  // rather than baking its own copy. The splitter copies every field, so a
-  // stored slide re-split after promotion carries the SAME marked file as its
-  // parent; baked twice, it is two uploads of one crop. Cleared, it inherits
-  // at the foot of this function — the parent's new file if the bake worked,
-  // the parent's old one (still marked, for the next pass) if it did not.
+  // A CONTINUATION OF A SLIDE WHOSE PICTURE IS BEING RE-CUT takes its
+  // parent's result rather than keeping, or baking, its own copy. The splitter
+  // copies every field, so a stored continuation carries the SAME file as its
+  // parent; baked twice, it is two uploads of one crop, and left alone it is
+  // the old crop one slide along. Cleared, it inherits at the foot of this
+  // function — the parent's new file if the bake worked, the parent's old one
+  // (still unmeasured or marked, for the next pass) if it did not. Followed
+  // down the chain, so a slide cut in three clears both of its tails.
+  let recutting = "";
   for (let i = 0; i < slides.length; i++) {
     const sx = slides[i];
-    if (sx.continuation && sx.resolvedImage?.bakedFor) delete sx.resolvedImage;
+    if (!sx.continuation) {
+      recutting = sx.resolvedImage && rebakeShape(sx) ? sx.resolvedImage.url : "";
+      continue;
+    }
+    if (sx.resolvedImage && (sx.resolvedImage.bakedFor || (recutting && sx.resolvedImage.url === recutting))) {
+      delete sx.resolvedImage;
+    }
   }
 
   const pending = slides.filter((sx) => (namesAPicture(sx.image) && !sx.resolvedImage && !sx.imageUnavailable) || !!rebakeShape(sx)).length;
@@ -10973,6 +11210,15 @@ export async function resolveDeckImages(
       // A failed bake keeps the old file and its mark: letterboxed, which is
       // what the deck had before, and retried on the next pass.
       //
+      // AND A RAIL PICTURE WHOSE SHAPE NOTHING RECORDED is re-cut the same
+      // way, the same file and never a new search (rebakeShape says which).
+      // The bleeding rail was cropped by a ruler 8pt off the one it is drawn
+      // with until 2026-09-23, so every rail photograph resolved before then
+      // — including the four 3ec51a09 resolves on the first edit after d1c7faf
+      // — sits in its box with page showing above and below it. It is
+      // MEASURED before anything is uploaded, and a file already the right
+      // shape keeps its URL and only gains the `aspect` that says so.
+      //
       // FETCHED AS STORED, NOT REISSUED FIRST. refreshSignedMediaUrl renews a
       // grant for whoever holds the URL, and on the draft path these slides
       // can arrive in the MODEL's call — so reissuing here would be a new way
@@ -10983,17 +11229,21 @@ export async function resolveDeckImages(
         const shape = rebakeShape(slide);
         const was = slide.resolvedImage;
         if (shape && was) {
-          const r = await bakeImageSource(
+          const r = await recutImageSource(
             { url: was.url, source: "supplied", credit: was.credit },
             {
               aspect: shape.width / shape.height, gradient: false,
               ...(slide.image?.attachment ? { fit: "contain" as const } : {}),
             },
           );
-          if (!r.degraded && !r.unusable) {
-            slide.resolvedImage = { url: r.url, scrim: 0, credit: was.credit, logo: r.logo };
+          if (r.fits) {
+            const kept: any = { ...was, aspect: r.aspect };
+            delete kept.bakedFor;
+            slide.resolvedImage = kept;
+          } else if (!r.degraded && !r.unusable) {
+            slide.resolvedImage = { url: r.url, scrim: 0, credit: was.credit, logo: r.logo, aspect: r.aspect };
           } else {
-            console.warn(`[SlideImages] slide ${slideIndex + 1}: could not re-cut its picture for ${slide.layout} — ${r.degraded || r.unusable}; kept the ${was.bakedFor} crop`);
+            console.warn(`[SlideImages] slide ${slideIndex + 1}: could not re-cut its picture for ${slide.layout} — ${r.degraded || r.unusable}; kept ${was.bakedFor ? `the ${was.bakedFor} crop` : "the crop it had"}`);
           }
         }
       }
@@ -11012,7 +11262,7 @@ export async function resolveDeckImages(
         if (file) {
           const src = await attachmentImageSource(file.bytes, file.contentType, slide.image.region);
           if (src) {
-            const railShape = pictureShape(slide.layout);
+            const railShape = pictureShape(slide.layout, densityOf(slide));
             const split = slide.layout === "image-split";
             if (drawsRawScreenshot(slide, slideIndex)) {
               // NOT BAKED AT ALL. The upload is already a signed, Google-
@@ -11048,7 +11298,13 @@ export async function resolveDeckImages(
                 // made them choose it.
                 fit: "contain",
               });
-              slide.resolvedImage = { url: baked.url, scrim: 0, credit: baked.credit, logo: baked.logo };
+              slide.resolvedImage = {
+                url: baked.url, scrim: 0, credit: baked.credit, logo: baked.logo,
+                // The shape it was cut to, on a rail, so the next build can
+                // trust it without a fetch (rebakeShape). Not when the bake
+                // failed and the raw file stands in: that one is measured.
+                ...(railShape && !baked.degraded ? { aspect: railShape.width / railShape.height } : {}),
+              };
             }
           }
         }
@@ -11065,9 +11321,11 @@ export async function resolveDeckImages(
         // Gradient only where text sits on the picture.
         const split = slide.layout === "image-split";
         // A prose slide's picture is a rail down the right, not a backdrop, so
-        // it is cropped to the rail's own shape. Baking it 16:9 and dropping it
-        // into a 239x272 box is the letterboxing every other path fixed.
-        const railShape = pictureShape(slide.layout);
+        // it is cropped to the rail's own shape — at the slide's OWN density,
+        // because the bleeding rail's box moves with it and this runs outside
+        // withDensity. Baking it 16:9 and dropping it into a 239x272 box is the
+        // letterboxing every other path fixed.
+        const railShape = pictureShape(slide.layout, densityOf(slide));
         // Tell the baker where this layout's lockup will land, so it measures
         // the part of the picture the mark actually sits on.
         const style = slideStyle(slide, slideIndex);
@@ -11102,7 +11360,8 @@ export async function resolveDeckImages(
         if (r && !r.unusable) {
           slide.resolvedImage = {
             url: r.url, scrim: r.scrim, credit: r.credit, logo: r.logo,
-            ...(shot ? { aspect: SHOT.unknownAspect } : {}),
+            ...(shot ? { aspect: SHOT.unknownAspect }
+              : railShape && !r.degraded ? { aspect: railShape.width / railShape.height } : {}),
           };
         } else {
           slide.imageUnavailable = true;

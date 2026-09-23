@@ -20,13 +20,13 @@ import {
   leadInLength, measuresRagged, raggedLines,
   densityOf, footerLineWidth, hairlineSpan, hairline, crossingHairlines, hungDot, ctaPill, HUNG_DOT, PILL,
   stampDeckSteps, stepperRail, stepperBox, bulletBlockHeight, deckSteps,
-  photoRailBox, pictureShape, hungDotSize,
+  photoRailBox, pictureShape, hungDotSize, stampDeckChrome, stampDensity, refreshDeckImageUrls, rebakeShape,
   TABLE_MAX_ROWS, COMPARISON_MAX_ROWS, COMPARISON_MAX_COLS,
   scoreMark, isScoreLabel, TICK_CELLS, CROSS_CELLS,
   type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel, readPath } from "../lib/slides/preview-model";
-import { applyEditSlide, unrenderableSlides, undrawnTableSlides, undrawnTableFaults, PAYLOAD_FIELDS, insertableLayout, normaliseSlide, SlideCallRefusal,
+import { applyEditSlide, unrenderableSlides, undrawnTableSlides, undrawnTableFaults, PAYLOAD_FIELDS, insertableLayout, normaliseSlide, normaliseSlideForWrite, retireDeclaredBriefs, SlideCallRefusal,
   TEXT_EXTRAS, CONTINUATION_KEEPS, CONTINUATION_CLEARS, PICTURE_LAYOUTS, drawsSlidePicture } from "../lib/slides/edit";
 import { slidesFailure, parseSlidesArguments, SLIDES_FAILED_FOR_USER, type SlidesTurnState } from "../lib/slides/failure";
 import {
@@ -56,7 +56,13 @@ import { CANVAS, LAYOUT_STYLE, COLOR, GRID, LAYOUTS, NOTE, SECTION, TYPE, PROCES
 
 const TYPE_STAT_CAP = 54;   // the multi-stat value cap; a hero must exceed it
 let failures = 0;
-const fail = (m: string) => { failures++; console.log(`  FAIL  ${m}`); };
+// THE CONSOLE AS IT WAS AT START. Checks that drive the resolver mute
+// console.log around it, and 51h asserted inside that window: its failures
+// were COUNTED and never printed — "8 FAILURE(S)" and not one line saying
+// which (found mutation-testing it, 2026-09-23). A failure nobody can read is
+// half a failure.
+const LOG = console.log;
+const fail = (m: string) => { failures++; LOG(`  FAIL  ${m}`); };
 const pass = (m: string) => console.log(`  ok    ${m}`);
 
 /** Deliberately awkward content: two-line titles and long labels are what turn
@@ -14171,11 +14177,24 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
    *     for a photo rail were walls of bullets, and each brief was reported to
    *     the model as slide TEXT that had gone missing.
    *
-   * THE FIX IS ONE FUNCTION, normaliseSlide, because every reader already
+   * THE PROMOTION IS ONE FUNCTION, normaliseSlide, because every reader already
    * calls it: the guard over the whole deck on every build and edit, the
    * splitter, resolveDeckImages in place, and buildSlideRequests on read. So
    * the assertions below are made on EVERY path by name, not on the function:
    * a repair that one path skips is the incident again, one path along.
+   *
+   * THE FOLD IS NOT, and that is the regression d1c7faf shipped and this check
+   * now pins from both sides. Folded inside normaliseSlide it ran on READ too,
+   * so an UNEDITED stored draft previewed its four content slides with no
+   * picture and published them with four stock photographs nobody had seen.
+   * The fold is normaliseSlideForWrite's: it happens on every WRITE path —
+   * the creation guard, the edit guard, the batch and single insert and the
+   * patch, each followed by a resolution with the generator and a fresh
+   * preview — and on NO read, preview or publish path: normaliseSlide itself,
+   * the splitter, draftPreview (the preview, PDF and reopen routes) and
+   * resolveDeckImages without a generator (publish). (g) drives the publish
+   * and reopen paths on the real stored 3ec51a09 draft and asserts they show
+   * the same pictures.
    *
    *   (a) PICTURE_LAYOUTS is the builder's own answer — every layout, every
    *       alias, no layout, an unknown name, and the panel exception — so the
@@ -14194,12 +14213,21 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
    *       JPEG is decoded and measured. No search, no generation; a failed
    *       fetch keeps the old file and its mark; a second pass does nothing;
    *       a continuation takes its parent's new file rather than a second.
-   *   (e) THE FOLD on every path, `image` winning over `imageQuery` on every
-   *       path, and a brief on a layout that draws no picture declared and
-   *       never fetched.
+   *   (e) THE FOLD on every WRITE path and on no READ path; `image` winning
+   *       over `imageQuery` only when it NAMES a picture (namesAPicture, the
+   *       resolver's own predicate); a brief on a layout that draws no picture
+   *       declared — in words fitted to why, never advising a move that costs
+   *       the slide its payload — declared ONCE, and never fetched.
    *   (f) THE STORED DECK'S SLIDES 2, 4, 14 AND 16 get their photographs on
    *       the next edit of ANY slide: the guard folds them and the resolution
    *       loop resolves them, with the generator asked once per brief.
+   *   (g) PREVIEW == PUBLISH on the real stored 3ec51a09 draft, unedited: the
+   *       reopen path and the publish path show the same pictures on the same
+   *       slides, and publishing asks no stock search and no generator.
+   *   (h) THE BLEEDING RAIL IS BAKED TO THE BOX IT IS DRAWN IN, at both
+   *       densities, and a rail picture baked by the d1c7faf code — 1600x2013,
+   *       no recorded shape — is RE-CUT from the same file on the next build,
+   *       while one already the right shape is measured and left alone.
    *
    * MUTATION LOG (detached worktree at 4571a26 plus this change, 2026-09-23)
    * — kills AND survivors, each mutant applied alone and restored:
@@ -14267,6 +14295,61 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
    *   NOT REACHABLE from here: the real Unsplash search and the real
    *           generator. (f) proves the loop ASKS for each stored brief once;
    *           which photograph comes back is the network's.
+   *
+   * SECOND PASS (detached worktree at d1c7faf plus this change, 2026-09-23),
+   * for the fold moving to the write path, the raw-slide patch, the rail
+   * crop, the `image` that names nothing, and the declared-once note. F1
+   * above now reads "the fold taken out of normaliseSlideForWrite".
+   *   killed  W1 normaliseSlide folding again, on READ → 51e's read paths
+   *           (normaliseSlide, the splitter, the preview route, publish) and
+   *           51g: the unedited 3ec51a09 draft published four pictures the
+   *           reopened preview did not show.
+   *   killed  W2 the generate_slides guard using the READ normalise → 51e on
+   *           the creation guard, both ways (no fold, `image` not winning).
+   *   killed  W3 the patch starting from the RAW stored slide → 51b, both
+   *           names ("image-split" and "photo-rail" each re-searched).
+   *   killed  R1 the content rail cropped from GRID.bodyY again → 51h: 0.7949
+   *           cut for a 0.7743 box at read, both rails.
+   *   killed  R2 cropped at the density in force, not the slide's → 51h at
+   *           present: 0.7743 cut for a 0.9408 box.
+   *   killed  R3 a rail picture with no recorded shape trusted → 51h, eight
+   *           failures: the d1c7faf file is never re-cut.
+   *   killed  R4 a RECORDED shape trusted even when it is off the box → 51h,
+   *           after the recorded-0.7949 assertion was added: it SURVIVED the
+   *           first run, because no fixture carried a recorded shape that
+   *           was wrong.
+   *   killed  R5 the re-cut never measuring first → 51h: the file already the
+   *           right shape was re-encoded and uploaded again.
+   *   killed  R6 a fresh rail resolution recording no aspect → 51h.
+   *   killed  R7 a continuation keeping its copy of a picture being re-cut →
+   *           51h: the split page's tail showed the old crop.
+   *   killed  I1 any non-empty `image` object winning (the key count), I2 the
+   *           patch letting any `image` win, I3 a blank query counted as a
+   *           picture → 51e's five objects that name nothing, on the guard,
+   *           both inserts and the patch.
+   *   killed  D1 retireDeclaredBriefs retiring nothing → 51e: an unrelated
+   *           edit and a full resend both re-announced the stat slide's
+   *           photograph. D2 retiring briefs on picture layouts too → 51e:
+   *           3ec51a09's four content briefs would never be folded.
+   *   killed  N1 a move offered whatever the slide carries → 51e: 277e13cb's
+   *           cards slide told to trade its cards. N2 the panel case lost →
+   *           51e: "a content slide draws no photograph" on a content slide.
+   *   killed  N3 the note firing on a layout that DOES draw a picture → 51g,
+   *           after the stored-draft assertion was added: it SURVIVED the
+   *           first run — every write folds such a brief, so only a STORED
+   *           draft carries one, and nothing asked about a stored draft.
+   *   SURVIVED N4 a move offered without measuring what it would drop.
+   *           Equivalent today, and said so rather than hidden: measured over
+   *           two-column, statement and every payload-less layout that draws
+   *           no picture, with attribution, caption, cta, number, source,
+   *           eyebrow or label beside the body, photo-rail — the first layout
+   *           offered — keeps every string each carries. The measurement is
+   *           there for the first layout that does not.
+   *   AND ONE ABOUT THE CHECK ITSELF: R3, R5, R6 and R7 first came back as
+   *           "N FAILURE(S)" with no line saying which. (h) asserts while the
+   *           resolver's console.log is muted, and `fail` printed through
+   *           console.log. It prints through the console as it was at start
+   *           now, and every kill above names its assertion.
    * ───────────────────────────────────────────────────────────────────────── */
   const before51 = failures;
   console.log(`\n51. An image-split slide with a second column, and a photograph named as imageQuery`);
@@ -14331,12 +14414,17 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       names.push(undefined, "no-such-layout");
       const drawn: string[] = [];
       const disagree: string[] = [];
+      // THREE PANEL SHAPES, not one: a panel with a title and items, a title
+      // alone, items alone. The builder gives the rail up for any of them,
+      // and a sweep that only ever sent both could not see the title-only
+      // branch of drawsSlidePicture go missing (N12, 2026-09-23).
+      const PANELS51: any[] = [undefined, { title: "Panel", items: [{ title: "x" }] }, { title: "Panel" }, { items: [{ title: "x" }] }];
       for (let i = 0; i < names.length; i++) {
-        for (let p = 0; p < 2; p++) {
-          const withPanel = p === 1;
+        for (let p = 0; p < PANELS51.length; p++) {
+          const withPanel = p > 0;
           const s: any = { title: "Title here", body: "Body one\nBody two", ...payload51, resolvedImage: { url: STUB, scrim: 0 } };
           if (names[i] !== undefined) s.layout = names[i];
-          if (withPanel) s.panel = { title: "Panel", items: [{ title: "x" }] };
+          if (withPanel) s.panel = PANELS51[p];
           let draws = false;
           try {
             // BUILT UNDER THE NAME IT WILL BE DRAWN AS, the way every path
@@ -14353,7 +14441,7 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
           }
           if (!withPanel && draws && names[i] && (LAYOUTS as string[]).indexOf(names[i] as string) >= 0) drawn.push(names[i] as string);
           if (drawsSlidePicture(s, 3) !== draws) {
-            disagree.push(`${JSON.stringify(names[i])}${withPanel ? " with a panel" : ""}: the builder ${draws ? "draws" : "does not draw"} the picture, drawsSlidePicture says ${!draws}`);
+            disagree.push(`${JSON.stringify(names[i])}${withPanel ? ` with a panel ${JSON.stringify(PANELS51[p])}` : ""}: the builder ${draws ? "draws" : "does not draw"} the picture, drawsSlidePicture says ${!draws}`);
           }
         }
       }
@@ -14422,6 +14510,24 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       const reasked: any = applyEditSlide([clone51(COVER51), normaliseSlide(clone51(S9))], { slideNumber: 2, layout: "image-split" })[1];
       A51(reasked.layout === "photo-rail" && !!reasked.resolvedImage && reasked.resolvedImage.url === PIC9,
         `51b "make slide 9 image-split" on the promoted slide cleared its picture for a box that did not change: ${JSON.stringify({ layout: reasked.layout, resolvedImage: reasked.resolvedImage })}`);
+      // AND ON THE SLIDE AS IT IS STORED, which is how 3ec51a09's slides 9 and
+      // 11 still are until the first edit rewrites them: image-split carrying
+      // `bodyRight`, no mark. A layout patch there compared the RAW name and
+      // re-searched; compared as drawn but not started from the drawn view, it
+      // kept the file UNMARKED and nothing ever re-cut it. Both names, both
+      // outcomes: the same file, and marked.
+      const asks51 = ["image-split", "photo-rail"];
+      for (let k = 0; k < asks51.length; k++) {
+        const got: any = applyEditSlide([clone51(COVER51), clone51(S9)], { slideNumber: 2, layout: asks51[k], title: S9.title })[1];
+        A51(got.layout === "photo-rail" && !!got.resolvedImage && got.resolvedImage.url === PIC9 && got.resolvedImage.bakedFor === "image-split",
+          `51b a "${asks51[k]}" patch on the RAW stored slide 9 left ${JSON.stringify({ layout: got.layout, resolvedImage: got.resolvedImage })} — the approved file, marked for its re-cut, was expected`);
+      }
+      // THE MARK IS NOT SLIDE TEXT. A promoted slide still waiting for its
+      // re-cut carries bakedFor: "image-split", and a picture whose re-cut
+      // failed keeps it by design; counted as content, every such slide told
+      // the model it had dropped the words "image-split" (N19).
+      const marked51 = deckWarnings([clone51(COVER51), normaliseSlide(clone51(S9))] as any);
+      A51(marked51.indexOf('"image-split"') < 0, `51b a promoted slide's re-cut mark is reported as dropped text: ${marked51.slice(0, 240)}`);
       // THE SUBTITLE ON ITS OWN IS STILL NOT DRAWN — the decision of
       // 2026-09-17, not reopened: no second column, no promotion.
       const subOnly: any = normaliseSlide({ ...clone51(S9), bodyRight: undefined });
@@ -14598,9 +14704,99 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       won(applyEditSlide(base51(), { insertAfter: 1, layout: "content", title: S2.title, body: S2.body, imageQuery: S2.imageQuery, image: clone51(CHOSEN) } as any)[1], "a single insert");
       folded(applyEditSlide(base51(), { slideNumber: 2, imageQuery: S2.imageQuery })[1], "a patch");
       won(applyEditSlide(base51(), { slideNumber: 2, imageQuery: S2.imageQuery, image: clone51(CHOSEN) } as any)[1], "a patch");
-      const prev = draftPreview([clone51(COVER51), clone51(S2)]);
-      folded(prev.slides[1], "the preview/PDF route");
-      won(draftPreview([clone51(COVER51), both()]).slides[1], "the preview/PDF route");
+
+      // ON NO READ PATH. Each of these is a place an UNEDITED stored draft is
+      // read — reopened, previewed, printed or published — and none of them is
+      // followed by a resolution with the generator and a fresh preview, so a
+      // brief folded there is a photograph the user was never shown. That was
+      // the regression: 3ec51a09's reopened preview drew four slides bare and
+      // its publish bought four stock pictures for them.
+      const unfolded = (s: any, where: string) => {
+        A51(!!s && s.imageQuery === S2.imageQuery && !(s.image && s.image.query),
+          `51e ${where}: a stored brief was folded on a READ path (${JSON.stringify({ image: s && s.image, imageQuery: s && s.imageQuery })}) — it would be bought at publish and never previewed`);
+      };
+      unfolded(normaliseSlide(clone51(S2)), "normaliseSlide, the read repair");
+      folded(normaliseSlideForWrite(clone51(S2)), "normaliseSlideForWrite, the write repair both write paths call");
+      unfolded(splitOverflowingSlides([clone51(COVER51), clone51(S2)] as any)[1], "the splitter");
+      unfolded(draftPreview([clone51(COVER51), clone51(S2)]).slides[1], "the preview/PDF/reopen route");
+      const bothRead: any = draftPreview([clone51(COVER51), both()]).slides[1];
+      A51(!!bothRead.image && bothRead.image.url === CHOSEN.url && bothRead.imageQuery === S2.imageQuery,
+        `51e the preview route rewrote a stored slide's picture brief: ${JSON.stringify({ image: bothRead.image, imageQuery: bothRead.imageQuery })}`);
+      {
+        // PUBLISH: resolution with NO generator, a stock key set so that a
+        // search WOULD go out if one were asked for, and every request kept.
+        const asked: string[] = [];
+        const saveU = process.env.UNSPLASH_ACCESS_KEY, saveB = process.env.BLOB_READ_WRITE_TOKEN;
+        process.env.UNSPLASH_ACCESS_KEY = "verify-51e-not-a-key";
+        delete process.env.BLOB_READ_WRITE_TOKEN;
+        const realF = globalThis.fetch;
+        (globalThis as any).fetch = async (input: any) => {
+          asked.push(String(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url));
+          return new Response("{}", { status: 404 });
+        };
+        const q51 = { warn: console.warn, log: console.log };
+        console.warn = () => {}; console.log = () => {};
+        const pub: any[] = [clone51(COVER51), clone51(S2)];
+        try { await resolveDeckImages(pub); } finally {
+          console.warn = q51.warn; console.log = q51.log;
+          (globalThis as any).fetch = realF;
+          if (saveU === undefined) delete process.env.UNSPLASH_ACCESS_KEY; else process.env.UNSPLASH_ACCESS_KEY = saveU;
+          if (saveB !== undefined) process.env.BLOB_READ_WRITE_TOKEN = saveB;
+        }
+        unfolded(pub[1], "resolution on the publish path");
+        A51(!pub[1].resolvedImage && asked.length === 0,
+          `51e publishing an unedited stored draft went looking for its photograph (${asked.length} request(s): ${asked.slice(0, 2).join(", ")}) — a picture the preview never showed`);
+      }
+
+      // `image` WINS ONLY WHEN IT NAMES A PICTURE, asked with the resolver's
+      // own predicate. Each of these objects names none, and each used to win
+      // on its key count, delete the real brief and draw nothing, with nothing
+      // said. The query is folded INTO it, keeping what else it carries.
+      const EMPTIES51: any[] = [{}, { query: "" }, { query: "   " }, { screenshot: false }, { callouts: [] }];
+      for (let k = 0; k < EMPTIES51.length; k++) {
+        A51(!namesAPicture(EMPTIES51[k]), `51e precondition: namesAPicture says ${JSON.stringify(EMPTIES51[k])} names a picture`);
+        const withEmpty = () => ({ ...clone51(S2), image: clone51(EMPTIES51[k]) });
+        const lost = (s: any, where: string) => {
+          const keptKeys = Object.keys(EMPTIES51[k]).filter((x) => x !== "query");
+          A51(!!s && !!s.image && s.image.query === S2.imageQuery && s.imageQuery === undefined
+            && keptKeys.every((x) => JSON.stringify(s.image[x]) === JSON.stringify(EMPTIES51[k][x])),
+            `51e ${where}: image ${JSON.stringify(EMPTIES51[k])} beat a real imageQuery (${JSON.stringify({ image: s && s.image, imageQuery: s && s.imageQuery })})`);
+        };
+        const restoreK = __setStoredDraftReader(async () => ({ draft: null, couldNotLook: false }));
+        try {
+          const madeK = await prepareSlidesForBuild({ title: "T", slides: [clone51(COVER51), withEmpty()] }, `c51e-empty-${k}-${process.pid}`, ["make a deck"]);
+          lost(madeK.slides[1], "the creation guard");
+        } finally { restoreK(); }
+        lost(applyEditSlide(base51(), { insertAfter: 1, insertSlides: [withEmpty()] })[1], "an insertSlides batch");
+        lost(applyEditSlide(base51(), { insertAfter: 1, layout: "content", title: S2.title, body: S2.body, imageQuery: S2.imageQuery, image: clone51(EMPTIES51[k]) } as any)[1], "a single insert");
+        lost(applyEditSlide(base51(), { slideNumber: 2, imageQuery: S2.imageQuery, image: clone51(EMPTIES51[k]) } as any)[1], "a patch");
+      }
+
+      // THE INSERT PATHS SETTLE THE LAYOUT BEFORE THEY FOLD. A layout-less
+      // slide carrying cards is a CARDS slide — which draws no picture — and
+      // the insert paths deliberately run only the hub repair before that is
+      // decided. Folded first, as content, it paid for a photograph it never
+      // draws and the declaration vanished (N7, N8).
+      const cardsBrief = () => ({ title: "Three moves", cards: [{ title: "One", body: "a" }, { title: "Two", body: "b" }], imageQuery: "concrete skyline at dusk" });
+      const inserts51: [string, any][] = [
+        ["an insertSlides batch", applyEditSlide(base51(), { insertAfter: 1, insertSlides: [cardsBrief()] })[1]],
+        ["a single insert", applyEditSlide(base51(), { insertAfter: 1, ...cardsBrief() } as any)[1]],
+      ];
+      for (let k = 0; k < inserts51.length; k++) {
+        const s: any = inserts51[k][1];
+        A51(!!s && s.layout === "cards" && s.imageQuery === "concrete skyline at dusk" && !s.image,
+          `51e ${inserts51[k][0]} of a layout-less cards slide folded its brief as if it were content: ${JSON.stringify({ layout: s && s.layout, image: s && s.image, imageQuery: s && s.imageQuery })}`);
+        let gen = 0;
+        const deckK: any[] = [clone51(COVER51), clone51(s)];
+        const saveBK = process.env.BLOB_READ_WRITE_TOKEN;
+        delete process.env.BLOB_READ_WRITE_TOKEN;
+        try { await resolveDeckImages(deckK, async () => { gen++; return ""; }); } finally {
+          if (saveBK !== undefined) process.env.BLOB_READ_WRITE_TOKEN = saveBK;
+        }
+        A51(gen === 0, `51e ${inserts51[k][0]}: a cards slide's photograph was generated (${gen}) — paid for and never drawn`);
+        A51(deckWarnings([clone51(COVER51), clone51(s)] as any).indexOf("a photograph was asked for") >= 0,
+          `51e ${inserts51[k][0]}: the cards slide's unfetched photograph is not declared`);
+      }
       A51(droppedContent(clone51(S2), 1).length === 0,
         `51e the photo brief on a content slide is still reported as dropped TEXT: ${JSON.stringify(droppedContent(clone51(S2), 1))}`);
       // A LAYOUT THAT DRAWS NO PICTURE: not folded, never fetched, and SAID.
@@ -14610,6 +14806,57 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       const warned = deckWarnings([clone51(COVER51), clone51(stat51)] as any);
       A51(warned.indexOf("a photograph was asked for") >= 0 && warned.indexOf("concrete skyline at dusk") >= 0,
         `51e the unfetched photograph on a stat slide is not declared to the model: ${warned.slice(0, 200)}`);
+      // WORDED BY CASE, and never advice that costs the slide what it is for.
+      // One sentence covered every case and was impossible, wrong or
+      // destructive by turns: "move it to content" on a cards slide traded the
+      // cards for a picture (277e13cb's slide 7: six strings undrawn when it
+      // was followed), and on a content slide with a panel it said "this
+      // content slide draws none … move it to content".
+      const noteOf = (slides: any[]) => {
+        const w = deckWarnings(slides as any);
+        const at = w.indexOf("a photograph was asked for");
+        return at < 0 ? "" : w.slice(at, w.indexOf(".;", at) >= 0 ? w.indexOf(".;", at) : w.length);
+      };
+      A51(/a stat slide draws its `stats`/.test(warned) && !/draws every word this slide carries/.test(warned) && /do not move this slide off stat/.test(warned),
+        `51e the stat slide's note does not name its payload, or offers to move it: ${noteOf([clone51(COVER51), clone51(stat51)])}`);
+      const cards277: any = { layout: "cards", title: "Three shifts", cards: [{ title: "Entities", body: "a" }, { title: "Answers", body: "b" }, { title: "Trust", body: "c" }],
+        imageQuery: "abstract network nodes connected data visualisation" };
+      const cardsNote = noteOf([clone51(COVER51), cards277]);
+      A51(/a cards slide draws its `cards`/.test(cardsNote) && !/move it to content|draws every word/.test(cardsNote),
+        `51e 277e13cb's cards slide is still advised to trade its cards for a picture: ${cardsNote}`);
+      const panelled: any = { layout: "content", title: "What we audit", body: "Entity pages\nFAQ blocks", panel: { title: "Owner", items: [{ title: "Editorial" }] }, imageQuery: "concrete skyline at dusk" };
+      const panelNote = noteOf([clone51(COVER51), panelled]);
+      A51(/taken by its panel/.test(panelNote) && !/content slide draws no photograph|move it to content/.test(panelNote),
+        `51e a content slide with a panel is told content draws no photograph: ${panelNote}`);
+      // Where a move IS offered, it is TRUE: built on the layout it names,
+      // the slide keeps every string it carries.
+      const twoCol51: any = { layout: "two-column", title: "Before and after", body: "Keyword pages written for crawlers", bodyRight: "Answer pages written for the question", imageQuery: "concrete skyline at dusk" };
+      const moveNote = noteOf([clone51(COVER51), twoCol51]);
+      const named = /If the picture matters, ([a-z-]+) draws every word/.exec(moveNote);
+      A51(!!named, `51e precondition: the two-column slide was offered no layout (${moveNote})`);
+      if (named) {
+        const moved = { ...clone51(twoCol51), layout: named[1], imageQuery: undefined, image: { query: "x" } };
+        A51(droppedContent(moved as any, 1).length === 0,
+          `51e the note offers ${named[1]} for a two-column slide, and built there it drops ${JSON.stringify(droppedContent(moved as any, 1))}`);
+      }
+      // AND SAID ONCE. The build that brings the brief declares it; the next
+      // write finds it in the STORED deck and drops it rather than replaying
+      // it — through an edit of another slide, and through a full resend.
+      const storedDecl: any[] = [clone51(COVER51), clone51(stat51)];
+      const restoreR = __setStoredDraftReader(async () => ({ draft: { title: "T", slides: clone51(storedDecl) }, couldNotLook: false }));
+      try {
+        const other = await prepareSlidesForBuild({ slides: [], editSlide: { slideNumber: 1, title: "Retitled cover" } }, `c51e-once-${process.pid}`, ["retitle the cover"]);
+        A51(other.slides[1].imageQuery === undefined && deckWarnings(other.slides).indexOf("a photograph was asked for") < 0,
+          `51e an unrelated edit re-announced a photograph already declared: ${JSON.stringify(other.slides[1].imageQuery)}`);
+        const resent = await prepareSlidesForBuild({ title: "T", slides: clone51(storedDecl) }, `c51e-resend-${process.pid}`, ["tidy it up"]);
+        A51(resent.slides[1].imageQuery === undefined, `51e a full resend replayed a photograph already declared: ${JSON.stringify(resent.slides[1].imageQuery)}`);
+        // A NEW brief in this call is still declared, once.
+        const fresh = await prepareSlidesForBuild({ slides: [], editSlide: { slideNumber: 2, imageQuery: "harbour cranes at dawn" } }, `c51e-new-brief-${process.pid}`, ["add a photo to slide 2"]);
+        A51(fresh.slides[1].imageQuery === "harbour cranes at dawn" && deckWarnings(fresh.slides).indexOf("harbour cranes at dawn") >= 0,
+          `51e a brief asked for in THIS call was dropped before it was declared: ${JSON.stringify(fresh.slides[1].imageQuery)}`);
+      } finally { restoreR(); }
+      A51(retireDeclaredBriefs([clone51(S2)], [clone51(S2)])[0].imageQuery === S2.imageQuery,
+        `51e a stored brief on a layout that DRAWS a picture was retired rather than left for the fold`);
       const patchedStat: any = applyEditSlide([clone51(COVER51), { layout: "stat", title: "Why", stats: [{ value: "26", label: "AI citations" }] }], { slideNumber: 2, imageQuery: "concrete skyline at dusk" })[1];
       A51(!patchedStat.image && patchedStat.imageQuery === "concrete skyline at dusk",
         `51e a patch asking a stat slide for a photograph folded it into one it never draws: ${JSON.stringify({ image: patchedStat.image, imageQuery: patchedStat.imageQuery })}`);
@@ -14674,6 +14921,231 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       }
       A51(ticks.length === QUERIES.length && ticks[ticks.length - 1] === `${QUERIES.length}/${QUERIES.length}`,
         `51f the build's progress counted ${ticks.join(" ")} for ${QUERIES.length} pictures`);
+    }
+
+    /* (g) PREVIEW == PUBLISH, ON THE REAL STORED DRAFT.
+     *
+     * 3ec51a09's draft as it is stored, verbatim but for its signed picture
+     * URLs (scripts/fixtures/deck-3ec51a09.json says how it was read). The
+     * REOPEN path is what the conversation route rebuilds the chat preview
+     * with (draftPreview); the PUBLISH path is generateSlides' own steps —
+     * chrome, density, split, reissue, resolve with NO generator — with a
+     * stock key set so a search WOULD leave if one were asked for, and every
+     * request recorded. The stored pictures' addresses serve nothing, so the
+     * promoted slides' re-cuts fail and keep their files, which is what makes
+     * "the same picture" an equality of URLs here. */
+    {
+      const fx = JSON.parse(readFileSync(join(__dirname, "fixtures", "deck-3ec51a09.json"), "utf8"));
+      const briefed: number[] = [];
+      for (let i = 0; i < fx.slides.length; i++) if (typeof fx.slides[i].imageQuery === "string") briefed.push(i + 1);
+      A51(briefed.join(",") === "2,4,14,16" && fx.slides.length === 18,
+        `51g precondition: the stored draft carries imageQuery on slides ${briefed.join(",")} of ${fx.slides.length}, not 2,4,14,16 of 18`);
+      const OWN = /^https:\/\/203\.0\.113\.60\/3ec51a09-s\d+-url\.jpg$/;
+      const reopened = draftPreview(clone51(fx.slides));
+      const shown: string[] = [];
+      for (let i = 0; i < reopened.preview.slides.length; i++) {
+        const els: any[] = reopened.preview.slides[i].elements;
+        let src = "";
+        for (let e = 0; e < els.length; e++) if (els[e].kind === "image" && OWN.test(String(els[e].src))) src = String(els[e].src);
+        shown.push(src);
+      }
+      const asked: string[] = [];
+      const saveU = process.env.UNSPLASH_ACCESS_KEY, saveB = process.env.BLOB_READ_WRITE_TOKEN;
+      process.env.UNSPLASH_ACCESS_KEY = "verify-51g-not-a-key";
+      delete process.env.BLOB_READ_WRITE_TOKEN;
+      const realG = globalThis.fetch;
+      (globalThis as any).fetch = async (input: any) => {
+        asked.push(String(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url));
+        return new Response("gone", { status: 404 });
+      };
+      const qG = { warn: console.warn, log: console.log };
+      let published: any[] = [];
+      try {
+        console.warn = () => {}; console.log = () => {};
+        const pub: any[] = clone51(fx.slides);
+        stampDeckChrome(pub, fx.title);
+        stampDensity(pub, densityOf(pub[0]));
+        published = splitOverflowingSlides(pub);
+        refreshDeckImageUrls(published);
+        await resolveDeckImages(published);
+      } finally {
+        console.warn = qG.warn; console.log = qG.log;
+        (globalThis as any).fetch = realG;
+        if (saveU === undefined) delete process.env.UNSPLASH_ACCESS_KEY; else process.env.UNSPLASH_ACCESS_KEY = saveU;
+        if (saveB !== undefined) process.env.BLOB_READ_WRITE_TOKEN = saveB;
+      }
+      A51(published.length === shown.length, `51g the publish path built ${published.length} slides and the reopened preview ${shown.length}`);
+      const differ: string[] = [];
+      for (let i = 0; i < Math.min(published.length, shown.length); i++) {
+        const got = published[i].resolvedImage && published[i].resolvedImage.url ? String(published[i].resolvedImage.url) : "";
+        if (got !== shown[i]) differ.push(`slide ${i + 1}: preview ${shown[i] ? shown[i].slice(-18) : "no picture"}, publish ${got ? got.slice(-18) : "no picture"}`);
+      }
+      A51(differ.length === 0, `51g the reopened preview and the published deck show different pictures: ${differ.join("; ")}`);
+      const searched = asked.filter((u) => !/^https:\/\/203\.0\.113\.60\//.test(u));
+      A51(searched.length === 0, `51g publishing the unedited draft went looking for photographs: ${searched.slice(0, 3).join(", ")}`);
+      // AND NOTHING FALSE IS SAID ABOUT THOSE FOUR SLIDES. Unedited, they
+      // are content slides carrying a brief nobody has resolved yet — a
+      // layout that draws a picture perfectly well. "A content slide draws no
+      // photograph" would be untrue of every one of them (M14 survived before
+      // this: every write folds such a brief, so only a stored draft carries
+      // one, and nothing asked the builder about a stored draft).
+      const storedWarn = deckWarnings(clone51(fx.slides));
+      A51(storedWarn.indexOf("a photograph was asked for") < 0,
+        `51g the unedited draft's content-slide briefs are declared as unfetchable: ${storedWarn.slice(storedWarn.indexOf("a photograph was asked for"), storedWarn.indexOf("a photograph was asked for") + 200)}`);
+      A51(shown.filter(Boolean).length === 6 && [1, 3, 13, 15].every((k) => !shown[k]),
+        `51g precondition: the reopened preview shows ${shown.filter(Boolean).length} stored pictures, slides 2/4/14/16 ${[1, 3, 13, 15].map((k) => (shown[k] ? "pictured" : "bare")).join("/")}`);
+    }
+
+    /* (h) THE BLEEDING RAIL IS CUT TO THE BOX IT IS DRAWN IN — AND A PICTURE
+     *     CUT BY THE OLD RULER IS RE-CUT FROM THE SAME FILE.
+     *
+     * pictureShape cropped the rail from GRID.bodyY while railBox hangs it
+     * from the title's rule 8pt higher, so every rail photograph was 2.6%
+     * short at read and Slides showed page above and below it; at `present`,
+     * cropped at read's preset, 15%. One ruler now (bleedRailFrame), asked at
+     * the slide's own density, pinned here exactly as 50c pins photo-rail. */
+    {
+      const sharpH = (await import("sharp")).default;
+      const PRES51: Density[] = ["read", "present"];
+      const RAILS51 = ["content", "case-study"];
+      const boxes: Record<string, number> = {};
+      for (let d = 0; d < PRES51.length; d++) {
+        for (let l = 0; l < RAILS51.length; l++) {
+          const u = `https://203.0.113.64/${RAILS51[l]}-${PRES51[d]}.jpg`;
+          const reqs = buildSlideRequests({ layout: RAILS51[l], density: PRES51[d], title: "A rail page", body: "One\nTwo",
+            resolvedImage: { url: u, scrim: 0 } } as any, 2, `c51h${d}${l}`) as any[];
+          let drawn: { w: number; h: number } | null = null;
+          for (let r = 0; r < reqs.length; r++) {
+            const ci = reqs[r].createImage;
+            if (ci && ci.url === u) drawn = { w: ci.elementProperties.size.width.magnitude * (ci.elementProperties.transform.scaleX || 1), h: ci.elementProperties.size.height.magnitude * (ci.elementProperties.transform.scaleY || 1) };
+          }
+          const shape = pictureShape(RAILS51[l], PRES51[d]);
+          A51(!!drawn && !!shape && Math.abs(shape.width / shape.height - drawn.w / drawn.h) < 1e-9,
+            `51h ${RAILS51[l]} at ${PRES51[d]}: the crop is ${shape ? (shape.width / shape.height).toFixed(4) : "none"} and the drawn box ${drawn ? (drawn.w / drawn.h).toFixed(4) : "none"} — Slides fits, so the picture letterboxes`);
+          if (drawn) boxes[`${RAILS51[l]}@${PRES51[d]}`] = drawn.w / drawn.h;
+        }
+      }
+      A51(Math.abs(boxes["content@read"] - boxes["content@present"]) > 0.05,
+        `51h precondition: the bleeding rail is the same shape at both densities (${JSON.stringify(boxes)}), so a density-blind crop could not be caught`);
+
+      // END TO END, with a stubbed image host and a fake Blob store: a fresh
+      // resolution at each density, and a picture produced by the d1c7faf
+      // code — keys url, scrim, credit, logo and nothing else, the file
+      // 1600x2013, which is that code's read-density crop (scratchpad probe
+      // stale-probe.ts reproduced both from the d1c7faf worktree).
+      const jpeg = async (w: number, h: number) => sharpH({ create: { width: w, height: h, channels: 3, background: { r: 110, g: 90, b: 70 } } })
+        .composite([{ input: Buffer.from(`<svg width="${w}" height="${h}"><rect x="${Math.round(w / 3)}" y="${Math.round(h / 3)}" width="${Math.round(w / 4)}" height="${Math.round(h / 4)}" fill="#40a0e0"/></svg>`) }])
+        .jpeg().toBuffer();
+      const serveH: Record<string, Buffer> = {
+        "/generated.jpg": await jpeg(1792, 1024),
+        "/d1c7faf-rail.jpg": await jpeg(1600, 2013),
+        "/right-already.jpg": await jpeg(1600, Math.round(1600 / boxes["content@read"])),
+      };
+      const uploadsH: Buffer[] = [];
+      const serverH = createServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on("data", (c) => chunks.push(Buffer.from(c)));
+        req.on("end", () => {
+          res.writeHead(200, { "content-type": "application/json" });
+          if (req.method !== "PUT") { res.end(JSON.stringify({ blobs: [], hasMore: false })); return; }
+          const at = decodeURIComponent((req.url || "").replace(/^\/api\/blob\/?/, "").split("?")[0]) || "slides/backdrops/x.jpg";
+          uploadsH.push(Buffer.concat(chunks));
+          res.end(JSON.stringify({ url: `https://store.private.blob.vercel-storage.com/${at}`, downloadUrl: `https://store.private.blob.vercel-storage.com/${at}?download=1`, pathname: at, contentType: "image/jpeg", contentDisposition: "inline" }));
+        });
+      });
+      await new Promise<void>((r) => serverH.listen(0, "127.0.0.1", () => r()));
+      const portH = (serverH.address() as any).port;
+      const fetchedH: string[] = [];
+      const realH = globalThis.fetch;
+      const KEYSH = ["BLOB_READ_WRITE_TOKEN", "VERCEL_BLOB_API_URL", "NEXTAUTH_SECRET", "UNSPLASH_ACCESS_KEY"];
+      const savedH: Record<string, string | undefined> = {};
+      for (let k = 0; k < KEYSH.length; k++) savedH[KEYSH[k]] = process.env[KEYSH[k]];
+      let gensH = 0;
+      const genH = async () => { gensH++; return "https://203.0.113.65/generated.jpg"; };
+      const qH = { warn: console.warn, log: console.log };
+      const dims = async (b: Buffer) => { const m = await sharpH(b).metadata(); return { w: m.width || 0, h: m.height || 0 }; };
+      try {
+        process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_storefake_secretfake";
+        process.env.VERCEL_BLOB_API_URL = `http://127.0.0.1:${portH}/api/blob`;
+        process.env.NEXTAUTH_SECRET = "verify-51h-not-a-secret";
+        delete process.env.UNSPLASH_ACCESS_KEY;
+        (globalThis as any).fetch = async (input: any, init?: any) => {
+          const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+          const u = new URL(url);
+          if (u.hostname === "127.0.0.1") return realH(input, init);
+          fetchedH.push(url);
+          const body = u.hostname === "203.0.113.65" || u.hostname === "203.0.113.66" ? serveH[u.pathname] : undefined;
+          return body ? new Response(new Uint8Array(body), { status: 200, headers: { "content-type": "image/jpeg" } }) : new Response("gone", { status: 404 });
+        };
+        console.warn = () => {}; console.log = () => {};
+        for (let d = 0; d < PRES51.length; d++) {
+          const want = boxes[`content@${PRES51[d]}`];
+          // A FRESH PICTURE is cut to the box it will be drawn in.
+          const up0 = uploadsH.length;
+          const fresh: any[] = [clone51(COVER51), { layout: "content", density: PRES51[d], title: "A rail page", body: "One\nTwo", image: { query: "harbour cranes at dawn" } }];
+          await resolveDeckImages(fresh, genH);
+          const made = uploadsH.length > up0 ? await dims(uploadsH[uploadsH.length - 1]) : null;
+          A51(!!made && Math.abs(made.w / made.h - want) / want < 0.005,
+            `51h a fresh ${PRES51[d]} rail picture was cut to ${made ? `${made.w}x${made.h} (${(made.w / made.h).toFixed(4)})` : "nothing"}, and the box it is drawn in is ${want.toFixed(4)}`);
+          A51(!!fresh[1].resolvedImage && typeof fresh[1].resolvedImage.aspect === "number",
+            `51h a fresh ${PRES51[d]} rail picture does not record the shape it was cut to: ${JSON.stringify(fresh[1].resolvedImage)}`);
+
+          // THE d1c7faf PICTURE: re-cut from the same file, never searched.
+          const f0 = fetchedH.length, u0 = uploadsH.length, g0 = gensH;
+          const STALE = "https://203.0.113.66/d1c7faf-rail.jpg";
+          const stale: any[] = [clone51(COVER51), { layout: "content", density: PRES51[d], title: "A rail page", body: "One\nTwo",
+            image: { query: "engineer reviewing blueprint" }, resolvedImage: { url: STALE, scrim: 0, credit: "Photo: A Photographer / Unsplash", logo: "white" } }];
+          await resolveDeckImages(stale, genH);
+          const recut = uploadsH.length > u0 ? await dims(uploadsH[uploadsH.length - 1]) : null;
+          A51(fetchedH.length - f0 === 1 && fetchedH[f0] === STALE && gensH === g0,
+            `51h the ${PRES51[d]} d1c7faf picture was fetched ${JSON.stringify(fetchedH.slice(f0))} with ${gensH - g0} generation(s) — the stored file, once, and nothing else`);
+          A51(uploadsH.length - u0 === 1 && !!recut && Math.abs(recut.w / recut.h - want) / want < 0.005,
+            `51h the ${PRES51[d]} d1c7faf picture (1600x2013) was ${recut ? `re-cut to ${recut.w}x${recut.h}` : "not re-cut"}; the box is ${want.toFixed(4)}`);
+          const sr = stale[1].resolvedImage || {};
+          A51(sr.url !== STALE && sr.credit === "Photo: A Photographer / Unsplash" && typeof sr.aspect === "number" && !sr.bakedFor,
+            `51h after its re-cut the ${PRES51[d]} picture carries ${JSON.stringify(sr)}`);
+          const f1 = fetchedH.length, u1 = uploadsH.length;
+          await resolveDeckImages(stale, genH);
+          A51(fetchedH.length === f1 && uploadsH.length === u1, `51h a second pass re-cut the ${PRES51[d]} picture again`);
+        }
+        // A FILE ALREADY THE RIGHT SHAPE, whose shape nothing recorded, is
+        // MEASURED and left as it is: same URL, no upload, and the shape
+        // written down so the next build does not fetch it to find out.
+        const f2 = fetchedH.length, u2 = uploadsH.length;
+        const RIGHT = "https://203.0.113.66/right-already.jpg";
+        const right: any[] = [clone51(COVER51), { layout: "content", density: "read", title: "A rail page", body: "One\nTwo", resolvedImage: { url: RIGHT, scrim: 0 } }];
+        await resolveDeckImages(right, genH);
+        A51(fetchedH.length - f2 === 1 && uploadsH.length === u2 && right[1].resolvedImage.url === RIGHT && typeof right[1].resolvedImage.aspect === "number",
+          `51h a rail file already the right shape was ${uploadsH.length > u2 ? "re-uploaded" : "left"} (${fetchedH.length - f2} fetch(es)): ${JSON.stringify(right[1].resolvedImage)}`);
+        // A RECORDED shape is trusted only while it matches the box: a file
+        // cut by a ruler that has since moved — here the old read crop,
+        // 0.7949, written down as such — is a re-cut candidate, and one cut
+        // to this box is left alone without a fetch (M7b survived without
+        // this: nothing carried a recorded shape that was wrong).
+        const recorded = (aspect: number) => rebakeShape({ layout: "content", density: "read", title: "A rail page", body: "One",
+          resolvedImage: { url: RIGHT, scrim: 0, aspect } } as any);
+        A51(!!recorded(0.7949) && !recorded(boxes["content@read"]),
+          `51h a recorded rail shape is not judged against the box: 0.7949 -> ${JSON.stringify(recorded(0.7949))}, ${boxes["content@read"].toFixed(4)} -> ${JSON.stringify(recorded(boxes["content@read"]))}`);
+        // A CONTINUATION takes its parent's re-cut, not the old file or a
+        // second upload of its own.
+        const u3 = uploadsH.length;
+        const paras: string[] = [];
+        for (let i = 0; i < 30; i++) paras.push(`A point about entity authority that takes a line or two to make on the page (${i + 1}).`);
+        const cut: any[] = splitOverflowingSlides([clone51(COVER51), { layout: "content", density: "read", title: "A long rail page", body: paras.join("\n"),
+          resolvedImage: { url: "https://203.0.113.66/d1c7faf-rail.jpg", scrim: 0, logo: "white" } }] as any) as any[];
+        A51(cut.length > 2 && !!cut[2].continuation && !!cut[2].resolvedImage, `51h precondition: the long rail page did not split with its picture (${cut.length})`);
+        await resolveDeckImages(cut, genH);
+        A51(uploadsH.length - u3 === 1 && cut.slice(2).every((x: any) => x.resolvedImage && x.resolvedImage.url === cut[1].resolvedImage.url),
+          `51h a split rail page uploaded ${uploadsH.length - u3} re-cut(s), and its continuation shows ${cut[2].resolvedImage && cut[2].resolvedImage.url === cut[1].resolvedImage.url ? "the parent's" : "another"} file`);
+      } finally {
+        console.warn = qH.warn; console.log = qH.log;
+        (globalThis as any).fetch = realH;
+        for (let k = 0; k < KEYSH.length; k++) {
+          if (savedH[KEYSH[k]] === undefined) delete process.env[KEYSH[k]];
+          else process.env[KEYSH[k]] = savedH[KEYSH[k]];
+        }
+        await new Promise<void>((r) => serverH.close(() => r()));
+      }
     }
   }
   if (failures === before51) {
@@ -14850,6 +15322,13 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       const gap = ROWS52.slice(0, 6).concat([["", "", "", "", ""]]).concat(ROWS52.slice(6));
       const b12gap = await chat52([COVER52, table52("Twelve checks and a blank", gap, { note: NOTE52 })]);
       A52(!/rows — /.test(b12gap.warn), `(b) twelve rows and a blank one were reported as a dropped row: ${b12gap.warn.slice(b12gap.warn.indexOf("Notes:"), b12gap.warn.indexOf("Notes:") + 200)}`);
+      /* COLUMNS past the cap are named too, and SHORT heads most of all:
+       * "Col 7" is under droppedContent's eleven-character floor, so without
+       * this note a dropped column reached the model unnamed (N3). */
+      const heads8 = ["Check", "A", "B", "C", "D", "E", "Col 7", "Col 8"];
+      const wide8 = await chat52([COVER52, { layout: "table", title: "Eight columns", table: { columns: heads8, rows: [["Row", "1", "2", "3", "4", "5", "6", "7"]] } }]);
+      A52(/draws 6 of its 8 columns/.test(wide8.warn) && wide8.warn.indexOf(`"Col 7"`) >= 0 && wide8.warn.indexOf(`"Col 8"`) >= 0,
+        `(b) an 8-column table does not name its dropped columns "Col 7" and "Col 8": ${wide8.warn.slice(wide8.warn.indexOf("Notes:"), wide8.warn.indexOf("Notes:") + 240)}`);
 
       /* (c) A HAND-SPLIT TABLE STAYS SPLIT WHEN THE HALVES CANNOT BE ONE. */
       const title = "Four articles against the 12-point checklist";
@@ -14867,6 +15346,15 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
         table52("Nine engines (continued)", ROWS52.slice(5, 9))]);
       A52(small.slides.length === 2 && (small.slides[1] as any).table.rows.length === 9,
         `(c) 5 + 4 rows titled "(continued)" are no longer merged into one table (${small.slides.length} slides)`);
+      /* ...counting DRAWN rows, as the builder and the drop note do: six and
+       * six plus a blank one is twelve rows on the slide, thirteen in the
+       * array, and it fits whole (N15). */
+      const blankTail = [["", "", "", "", ""]].concat(ROWS52.slice(6));
+      const withBlank = await chat52([COVER52,
+        table52(title, ROWS52.slice(0, 6)),
+        table52(`${title} (continued)`, blankTail)]);
+      A52(withBlank.slides.length === 2,
+        `(c) 6 + 6 rows and a blank one, titled "(continued)", stayed split (${withBlank.slides.length} slides) — the merge counted the blank row the builder never draws`);
 
       /* (d) A COMPARISON PAST ITS CAPS NAMES WHAT IT DROPPED. */
       const cmpRows = CHECKS52.map((c, i) => ({ label: c, cells: MARKS52[i] })).concat([{ label: "SCORE", cells: SCORE52.slice(1) } as any]);
@@ -14886,6 +15374,19 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       const t13Drawn = textOf52(buildSlideRequests(t13.slides[1], 1, "c52d13") as any[]);
       A52(t13Drawn.indexOf("12. Schema") >= 0 && t13Drawn.indexOf("SCORE") < 0,
         `(d) the table's note and its drawing disagree: "12. Schema" drawn ${t13Drawn.indexOf("12. Schema") >= 0}, "SCORE" drawn ${t13Drawn.indexOf("SCORE") >= 0}`);
+      /* AT the caps — eight rows and four options, the recommended two-slide
+       * scorecard's shape — nothing is reported dropped (N1, N2). */
+      const atCap = await chat52([COVER52, { layout: "comparison", title: "Four articles, eight checks",
+        comparison: { columns: COLS52.slice(1), rows: CHECKS52.slice(0, COMPARISON_MAX_ROWS).map((c, i) => ({ label: c, cells: MARKS52[i] })) } }]);
+      A52(COLS52.slice(1).length === COMPARISON_MAX_COLS && !/a comparison draws/.test(atCap.warn),
+        `(d) a comparison of exactly ${COMPARISON_MAX_ROWS} rows and ${COMPARISON_MAX_COLS} options was reported as dropping some: ${atCap.warn.slice(atCap.warn.indexOf("Notes:"), atCap.warn.indexOf("Notes:") + 200)}`);
+      /* A dropped row with no label is still COUNTED: "and 1 more", not a
+       * list that reads as if the named one were all (N4). */
+      const unlabelled = CHECKS52.slice(0, COMPARISON_MAX_ROWS).map((c, i) => ({ label: c, cells: MARKS52[i] }))
+        .concat([{ label: "", cells: ["Y", "Y", "Y", "Y"] } as any, { label: "Row ten", cells: ["N", "N", "N", "N"] } as any]);
+      const cmpBlank = await chat52([COVER52, { layout: "comparison", title: "Ten rows", comparison: { columns: COLS52.slice(1), rows: unlabelled } }]);
+      A52(cmpBlank.warn.indexOf(`"Row ten" and 1 more`) >= 0,
+        `(d) a comparison dropping an unlabelled row did not count it: ${cmpBlank.warn.slice(cmpBlank.warn.indexOf("Notes:"), cmpBlank.warn.indexOf("Notes:") + 240)}`);
       const wide = await chat52([COVER52, { layout: "comparison", title: "Five options",
         comparison: { columns: ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"], rows: [{ label: "Fast", cells: ["y", "n", "y", "n", "y"] }] } }]);
       A52(new RegExp(`draws ${COMPARISON_MAX_COLS} of its 5 options`).test(wide.warn) && wide.warn.indexOf(`"Epsilon"`) >= 0,
@@ -15186,6 +15687,384 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   if (failures === before53) {
     pass(`a scorecard total its own marks do not reach is named to the model by column, across the slides the scorecard spans,`
       + ` and every total a mark-sum could mean is left alone`);
+  }
+
+  /* ─────────────────────────────────────────────────────────────────────────
+   * 54. A COMPARISON CELL IS DRAWN INSIDE ITS ROW, ITS MARKS SHARE ONE MIDDLE,
+   *     AND TEXT RUN ONTO A RULE IS REPORTED (Amrize, 2026-09-23)
+   *
+   * The scorecard sent the way the editorial doc writes it — a mark and its
+   * qualifier in one cell, "N — no brand, no keyword" — drew every cell in a
+   * one-line 16pt box, so a cell that wrapped ran its second line straight
+   * through the hairline under its row, three times on one slide. Nothing
+   * said so: the overrun sweep compared text with TEXT and a rule is a shape,
+   * so validateDeck reported slide 18's one text-on-text overrun and nothing
+   * for slide 17. And the glyph cells had a box of their own, top-anchored
+   * a point higher and two taller, so a tick sat about 3pt below the "P"
+   * beside it.
+   *
+   *   (a) The live shape — the verifier's two six-check slides, qualifiers
+   *       and all — at both densities: every cell and label's ink inside its
+   *       own box, measured on words, no box across a rule, no geometry fault
+   *       on either slide.
+   *   (b) A tick, a cross and a letter in one row: ONE box, centred.
+   *   (c) A cell too long for its row even at the floor is cut on a word,
+   *       and the cut is NAMED in the tool result; a cell is shrunk only as
+   *       far as its row needs, and never cut for HEIGHT — a row shallower
+   *       than one line at the floor draws its words whole and says so.
+   *   (d) The validator itself: a line of copy that leaves its box and
+   *       crosses a rule is a fault — the old geometry, rebuilt by hand, is
+   *       red — and a label sitting on its rule within the empty foot of its
+   *       line box, or a rule beside the text, or a block that is no rule,
+   *       is not.
+   *   (e) MEASURED ON WORDS, by the fitter and the validator both. A
+   *       four-column scorecard of qualifier sentences, where a cell is about
+   *       25 characters wide and the character count comes back a line short
+   *       (15-21% of multi-line cells against Chrome, 722 cells): at both
+   *       densities every cell's raggedLines block fits its box — asked of
+   *       raggedLines directly, not of the ruler under test — with no fault
+   *       and the cut cells named. Two cells put back as the count fitted
+   *       them are reported through exactly the rules Chrome drew them
+   *       across, and a centred cell with no rule beneath it is reported
+   *       through the rule ABOVE it, which the sweep never looked at.
+   *
+   * Rendered, not only asserted (the oracle: every Chrome line a thin rule
+   * passes through, 2026-09-23): the verifier's 60-slide prose fuzz drew 23,
+   * 34 and 30 lines across rules at seeds 5, 7 and 11 before this, and 0, 0
+   * and 0 after; the qualifier scorecard 5 before and 0 after. No stored deck
+   * moves: 0 of the 50 stored comparison slide-densities draw differently,
+   * and 0 of the 327 verdicts on the 98 stored drafts change.
+   *
+     * MUTATION LOG (detached worktree at d1c7faf plus this change, 2026-09-23)
+   * — kills AND survivors, each mutant applied alone and restored:
+   *   killed  C1 the rows sized without the 4pt under the header rule → (a):
+   *           the last row's boxes cross the footer's rule at 376.
+   *   killed  C2 the fitter measuring a centred cell from its top → (c), on
+   *           the six-row slide only: it SURVIVED the first three fixtures,
+   *           where both rulers pick the same size at every cell, and the
+   *           six-row one is where they disagree (9pt fits centred, 7.5pt
+   *           from the top).
+   *   killed  C3 the fitter asking fitCell's character count before the face
+   *           → (c), once the shallow fixture carried a cell that fits by
+   *           the face and not by the count; SURVIVED before it did.
+   *   killed  C4 the fitter never shrinking, only cutting → (c): slide 18 at
+   *           present drawn at 9pt in rows that hold 8pt, and reported too
+   *           shallow for its type (re-run after the wrap ruler: still red).
+   *   killed  C5 the tick keeping its own top-anchored box → (b).
+   *   killed  C6 the cut-cell note removed, C7 the shallow-rows note removed
+   *           → (c).
+   *   killed  C8 inkBottom measuring a middle-anchored box from its top → (a)
+   *           at present: slide 18's one-line cells "run 3.3pt out of their
+   *           boxes", which is the false alarm that made the first cut of
+   *           the fitter destroy them.
+   *   killed  V1 ruleCrossings removed → (d). V2 the thickness gate removed
+   *           → (d): a 12pt block read as a rule. V3 the 0.35em clearance cut
+   *           to the 1pt tolerance → (d), 46b and the line chart's benchmark
+   *           label on slide 15 of the battery — the false alarm the
+   *           clearance was measured against. V4 a rule beside the text
+   *           counted → (d).
+   *
+   *   The wrap ruler (second pass, same day, same worktree discipline; C1-C8
+   *   and V1-V4 re-run against it first, V1/V3/V4 re-expressed for the
+   *   two-sided sweep, all still killed):
+   *   killed  C9 the fitter back on the count (no `ragged`) → (a) at present,
+   *           (c) and (e): "Absent: neither the brand…" at 9pt, 49.7pt of
+   *           type in a 38pt box.
+   *   killed  C10 the validator back on the count for a comparison → (e):
+   *           the old fit is not reported, AND the fitted slide is reported
+   *           — the count over-counts "Absent: no summary at all…" (four
+   *           lines to the wrap's three), so a fitter and a validator on two
+   *           rulers argue in both directions.
+   *   killed  C12 the upward branch removed, C16 a centred block's head
+   *           measured from the box's top → (e), the third-row cell and the
+   *           last-row cell.
+   *   killed  C13 no clearance at a centred box's head → (e): the FIRST-row
+   *           cell, 1.8pt past a header rule Chrome draws it clear of, is
+   *           reported through "the rules above and beneath it".
+   *   killed  C14 inkBottom ignoring the `ragged` flag → (e), five ways.
+   *   SURVIVED C11 the ruler widened to EVERY centred box on every layout.
+   *           Equivalent on everything there is: every fixture here, and 0
+   *           of the 327 verdicts on the 98 stored drafts move. A scope
+   *           decision rather than a defect — no other centred box is
+   *           FITTED on words, and measuring a box on a ruler it was not
+   *           fitted with is the disagreement C10 shows.
+   *   SURVIVED C15 the bold face dropped from the ragged branch, C17 caps
+   *           not upper-cased there: equivalent today. The only bold box a
+   *           comparison fits is its label, whose 216pt measure is past the
+   *           wrap threshold at every size down to the floor, and no cell
+   *           style is caps.
+   * ───────────────────────────────────────────────────────────────────────── */
+  const before54 = failures;
+  console.log(`\n54. A comparison cell is drawn inside its row, and text run onto a rule is reported`);
+  const A54 = (ok: boolean, m: string) => { if (!ok) fail(`54: ${m}`); };
+  {
+    const COLS54 = ["Meta data center", "10 Things", "Denver dam", "Obama Center"];
+    const SUB54 = "Y present, P partial, N absent. Obama scored against the final version; schema cannot be seen in a doc.";
+    const S17: any = { layout: "comparison", title: "Checks 1 to 6: is the page {shaped to be quoted?}", subtitle: SUB54, comparison: { columns: COLS54, rows: [
+      { label: "1. Title tag", cells: ["P — no brand", "P — has brand", "N — no brand, no keyword", "Y — brand + project"] },
+      { label: "2. Meta description", cells: ["N", "N", "N", "P — no figure"] },
+      { label: "3. TL;DR block", cells: ["N", "P — intro does some of the job", "N", "Y — four bullets"] },
+      { label: "4. Question headings", cells: ["Y — all seven", "Y — all ten", "N — labels, not questions", "P — 4 of 5 H2s"] },
+      { label: "5. Answer-first", cells: ["P", "P", "N", "P"] },
+      { label: "6. Entity in sentence", cells: ["P — heavy “we/our”", "P — heavy “we/our”", "P — heavy “we/our”", "P — top facts unbranded"] },
+    ] } };
+    const S18: any = { layout: "comparison", title: "Checks 7 to 12: can a model {trust it?}", subtitle: SUB54,
+      note: "Written to spec from the start, the Obama piece leads the published articles.", comparison: { columns: COLS54, rows: [
+      { label: "7. Verifiable specifics", cells: ["Y — strong", "Y — strong", "Y — strong", "P — 3 unsourced superlatives"] },
+      { label: "8. Named experts", cells: ["Y — with titles", "N", "P — one, repeated", "Y — six, titled"] },
+      { label: "9. Byline and dates", cells: ["N", "P — date only", "N", "N"] },
+      { label: "10. FAQ + schema", cells: ["N", "N", "N", "P — short answers"] },
+      { label: "11. Internal links", cells: ["P — navigation only", "Y — good product links", "N", "P — MAXtect only"] },
+      { label: "12. Schema", cells: ["N", "N", "N", "n/a"] },
+      { label: "SCORE", cells: ["5 / 12", "5.5 / 12", "2 / 12", "6.5 / 11"], highlight: true },
+    ] } };
+    const COVER54: any = { layout: "cover", title: "AI Search Content Workshop" };
+    const clone54 = (x: any) => JSON.parse(JSON.stringify(x));
+    const words54 = new Set<string>();
+    for (const s of [S17, S18]) for (const r of s.comparison.rows) { words54.add(r.label); for (const c of r.cells) words54.add(c); }
+    const isCell = (t: string) => words54.has(t) || t === "✓" || t === "✗"
+      || (/…$/.test(t) && Array.from(words54).some((w) => w.indexOf(t.slice(0, -1).trim()) === 0));
+    try {
+      /* (a) THE LIVE SHAPE, AT BOTH DENSITIES. */
+      const PRES54: Density[] = ["read", "present"];
+      for (let d = 0; d < PRES54.length; d++) {
+        const deck: any[] = [clone54(COVER54), clone54(S17), clone54(S18)];
+        for (let i = 0; i < deck.length; i++) deck[i].density = PRES54[d];
+        const g = validateDeck(deck, "c54a");
+        const onCmp = g.faults.filter((f: any) => f.slide > 1 && f.kind !== "overlap");
+        A54(onCmp.length === 0, `(a ${PRES54[d]}) the scorecard slides have geometry faults: ${onCmp.map((f: any) => f.note).join(" | ").slice(0, 300)}`);
+        for (let k = 1; k < deck.length; k++) {
+          const page = previewSlideFrom(deck[k], buildSlideRequests(deck[k], k, `c54a${d}${k}`) as any[]);
+          const rules = page.elements.filter((e: any) => e.kind === "rect" && e.h <= 1.5 && e.w > 200);
+          const cells = page.elements.filter((e: any) => e.kind === "text" && isCell(String(e.text)));
+          A54(cells.length >= deck[k].comparison.rows.length * 5, `(a ${PRES54[d]}) precondition: slide ${k + 1} drew ${cells.length} cells and labels`);
+          for (let c = 0; c < cells.length; c++) {
+            const el: any = cells[c];
+            if (String(el.text).length > 1) {
+              // On WORDS, as the fitter and the validator both measure a
+              // comparison cell — see (e) for why the count is not enough.
+              const foot = inkBottom({ ...el, ragged: true });
+              A54(foot <= el.y + el.h + 1, `(a ${PRES54[d]}) slide ${k + 1}: "${el.text}" runs ${(foot - el.y - el.h).toFixed(1)}pt out of its box`);
+            }
+            const crossed = rules.filter((r: any) => r.y > el.y + 0.01 && r.y < el.y + el.h - 0.01);
+            A54(crossed.length === 0, `(a ${PRES54[d]}) slide ${k + 1}: the box of "${el.text}" spans a row rule at ${crossed.map((r: any) => r.y.toFixed(1)).join(", ")}`);
+          }
+        }
+      }
+
+      /* (b) ONE BOX, ONE MIDDLE. */
+      const mixed: any = { layout: "comparison", title: "Marks", comparison: { columns: ["A", "B", "C"], rows: [{ label: "Mixed", cells: ["Y", "N", "P"] }] } };
+      const mp = previewSlideFrom(mixed, buildSlideRequests(mixed, 1, "c54b") as any[]);
+      const tick = mp.elements.find((e: any) => e.kind === "text" && e.text === "✓") as any;
+      const cross = mp.elements.find((e: any) => e.kind === "text" && e.text === "✗") as any;
+      const letter = mp.elements.find((e: any) => e.kind === "text" && e.text === "P") as any;
+      A54(!!tick && !!cross && !!letter, `(b) precondition: the row drew a tick, a cross and a letter (${!!tick}/${!!cross}/${!!letter})`);
+      if (tick && cross && letter) {
+        const same = (p: any, q: any) => Math.abs(p.y - q.y) < 1e-9 && Math.abs(p.h - q.h) < 1e-9;
+        A54(same(tick, letter) && same(cross, letter) && tick.vCenter && cross.vCenter && letter.vCenter,
+          `(b) the tick (y ${tick.y.toFixed(2)}, h ${tick.h.toFixed(2)}${tick.vCenter ? ", centred" : ""}), the cross (y ${cross.y.toFixed(2)}, h ${cross.h.toFixed(2)}) and the letter (y ${letter.y.toFixed(2)}, h ${letter.h.toFixed(2)}${letter.vCenter ? ", centred" : ""}) are not one box`);
+      }
+
+      /* (c) CUT, AND SAID. */
+      const LONG54 = "P — the introduction does some of the job but buries the answer under three paragraphs of company history and a quote";
+      const rows54: any[] = [];
+      for (let i = 0; i < 8; i++) rows54.push({ label: `Check ${i + 1}`, cells: i === 3 ? ["Y", LONG54, "N", "P"] : ["Y", "N", "P", "Y"] });
+      const cutDeck: any[] = [clone54(COVER54), { layout: "comparison", title: "Eight checks", subtitle: SUB54, comparison: { columns: COLS54, rows: rows54 } }];
+      const cutWarn = deckWarnings(cutDeck);
+      A54(/drawn cut short/.test(cutWarn) && cutWarn.indexOf(quoteClip(LONG54)) >= 0,
+        `(c) a cell cut to fit its row is not named to the model: ${cutWarn.slice(cutWarn.indexOf("Notes:"), cutWarn.indexOf("Notes:") + 260)}`);
+      const cutText = (buildSlideRequests(cutDeck[1], 1, "c54c") as any[]).filter((r: any) => r.insertText).map((r: any) => String(r.insertText.text));
+      A54(cutText.some((t) => /…$/.test(t) && LONG54.indexOf(t.slice(0, -1).trim()) === 0) && cutText.indexOf(LONG54) < 0,
+        `(c) the long cell is not drawn cut on a word with an ellipsis`);
+      A54(!/drawn cut short/.test(deckWarnings([clone54(COVER54), clone54(S17)])),
+        `(c) the live scorecard's cells were reported cut when they fit`);
+
+      /* (c) ...AND NEVER CUT FOR HEIGHT. A shorter line is the same height, so a
+       * row too shallow for the line is not helped by fewer words. The first
+       * cut of the fitter measured a centred one-line cell from the TOP of its
+       * box, found it 2.7pt too tall for slide 18's rows at present, and drew
+       * every cell as "Y…" and "5…": at `present`, where the rows are
+       * shallowest, every cell that fits its column on one line is drawn
+       * whole. */
+      const s18p: any = { ...clone54(S18), density: "present" };
+      const p18 = previewSlideFrom(s18p, buildSlideRequests(s18p, 2, "c54c2") as any[]);
+      // NOT "P — 3 unsourced superlatives", which this list carried until the
+      // cell was measured on words: Chrome sets it in 96.14pt of a 96.32pt
+      // measure at 7.5pt, which is inside the 3% the wrap ruler keeps for
+      // kerning, so at present — where the row holds one line — it is cut and
+      // NAMED rather than drawn on a line it fits by a fifth of a point.
+      const whole = ["Y — strong", "5 / 12", "5.5 / 12", "6.5 / 11", "n/a", "SCORE", "7. Verifiable specifics"];
+      const drawn18 = p18.elements.filter((e: any) => e.kind === "text").map((e: any) => String(e.text));
+      const missing18 = whole.filter((w) => drawn18.indexOf(w) < 0);
+      A54(missing18.length === 0, `(c) at present, slide 18's one-line cells were cut to fit a row they already fit: ${JSON.stringify(missing18)} missing, drawn ${JSON.stringify(drawn18.filter((t) => /…$/.test(t)).slice(0, 6))}`);
+      // AND SHRUNK ONLY AS FAR AS THE ROW NEEDS: every cell and label is at
+      // its style's size, or half a point larger would not fit its box. A
+      // fitter measuring the centred cell from its top shrank slide 18 to the
+      // floor where 8pt fits (M16 survived without this); one that never
+      // shrank drew 9pt in a row that holds 8.
+      const tooSmall: string[] = [];
+      const pages54: [string, any][] = [["present slide 18", p18]];
+      for (let k = 0; k < 2; k++) {
+        const sk: any = clone54([S17, S18][k]);
+        pages54.push([`read slide ${17 + k}`, previewSlideFrom(sk, buildSlideRequests(sk, 1 + k, `c54c4${k}`) as any[])]);
+      }
+      // Six rows under the note at present: 12.6pt a cell, which holds a 9pt
+      // line centred (12.4) and not measured from the top (16.0). The one
+      // fixture here where the two rulers disagree about the SIZE — the
+      // pages above agree at every cell, and M16 survived them.
+      const six: any = { ...clone54(S18), density: "present" };
+      six.comparison.rows = six.comparison.rows.slice(0, 6);
+      pages54.push(["present slide 18, six rows", previewSlideFrom(six, buildSlideRequests(six, 2, "c54c5") as any[])]);
+      for (let pg = 0; pg < pages54.length; pg++) {
+        const els: any[] = pages54[pg][1].elements;
+        for (let e = 0; e < els.length; e++) {
+          const el: any = els[e];
+          if (el.kind !== "text" || !el.vCenter || !isCell(String(el.text)) || String(el.text).length < 2) continue;
+          // A CUT cell is at the floor by design: the words come down to 7.5pt
+          // before any are cut, because a smaller line holds more of them.
+          if (/…$/.test(String(el.text))) {
+            if (el.size !== 7.5) tooSmall.push(`${pages54[pg][0]}: "${el.text}" was cut at ${el.size}pt, above the floor`);
+            continue;
+          }
+          const bigger = el.size >= 9 ? null : inkBottom({ ...el, ragged: true, size: el.size + 0.5 });
+          if (bigger !== null && bigger <= el.y + el.h) tooSmall.push(`${pages54[pg][0]}: "${el.text}" at ${el.size}pt`);
+          if (inkBottom({ ...el, ragged: true }) > el.y + el.h + 0.01) tooSmall.push(`${pages54[pg][0]}: "${el.text}" does not fit at ${el.size}pt`);
+        }
+      }
+      A54(tooSmall.length === 0, `(c) cells are not at the largest size their row holds: ${tooSmall.slice(0, 5).join("; ")}`);
+      A54(!/too shallow/.test(deckWarnings([{ ...clone54(COVER54), density: "present" }, s18p])),
+        `(c) slide 18 at present — rows that hold a line at 8pt — was reported as too shallow for its type`);
+      /* A ROW SHALLOWER THAN ONE LINE OF THE SMALLEST TYPE says so, and draws
+       * its words whole rather than cutting them: twelve rows under a note
+       * at present. */
+      const deep: any[] = [];
+      for (let i = 0; i < 8; i++) deep.push({ label: `Check ${i + 1}`, cells: ["Y — strong", "N", "P — unsourced superlatives", "Y"] });
+      const squeezed: any = { layout: "comparison", density: "present", title: "Eight checks: can a model {trust it?}", subtitle: SUB54,
+        note: "Written to spec from the start, the Obama piece leads the published articles.", comparison: { columns: COLS54, rows: deep } };
+      const sqWarn = deckWarnings([{ ...clone54(COVER54), density: "present" }, squeezed]);
+      const sqText = (buildSlideRequests(squeezed, 1, "c54c3") as any[]).filter((r: any) => r.insertText).map((r: any) => String(r.insertText.text));
+      // The long one fits its column on one line by the FACE, and not by
+      // fitCell's character count — so a fitter that asked fitCell before the
+      // face would cut it (M16b survived until this cell was here). 26
+      // characters to fitCell's 23, and 90.15pt of 96.32 in Chrome: clear of
+      // the wrap ruler's kerning margin, which its predecessor ("P — 3
+      // unsourced superlatives", 96.14pt) was not.
+      A54(/too shallow for a line of its smallest type/.test(sqWarn) && sqText.filter((t) => t === "Y — strong").length === 8
+        && sqText.filter((t) => t === "P — unsourced superlatives").length === 8 && !/drawn cut short/.test(sqWarn),
+        `(c) a comparison whose rows are shallower than one line is not reported, or its words were cut: ${sqWarn.slice(sqWarn.indexOf("Notes:"), sqWarn.indexOf("Notes:") + 260)} | ${sqText.filter((t) => /…$/.test(t)).slice(0, 4).join(" ")}`);
+      A54(!/too shallow/.test(deckWarnings([clone54(COVER54), clone54(S17), clone54(S18)])),
+        `(c) the live scorecard at read was reported as too shallow for its type`);
+      // Its one line at the floor overhangs an 11pt row by 0.7pt at each end,
+      // which is leading, not ink: Chrome draws no glyph across a rule there
+      // (the oracle, 2026-09-23). The builder's "too shallow" note is the
+      // report; a rule crossing on top of it would be a false one — and one a
+      // centred box's head, measured without its clearance, would make.
+      const sqRules = validateDeck([{ ...clone54(COVER54), density: "present" }, clone54(squeezed)], "c54c6").faults
+        .filter((f: any) => f.slide === 2 && /onto a rule/.test(String(f.where)));
+      A54(sqRules.length === 0, `(c) a one-line cell seated in a too-shallow row was reported as crossing its rules: ${sqRules.map((f: any) => f.note).join(" | ").slice(0, 240)}`);
+
+      /* (d) THE VALIDATOR SEES A RULE. The old geometry, by hand: a 9pt cell
+       * that wraps to two lines in a one-line 16pt box, and the row's rule
+       * 7pt under the box — the shape slide 17 shipped. */
+      const el9 = { kind: "text", x: 257, y: 200, w: 110, h: 16, size: 9, font: "Roboto", weight: 300, text: "N — no brand, no keyword and more words" } as any;
+      const two = inkBottom(el9);
+      A54(two > el9.y + el9.h + 8, `(d) precondition: the hand-built cell does not run a line out of its box (${two.toFixed(1)})`);
+      const rule = (x: number, y: number, w: number, h: number) => ({ kind: "rect", x, y, w, h, fill: "#023250" }) as any;
+      const run = (els: any[]) => overrunFaults({ elements: els } as any, { layout: "comparison" } as any, 16).faults;
+      const hit = run([el9, rule(24.48, 223, 671.04, 1)]);
+      A54(hit.length === 1 && /through the rule beneath it/.test(hit[0].note),
+        `(d) a cell run through its row's rule is not reported: ${JSON.stringify(hit.map((f: any) => f.note))}`);
+      A54(run([el9, rule(24.48, 223, 671.04, 1), rule(24.48, 240, 671.04, 1)]).length === 1,
+        `(d) one cell crossing two rules was reported more than once`);
+      A54(run([el9, rule(400, 223, 200, 1)]).length === 0, `(d) a rule BESIDE the text was reported as crossed`);
+      A54(run([el9, rule(24.48, 223, 671.04, 12)]).length === 0, `(d) a 12pt block was read as a rule`);
+      const label7 = { kind: "text", x: 58, y: 240, w: 150, h: 12, size: 7, font: "Roboto", weight: 700, caps: true, text: "WHERE YOU STARTED" } as any;
+      A54(inkBottom(label7) > label7.y + label7.h + 1 && run([label7, rule(58, 252, 600, 1.2)]).length === 0,
+        `(d) a caps label seated on its own rule, inside the empty foot of its line box, was reported as crossing it`);
+
+      /* (e) MEASURED ON WORDS — BY THE FITTER AND BY THE VALIDATOR. A
+       * four-column scorecard of qualifier SENTENCES (the verifier's,
+       * 2026-09-23). A cell there is 110pt wide, about 25 characters at 9pt,
+       * where the count model comes back a line short: five cells it fitted
+       * to three lines drew four in Chrome, across the rules and onto the row
+       * beneath, and validateDeck said nothing because it asked the same
+       * count. Measured here with raggedLines directly — NOT with inkBottom,
+       * the ruler under test — every drawn cell's block fits its box, at both
+       * densities; the slide has no geometry fault; and the cells that could
+       * not fit are named. */
+      const QUAL54: any[] = [
+        { label: "1. Title tag", cells: ["Partial: the brand is in the title, but the target keyword only comes after the colon", "Partial: keyword present, brand missing, and the title runs past sixty characters", "Absent: neither the brand nor the keyword, just a generic news headline", "Present: brand and project are both named in the first six words of the title"] },
+        { label: "2. TL;DR block", cells: ["Absent: the page opens with a quote from the chief executive, not with the answer", "Partial: the introduction does some of the job but buries the figure in paragraph three", "Absent: no summary at all; the answer sits in the final section of the article", "Present: four bullets summarise the whole piece before the first heading appears"] },
+        { label: "3. Named experts", cells: ["Present: two engineers are quoted with their job titles and the date of the interview", "Absent: nobody is named anywhere on the page, including in the image captions", "Partial: one spokesperson is quoted twice, without a title or a date", "Present: six experts, each titled, dated and linked to a profile page"] },
+        { label: "4. Internal links", cells: ["Partial: navigation links only, none from inside the body copy of the article", "Present: good product links from every section to the relevant range page", "Absent: the article links out to a competitor and nowhere on the site", "Partial: links to MAXtect only, and the anchor text is always the product name"] },
+      ];
+      const HEADLINE54 = QUAL54[0].cells[2];
+      for (let d = 0; d < 2; d++) {
+        const dens: Density = d === 0 ? "read" : "present";
+        const qs: any = { layout: "comparison", title: "Four checks across four articles", density: dens, comparison: { columns: COLS54, rows: QUAL54 } };
+        const qp = previewSlideFrom(qs, buildSlideRequests(clone54(qs), 1, `c54e${d}`) as any[]);
+        const qCells = qp.elements.filter((e: any) => e.kind === "text" && e.vCenter && String(e.text).length > 1) as any[];
+        A54(qCells.length === 20, `(e ${dens}) precondition: the scorecard drew ${qCells.length} of its 20 cells and labels`);
+        // The fixture is one the COUNT gets wrong, at the width the cells are
+        // drawn at: without that, a fitter back on the count passes it.
+        const colW54 = qCells.length ? qCells[qCells.length - 1].w : 0;
+        A54(estimateLines(HEADLINE54, colW54, 9, false, false, "Roboto") < raggedLines(HEADLINE54, colW54, 9, "Roboto"),
+          `(e ${dens}) precondition: the count model and the wrap agree on "${HEADLINE54}" at 9pt in ${colW54.toFixed(1)}pt, so this fixture cannot tell them apart`);
+        const tall: string[] = [];
+        for (let c = 0; c < qCells.length; c++) {
+          const el = qCells[c];
+          const block = raggedLines(el.text, el.w, el.size, el.font, el.weight >= 600 ? String(el.text).length : 0) * el.size * 1.38;
+          if (block > el.h + 0.01) tall.push(`"${String(el.text).slice(0, 40)}" ${el.size}pt: ${block.toFixed(1)}pt of type in a ${el.h.toFixed(1)}pt box`);
+        }
+        A54(tall.length === 0, `(e ${dens}) cells wrap past their rows: ${tall.slice(0, 4).join("; ")}`);
+        const qDeck: any[] = [{ ...clone54(COVER54), density: dens }, clone54(qs)];
+        const qFaults = validateDeck(qDeck, `c54e${d}`).faults.filter((f: any) => f.slide === 2);
+        A54(qFaults.length === 0, `(e ${dens}) the qualifier scorecard has geometry faults: ${qFaults.map((f: any) => f.note).join(" | ").slice(0, 300)}`);
+        const qWarn = deckWarnings(clone54(qDeck));
+        A54(/drawn cut short/.test(qWarn), `(e ${dens}) no cell was named as cut, on a scorecard whose sentences cannot all fit their rows`);
+
+        /* ...AND THE VALIDATOR SEES THE OLD FIT. Two cells as the count
+         * model fitted them — 9pt, three lines by the count and four on words
+         * — put back by hand into their own boxes between their own rules,
+         * each where Chrome drew it crossing: the first row's through the
+         * rule beneath it only (the header rule is 5pt clear, not 1), and the
+         * third row's through the rules above AND beneath. */
+        if (d === 0) {
+          const OLD54: [string, RegExp][] = [
+            [HEADLINE54, /through the rule beneath it/],
+            [QUAL54[2].cells[2], /through the rules above and beneath it/],
+          ];
+          for (let o = 0; o < OLD54.length; o++) {
+            const src = OLD54[o][0];
+            const at = qCells.filter((e: any) => String(e.text) === src || src.indexOf(String(e.text).replace(/…$/, "")) === 0)[0];
+            A54(!!at && estimateLines(src, at.w, 9, false, false, "Roboto") === 3 && raggedLines(src, at.w, 9, "Roboto") === 4,
+              `(e) precondition: "${src.slice(0, 40)}" was not drawn, or is not three lines by the count and four on words at 9pt`);
+            if (!at) continue;
+            const oldFit = { ...at, text: src, size: 9 };
+            const others = qp.elements.filter((e: any) => e !== at);
+            const onCmp = overrunFaults({ elements: others.concat([oldFit]) } as any, { layout: "comparison" } as any, 1).faults
+              .filter((f: any) => /onto a rule/.test(String(f.where)));
+            A54(onCmp.length === 1 && OLD54[o][1].test(onCmp[0].note),
+              `(e) the cell the count model fitted — four lines on words in a three-line box — is not reported ${OLD54[o][1].source}: ${JSON.stringify(onCmp.map((f: any) => f.note))}`);
+          }
+        }
+      }
+      /* A CENTRED BOX LEAVES BY THE TOP AS FAR AS BY THE FOOT. A scorecard's
+       * last row has no row rule beneath it, so a cell there overflowing its
+       * box crosses only the rule ABOVE it — which the sweep never looked at. */
+      const lastRow = { kind: "text", x: 257, y: 300, w: 110.7, h: 38, size: 9, font: "Roboto", weight: 300, vCenter: true, text: HEADLINE54 } as any;
+      const up = run([lastRow, rule(24.48, 299, 671.04, 1)]);
+      A54(up.length === 1 && /through the rule above it/.test(up[0].note),
+        `(e) a centred cell run up through the rule above its row is not reported: ${JSON.stringify(up.map((f: any) => f.note))}`);
+      A54(run([{ ...lastRow, vCenter: false }, rule(24.48, 299, 671.04, 1)]).length === 0,
+        `(e) a box anchored at its TOP was reported as crossing a rule above it, which its words cannot reach`);
+    } catch (e: any) {
+      fail(`54 threw before finishing: ${e && e.stack ? e.stack : e}`);
+    }
+  }
+  if (failures === before54) {
+    pass(`a comparison cell is fitted inside its row at both densities, on words — cut and named when it cannot be — its tick, cross and`
+      + ` letter share one centred box, and the validator, on the same ruler, reports text that leaves its box through a rule above or below it`);
   }
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);

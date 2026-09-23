@@ -930,6 +930,32 @@ console.log("\n15. An insert renumbers every step after it");
 //            before, and 16m on the Amrize thread's own shape: an insert, a
 //            patch and a resend of its stored read deck, with the ask that
 //            now infers present one turn back, all re-stamped present.
+//
+// THE FOURTH PASS, 2026-09-23 — the hyphenated modifier, the question test,
+// the reading veto and the clause-ending alternative taken out; detached
+// worktree at d1c7faf plus the change, each mutant alone. Two of these close
+// survivors the verification of d1c7faf found (N16, N9).
+//   killed   MODIFIERS back to `\w+` → 16a on 9fc715be, the real "follow-up
+//            meeting" ask, and the hyphen synth.
+//   killed   HELD losing `\s+are` → 16a on 0ce3417e, the stored sentence the
+//            header cites for it (N16: it survived until that was a case).
+//   killed   the question test replaced by HELD on the whole opening → 16a on
+//            the four question synths, the first of them the old one.
+//   killed   the question asked of the whole opening rather than the HELD
+//            sentence → 16a then-ask-synth: a statement followed by a request
+//            ending in "?" read as a question.
+//   killed   the reading veto removed → 16a on its four synths, and each of
+//            its phrases alone (pre-read, leave-behind, send round) → its own
+//            synth. The veto's fixtures are checked PRESENT without their
+//            phrase, so none of them passes by being read for another reason.
+//   killed   a reading turn not ending the window's search → 16a, both window
+//            cases.
+//   N9, the clause-ending alternative ("we have a workshop."), was not
+//            pinned but REMOVED: it had no stored sentence behind it — taken
+//            out, not one of 2,987 stored messages changes — and this file's
+//            rule for a trigger is a real sentence.
+//   No survivors. The synthetic cases are said to be synthetic where they
+//            are listed, for the reason the clamp's word-boundary one is.
 ;(async () => {
 const before16 = failures;
 console.log("\n16. Density is decided once, at creation, and an edit never changes it");
@@ -1047,12 +1073,57 @@ try {
     ["perfect-synth", "We have finished the workshop with Amrize, can you write up the actions", "read"],
     ["notes-synth", "we have the meeting notes from Tuesday, can you turn them into a summary", "read"],
     ["question-synth", "Do we have a meeting with Siemens tomorrow?", "read"],
+    // THE PROGRESSIVE WITH `are`, the stored sentence the header of
+    // density-from-ask.ts cites for it — verbatim, "to day" and all.
+    ["0ce3417e", "We are having a morning meeting to day goodbye to Holly this morning. Can you write me a script. here are some notes but can you also check the Engine and notes for more.", "present"],
+    // THE HYPHENATED MODIFIER, 2026-09-23: the real ask, verbatim, that `\w+`
+    // could not step over — built at read, where "follow up meeting" would
+    // have been present.
+    ["9fc715be", "I am preparing a deck for a follow-up meeting will who is leading the North American corporate comms team at BeOne Medicines. \n\nFrom Ed's captured meeting notes, can you remind me what is important for the client that I should convey in the follow-up meeting and presentation? \n\nEd will also be attending and presenting a few slides with ideas for their CEO thought leadership.", "present"],
+    ["hyphen-synth", "We have a half-day workshop with Amrize on Thursday, can you build the deck", "present"],
+    // A QUESTION IS ASKED OF ITS OWN SENTENCE. SYNTHETIC, all four: the
+    // lookbehind these replace caught "do we" and "did we" with one space and
+    // nothing else, and measured, the sentence test changes no stored message.
+    // The last is the other direction — a statement followed by a question is
+    // still a statement.
+    ["didnt-synth", "Didn't we have a meeting with Siemens last week?", "read"],
+    ["will-synth", "Will we have a meeting with Siemens next week?", "read"],
+    ["know-synth", "Do you know if we have a meeting with Siemens tomorrow?", "read"],
+    ["then-ask-synth", "We have a workshop with Amrize on Thursday. Can you build a deck for it?", "present"],
+    // THE READING VETO. The two stored openings it matches are already read
+    // (a veto that narrows needs no sentence to exist; it needs to cost no
+    // stored `present`, and measured it costs none), so the fixtures that
+    // pin it are SYNTHETIC, each one present by another rule without it.
+    ["db3ab475", "Thanks for providing your sources, could you choose the best five resources for me to read and provide a list with link and short summary of key points", "read"],
+    ["read-synth", "I have a meeting with Siemens tomorrow, summarise the notes into slides for me to read before it", "read"],
+    ["preread-synth", "Turn this proposal into a pre-read for the board meeting on Thursday", "read"],
+    ["leave-synth", "Make a leave-behind deck for my 10am meeting with Siemens", "read"],
+    ["send-synth", "Build slides to send round before the workshop with Amrize", "read"],
   ];
   for (let i = 0; i < CASES.length; i++) {
     const got = densityFromAsk(CASES[i][1]);
     if (got !== CASES[i][2]) {
       fail(`16a ${CASES[i][0] || "empty"}: expected ${CASES[i][2]}, got ${got} — ${JSON.stringify(CASES[i][1].slice(0, 70))}`);
     }
+  }
+  // THE VETO'S FIXTURES MUST BE PRESENT WITHOUT IT, or they pin nothing: each
+  // one, its reading phrase struck out, has to read present.
+  const VETOED: [string, string][] = [
+    ["read-synth", "I have a meeting with Siemens tomorrow, summarise the notes into slides before it"],
+    ["preread-synth", "Turn this proposal into slides for the board meeting on Thursday"],
+    ["leave-synth", "Make a deck for my 10am meeting with Siemens"],
+    ["send-synth", "Build slides before the workshop with Amrize"],
+  ];
+  for (let i = 0; i < VETOED.length; i++) {
+    if (densityFromAsk(VETOED[i][1]) !== "present") fail(`16a precondition: ${VETOED[i][0]} is not present without its reading phrase, so it does not test the veto`);
+  }
+  // NEWEST DECISIVE TURN WINS, both ways: a turn that says the deck is for
+  // reading is not overruled by an occasion one turn back.
+  if (densityFromAsks(["summarise the notes into slides for me to read before it", "I have a meeting with Siemens tomorrow"]) !== "read") {
+    fail("16a a reading purpose in the newest turn was overruled by an occasion one turn back");
+  }
+  if (densityFromAsks(["can you build the slides", "summarise the notes for me to read", "I have a meeting with Siemens tomorrow"]) !== "read") {
+    fail("16a an older reading purpose did not end the search before the occasion behind it");
   }
 
   // (b) THE CLAMP. Slide copy far into a long message is content, not the ask.

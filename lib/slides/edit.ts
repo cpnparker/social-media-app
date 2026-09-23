@@ -342,24 +342,53 @@ function normaliseHub<T>(slide: T): T {
  * place, on the preview, publish and PDF builds alike; and buildSlideRequests,
  * read-tolerantly, for a client-held draft that reached a route with no guard
  * in front of it. A repair written anywhere else is a repair one of those
- * paths does not see. Three repairs, in this order:
+ * paths does not see. Two repairs, in this order:
  *
  *   1. THE HUB (normaliseHub, above): misplaced `groups`, `items` and
  *      `caption` lifted into `hub`, and a layout-less slide that draws
  *      connections called a hub.
  *   2. IMAGE-SPLIT WITH A SECOND COLUMN IS DRAWN AS PHOTO-RAIL
  *      (promoteSplitColumns).
- *   3. `imageQuery` IS FOLDED INTO `image`, on a layout that draws a picture
- *      (foldImageQuery).
  *
  * The hub goes first because it can SETTLE a layout — a layout-less slide
- * with connections becomes "hub" — and the other two read the layout. Each
+ * with connections becomes "hub" — and the promotion reads the layout. Each
  * step is pure, idempotent, and hands back the very object it was given when
  * it has nothing to do, which resolveDeckImages relies on to know whether to
  * write in place.
+ *
+ * THE PICTURE FOLD IS NOT ONE OF THEM, and that is the regression d1c7faf
+ * shipped (2026-09-23) and this closes. It ran here, so it ran on READ, and a
+ * brief the draft had never resolved became one resolution would buy: the
+ * reopened preview (draftPreview, which resolves nothing) drew slides 2, 4,
+ * 14 and 16 of 3ec51a09 with no picture, while publishing the same unedited
+ * draft — which resolves with no generator — searched stock for all four and
+ * put four photographs in Drive that nobody had been shown. Three stored
+ * drafts carried such briefs (3ec51a09, cd96db5a, 277e13cb). A repair made on
+ * read may change what is DRAWN; it may not change what is BOUGHT. The hub is
+ * a drawing and the promotion keeps the approved file, so both stay here. The
+ * fold buys a photograph, so it runs where one is about to be resolved AND
+ * shown — normaliseSlideForWrite, below — and nowhere else.
  */
 export function normaliseSlide<T>(slide: T): T {
-  return foldImageQuery(promoteSplitColumns(normaliseHub(slide)));
+  return promoteSplitColumns(normaliseHub(slide));
+}
+
+/**
+ * A slide as it is WRITTEN: normaliseSlide, then `imageQuery` folded into
+ * `image` on a layout that draws a picture (foldImageQuery).
+ *
+ * TWO CALLERS, and both are write paths: the generate_slides guard, over the
+ * whole deck on every build, edit, insert and removal, and applyEditSlide's
+ * inserts and patches, which the guard then sees again. Each is always
+ * followed by a resolution WITH the generator and a fresh preview drawn from
+ * the resolved spec, so a brief folded here is resolved and on screen before
+ * anybody can press Create. Never where a stored draft is read, previewed or
+ * published: those paths resolve with no generator or not at all, and a
+ * picture folded there is one the user never saw. Check 51e drives every path
+ * of both kinds by name.
+ */
+export function normaliseSlideForWrite<T>(slide: T): T {
+  return foldImageQuery(normaliseSlide(slide));
 }
 
 /** Is this picture brief a UI CAPTURE rather than a photograph? The builder's
@@ -369,6 +398,20 @@ export function normaliseSlide<T>(slide: T): T {
  *  to ask it, and this file cannot import the builder. */
 export function isScreenshotImage(image: any): boolean {
   return !!(image && (image.screenshot || (image.callouts && image.callouts.length > 0)));
+}
+
+/** Does this brief NAME a picture to go and find — a URL, a search or an
+ *  attachment? The resolver's own question (generate.ts's namesAPicture asks
+ *  it through here), so the fold below and resolution cannot disagree about
+ *  what counts as a picture.
+ *
+ *  A BLANK STRING NAMES NOTHING. `{ query: "  " }` used to pass here, reach
+ *  the stock search as an empty query, and come back as "no photograph could
+ *  be found" for a picture nobody had described. */
+export function namesAPicture(image: any): boolean {
+  if (!isObj(image)) return false;
+  const named = (v: any) => typeof v === "string" && v.trim() !== "";
+  return named(image.url) || named(image.query) || !!image.attachment;
 }
 
 /**
@@ -473,7 +516,8 @@ export function drawsSlidePicture(slide: any, index: number = 1): boolean {
 }
 
 /**
- * `imageQuery` BECOMES `image: { query }`, on every route.
+ * `imageQuery` BECOMES `image: { query }`, on every WRITE route
+ * (normaliseSlideForWrite says which, and why never on a read).
  *
  * THE INCIDENT, 2026-09-22 (thread 3ec51a09 again). Slides 2, 4, 14 and 16 are
  * `content` slides carrying `imageQuery` — the field editSlide accepts, which
@@ -487,10 +531,19 @@ export function drawsSlidePicture(slide: any, index: number = 1): boolean {
  * resolveDeckImages resolves any slide naming a picture that has no
  * `resolvedImage` and no `imageUnavailable`.
  *
- * `image` WINS WHEN BOTH ARE SENT, the precedent the edit patch already set:
- * it is the only one of the two that can carry an attachment, a region or a
- * callout, and a brief that says less must not overwrite one that says more.
- * The losing `imageQuery` is removed, so it is not replayed next turn.
+ * `image` WINS WHEN BOTH ARE SENT AND IT NAMES A PICTURE, the precedent the
+ * edit patch already set: it is the only one of the two that can carry an
+ * attachment, a region or a callout, and a brief that says less must not
+ * overwrite one that says more. The losing `imageQuery` is removed, so it is
+ * not replayed next turn.
+ *
+ * AND ONLY WHEN IT NAMES ONE, asked with the resolver's own predicate. This
+ * counted KEYS, so `{ query: "" }`, `{ screenshot: false }` or `{ callouts: [] }`
+ * beside imageQuery "Obama Presidential Center facade" won, deleted the real
+ * brief, and the slide drew no picture with nothing said and nothing counted
+ * as dropped. An `image` that names no picture is not a brief; the query is
+ * folded INTO it, so whatever else it says — callouts, a screenshot flag — is
+ * kept beside the search it was missing.
  *
  * ONLY ON A LAYOUT THAT DRAWS A PICTURE. On the rest — a stat, a table, a hub
  * — a folded brief would buy a stock search or a generation and a Blob upload
@@ -504,17 +557,65 @@ export function drawsSlidePicture(slide: any, index: number = 1): boolean {
 function foldImageQuery<T>(slide: T): T {
   const s: any = slide;
   if (!isObj(s) || s.imageQuery === undefined) return slide;
-  // An EMPTY `image: {}` says nothing, and is not a brief that can win.
-  if (isObj(s.image) && Object.keys(s.image).length > 0) {
+  if (namesAPicture(s.image)) {
     const out: any = { ...s };
     delete out.imageQuery;
     return out;
   }
   if (typeof s.imageQuery !== "string" || !s.imageQuery.trim()) return slide;
   if (!drawsSlidePicture(s)) return slide;
-  const out: any = { ...s, image: { query: s.imageQuery.trim() } };
+  const out: any = { ...s, image: { ...(isObj(s.image) ? s.image : {}), query: s.imageQuery.trim() } };
   delete out.imageQuery;
   return out;
+}
+
+/** The field a layout is drawn from, or undefined for a layout drawn from its
+ *  words alone. For the builder's note on a photograph a layout cannot draw,
+ *  which has to know whether moving the slide would cost it its payload. */
+export function payloadOf(layout: string): string | undefined {
+  return REQUIRED_PAYLOAD[layout];
+}
+
+/**
+ * A PHOTOGRAPH BRIEF NOTHING WILL FETCH IS SAID ONCE, AND THEN DROPPED.
+ *
+ * An `imageQuery` on a layout that draws no picture is left on the slide by
+ * the fold and declared by the builder (a photograph was asked for and this
+ * layout draws none). It was declared on EVERY build of the deck, because the
+ * brief is stored and replayed: an unrelated edit of slide 1 of 277e13cb
+ * re-announced slide 7's photograph, a cost d1c7faf had already refused to pay
+ * for layoutAsked. And nothing could clear it — a patch of `imageQuery: ""`
+ * leaves the stored brief, and one with nothing else in it is refused as
+ * asking for no change.
+ *
+ * So the build that INTRODUCES the brief declares it, and the next write
+ * drops it: a brief on the incoming slide that the STORED deck already carried
+ * on a slide which could not fold it either was declared when that deck was
+ * built, and is removed rather than replayed. A brief the call brings for the
+ * first time is kept, for this build to declare. One declared brief per
+ * sentence, once — whether the next turn edits, inserts or resends the deck.
+ *
+ * A brief the stored deck carried on a layout that DOES draw a picture is not
+ * touched here: normaliseSlideForWrite folds it, which is how 3ec51a09's four
+ * content slides get their photographs on the next edit.
+ */
+export function retireDeclaredBriefs<T>(slides: T[], stored: any[] | null | undefined): T[] {
+  if (!Array.isArray(stored) || !stored.length) return slides;
+  const declared: string[] = [];
+  for (let i = 0; i < stored.length; i++) {
+    const st = stored[i];
+    if (!isObj(st) || typeof st.imageQuery !== "string" || !st.imageQuery.trim()) continue;
+    if (!drawsSlidePicture(st, i)) declared.push(st.imageQuery.trim());
+  }
+  if (!declared.length) return slides;
+  return slides.map((slide) => {
+    const s: any = slide;
+    if (!isObj(s) || typeof s.imageQuery !== "string") return slide;
+    if (declared.indexOf(s.imageQuery.trim()) < 0) return slide;
+    const out: any = { ...s };
+    delete out.imageQuery;
+    return out;
+  });
 }
 
 /** Is the payload this layout is drawn from there, and does it draw? For every
@@ -1054,7 +1155,8 @@ function applyEditSlideTo(
         // below, and the picture fold has to be decided on the layout the
         // slide will HAVE — a layout-less slide with cards becomes "cards"
         // here, which draws no picture, where the builder would have read it
-        // as content, which does. normaliseSlide runs whole at the end.
+        // as content, which does. normaliseSlideForWrite runs whole at the
+        // end.
         const one: any = normaliseHub(typed.out);
         // A slide carrying connections and no layout is a hub, the way one
         // carrying cards is a cards slide.
@@ -1085,9 +1187,10 @@ function applyEditSlideTo(
         // slide sent with both `image` and `imageQuery` had its image — the
         // only brief that can carry an attachment or a callout — overwritten
         // by the lesser one, the opposite of the patch path below; and a stat
-        // or table slide bought a photograph it never draws. normaliseSlide
-        // decides both the way every other route now does.
-        return normaliseSlide(one);
+        // or table slide bought a photograph it never draws.
+        // normaliseSlideForWrite decides both the way every other write
+        // route now does.
+        return normaliseSlideForWrite(one);
       });
       if (faults.length) {
         throw new SlideCallRefusal(`Cannot insert these slides: ${faults.join("; ")}.`, { scope: "insert", faults: people });
@@ -1098,7 +1201,8 @@ function applyEditSlideTo(
     // The same repair for a single insert, so `groups`, `items` or `caption`
     // sent beside the new slide's title reach `hub` — which is what the
     // payload copy below carries onto the slide. The hub only: the rest of
-    // normaliseSlide runs on the finished slide, once its layout is settled.
+    // normaliseSlideForWrite runs on the finished slide, once its layout is
+    // settled.
     edit = normaliseHub(edit);
 
     if (
@@ -1147,11 +1251,11 @@ function applyEditSlideTo(
     for (const f of PAYLOAD_FIELDS) {
       if (f !== "cards" && !isEmptyPayload(edit[f])) fresh[f] = edit[f];
     }
-    // The brief as it was sent; normaliseSlide folds it, or leaves it for the
-    // builder to declare on a layout that draws no picture.
+    // The brief as it was sent; normaliseSlideForWrite folds it, or leaves it
+    // for the builder to declare on a layout that draws no picture.
     if (isObj(edit.image)) fresh.image = edit.image;
-    else if (edit.imageQuery?.trim()) fresh.imageQuery = edit.imageQuery.trim();
-    return slides.slice(0, at).concat([normaliseSlide(fresh)], slides.slice(at));
+    if (edit.imageQuery?.trim()) fresh.imageQuery = edit.imageQuery.trim();
+    return slides.slice(0, at).concat([normaliseSlideForWrite(fresh)], slides.slice(at));
   }
 
   const idx = (edit.slideNumber ?? 0) - 1;
@@ -1232,7 +1336,17 @@ function applyEditSlideTo(
   }
   return slides.map((sl, i) => {
     if (i !== idx) return sl;                       // every other slide byte-for-byte
-    const next: any = { ...sl };
+    // FROM THE SLIDE AS IT IS DRAWN, not as it is stored. 3ec51a09's slides 9
+    // and 11 are STORED as image-split carrying `bodyRight` until the first
+    // edit rewrites them, and the layout comparison below read that raw name:
+    // a patch restating "image-split", or asking for "photo-rail", compared
+    // photo-rail with image-split, called it a change of box, cleared the
+    // approved photograph and searched again — the one thing the promotion
+    // exists to prevent. Comparing against the drawn layout alone was not
+    // enough either: it kept the file UNMARKED, a 0.839 crop in a 0.736 box
+    // that nothing would ever re-cut. Starting from the promoted view keeps
+    // the same file AND its bakedFor mark, in every case.
+    const next: any = { ...promoteSplitColumns(sl) };
     if (isObj(edit.image) || edit.imageQuery?.trim()) {
       // New picture: set the brief and drop the resolved image so a fresh one is
       // fetched. imageUnavailable is cleared so resolution runs again. `image`
@@ -1242,14 +1356,20 @@ function applyEditSlideTo(
       // whole slide through insertSlides to add one.
       //
       // The new brief REPLACES the old one either way, and a query goes back
-      // as `imageQuery` for normaliseSlide to fold (below) — so a picture
-      // asked for on a layout that draws none is declared, not bought.
-      if (isObj(edit.image)) {
+      // as `imageQuery` for normaliseSlideForWrite to fold (below) — so a
+      // picture asked for on a layout that draws none is declared, not bought.
+      //
+      // `image` wins only when it NAMES a picture (namesAPicture, the
+      // resolver's own predicate). An `image` of callouts alone is kept, and
+      // the query is folded into it rather than thrown away.
+      if (namesAPicture(edit.image)) {
         next.image = edit.image;
         delete next.imageQuery;
       } else {
-        delete next.image;
-        next.imageQuery = String(edit.imageQuery).trim();
+        if (isObj(edit.image)) next.image = edit.image;
+        else delete next.image;
+        if (edit.imageQuery?.trim()) next.imageQuery = String(edit.imageQuery).trim();
+        else delete next.imageQuery;
       }
       delete next.resolvedImage;
       delete next.imageUnavailable;
@@ -1294,6 +1414,6 @@ function applyEditSlideTo(
     }
     // On the FINISHED slide, so a patch that changes the layout and the
     // picture together is folded against the layout it lands on.
-    return normaliseSlide(next);
+    return normaliseSlideForWrite(next);
   });
 }

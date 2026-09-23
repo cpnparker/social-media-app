@@ -61,6 +61,14 @@
  * KILLED  an even water-fill in place of roll-forward plus hand-back -> the
  *           plan the old rule showed whole is cut to 58 of 79. Spending the
  *           remainder is not enough; the fix may only ADD.
+ * And two the first log did not have, found as survivors by the 2026-09-23
+ * verification (N10, N18) and closed the same day, detached worktree at
+ * d1c7faf plus the change, each mutant alone:
+ * KILLED  the ceiling's 8 characters of slack per cut sheet removed -> the
+ *           digit sweep runs past its budget (N10: survived before the sweep)
+ * KILLED  `continue` past a sheet whose next row does not fit changed to
+ *           `break` -> the keyword tab starves behind the paragraph tab (N18:
+ *           survived before the third fixture)
  *
  * SURVIVED, then killed by section 7: that same UTC-formatting mutation, run on
  *   a machine whose own timezone is UTC. Local and UTC fields are identical
@@ -337,6 +345,56 @@ console.log("\n3b. The budget left over goes back to the sheets that were cut");
     `precondition: both the prose tab and the keyword tab are still cut (${es && es.emitted}/${es && es.nonEmpty}, ${kws && kws.emitted}/${kws && kws.nonEmpty})`);
   assert(!!es && es.emitted - proseFirst >= 3,
     `a tab of paragraph rows gains a row per round, not the one row an even share of characters buys: +${es && es.emitted - proseFirst} (keywords at ${kws && kws.emitted})`);
+
+  // PAST A SHEET WHOSE NEXT ROW NO LONGER FITS, THE ROUND GOES ON. "Until no
+  // cut sheet's next row fits" means every sheet's: a paragraph tab whose
+  // next row is 865 characters stops early in the last rounds, and the
+  // keyword tab behind it keeps taking its short rows until the ceiling. Stop
+  // the round at the first sheet that cannot take a row and the keywords
+  // starve with a third of the remainder unspent (46 rows where 57 fit, 335
+  // characters left). On the real Amrize workbook that was Keyword Universe
+  // at 39 of 61 instead of 40.
+  const wb3 = XLSX.utils.book_new();
+  const longRows: any[][] = [["Finding"]];
+  for (let i = 0; i < 30; i++) longRows.push([`Finding ${i + 1}: ${"the branded share of organic traffic is ninety-seven percent ".repeat(14)}`]);
+  XLSX.utils.book_append_sheet(wb3, XLSX.utils.aoa_to_sheet(longRows), "Executive Summary");
+  const kw3: any[][] = [["Keyword", "Volume"]];
+  for (let i = 0; i < 300; i++) kw3.push([`ready mix concrete ${i}`, 1000 + i]);
+  XLSX.utils.book_append_sheet(wb3, XLSX.utils.aoa_to_sheet(kw3), "Keywords");
+  for (const n of ["GAF", "Holcim", "Vulcan"]) XLSX.utils.book_append_sheet(wb3, XLSX.utils.aoa_to_sheet([["Domain", "DR"], [`${n}.com`, 70]]), n);
+  const out3 = workbookToText(XLSX.write(wb3, { type: "buffer", bookType: "xlsx" }) as Buffer, { maxChars: BUDGET });
+  const long3 = out3.sheets[0], kws3 = out3.sheets[1];
+  assert(long3.emitted < long3.nonEmpty && kws3.emitted < kws3.nonEmpty && BUDGET - out3.text.length < longRows[1][0].length,
+    `precondition: both tabs are still cut and what is left is less than a paragraph row (${long3.emitted}/${long3.nonEmpty}, ${kws3.emitted}/${kws3.nonEmpty}, ${BUDGET - out3.text.length} left)`);
+  assert(BUDGET - out3.text.length < 60,
+    `the keyword tab behind a paragraph tab that has stopped fitting keeps gaining rows: ${BUDGET - out3.text.length} characters left unspent, keywords at ${kws3.emitted}`);
+
+  // AND THE TEXT STAYS WITHIN THE BUDGET WHEN THE COUNTS GAIN A DIGIT. Pass
+  // two spends to a ceiling measured on pass one's contents line, and then
+  // rewrites it: "9 shown" becomes "10 shown", and each sheet's own "… 9 of
+  // this sheet's rows" line gains the same digit. The ceiling keeps 8
+  // characters a cut sheet for exactly that, and without them this fixture —
+  // two paragraph tabs cut from 9 or fewer rows to 10 or more — runs past
+  // the budget at 18 of these 200 budgets, by up to 9 characters. Swept
+  // character by character, because whether the last row lands inside those
+  // few characters of the ceiling depends on the budget to the character.
+  const wb4 = XLSX.utils.book_new();
+  for (let sh = 0; sh < 2; sh++) {
+    const a: any[][] = [];
+    for (let r = 0; r < 60; r++) a.push(["r" + r, "x".repeat(90)]);
+    XLSX.utils.book_append_sheet(wb4, XLSX.utils.aoa_to_sheet(a), "Big " + sh);
+  }
+  for (let sh = 0; sh < 5; sh++) XLSX.utils.book_append_sheet(wb4, XLSX.utils.aoa_to_sheet([["a", "b"], ["c", 1]]), "Small " + sh);
+  const buf4 = XLSX.write(wb4, { type: "buffer", bookType: "xlsx" }) as Buffer;
+  let crossed = 0;
+  const overs: string[] = [];
+  for (let B = 3000; B < 3200; B++) {
+    const o = workbookToText(buf4, { maxChars: B });
+    if (o.sheets[0].emitted >= 10 && o.sheets[0].emitted < o.sheets[0].nonEmpty) crossed++;
+    if (o.text.length > B) overs.push(`${o.text.length} of ${B}`);
+  }
+  assert(crossed > 100, `precondition: the sweep's cut tabs reach double figures (${crossed} of 200 budgets)`);
+  assert(overs.length === 0, `the text ran past its budget once the counts gained a digit: ${overs.slice(0, 4).join(", ")}${overs.length > 4 ? ` and ${overs.length - 4} more` : ""}`);
 }
 
 // ── 4. Blank rows are not truncation ───────────────────────────────────────
