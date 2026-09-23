@@ -8,11 +8,12 @@
  * SDKs and server-only config), so logic that lived there could not be tested
  * at all. Guarded by scripts/verify-slide-edit.ts.
  *
- * brand.ts is the one thing it imports, and only for the stepper's bounds. That
- * module is a true leaf — no imports of its own, no server config — so the
- * property this file's seam was cut for is intact.
+ * brand.ts is the one thing it imports: the stepper's bounds, and layoutOf,
+ * which the picture fold needs in order to know what a layout name will be
+ * drawn as. That module is a true leaf — no imports of its own, no server
+ * config — so the property this file's seam was cut for is intact.
  */
-import { STEPPER } from "@/lib/slides/brand";
+import { STEPPER, layoutOf } from "@/lib/slides/brand";
 
 /** What each layout is DRAWN FROM. A layout in this table with its field
  *  missing has nothing to render: the slide comes out as a title over empty
@@ -264,7 +265,7 @@ const looksLikeItems = (a: any): boolean =>
  * write time in the guard AND at read time in buildSlideRequests, so a stored
  * deck is normalised again every time it is drawn.
  */
-export function normaliseSlide<T>(slide: T): T {
+function normaliseHub<T>(slide: T): T {
   const s: any = slide;
   if (!isObj(s)) return slide;
   const isHub = s.layout === "hub";
@@ -327,6 +328,192 @@ export function normaliseSlide<T>(slide: T): T {
     if (bare && bare.split(/\s+/).length <= 3) work.title = bare;
   }
   out.hub = work;
+  return out;
+}
+
+/**
+ * A slide as the builder will DRAW it, from whatever route it arrived by.
+ *
+ * THE ONE PLACE A SLIDE IS REPAIRED, and it is one place because every reader
+ * already calls it: the generate_slides guard over the WHOLE deck on every
+ * build, edit, insert and removal (so a stored draft is repaired on the next
+ * turn that touches ANY slide of it, and the repaired spec is what is stored);
+ * the splitter, before it cuts or copies anything; resolveDeckImages, in
+ * place, on the preview, publish and PDF builds alike; and buildSlideRequests,
+ * read-tolerantly, for a client-held draft that reached a route with no guard
+ * in front of it. A repair written anywhere else is a repair one of those
+ * paths does not see. Three repairs, in this order:
+ *
+ *   1. THE HUB (normaliseHub, above): misplaced `groups`, `items` and
+ *      `caption` lifted into `hub`, and a layout-less slide that draws
+ *      connections called a hub.
+ *   2. IMAGE-SPLIT WITH A SECOND COLUMN IS DRAWN AS PHOTO-RAIL
+ *      (promoteSplitColumns).
+ *   3. `imageQuery` IS FOLDED INTO `image`, on a layout that draws a picture
+ *      (foldImageQuery).
+ *
+ * The hub goes first because it can SETTLE a layout — a layout-less slide
+ * with connections becomes "hub" — and the other two read the layout. Each
+ * step is pure, idempotent, and hands back the very object it was given when
+ * it has nothing to do, which resolveDeckImages relies on to know whether to
+ * write in place.
+ */
+export function normaliseSlide<T>(slide: T): T {
+  return foldImageQuery(promoteSplitColumns(normaliseHub(slide)));
+}
+
+/** Is this picture brief a UI CAPTURE rather than a photograph? The builder's
+ *  isScreenshot reads this, so the question has one answer: `screenshot`, or
+ *  any callouts (a slide that points at a control is pointing at an
+ *  interface). Here rather than in the builder because promoteSplitColumns has
+ *  to ask it, and this file cannot import the builder. */
+export function isScreenshotImage(image: any): boolean {
+  return !!(image && (image.screenshot || (image.callouts && image.callouts.length > 0)));
+}
+
+/**
+ * AN IMAGE-SPLIT SLIDE CARRYING `bodyRight` IS DRAWN AS PHOTO-RAIL.
+ *
+ * THE INCIDENT, 2026-09-22 (thread 3ec51a09, the Amrize workshop deck).
+ * image-split draws the title and ONE column, `body`, beside a bled
+ * photograph. Slides 9 and 11 were image-split carrying `bodyRight` as well,
+ * so half their prose was never drawn — slide 9 was titled "Four articles in
+ * production right now" and showed two of them. The model had been told
+ * image-split was "the workhorse for making a deck visual" AND photo-rail was
+ * "the workhorse page for an argument that has a picture … supply image plus
+ * body and bodyRight", and it picked the one that drops half the words.
+ * photo-rail is the layout built for exactly this content — a picture and two
+ * prose columns — and rebuilt that way the deck's dropped strings went from 8
+ * to 0 with no new geometry fault.
+ *
+ * PROMOTED RATHER THAN REFUSED, and the difference is the thread above: the
+ * slides are already STORED, and a refusal only reaches a call. Promoted
+ * here, they are fixed on the next edit of any slide in that deck — the guard
+ * normalises the whole deck — and in every preview, PDF and publish before
+ * then, because each of those normalises on read.
+ *
+ * NOT A SCREENSHOT. image-split is one of the two layouts that draws a
+ * screenshot's callouts — the pins on the picture and the numbered lines
+ * beside it — and draws the capture raw at its own shape on a mat. photo-rail
+ * does neither: it crops every picture to a fixed 0.736 portrait box, so a UI
+ * capture would lose its callouts AND be cut to a sliver of the interface the
+ * slide is about. A screenshot slide therefore stays image-split, its
+ * `bodyRight` stays undrawn, and droppedContent names that column to the
+ * model exactly as it did before — one lost column declared, rather than a
+ * whole slide's pointing silently traded for it.
+ *
+ * NOT THE SUBTITLE ON ITS OWN. An image-split `subtitle` without `bodyRight` is
+ * left undrawn by a decision Chris took on 2026-09-17 (see the image-split
+ * branch in generate.ts); this does not reopen it. A promoted slide DOES draw
+ * its subtitle, because photo-rail draws one — the decision was about
+ * image-split's column, and this slide is no longer in it.
+ *
+ * THE PICTURE IS MARKED, NOT DROPPED. A picture already resolved for this
+ * slide was baked to image-split's box — a 0.839 crop of the half-slide —
+ * and photo-rail draws a 0.736 portrait. Google Slides fits an image INSIDE
+ * its box preserving aspect, so the old file would arrive letterboxed in the
+ * deck, and in the chat preview, which fits the way Slides does; only the PDF
+ * print, which covers, would have looked right. Dropping it would re-run the
+ * SEARCH, and a search is not guaranteed to return the photograph the user
+ * approved (resolveDeckImages explains why that matters). So it is kept, with
+ * `bakedFor` recording the box it was cut for, and resolution re-bakes THE
+ * SAME FILE to photo-rail's shape. Pure: the resolved image is copied, never
+ * written to.
+ *
+ * NOT DECLARED as "asked for image-split, drawn as photo-rail", on purpose.
+ * layoutAsked is the channel for a name that does not exist, and it is
+ * STORED — a promotion recorded there would be repeated to the model on every
+ * turn of this deck for the rest of its life. Nothing here is lost, the
+ * repaired layout is what the next turn replays, and the model's warnings
+ * are read closely enough already that it called four real losses "two minor
+ * cosmetic notes": a line announcing a gain would make that worse, not better.
+ */
+function promoteSplitColumns<T>(slide: T): T {
+  const s: any = slide;
+  if (!isObj(s) || s.layout !== "image-split") return slide;
+  if (!(typeof s.bodyRight === "string" && s.bodyRight.trim())) return slide;
+  if (isScreenshotImage(s.image)) return slide;
+  const out: any = { ...s, layout: "photo-rail" };
+  if (isObj(s.resolvedImage) && typeof s.resolvedImage.url === "string" && s.resolvedImage.url) {
+    out.resolvedImage = { ...s.resolvedImage, bakedFor: s.resolvedImage.bakedFor || "image-split" };
+  }
+  return out;
+}
+
+/** THE LAYOUTS THAT DRAW A SLIDE'S OWN PICTURE — the one `image` names and
+ *  resolution turns into `resolvedImage`. Eight of the thirty-two. A card's
+ *  picture, a quote's portrait and a grid's thumbnails are other fields, and
+ *  are not this.
+ *
+ *  MEASURED, NOT REMEMBERED: check 51 of scripts/verify-slide-layouts.ts
+ *  builds every layout in the enum, and every alias, with a stub picture and
+ *  asserts this list is exactly the set whose requests place it. A list that
+ *  says a layout draws a picture it does not pays for a search on every slide
+ *  of that layout; one that misses a layout that does is the bug this list
+ *  was written to close. */
+export const PICTURE_LAYOUTS: string[] = [
+  "cover", "section", "content", "case-study", "image-split", "feature", "photo-rail", "closing",
+];
+
+/** Would this slide draw the picture its `image` names?
+ *
+ *  Its layout as the builder will settle it — an alias as its layout, a
+ *  missing one as `content` (at index 0 it is `cover`, and both draw) — and
+ *  one exception the measurement found: a content or case-study slide with a
+ *  PANEL gives up its rail for it, because the master's right-hand column
+ *  carries a panel or a picture and never both. */
+export function drawsSlidePicture(slide: any, index: number = 1): boolean {
+  if (!isObj(slide)) return false;
+  const layout = layoutOf(typeof slide.layout === "string" ? slide.layout : undefined, index);
+  if (PICTURE_LAYOUTS.indexOf(layout) < 0) return false;
+  const panel = slide.panel;
+  const hasPanel = isObj(panel) &&
+    ((Array.isArray(panel.items) && panel.items.length > 0) || (typeof panel.title === "string" && panel.title.trim() !== ""));
+  return !(hasPanel && (layout === "content" || layout === "case-study"));
+}
+
+/**
+ * `imageQuery` BECOMES `image: { query }`, on every route.
+ *
+ * THE INCIDENT, 2026-09-22 (thread 3ec51a09 again). Slides 2, 4, 14 and 16 are
+ * `content` slides carrying `imageQuery` — the field editSlide accepts, which
+ * the model carried into a full `slides` build — and no `image`. The insert
+ * and edit paths had always folded the one into the other; the CREATION path
+ * never did, so four slides that asked for a photo rail (which `content`
+ * draws, given `image.query`) were drawn as walls of bullets, and the
+ * dropped-content audit reported each photo brief to the model as slide TEXT
+ * that had gone missing. Folded here, the stored slides get their picture on
+ * the next edit of that deck: the guard normalises every slide, and
+ * resolveDeckImages resolves any slide naming a picture that has no
+ * `resolvedImage` and no `imageUnavailable`.
+ *
+ * `image` WINS WHEN BOTH ARE SENT, the precedent the edit patch already set:
+ * it is the only one of the two that can carry an attachment, a region or a
+ * callout, and a brief that says less must not overwrite one that says more.
+ * The losing `imageQuery` is removed, so it is not replayed next turn.
+ *
+ * ONLY ON A LAYOUT THAT DRAWS A PICTURE. On the rest — a stat, a table, a hub
+ * — a folded brief would buy a stock search or a generation and a Blob upload
+ * for a photograph nobody sees, and add the wait to every build of the deck.
+ * So the brief is left where the model put it and nothing is fetched; the
+ * builder says so to the model in the deck's warnings (a photograph was asked
+ * for and this layout draws none), and a later edit that moves the slide to a
+ * layout that does draw one folds it then, because the brief is still there
+ * to fold.
+ */
+function foldImageQuery<T>(slide: T): T {
+  const s: any = slide;
+  if (!isObj(s) || s.imageQuery === undefined) return slide;
+  // An EMPTY `image: {}` says nothing, and is not a brief that can win.
+  if (isObj(s.image) && Object.keys(s.image).length > 0) {
+    const out: any = { ...s };
+    delete out.imageQuery;
+    return out;
+  }
+  if (typeof s.imageQuery !== "string" || !s.imageQuery.trim()) return slide;
+  if (!drawsSlidePicture(s)) return slide;
+  const out: any = { ...s, image: { query: s.imageQuery.trim() } };
+  delete out.imageQuery;
   return out;
 }
 
@@ -863,7 +1050,12 @@ function applyEditSlideTo(
         // text fields as text, and a hub whose `groups` landed beside its
         // title is not a blank slide.
         const typed = textFaults({ ...(raw || {}) });
-        const one: any = normaliseSlide(typed.out);
+        // THE HUB ONLY, for now: the layout is not settled until the line
+        // below, and the picture fold has to be decided on the layout the
+        // slide will HAVE — a layout-less slide with cards becomes "cards"
+        // here, which draws no picture, where the builder would have read it
+        // as content, which does. normaliseSlide runs whole at the end.
+        const one: any = normaliseHub(typed.out);
         // A slide carrying connections and no layout is a hub, the way one
         // carrying cards is a cards slide.
         const lay = one.layout || (Array.isArray(one.cards) && one.cards.length ? "cards" : hubHasConnections(one.hub) ? "hub" : "content");
@@ -888,11 +1080,14 @@ function applyEditSlideTo(
           });
         }
         one.layout = lay;
-        if (one.imageQuery && String(one.imageQuery).trim()) {
-          one.image = { query: String(one.imageQuery).trim() };
-          delete one.imageQuery;
-        }
-        return one;
+        // THE PICTURE BRIEF THROUGH THE ONE RULE, not a copy of it. This
+        // folded `imageQuery` unconditionally and AFTER normalising, so a
+        // slide sent with both `image` and `imageQuery` had its image — the
+        // only brief that can carry an attachment or a callout — overwritten
+        // by the lesser one, the opposite of the patch path below; and a stat
+        // or table slide bought a photograph it never draws. normaliseSlide
+        // decides both the way every other route now does.
+        return normaliseSlide(one);
       });
       if (faults.length) {
         throw new SlideCallRefusal(`Cannot insert these slides: ${faults.join("; ")}.`, { scope: "insert", faults: people });
@@ -902,8 +1097,9 @@ function applyEditSlideTo(
 
     // The same repair for a single insert, so `groups`, `items` or `caption`
     // sent beside the new slide's title reach `hub` — which is what the
-    // payload copy below carries onto the slide.
-    edit = normaliseSlide(edit);
+    // payload copy below carries onto the slide. The hub only: the rest of
+    // normaliseSlide runs on the finished slide, once its layout is settled.
+    edit = normaliseHub(edit);
 
     if (
       typeof edit.title !== "string" &&
@@ -951,9 +1147,11 @@ function applyEditSlideTo(
     for (const f of PAYLOAD_FIELDS) {
       if (f !== "cards" && !isEmptyPayload(edit[f])) fresh[f] = edit[f];
     }
+    // The brief as it was sent; normaliseSlide folds it, or leaves it for the
+    // builder to declare on a layout that draws no picture.
     if (isObj(edit.image)) fresh.image = edit.image;
-    else if (edit.imageQuery?.trim()) fresh.image = { query: edit.imageQuery.trim() };
-    return slides.slice(0, at).concat([fresh], slides.slice(at));
+    else if (edit.imageQuery?.trim()) fresh.imageQuery = edit.imageQuery.trim();
+    return slides.slice(0, at).concat([normaliseSlide(fresh)], slides.slice(at));
   }
 
   const idx = (edit.slideNumber ?? 0) - 1;
@@ -1042,7 +1240,17 @@ function applyEditSlideTo(
       // carry an attachment, a region or a callout — a patch adding callouts to
       // a screenshot had no route here at all, so the model had to resend the
       // whole slide through insertSlides to add one.
-      next.image = isObj(edit.image) ? edit.image : { query: String(edit.imageQuery).trim() };
+      //
+      // The new brief REPLACES the old one either way, and a query goes back
+      // as `imageQuery` for normaliseSlide to fold (below) — so a picture
+      // asked for on a layout that draws none is declared, not bought.
+      if (isObj(edit.image)) {
+        next.image = edit.image;
+        delete next.imageQuery;
+      } else {
+        delete next.image;
+        next.imageQuery = String(edit.imageQuery).trim();
+      }
       delete next.resolvedImage;
       delete next.imageUnavailable;
       delete next.imageError;
@@ -1067,7 +1275,14 @@ function applyEditSlideTo(
       // re-resolve from, because a slide carrying a resolved picture and no
       // brief has nothing to fetch again and clearing it would lose the
       // photograph rather than re-crop it.
-      if (wanted !== next.layout && (isObj(next.image) || typeof next.image === "string")) {
+      //
+      // Compared as DRAWN, not as named. A promoted slide is stored as
+      // photo-rail; "make slide 9 image-split" on it lands on photo-rail again
+      // (it still carries `bodyRight`), and clearing its picture for a box
+      // that never changed would re-run the search — and could come back
+      // with a different photograph from the one the user approved.
+      const drawnWanted = promoteSplitColumns({ ...next, layout: wanted }).layout;
+      if (drawnWanted !== next.layout && (isObj(next.image) || typeof next.image === "string")) {
         delete next.resolvedImage;
         delete next.imageUnavailable;
         delete next.imageError;
@@ -1077,6 +1292,8 @@ function applyEditSlideTo(
     for (const f of PAYLOAD_FIELDS) {
       if (!isEmptyPayload(edit[f])) next[f] = edit[f];
     }
-    return next;
+    // On the FINISHED slide, so a patch that changes the layout and the
+    // picture together is folded against the layout it lands on.
+    return normaliseSlide(next);
   });
 }

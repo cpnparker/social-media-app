@@ -38,7 +38,31 @@ import { extractDocId } from "@/lib/gdrive/doc-link";
 
 const FORECAST_FILE_ID = process.env.FINANCE_FORECAST_FILE_ID || "1Skw6rHX5mtQMbkK5anbJrMwEL-2AHDab";
 const CACHE_MS = 10 * 60_000;
+/** What a NAME read hands the model: a partial-name match may be the wrong
+ *  document, and 8,000 characters is enough to find that out. */
 const MAX_CHARS = 8000;
+
+/**
+ * What a read BY ID hands the model — a link the user pasted, or a bare id.
+ *
+ * A link names ONE document on purpose, and 8,000 characters was not enough to
+ * read it. The final Obama Presidential Center article (Amrize, 2026-09-23) is
+ * 12,474 characters as Drive exports it, and the cut fell at 8,000, mid-
+ * sentence ("…says Vassil Draganov, a principal at"): the model never saw two
+ * of the five question headings, the 150% wind-test figure, or the FAQ at
+ * 10,834 — and it was being asked to score that article against a checklist
+ * whose tenth point IS the FAQ. The same document attached as a .docx arrived
+ * whole, so the attachment was the only road that worked, and the one the
+ * user was least likely to take.
+ *
+ * 24,000 is three times that article, roughly 6,000 tokens, re-sent on each
+ * tool round of the turn that read it. A document longer than this still gets
+ * the marker below and says how much of it was seen. The formatter in
+ * lib/ai/providers.ts slices the JSON it hands the model at DRIVE_RESULT_MAX_CHARS,
+ * which must clear this plus JSON escaping, or this number is a promise the
+ * next layer breaks — verify-incident-fixes section 19 drives both together.
+ */
+export const LINK_MAX_CHARS = 24_000;
 
 /**
  * The floor on a forced re-read of the list, so a model that retries in a loop
@@ -94,7 +118,9 @@ interface DriveFile { id: string; name: string; mimeType: string; modifiedTime: 
  */
 export interface DriveCaches {
   list: { at: number; files: DriveFile[] };
-  content: Map<string, { at: number; text: string }>;
+  /** `text` is at most LINK_MAX_CHARS; `full` is the document's real length,
+   *  which the truncation marker reports. */
+  content: Map<string, { at: number; text: string; full?: number }>;
   forcedAt: number;
   forcedFailedAt: number;
 }
@@ -329,9 +355,21 @@ function serializeSheetRows(ws: XLSX.WorkSheet, cap: number): string {
   return lines.join("\n");
 }
 
-async function readFileText(f: DriveFile, w: Wired): Promise<string> {
+/**
+ * A document's text, normalised — cached at the LARGEST cap and cut by the
+ * caller.
+ *
+ * Cut to the caller's cap here, the cache would hold whichever cap asked
+ * first: a name read at 8,000 would then answer the link read that came next
+ * with the same 8,000 characters, under a marker telling the model it had seen
+ * all a link gets. Held whole, a 300-page PDF would sit in a warm lambda's
+ * memory for as long as the lambda lives — nothing evicts this map, entries
+ * only go stale. So it holds what the largest reader can be handed, and the
+ * real length beside it for the marker.
+ */
+async function readFileText(f: DriveFile, w: Wired, cap: number = MAX_CHARS): Promise<string> {
   const cached = w.caches.content.get(f.id);
-  if (cached && w.now() - cached.at < CACHE_MS) return cached.text;
+  if (cached && w.now() - cached.at < CACHE_MS) return capText(cached.text, cap, cached.full);
 
   const token = await w.getToken();
   const auth = { Authorization: `Bearer ${token}` };
@@ -370,21 +408,24 @@ async function readFileText(f: DriveFile, w: Wired): Promise<string> {
 
   text = text.replace(/\n{3,}/g, "\n\n").trim();
 
-  // Say so when the document does not fit. Cutting silently meant the model
-  // read the first third of a brief and answered "the brief doesn't cover
-  // budget" — confidently — when budget was on page 6. A marker in the text
-  // itself is what reaches the model, whatever formats the result downstream.
-  if (text.length > MAX_CHARS) {
-    const full = text.length;
-    text =
-      text.slice(0, MAX_CHARS) +
-      `\n\n${TRUNCATION_MARKER} — showing the first ${MAX_CHARS.toLocaleString()} of ${full.toLocaleString()} characters of this document. ` +
-      `You have NOT seen the rest. Do not conclude the document omits something you did not read; ` +
-      `say which part you saw and offer to look at a specific section.]`;
-  }
+  w.caches.content.set(f.id, { at: w.now(), text: text.slice(0, LINK_MAX_CHARS), full: text.length });
+  return capText(text, cap);
+}
 
-  w.caches.content.set(f.id, { at: w.now(), text });
-  return text;
+/**
+ * Say so when the document does not fit. Cutting silently meant the model
+ * read the first third of a brief and answered "the brief doesn't cover
+ * budget" — confidently — when budget was on page 6. A marker in the text
+ * itself is what reaches the model, whatever formats the result downstream.
+ */
+function capText(text: string, cap: number, full: number = text.length): string {
+  if (full <= cap) return text;
+  return (
+    text.slice(0, cap) +
+    `\n\n${TRUNCATION_MARKER} — showing the first ${cap.toLocaleString()} of ${full.toLocaleString()} characters of this document. ` +
+    `You have NOT seen the rest. Do not conclude the document omits something you did not read; ` +
+    `say which part you saw and offer to look at a specific section.]`
+  );
 }
 
 /**
@@ -597,7 +638,7 @@ export async function queryDriveDocs(
     if (ident) {
       const outcome = await fetchById(ident.id, w);
       if (outcome.kind === "file") {
-        const text = await readFileText(outcome.file, w);
+        const text = await readFileText(outcome.file, w, LINK_MAX_CHARS);
         if (!text) return { data: [], count: 0, answered: true, error: `"${outcome.file.name}" contained no extractable text.` };
         return {
           data: {

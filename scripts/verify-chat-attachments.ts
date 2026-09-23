@@ -45,6 +45,23 @@
  * KILLED  a date formatted through UTC, which grew an "02:00" on it in Zurich
  *           and would have moved it to the previous day west of Greenwich
  *
+ * Section 3b, the remainder handed back (detached worktree at 4571a26 plus
+ * the change, 2026-09-23; each mutant alone, not self-test detectors):
+ * KILLED  pass two removed -> the summary stays at 25 rows with 540 of 6,000
+ *           characters unspent, and the paragraph tab gains nothing
+ * KILLED  pass two dealt against the raw budget, not the ceiling -> 6,391 of
+ *           6,000: the contents line and the marker were never counted
+ * KILLED  pass two skipping the first cut sheet -> the summary gains nothing
+ * KILLED  the contents line left at pass one's count -> the header says 25
+ *           shown over a block of 35
+ * KILLED  the remainder dealt as an even share of CHARACTERS -> the paragraph
+ *           tab gains one row where a row a round gives it three; this is the
+ *           version that shipped first here, and on the real workbook it gave
+ *           the Executive Summary one row and Organic US eleven
+ * KILLED  an even water-fill in place of roll-forward plus hand-back -> the
+ *           plan the old rule showed whole is cut to 58 of 79. Spending the
+ *           remainder is not enough; the fix may only ADD.
+ *
  * SURVIVED, then killed by section 7: that same UTC-formatting mutation, run on
  *   a machine whose own timezone is UTC. Local and UTC fields are identical
  *   there, so every date assertion stayed green while the formatter was wrong
@@ -236,6 +253,90 @@ console.log("\n3. A big sheet cannot starve the ones after it");
   const huge = out.sheets.filter((s) => s.name === "Huge")[0];
   assert(!!huge && huge.emitted < huge.nonEmpty, `precondition: the big sheet really was cut (${huge && huge.emitted} of ${huge && huge.nonEmpty})`);
   assert(/Break-even at 70%/.test(out.text), "and the sheet after it still reaches the model");
+}
+
+// ── 3b. What is left over goes back to the sheets that were cut ────────────
+//
+// The mirror image of section 3, and it is what a real workbook did. Rolling
+// the budget forward only helps sheets AFTER a small one, so the big sheets at
+// the FRONT — a README, an executive summary — were cut to an even share
+// while the small tabs behind them left the rest unspent. The Amrize demand
+// analysis (17 sheets, 2026-09-23) went out with its Executive Summary at 11
+// of 37 rows and 4,636 of its 60,000 characters never used. After the fix it
+// is 15 of 37, its README is whole, and no sheet shows fewer rows than before.
+//
+// The fixture has the same shape at a small budget: a big summary first,
+// three small tabs, and a plan LAST that the old rule showed whole. That plan
+// is the other half of the assertion: an even water-fill would spend the
+// remainder too, and would cut the plan to do it. The fix may only ADD.
+console.log("\n3b. The budget left over goes back to the sheets that were cut");
+{
+  const BUDGET = 6000;
+  const wb = XLSX.utils.book_new();
+  const summary: any[][] = [["Finding", "Detail"]];
+  for (let i = 0; i < 100; i++) summary.push([`Finding ${i + 1}`, `Branded share of organic traffic ${i}`]);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), "Summary");
+  for (const n of ["GAF", "Holcim", "Vulcan"]) {
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["Domain", "DR"], [`${n.toLowerCase()}.com`, 70]]), n);
+  }
+  const plan: any[][] = [["Month", "Page"]];
+  for (let i = 0; i < 78; i++) plan.push([`Month ${i + 1}`, `Answer-first page on ready mix ${i}`]);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(plan), "Plan");
+  const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
+
+  const read = XLSX.read(buf, { type: "buffer", cellDates: true });
+  // What the FIRST sheet got under the rule that shipped: an even fifth.
+  const firstPass = serializeSheet(read.Sheets["Summary"], { maxChars: Math.max(500, Math.floor(BUDGET / 5)) });
+  const planWhole = serializeSheet(read.Sheets["Plan"], { maxChars: 1e9 });
+  const out = workbookToText(buf, { maxChars: BUDGET });
+  const sheet = (name: string) => out.sheets.filter((x) => x.name === name)[0];
+  const sum = sheet("Summary");
+  const pl = sheet("Plan");
+
+  assert(firstPass.emitted < firstPass.nonEmpty && planWhole.text.length > BUDGET / 2.5,
+    `precondition: the summary is cut by an even share (${firstPass.emitted} of ${firstPass.nonEmpty}) and the plan is big enough that an even split would cut it (${planWhole.text.length} chars)`);
+  assert(!!sum && sum.emitted > firstPass.emitted,
+    `the summary gets the remainder back: ${sum && sum.emitted} rows, where an even share gave ${firstPass.emitted}`);
+  assert(out.text.length <= BUDGET, `and the text the model receives stays within the budget (${out.text.length} of ${BUDGET})`);
+  assert(BUDGET - out.text.length < 120,
+    `with the budget actually spent while a sheet is still cut: ${BUDGET - out.text.length} characters left unused`);
+  assert(!!pl && pl.emitted === pl.nonEmpty,
+    `and the plan, which the old rule showed whole, is STILL whole (${pl && pl.emitted} of ${pl && pl.nonEmpty}) — the fix only adds`);
+  let smallWhole = true;
+  for (const n of ["GAF", "Holcim", "Vulcan"]) { const x = sheet(n); if (!x || x.emitted !== x.nonEmpty) smallWhole = false; }
+  assert(smallWhole, "and every small tab is whole");
+  assert(/Summary \(101 rows, \d+ shown\)/.test(out.text.slice(0, out.text.indexOf("\n\n"))),
+    "and the contents line reports the summary's new count, not the first pass's");
+
+  // ROWS, NOT CHARACTERS. A summary's rows are paragraphs; a keyword tab's are
+  // a phrase and a number. Dealt as an even share of characters, the summary
+  // could not afford its next row, its share rolled on to the keywords, and
+  // the real Executive Summary gained one row while Organic US gained eleven.
+  // Dealt a row each per round, the prose tab gains a row in every round its
+  // next row still fits, and only what it cannot use goes to the short rows.
+  //
+  // Measured on this fixture: the remainder is about 1,400 characters and a
+  // prose row about 380. An even share of characters (~700) buys it ONE row;
+  // a row each per round buys it THREE, the keywords taking three plus the
+  // tail the prose could not use.
+  const wb2 = XLSX.utils.book_new();
+  const prose: any[][] = [["Finding"]];
+  for (let i = 0; i < 30; i++) prose.push([`Finding ${i + 1}: ${"the branded share of organic traffic is ninety-seven percent ".repeat(6)}`]);
+  XLSX.utils.book_append_sheet(wb2, XLSX.utils.aoa_to_sheet(prose), "Executive Summary");
+  const kw: any[][] = [["Keyword", "Volume"]];
+  for (let i = 0; i < 200; i++) kw.push([`ready mix concrete ${i}`, 1000 + i]);
+  XLSX.utils.book_append_sheet(wb2, XLSX.utils.aoa_to_sheet(kw), "Keywords");
+  XLSX.utils.book_append_sheet(wb2, XLSX.utils.aoa_to_sheet([["Note"], ["Owner: Chris"]]), "Notes");
+  const buf2 = XLSX.write(wb2, { type: "buffer", bookType: "xlsx" }) as Buffer;
+  const read2 = XLSX.read(buf2, { type: "buffer", cellDates: true });
+  const proseFirst = serializeSheet(read2.Sheets["Executive Summary"], { maxChars: Math.floor(BUDGET / 3) }).emitted;
+  const out2 = workbookToText(buf2, { maxChars: BUDGET });
+  const es = out2.sheets.filter((x) => x.name === "Executive Summary")[0];
+  const kws = out2.sheets.filter((x) => x.name === "Keywords")[0];
+  assert(!!es && !!kws && es.emitted < es.nonEmpty && kws.emitted < kws.nonEmpty,
+    `precondition: both the prose tab and the keyword tab are still cut (${es && es.emitted}/${es && es.nonEmpty}, ${kws && kws.emitted}/${kws && kws.nonEmpty})`);
+  assert(!!es && es.emitted - proseFirst >= 3,
+    `a tab of paragraph rows gains a row per round, not the one row an even share of characters buys: +${es && es.emitted - proseFirst} (keywords at ${kws && kws.emitted})`);
 }
 
 // ── 4. Blank rows are not truncation ───────────────────────────────────────

@@ -8177,6 +8177,9 @@ function driveShareInstruction(): string {
     : `Drive sharing is not configured on this deployment, so no address can be given. Say so rather than inventing one.`;
 }
 
+/** The most of a Drive result the model is handed. See formatDriveDocsResult. */
+export const DRIVE_RESULT_MAX_CHARS = 30_000;
+
 export function formatDriveDocsResult(result: { data: any; count: number; error?: string; notice?: string; answered?: boolean }): string {
   if (result.notice) return `${result.notice}\n\n${driveShareInstruction()}`;
   // DRIVE'S ANSWER, not a broken request. A definitive "not shared", a 403 and
@@ -8205,12 +8208,21 @@ export function formatDriveDocsResult(result: { data: any; count: number; error?
   // its contents are then read aloud by the assistant — same trust level as mail.
   //
   // The per-document truncation marker added in lib/gdrive/docs.ts sits at the
-  // END of the document text, so this 9,000-char slice could cut it straight
-  // off — JSON escaping inflates an 8,000-char document well past the budget.
-  // The signal has to be re-applied AFTER slicing or it does not survive.
+  // END of the document text, so this slice could cut it straight off — JSON
+  // escaping inflates a document past its own cap. The signal has to be
+  // re-applied AFTER slicing or it does not survive.
+  //
+  // SIZED FROM THE LARGEST THING docs.ts HANDS OVER, which is a read by link
+  // (LINK_MAX_CHARS, 24,000) plus its marker, its keys and the escaping. This
+  // was 9,000 against an 8,000 cap, and raising the link cap alone would have
+  // moved the cut from one layer to the next: the Obama article would have
+  // been read whole and then sliced here at the same sentence. Not imported —
+  // this formatter is synchronous and docs.ts is only ever loaded dynamically
+  // here — so verify-incident-fixes section 19 drives a full-cap read of
+  // escape-heavy text through BOTH and asserts it arrives whole.
   const json = JSON.stringify(result.data);
-  const cut = json.length > 9000;
-  const body = cut ? json.slice(0, 9000) : json;
+  const cut = json.length > DRIVE_RESULT_MAX_CHARS;
+  const body = cut ? json.slice(0, DRIVE_RESULT_MAX_CHARS) : json;
   const note = cut
     ? `\n\n[⚠ This tool result was truncated to fit. You have NOT seen the full document text. Do not conclude a document omits something you did not read — say which part you saw and offer to look at a specific section.]`
     : "";

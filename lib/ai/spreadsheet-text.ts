@@ -176,6 +176,16 @@ export function isoDates(ws: XLSX.WorkSheet): number {
  * is available to the ones after them. First-come would let one sheet of
  * workings take the lot, and the summary tab the file was attached for would
  * never appear.
+ *
+ * AND WHAT IS STILL UNSPENT AT THE END GOES BACK. Rolling forward only ever
+ * helps the sheets AFTER a small one, so the big sheets at the front of a
+ * workbook — where its README and its summary live — were cut to an even
+ * share while the small tabs behind them left the budget unspent. The Amrize
+ * demand analysis (17 sheets, 2026-09-23) went out with its Executive Summary
+ * cut to 11 of 37 rows and 4,636 of its 60,000 characters never used. A
+ * second pass now hands that remainder to the sheets that were cut, in sheet
+ * order, and only ever ADDS: every sheet shows at least the rows it showed
+ * before, so no tab that used to arrive whole can arrive cut.
  */
 export function workbookToText(
   buffer: Buffer | ArrayBuffer | Uint8Array,
@@ -210,43 +220,99 @@ export function sheetsToText(wb: XLSX.WorkBook, opts?: SheetTextOptions): Workbo
   const blocks: string[] = [];
   let spent = 0;
 
+  /** One sheet's block and what it costs against the budget. */
+  const blockFor = (name: string, s: ReturnType<typeof serializeSheet>): { block: string; cost: number } => {
+    if (!s.text) return { block: `### Sheet: ${name} — empty`, cost: name.length + 24 };
+    const head = `### Sheet: ${name} (${s.nonEmpty} row${s.nonEmpty === 1 ? "" : "s"}${s.cols ? ` × ${s.cols} column${s.cols === 1 ? "" : "s"}` : ""})`;
+    const cut = s.emitted < s.nonEmpty
+      ? `\n… ${s.emitted} of this sheet's ${s.nonEmpty} rows are shown. The rest were not included.`
+      : "";
+    return { block: `${head}\n${s.text}${cut}`, cost: head.length + s.text.length + cut.length + 2 };
+  };
+  /** The sheets pass one cut, for pass two: where their block sits, the
+   *  allowance they had, and what they cost. */
+  const cutSheets: { ws: XLSX.WorkSheet; name: string; at: number; summary: SheetSummary }[] = [];
+
   for (let i = 0; i < names.length; i++) {
     const ws = wb.Sheets[names[i]];
     if (!ws) continue;
     const remaining = names.length - i;
     const allowance = Math.max(500, Math.floor((budget - spent) / remaining));
     const s = serializeSheet(ws, { maxRows: opts?.maxRows, maxCols: opts?.maxCols, maxChars: allowance });
-    summaries.push({ name: names[i], rows: s.rows, cols: s.cols, nonEmpty: s.nonEmpty, emitted: s.emitted });
-
-    if (!s.text) {
-      blocks.push(`### Sheet: ${names[i]} — empty`);
-      spent += names[i].length + 24;
-      continue;
-    }
-    const head = `### Sheet: ${names[i]} (${s.nonEmpty} row${s.nonEmpty === 1 ? "" : "s"}${s.cols ? ` × ${s.cols} column${s.cols === 1 ? "" : "s"}` : ""})`;
-    const cut = s.emitted < s.nonEmpty
-      ? `\n… ${s.emitted} of this sheet's ${s.nonEmpty} rows are shown. The rest were not included.`
-      : "";
-    blocks.push(`${head}\n${s.text}${cut}`);
-    spent += head.length + s.text.length + cut.length + 2;
+    const summary: SheetSummary = { name: names[i], rows: s.rows, cols: s.cols, nonEmpty: s.nonEmpty, emitted: s.emitted };
+    summaries.push(summary);
+    const b = blockFor(names[i], s);
+    if (s.emitted < s.nonEmpty && s.text) cutSheets.push({ ws, name: names[i], at: blocks.length, summary });
+    blocks.push(b.block);
+    spent += b.cost;
   }
 
   // The contents page. A model that can see a sheet exists can ask for it; one
   // that cannot will answer as though the file did not contain it.
-  const index = summaries
-    .map((s) => `${s.name} (${s.nonEmpty} row${s.nonEmpty === 1 ? "" : "s"}${s.emitted < s.nonEmpty ? `, ${s.emitted} shown` : ""})`)
-    .join("; ");
-  const truncated = summaries.some((s) => s.emitted < s.nonEmpty);
+  const contents = (): string => {
+    const index = summaries
+      .map((s) => `${s.name} (${s.nonEmpty} row${s.nonEmpty === 1 ? "" : "s"}${s.emitted < s.nonEmpty ? `, ${s.emitted} shown` : ""})`)
+      .join("; ");
+    return `Workbook with ${summaries.length} sheet${summaries.length === 1 ? "" : "s"}: ${index}\n\n`;
+  };
+  const MARKER =
+    `\n\n${TRUNCATION_MARKER} — this workbook did not fit. The sheet list above gives every sheet's real ` +
+    `row count and how many of them are shown. You have NOT seen the rest. Do not total, count, or ` +
+    `conclude that something is absent, from rows you were not given; say which part you saw and offer ` +
+    `to look at a named sheet or range.]`;
 
-  let text = `Workbook with ${summaries.length} sheet${summaries.length === 1 ? "" : "s"}: ${index}\n\n${blocks.join("\n\n")}`;
-
-  if (truncated) {
-    text +=
-      `\n\n${TRUNCATION_MARKER} — this workbook did not fit. The sheet list above gives every sheet's real ` +
-      `row count and how many of them are shown. You have NOT seen the rest. Do not total, count, or ` +
-      `conclude that something is absent, from rows you were not given; say which part you saw and offer ` +
-      `to look at a named sheet or range.]`;
+  // PASS TWO: the remainder, back to the sheets that were cut — ONE ROW AT A
+  // TIME, round-robin in sheet order, until no cut sheet's next row fits.
+  //
+  // Rows, not characters, because a row is emitted whole or not at all and
+  // sheets differ wildly in how long a row is. Dealt as an even share of
+  // CHARACTERS, the Amrize Executive Summary — whose rows are paragraphs of
+  // up to 900 characters — could never use its share, which rolled on to the
+  // keyword tabs behind it at a hundred characters a row: it gained one row
+  // while Organic US gained eleven. Dealt a row each per round, every cut
+  // sheet gains rows at the same pace for as long as its rows still fit.
+  //
+  // Against a CEILING, not the raw budget: pass one never counted the
+  // contents line or the marker, which is harmless while it leaves room
+  // unspent and would not be once this pass spends the room exactly. So what
+  // this pass hands out stops where the text the model receives reaches the
+  // budget — the contents line measured as it stands, with slack for the
+  // "N shown" counts it is about to change.
+  const ceiling = budget - contents().length - MARKER.length - 8 * cutSheets.length;
+  if (cutSheets.length && spent < ceiling) {
+    // Each cut sheet's rows as serialised, uncapped: the same lines pass one
+    // emitted a prefix of, so adding the next is adding lines[emitted]. A
+    // line never holds a newline — cells are whitespace-collapsed — which is
+    // what makes a split on "\n" the serialiser's own row boundary.
+    const lines: string[][] = [];
+    for (let k = 0; k < cutSheets.length; k++) {
+      const whole = serializeSheet(cutSheets[k].ws, { maxRows: opts?.maxRows, maxCols: opts?.maxCols, maxChars: Number.MAX_SAFE_INTEGER });
+      lines.push(whole.text ? whole.text.split("\n") : []);
+    }
+    const shown: number[] = cutSheets.map((c) => c.summary.emitted);
+    let added = true;
+    while (added) {
+      added = false;
+      for (let k = 0; k < cutSheets.length; k++) {
+        if (shown[k] >= lines[k].length) continue;
+        const cost = lines[k][shown[k]].length + 1;
+        if (spent + cost > ceiling) continue;
+        spent += cost;
+        shown[k]++;
+        added = true;
+      }
+    }
+    for (let k = 0; k < cutSheets.length; k++) {
+      const c = cutSheets[k];
+      if (shown[k] === c.summary.emitted) continue;
+      c.summary.emitted = shown[k];
+      const text = lines[k].slice(0, shown[k]).join("\n");
+      const b = blockFor(c.name, { text, rows: c.summary.rows, cols: c.summary.cols, nonEmpty: c.summary.nonEmpty, emitted: shown[k] });
+      blocks[c.at] = b.block;
+    }
   }
 
+  const truncated = summaries.some((s) => s.emitted < s.nonEmpty);
+  const text = `${contents()}${blocks.join("\n\n")}${truncated ? MARKER : ""}`;
   return { text, sheets: summaries, truncated };
 }

@@ -21,11 +21,13 @@ import {
   densityOf, footerLineWidth, hairlineSpan, hairline, crossingHairlines, hungDot, ctaPill, HUNG_DOT, PILL,
   stampDeckSteps, stepperRail, stepperBox, bulletBlockHeight, deckSteps,
   photoRailBox, pictureShape, hungDotSize,
+  TABLE_MAX_ROWS, COMPARISON_MAX_ROWS, COMPARISON_MAX_COLS,
+  scoreMark, isScoreLabel, TICK_CELLS, CROSS_CELLS,
   type SlideInput,
 } from "../lib/slides/generate";
 import { toPreviewModel, readPath } from "../lib/slides/preview-model";
 import { applyEditSlide, unrenderableSlides, undrawnTableSlides, undrawnTableFaults, PAYLOAD_FIELDS, insertableLayout, normaliseSlide, SlideCallRefusal,
-  TEXT_EXTRAS, CONTINUATION_KEEPS, CONTINUATION_CLEARS } from "../lib/slides/edit";
+  TEXT_EXTRAS, CONTINUATION_KEEPS, CONTINUATION_CLEARS, PICTURE_LAYOUTS, drawsSlidePicture } from "../lib/slides/edit";
 import { slidesFailure, parseSlidesArguments, SLIDES_FAILED_FOR_USER, type SlidesTurnState } from "../lib/slides/failure";
 import {
   asksForDeckChange, deckAskIsLive, withdrawsDeckAsk, DECK_ASK_WINDOW, HANDOVER_RULE, deckChangeClaim, claimingRules, CLAIM_RULES, ASK_RULES, shouldRetryDeckClaim, unmadeDeckChangeNotice,
@@ -40,15 +42,16 @@ import {
   faultCounts, relayableFaults, logDeckGeometry, inkBottom, GEOMETRY_SEVERITY, type DeckGeometry,
 } from "../lib/slides/validate";
 import { previewSlideFrom } from "../lib/slides/preview-model";
-import { prepareSlidesForBuild, sourceSlideCount, fidelityAudit, SLIDES_GEN_OPENAI_TOOL, unresolvedSlidesNotice, createStreamingResponse } from "../lib/ai/providers";
+import { prepareSlidesForBuild, sourceSlideCount, fidelityAudit, SLIDES_GEN_OPENAI_TOOL, unresolvedSlidesNotice, createStreamingResponse, __setStoredDraftReader } from "../lib/ai/providers";
 import { draftPreview } from "../lib/slides/preview-model";
 import { readFileSync } from "fs";
 import { createServer } from "http";
 import { join } from "path";
 import { gradientProfileFor, CONTRAST } from "../lib/slides/images";
+import { signedMediaUrl } from "../lib/media/signed";
 import { CANVAS, LAYOUT_STYLE, COLOR, GRID, LAYOUTS, NOTE, SECTION, TYPE, PROCESS, SHOT, IMAGE, FEATURE_SHOT_STYLE, LOGO_PLACEMENT,
   DENSITY, DEFAULT_DENSITY, FRAME, STEPPER, BAND_BOTTOM, TIMELINE, TIMELINE_PARALLEL, LOGO_WALL, withDensity, assetUrl, textOn,
-  columnBand, PHOTO_RAIL, SERPENTINE, RULE,
+  columnBand, PHOTO_RAIL, SERPENTINE, RULE, LAYOUT_ALIASES, layoutOf,
   type Density, type SlideLayout } from "../lib/slides/brand";
 
 const TYPE_STAT_CAP = 54;   // the multi-stat value cap; a hero must exceed it
@@ -13648,9 +13651,14 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
         catch (e: any) {
           A50(false, `50j a patch carrying only \`layout: "${want}"\` is refused: ${String(e && e.message).slice(0, 110)}`);
         }
+        // ONE EXCEPTION, and it is the patch working rather than failing: the
+        // fixture carries `bodyRight`, and an image-split slide carrying it is
+        // DRAWN as photo-rail (normaliseSlide, pinned by check 51), so the
+        // stored layout is the one the slide will be drawn as.
+        const expect50 = want === "image-split" ? "photo-rail" : want;
         if (out) {
-          A50(out[1].layout === want,
-            `50j a layout-only patch left slide 2 on ${JSON.stringify(out[1].layout)} rather than ${JSON.stringify(want)}`);
+          A50(out[1].layout === expect50,
+            `50j a layout-only patch left slide 2 on ${JSON.stringify(out[1].layout)} rather than ${JSON.stringify(expect50)}`);
         }
       }
     }
@@ -14130,6 +14138,1043 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     pass(`the column band is the inherited pair at two and an equal partition at n, the picture is cropped to the box it is drawn in`
       + ` at both presets, the rule starts at its edge and the title ends above it, the lead-in is measured as the face it is set in,`
       + ` the serpentine's pitch is solved and its captions cannot meet, and a row that cannot hold its owners says so on the slide`);
+  }
+
+  /* ─────────────────────────────────────────────────────────────────────────
+   * 51. AN IMAGE-SPLIT SLIDE WITH A SECOND COLUMN, AND A PHOTOGRAPH NAMED AS
+   *     `imageQuery` — THE AMRIZE DECK'S TWO SILENT LOSSES, AND ONE PLACE FOR
+   *     BOTH.
+   *
+   * THE INCIDENT. Thread 3ec51a09 (2026-09-22) built an 18-slide workshop deck
+   * for Amrize. Rebuilt through the real builder, it dropped eight strings the
+   * model had written and said were in the deck:
+   *   - slides 9 and 11 were `image-split` carrying `bodyRight` and
+   *     `subtitle`. image-split draws the title and ONE column beside a bled
+   *     photograph, so half of each slide's prose was never drawn — slide 9
+   *     is titled "Four articles in production right now" and showed two.
+   *     The tool had sold image-split AND photo-rail as "the workhorse", and
+   *     photo-rail is the one that draws a picture beside two columns.
+   *   - slides 2, 4, 14 and 16 were `content` carrying `imageQuery` — the name
+   *     editSlide takes — and no `image`. The insert and edit paths folded one
+   *     into the other; the CREATION path never did, so four slides that asked
+   *     for a photo rail were walls of bullets, and each brief was reported to
+   *     the model as slide TEXT that had gone missing.
+   *
+   * THE FIX IS ONE FUNCTION, normaliseSlide, because every reader already
+   * calls it: the guard over the whole deck on every build and edit, the
+   * splitter, resolveDeckImages in place, and buildSlideRequests on read. So
+   * the assertions below are made on EVERY path by name, not on the function:
+   * a repair that one path skips is the incident again, one path along.
+   *
+   *   (a) PICTURE_LAYOUTS is the builder's own answer — every layout, every
+   *       alias, no layout, an unknown name, and the panel exception — so the
+   *       fold cannot buy a photograph for a layout that never draws one, or
+   *       skip one that does.
+   *   (b) THE REAL STORED SLIDE 9 is drawn as photo-rail, whole, on the read
+   *       path, the creation guard, an edit of a DIFFERENT slide of the stored
+   *       deck, the preview/PDF split, resolution in place and a split
+   *       continuation; it is not announced through layoutAsked; a subtitle
+   *       ON ITS OWN still is not drawn (Chris's 2026-09-17 decision).
+   *   (c) A SCREENSHOT stays image-split — the only layout besides feature
+   *       that draws callouts — draws them, and its lost column is declared.
+   *   (d) THE PICTURE ALREADY RESOLVED FOR IT IS RE-CUT FROM THE SAME FILE to
+   *       photo-rail's shape: driven through resolveDeckImages end to end
+   *       against a stubbed image host and a fake Blob store, and the uploaded
+   *       JPEG is decoded and measured. No search, no generation; a failed
+   *       fetch keeps the old file and its mark; a second pass does nothing;
+   *       a continuation takes its parent's new file rather than a second.
+   *   (e) THE FOLD on every path, `image` winning over `imageQuery` on every
+   *       path, and a brief on a layout that draws no picture declared and
+   *       never fetched.
+   *   (f) THE STORED DECK'S SLIDES 2, 4, 14 AND 16 get their photographs on
+   *       the next edit of ANY slide: the guard folds them and the resolution
+   *       loop resolves them, with the generator asked once per brief.
+   *
+   * MUTATION LOG (detached worktree at 4571a26 plus this change, 2026-09-23)
+   * — kills AND survivors, each mutant applied alone and restored:
+   *   killed  P1 the promotion taken out of normaliseSlide → 50j and 51b, 20
+   *           failures: the stored slide normalises to image-split and drops
+   *           both strings again.
+   *   killed  P2 screenshots promoted too → 51c: the callout lines vanish, and
+   *           droppedContent reports the CALLOUTS rather than the column.
+   *   killed  P3 promoted on a subtitle alone → the 2026-09-17 decision's own
+   *           guard (check 45) and 51b. Reopening that call is caught twice.
+   *   killed  P4 the picture kept but not marked → 51b and 51d: nothing is
+   *           re-cut, and the 0.839 file letterboxes in the 0.736 box.
+   *   killed  P5 the picture dropped instead (re-searched) → 51b: the credit
+   *           goes with it and the edit path's slide has no picture at all.
+   *   killed  P6 the promotion written into the caller's slide → 51b.
+   *   killed  P7 the splitter not normalising first → 51b (the preview route
+   *           hands back image-split; a split promoted slide came out
+   *           image-split three times) and 51d's precondition.
+   *   killed  P8 the promotion announced through layoutAsked → 51b, twice.
+   *   killed  P9 re-cut to image-split's own box → 51d: 1600x1907 against the
+   *           1600x2174 photo-rail needs.
+   *   killed  P10 a failed re-cut dropping the picture → 51d.
+   *   killed  P11 the re-cut keeping its mark → 51d, and the continuation then
+   *           inherits a marked file.
+   *   killed  P12 the re-cut losing the credit → 51d.
+   *   killed  P13 the continuation re-cut on its own → 51d (two uploads for
+   *           one picture).
+   *   killed  P15 the re-cut left out of the progress count → 51d.
+   *   killed  P16 the stored URL reissued before the fetch → 51d, once the
+   *           fixture became an EXPIRED link we minted. With the first fixture
+   *           — an address we never signed — it SURVIVED, because
+   *           refreshSignedMediaUrl passes a foreign URL through untouched;
+   *           the check was blind to exactly the case the rule is for.
+   *   killed  P17 an attached photograph re-cut by cropping → 51d reads the
+   *           top-left pixel: the picture's colour, not the letterbox white.
+   *   killed  P18 a layout patch compared by NAME again, so "make it
+   *           image-split" on a promoted slide clears its picture → 51b.
+   *   killed  G1 the guard no longer normalising the deck → the hub checks
+   *           (20d) and 51b/51f.
+   *   killed  F1 the fold taken out of normaliseSlide → 51e on every path,
+   *           51f, and verify-slide-edit's check 8 (the patch path now folds
+   *           through normaliseSlide).
+   *   killed  F2 the fold on every layout → 51e: the stat slide buys a
+   *           photograph (one generation) it never draws.
+   *   killed  F3 photo-rail missing from PICTURE_LAYOUTS, F4 the panel
+   *           exception ignored, F5 aliases unresolved → 51a each time, by
+   *           naming the layout the builder disagrees about.
+   *   killed  F6 `imageQuery` winning over `image` → 51e on the creation
+   *           guard, the batch insert and the preview route.
+   *   killed  F7 the batch insert's OLD fold restored after normalising → 51e:
+   *           that code let `imageQuery` overwrite `image`, the opposite of
+   *           the patch path, and nothing had asked.
+   *   killed  F8 `imageQuery` counted as slide text again → 51e.
+   *   killed  F9 the unfetched brief not declared → 51e.
+   *   killed  F10 the continuation carrying the brief → 51e (declared once per
+   *           piece, four times on the fixture).
+   *   killed  F11 the patch path's old unconditional fold → 51e, after the
+   *           assertion was added: the first run had no PATCH on a layout
+   *           without a picture, and it SURVIVED.
+   *   SURVIVED P14 rebakeShape admitting a continuation. Equivalent here: the
+   *           pass above it deletes a continuation's marked picture before
+   *           rebakeShape is ever asked, so the clause cannot change an
+   *           outcome. Kept as the statement of the rule — rebakeShape is
+   *           exported, and its next caller will not run that pass.
+   *   NOT REACHABLE from here: the real Unsplash search and the real
+   *           generator. (f) proves the loop ASKS for each stored brief once;
+   *           which photograph comes back is the network's.
+   * ───────────────────────────────────────────────────────────────────────── */
+  const before51 = failures;
+  console.log(`\n51. An image-split slide with a second column, and a photograph named as imageQuery`);
+  const A51 = (ok: boolean, m: string) => { if (!ok) fail(m); };
+  {
+    const text51 = (reqs: any[]) => reqs.filter((r: any) => r.insertText).map((r: any) => String(r.insertText.text)).join(" · ");
+    // The stored slides of 3ec51a09, text verbatim. The stored picture URLs
+    // are live signed capabilities and are NOT copied here: an inert address
+    // in the documentation range stands in, which the re-cut in (d) serves.
+    const PIC9 = "https://203.0.113.51/amrize-s9-split.jpg";
+    const S9: any = {
+      layout: "image-split", density: "read",
+      title: "Four articles in production right now",
+      subtitle: "Live worked examples, not theory",
+      body: "**\"10 Things to Know About Amrize\":** a foundational entity page, the single best place to frontload citable, structured facts about who Amrize is.\n**AI concrete for data centres:** technical authority content, aimed squarely at the data centre business unit priority set at kickoff.",
+      bodyRight: "**Denver dam** and **Obama Presidential Centre:** proof point case studies, showing Amrize's work through named, verifiable projects rather than generic claims.\n**The pattern across all four:** each is being structured to answer a specific question an AI system, or a customer, would actually ask.",
+      image: { query: "concrete dam or large infrastructure project, wide shot" },
+      resolvedImage: { url: PIC9, logo: "white", scrim: 0, credit: "Photo: Alex Bagirov / Unsplash" },
+    };
+    const S2: any = {
+      layout: "content", density: "read",
+      title: "From entity mapping to content on the page",
+      subtitle: "Digital Authority Pt 1 and 2 built the map. This session is about writing to it.",
+      body: "**June 17 and 25:** We built the Authority, Consistency and Relevance (ACR) framework and mapped Amrize as the master entity, with satellite entities (people, products, plants, locations) feeding it.\n**Four articles are already in motion** using these techniques, so we'll open them up as live examples, not hypotheticals.",
+      imageQuery: "engineer reviewing blueprint or schematic, close up, cool tones",
+    };
+    const QUERIES = [
+      "engineer reviewing blueprint or schematic, close up, cool tones",
+      "layered concrete structure, cross section, architectural",
+      "workshop whiteboard with sticky notes, collaborative session",
+      "clipboard checklist, minimal desk setup",
+    ];
+    const COVER51: any = { layout: "cover", title: "AI Search Content Workshop", density: "read" };
+    const clone51 = (x: any) => JSON.parse(JSON.stringify(x));
+
+    /* (a) WHICH LAYOUTS DRAW A SLIDE'S PICTURE, asked of the builder. */
+    {
+      const STUB = "https://203.0.113.50/probe.jpg";
+      const payload51: any = {
+        cards: [{ title: "A", body: "a" }, { title: "B", body: "b" }],
+        stats: [{ value: "1", label: "one" }],
+        chart: { series: [{ name: "s", points: [{ label: "a", value: 1 }, { label: "b", value: 2 }] }] },
+        swot: { strengths: ["a"], weaknesses: ["b"], opportunities: ["c"], threats: ["d"] },
+        matrix: { xAxis: ["x0", "x1"], yAxis: ["y0", "y1"], quadrants: ["a", "b", "c", "d"], items: [{ label: "i", x: 0.2, y: 0.8 }] },
+        comparison: { columns: [{ title: "a", items: ["x"] }, { title: "b", items: ["y"] }] },
+        table: { columns: ["a", "b"], rows: [["1", "2"]] },
+        scatter: { points: [{ label: "a", x: 1, y: 2 }] },
+        venn: { sets: [{ label: "a" }, { label: "b" }] },
+        milestones: [{ date: "2026-01-01", title: "a" }, { date: "2026-06-01", title: "b" }],
+        tracks: [{ name: "t", phases: [{ start: "2026-01-01", end: "2026-03-01", label: "a" }] }],
+        stages: [{ name: "a" }, { name: "b" }, { name: "c" }],
+        logos: [{ name: "Acme" }],
+        quote: { text: "a quote here", name: "N" },
+        images: [{ url: "https://203.0.113.50/g.jpg" }],
+        layers: [{ title: "a" }, { title: "b" }],
+        hub: { title: "H", groups: [{ items: [{ title: "a" }] }] },
+      };
+      const names: (string | undefined)[] = [];
+      for (let i = 0; i < LAYOUTS.length; i++) names.push(LAYOUTS[i]);
+      const aliasNames = Object.keys(LAYOUT_ALIASES);
+      for (let i = 0; i < aliasNames.length; i++) names.push(aliasNames[i]);
+      names.push(undefined, "no-such-layout");
+      const drawn: string[] = [];
+      const disagree: string[] = [];
+      for (let i = 0; i < names.length; i++) {
+        for (let p = 0; p < 2; p++) {
+          const withPanel = p === 1;
+          const s: any = { title: "Title here", body: "Body one\nBody two", ...payload51, resolvedImage: { url: STUB, scrim: 0 } };
+          if (names[i] !== undefined) s.layout = names[i];
+          if (withPanel) s.panel = { title: "Panel", items: [{ title: "x" }] };
+          let draws = false;
+          try {
+            // BUILT UNDER THE NAME IT WILL BE DRAWN AS, the way every path
+            // draws it: resolveDeckImages settles an alias ("bullets") or a
+            // missing layout to the real one in place before anything is
+            // built, and the rail's own box reads the settled name. The fold
+            // runs BEFORE that settlement, on the name the model sent, which
+            // is exactly why it has to resolve aliases itself.
+            const reqs = buildSlideRequests({ ...s, layout: layoutOf(s.layout, 3) }, 3, `c51a${i}${p}`) as any[];
+            for (let r = 0; r < reqs.length; r++) if (reqs[r].createImage && reqs[r].createImage.url === STUB) draws = true;
+          } catch (e: any) {
+            disagree.push(`${names[i]}: the builder threw (${String(e && e.message).slice(0, 60)})`);
+            continue;
+          }
+          if (!withPanel && draws && names[i] && (LAYOUTS as string[]).indexOf(names[i] as string) >= 0) drawn.push(names[i] as string);
+          if (drawsSlidePicture(s, 3) !== draws) {
+            disagree.push(`${JSON.stringify(names[i])}${withPanel ? " with a panel" : ""}: the builder ${draws ? "draws" : "does not draw"} the picture, drawsSlidePicture says ${!draws}`);
+          }
+        }
+      }
+      A51(disagree.length === 0, `51a the fold's picture rule disagrees with the builder: ${disagree.slice(0, 5).join("; ")}`);
+      A51(drawn.slice().sort().join(",") === PICTURE_LAYOUTS.slice().sort().join(","),
+        `51a PICTURE_LAYOUTS is [${PICTURE_LAYOUTS.join(", ")}] and the builder draws a picture on [${drawn.join(", ")}]`);
+      // The precondition that makes the sweep mean something: some layouts do
+      // NOT draw one, and the panel does change the answer.
+      A51(drawn.length > 0 && drawn.length < LAYOUTS.length, `51a precondition: the sweep found ${drawn.length} of ${LAYOUTS.length} layouts drawing a picture`);
+    }
+
+    /* (b) THE STORED SLIDE 9, ON EVERY PATH. */
+    {
+      const raw = clone51(S9);
+      const norm: any = normaliseSlide(raw);
+      A51(norm.layout === "photo-rail", `51b the stored image-split slide with \`bodyRight\` normalised to ${JSON.stringify(norm.layout)}`);
+      A51(JSON.stringify(raw) === JSON.stringify(S9), `51b normaliseSlide wrote to the slide it was given`);
+      A51(!!norm.resolvedImage && norm.resolvedImage.url === PIC9 && norm.resolvedImage.bakedFor === "image-split",
+        `51b the picture was not kept and marked for a re-cut: ${JSON.stringify(norm.resolvedImage)}`);
+      A51(JSON.stringify(normaliseSlide(norm)) === JSON.stringify(norm), `51b normaliseSlide is not idempotent on a promoted slide`);
+      // THE READ PATH — a client-held draft with no guard in front of it.
+      const drawnText = text51(buildSlideRequests(raw, 8, "c51b") as any[]);
+      const need = ["Denver dam", "The pattern across all four", "Live worked examples, not theory", "10 Things to Know About Amrize"];
+      for (let i = 0; i < need.length; i++) {
+        A51(drawnText.indexOf(need[i]) >= 0, `51b the stored slide 9, built as it is stored, does not draw ${JSON.stringify(need[i])}`);
+      }
+      const lost = droppedContent(raw, 8);
+      A51(lost.length === 0, `51b the stored slide 9 still drops ${lost.length} string(s): ${lost.map((x) => quoteClip(x)).join(", ")}`);
+      // THE CREATION GUARD, THE EDIT GUARD, THE PREVIEW/PDF SPLIT, RESOLUTION.
+      const restore51 = __setStoredDraftReader(async (id: string) => (
+        id.indexOf("c51-stored") === 0
+          ? { draft: { title: "AI Search Content Workshop", slides: [clone51(COVER51), clone51(S9), clone51(S2)] }, couldNotLook: false }
+          : { draft: null, couldNotLook: false }));
+      try {
+        const made = await prepareSlidesForBuild({ title: "AI Search Content Workshop", slides: [clone51(COVER51), clone51(S9)] }, `c51-new-${process.pid}`, ["make a deck"]);
+        A51(made.slides[1].layout === "photo-rail", `51b the creation guard stored slide 9 as ${JSON.stringify(made.slides[1].layout)}`);
+        const edited = await prepareSlidesForBuild({ slides: [], editSlide: { slideNumber: 1, title: "AI Search Content Workshop, revised" } }, `c51-stored-${process.pid}`, ["retitle the cover"]);
+        A51(edited.slides[1].layout === "photo-rail" && !!edited.slides[1].resolvedImage && edited.slides[1].resolvedImage.bakedFor === "image-split",
+          `51b an edit of the COVER left the stored slide 9 as ${JSON.stringify(edited.slides[1].layout)} (${JSON.stringify(edited.slides[1].resolvedImage)}) — the stored deck is only repaired by an edit to that very slide`);
+      } finally { restore51(); }
+      const shown = draftPreview([clone51(COVER51), clone51(S9)]);
+      A51(shown.slides[1].layout === "photo-rail", `51b the preview/PDF route hands back slide 9 as ${JSON.stringify(shown.slides[1].layout)}`);
+      A51(JSON.stringify(shown.preview.slides[1]).indexOf("Denver dam") >= 0, `51b the preview/PDF drawing of slide 9 does not carry its right-hand column`);
+      const inPlace: any[] = [clone51(COVER51), clone51(S9)];
+      const save51 = { blob: process.env.BLOB_READ_WRITE_TOKEN };
+      delete process.env.BLOB_READ_WRITE_TOKEN;
+      const realFetch51 = globalThis.fetch;
+      (globalThis as any).fetch = async () => { throw new Error("check 51b allows no network"); };
+      try { await resolveDeckImages(inPlace); } finally {
+        (globalThis as any).fetch = realFetch51;
+        if (save51.blob !== undefined) process.env.BLOB_READ_WRITE_TOKEN = save51.blob;
+      }
+      A51(inPlace[1].layout === "photo-rail", `51b resolution (the publish path) left slide 9 as ${JSON.stringify(inPlace[1].layout)}`);
+      // (c) of the decision: NOT announced as a substitution.
+      A51(!inPlace[1].layoutAsked, `51b the promotion was recorded as layoutAsked=${JSON.stringify(inPlace[1].layoutAsked)} — a note repeated on every turn of the deck for a slide that lost nothing`);
+      A51(deckWarnings(inPlace).indexOf("asked for layout") < 0, `51b deckWarnings announces the promotion as a substitution`);
+      // A SPLIT: the continuation is the same page, not an image-split.
+      const longBody: string[] = [];
+      for (let i = 0; i < 14; i++) longBody.push(`**Article ${i + 1}:** a proof point structured to answer a specific question an AI system would ask.`);
+      const pieces = splitOverflowingSlides([{ ...clone51(S9), body: longBody.join("\n") }] as any);
+      A51(pieces.length > 1, `51b precondition: the long slide did not split (${pieces.length})`);
+      A51(pieces.every((p: any) => p.layout === "photo-rail"),
+        `51b a split promoted slide came out as ${pieces.map((p: any) => p.layout).join(" + ")} — measured as one layout and copied as another`);
+      // ASKING FOR THE LAYOUT IT WAS PROMOTED FROM changes nothing it draws,
+      // so it must not throw the approved picture away to be searched again.
+      const reasked: any = applyEditSlide([clone51(COVER51), normaliseSlide(clone51(S9))], { slideNumber: 2, layout: "image-split" })[1];
+      A51(reasked.layout === "photo-rail" && !!reasked.resolvedImage && reasked.resolvedImage.url === PIC9,
+        `51b "make slide 9 image-split" on the promoted slide cleared its picture for a box that did not change: ${JSON.stringify({ layout: reasked.layout, resolvedImage: reasked.resolvedImage })}`);
+      // THE SUBTITLE ON ITS OWN IS STILL NOT DRAWN — the decision of
+      // 2026-09-17, not reopened: no second column, no promotion.
+      const subOnly: any = normaliseSlide({ ...clone51(S9), bodyRight: undefined });
+      A51(subOnly.layout === "image-split", `51b an image-split slide with only a subtitle was promoted to ${JSON.stringify(subOnly.layout)}`);
+    }
+
+    /* (c) A SCREENSHOT STAYS IMAGE-SPLIT, and draws what only it can. */
+    {
+      const CALLS = [{ x: 20, y: 30, text: "Share of voice per prompt" }, { x: 70, y: 60, text: "Citation sources list" }];
+      const shot: any = { ...clone51(S9), image: { attachment: 1, callouts: CALLS }, resolvedImage: { url: "https://203.0.113.51/shot.png", scrim: 0, aspect: 1.6, sourceWidth: 1600 } };
+      const n = normaliseSlide(shot) as any;
+      A51(n.layout === "image-split", `51c a screenshot with callouts was promoted to ${JSON.stringify(n.layout)}, which draws no callouts and crops the capture to a portrait`);
+      const t = text51(buildSlideRequests(shot, 8, "c51c") as any[]);
+      A51(t.indexOf("Share of voice per prompt") >= 0 && t.indexOf("Citation sources list") >= 0, `51c the screenshot's numbered callout lines are not drawn`);
+      const lost = droppedContent(shot, 8);
+      A51(lost.some((x) => x.indexOf("Denver dam") >= 0), `51c the screenshot's undrawn right-hand column is not declared: ${JSON.stringify(lost.map((x) => x.slice(0, 30)))}`);
+      const plainShot: any = normaliseSlide({ ...clone51(S9), image: { query: "a dashboard", screenshot: true } });
+      A51(plainShot.layout === "image-split", `51c a screenshot without callouts was promoted to ${JSON.stringify(plainShot.layout)}`);
+    }
+
+    /* (d) THE RE-CUT, END TO END. */
+    {
+      const sharp51 = (await import("sharp")).default;
+      const splitAspect = IMAGE.splitWidth / CANVAS.height;
+      const railAspect = PHOTO_RAIL.width / PHOTO_RAIL.height;
+      A51(Math.abs(splitAspect - railAspect) / railAspect > 0.05,
+        `51d precondition: image-split's crop (${splitAspect.toFixed(3)}) and photo-rail's box (${railAspect.toFixed(3)}) agree, so there is nothing to re-cut`);
+      const W51 = 1600;
+      // A picture baked the way resolution bakes image-split's: 1600 wide at
+      // the half-slide's aspect, a pattern rather than a flat field so the
+      // attention crop has something to find.
+      const splitFile = await sharp51({ create: { width: W51, height: Math.round(W51 / splitAspect), channels: 3, background: { r: 90, g: 120, b: 150 } } })
+        .composite([{ input: Buffer.from(`<svg width="${W51}" height="${Math.round(W51 / splitAspect)}"><rect x="600" y="500" width="300" height="600" fill="#e0c050"/></svg>`) }])
+        .jpeg().toBuffer();
+      const uploads: Buffer[] = [];
+      const server51 = createServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on("data", (c) => chunks.push(Buffer.from(c)));
+        req.on("end", () => {
+          const asked = decodeURIComponent((req.url || "").replace(/^\/api\/blob\/?/, "").split("?")[0]) || "slides/backdrops/x.jpg";
+          uploads.push(Buffer.concat(chunks));
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ url: `https://store.private.blob.vercel-storage.com/${asked}`, downloadUrl: `https://store.private.blob.vercel-storage.com/${asked}?download=1`, pathname: asked, contentType: "image/jpeg", contentDisposition: "inline" }));
+        });
+      });
+      await new Promise<void>((r) => server51.listen(0, "127.0.0.1", () => r()));
+      const port51 = (server51.address() as any).port;
+      const fetched: string[] = [];
+      let serve = true;
+      const realFetch = globalThis.fetch;
+      const saved: Record<string, string | undefined> = {};
+      const KEYS = ["BLOB_READ_WRITE_TOKEN", "VERCEL_BLOB_API_URL", "NEXTAUTH_SECRET", "UNSPLASH_ACCESS_KEY"];
+      for (let k = 0; k < KEYS.length; k++) saved[KEYS[k]] = process.env[KEYS[k]];
+      let generated = 0;
+      const gen = async () => { generated++; return "https://203.0.113.52/generated.jpg"; };
+      const quiet = { warn: console.warn, log: console.log };
+      try {
+        process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_storefake_secretfake";
+        process.env.VERCEL_BLOB_API_URL = `http://127.0.0.1:${port51}/api/blob`;
+        process.env.NEXTAUTH_SECRET = "verify-51-not-a-secret";
+        delete process.env.UNSPLASH_ACCESS_KEY;
+        (globalThis as any).fetch = async (input: any, init?: any) => {
+          const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+          const u = new URL(url);
+          if (u.hostname === "203.0.113.51") {
+            fetched.push(url);
+            return serve ? new Response(new Uint8Array(splitFile), { status: 200, headers: { "content-type": "image/jpeg" } }) : new Response("gone", { status: 404 });
+          }
+          if (u.hostname === "127.0.0.1") return realFetch(input, init);
+          throw new Error(`check 51d allows no network: ${u.host}`);
+        };
+        // THE STORED PICTURE IS ONE OF OURS, AND EXPIRED — minted by the same
+        // signer, an hour past its life. The re-cut must fetch it AS STORED:
+        // reissuing it first would renew a leaked link for whoever put it in
+        // the call, and on the draft path the model writes the call.
+        const OLD51 = signedMediaUrl("slides/backdrops/amrize-s9-split.jpg", "https://203.0.113.51", { ttlSeconds: -3600 });
+        console.warn = () => {}; console.log = () => {};
+        const deck: any[] = [clone51(COVER51), normaliseSlide({ ...clone51(S9), resolvedImage: { ...clone51(S9.resolvedImage), url: OLD51 } })];
+        const ticks: string[] = [];
+        await resolveDeckImages(deck, gen, undefined, (d, t) => ticks.push(`${d}/${t}`));
+        console.warn = quiet.warn; console.log = quiet.log;
+        const r = deck[1].resolvedImage || {};
+        A51(fetched.length === 1 && fetched[0] === OLD51, `51d the re-cut fetched ${JSON.stringify(fetched)} — it must fetch the stored file, once, as stored`);
+        A51(generated === 0, `51d the re-cut asked the image generator ${generated} time(s) — a different photograph from the one approved`);
+        A51(uploads.length === 1, `51d the re-cut uploaded ${uploads.length} file(s)`);
+        if (uploads.length) {
+          const meta = await sharp51(uploads[0]).metadata();
+          const wantH = Math.round(W51 / railAspect);
+          A51(meta.width === W51 && meta.height === wantH,
+            `51d the re-cut file is ${meta.width}x${meta.height}; photo-rail's box needs ${W51}x${wantH} (aspect ${railAspect.toFixed(3)}), and Slides would letterbox anything else`);
+        }
+        A51(!r.bakedFor && /\/api\/media\/signed\?/.test(String(r.url || "")) && r.url !== OLD51,
+          `51d after the re-cut the slide carries ${JSON.stringify(r)} — the new file, unmarked, was expected`);
+        A51(r.credit === "Photo: Alex Bagirov / Unsplash", `51d the photographer's credit was lost in the re-cut: ${JSON.stringify(r.credit)}`);
+        A51(ticks.length === 1 && ticks[0] === "1/1", `51d the re-cut is not counted in the build's progress (${ticks.join(" ")})`);
+        // A SECOND PASS — publishing re-runs resolution — does nothing.
+        const before2 = fetched.length + uploads.length;
+        console.warn = () => {}; console.log = () => {};
+        await resolveDeckImages(deck, gen);
+        console.warn = quiet.warn; console.log = quiet.log;
+        A51(fetched.length + uploads.length === before2, `51d a second resolution pass re-cut the picture again`);
+        // A FAILED FETCH keeps the old file and its mark, for the next pass.
+        serve = false;
+        const failing: any[] = [clone51(COVER51), normaliseSlide(clone51(S9))];
+        console.warn = () => {}; console.log = () => {};
+        await resolveDeckImages(failing, gen);
+        console.warn = quiet.warn; console.log = quiet.log;
+        const f = failing[1].resolvedImage || {};
+        A51(f.url === PIC9 && f.bakedFor === "image-split" && !failing[1].imageUnavailable,
+          `51d a re-cut that could not fetch left ${JSON.stringify(f)} (unavailable=${!!failing[1].imageUnavailable}) — it must keep the approved picture and try again`);
+        // A CONTINUATION takes its parent's new file, not a second upload.
+        serve = true;
+        const up0 = uploads.length;
+        const longBody: string[] = [];
+        for (let i = 0; i < 14; i++) longBody.push(`**Article ${i + 1}:** a proof point structured to answer a specific question an AI system would ask.`);
+        const split51 = splitOverflowingSlides([clone51(COVER51), { ...clone51(S9), body: longBody.join("\n") }] as any) as any[];
+        A51(split51.length > 2 && !!split51[2].continuation && !!(split51[2].resolvedImage && split51[2].resolvedImage.bakedFor),
+          `51d precondition: the split continuation does not carry the parent's marked picture (${split51.length} slides)`);
+        console.warn = () => {}; console.log = () => {};
+        await resolveDeckImages(split51, gen);
+        console.warn = quiet.warn; console.log = quiet.log;
+        A51(uploads.length - up0 === 1, `51d a promoted slide and its continuation uploaded ${uploads.length - up0} re-cut files for one picture`);
+        A51(!!split51[2].resolvedImage && split51[2].resolvedImage.url === split51[1].resolvedImage.url && !split51[2].resolvedImage.bakedFor,
+          `51d the continuation did not take its parent's re-cut picture: ${JSON.stringify(split51[2].resolvedImage)}`);
+        // AN ATTACHED PHOTOGRAPH is re-fitted WHOLE, as it was first fitted:
+        // the user chose it, and a crop cuts off what made them choose it.
+        // Contained into a narrower box, the file gains bars top and bottom,
+        // so its top row is the letterbox white rather than the picture.
+        const up1 = uploads.length;
+        const attached: any[] = [clone51(COVER51), normaliseSlide({ ...clone51(S9), image: { attachment: 1 } })];
+        console.warn = () => {}; console.log = () => {};
+        await resolveDeckImages(attached, gen);
+        console.warn = quiet.warn; console.log = quiet.log;
+        A51(uploads.length - up1 === 1, `51d an attached photograph's re-cut uploaded ${uploads.length - up1} file(s)`);
+        if (uploads.length - up1 === 1) {
+          const top = await sharp51(uploads[uploads.length - 1]).extract({ left: 0, top: 0, width: 1, height: 1 }).raw().toBuffer();
+          A51(top[0] > 240 && top[1] > 240 && top[2] > 240,
+            `51d an attached photograph was CROPPED to photo-rail's box (top-left pixel ${top[0]},${top[1]},${top[2]}) — it is fitted whole everywhere else`);
+        }
+      } finally {
+        console.warn = quiet.warn; console.log = quiet.log;
+        (globalThis as any).fetch = realFetch;
+        for (let k = 0; k < KEYS.length; k++) {
+          if (saved[KEYS[k]] === undefined) delete process.env[KEYS[k]];
+          else process.env[KEYS[k]] = saved[KEYS[k]];
+        }
+        await new Promise<void>((r) => server51.close(() => r()));
+      }
+    }
+
+    /* (e) THE FOLD, AND `image` WINNING, ON EVERY PATH. */
+    {
+      const CHOSEN = { url: "https://203.0.113.53/chosen.jpg" };
+      const base51 = () => [clone51(COVER51), { layout: "content", title: "Kept", body: "One" }];
+      const folded = (s: any, where: string) => {
+        A51(!!s && !!s.image && s.image.query === S2.imageQuery && s.imageQuery === undefined,
+          `51e ${where}: imageQuery was not folded into image.query (${JSON.stringify({ image: s && s.image, imageQuery: s && s.imageQuery })})`);
+      };
+      const won = (s: any, where: string) => {
+        A51(!!s && !!s.image && s.image.url === CHOSEN.url && !s.image.query && s.imageQuery === undefined,
+          `51e ${where}: \`image\` did not win over \`imageQuery\` (${JSON.stringify({ image: s && s.image, imageQuery: s && s.imageQuery })})`);
+      };
+      const both = () => ({ ...clone51(S2), image: clone51(CHOSEN) });
+      const restoreE = __setStoredDraftReader(async () => ({ draft: null, couldNotLook: false }));
+      try {
+        const made = await prepareSlidesForBuild({ title: "T", slides: [clone51(COVER51), clone51(S2)] }, `c51e-new-${process.pid}`, ["make a deck"]);
+        folded(made.slides[1], "the creation guard");
+        const madeBoth = await prepareSlidesForBuild({ title: "T", slides: [clone51(COVER51), both()] }, `c51e-both-${process.pid}`, ["make a deck"]);
+        won(madeBoth.slides[1], "the creation guard");
+      } finally { restoreE(); }
+      folded(applyEditSlide(base51(), { insertAfter: 1, insertSlides: [clone51(S2)] })[1], "an insertSlides batch");
+      won(applyEditSlide(base51(), { insertAfter: 1, insertSlides: [both()] })[1], "an insertSlides batch");
+      folded(applyEditSlide(base51(), { insertAfter: 1, layout: "content", title: S2.title, body: S2.body, imageQuery: S2.imageQuery })[1], "a single insert");
+      won(applyEditSlide(base51(), { insertAfter: 1, layout: "content", title: S2.title, body: S2.body, imageQuery: S2.imageQuery, image: clone51(CHOSEN) } as any)[1], "a single insert");
+      folded(applyEditSlide(base51(), { slideNumber: 2, imageQuery: S2.imageQuery })[1], "a patch");
+      won(applyEditSlide(base51(), { slideNumber: 2, imageQuery: S2.imageQuery, image: clone51(CHOSEN) } as any)[1], "a patch");
+      const prev = draftPreview([clone51(COVER51), clone51(S2)]);
+      folded(prev.slides[1], "the preview/PDF route");
+      won(draftPreview([clone51(COVER51), both()]).slides[1], "the preview/PDF route");
+      A51(droppedContent(clone51(S2), 1).length === 0,
+        `51e the photo brief on a content slide is still reported as dropped TEXT: ${JSON.stringify(droppedContent(clone51(S2), 1))}`);
+      // A LAYOUT THAT DRAWS NO PICTURE: not folded, never fetched, and SAID.
+      const stat51: any = { layout: "stat", title: "Why this matters", stats: [{ value: "26", label: "AI citations for amrize.com" }], imageQuery: "concrete skyline at dusk" };
+      const n = normaliseSlide(clone51(stat51)) as any;
+      A51(!n.image && n.imageQuery === stat51.imageQuery, `51e a stat slide's imageQuery was folded into a picture it never draws: ${JSON.stringify(n.image)}`);
+      const warned = deckWarnings([clone51(COVER51), clone51(stat51)] as any);
+      A51(warned.indexOf("a photograph was asked for") >= 0 && warned.indexOf("concrete skyline at dusk") >= 0,
+        `51e the unfetched photograph on a stat slide is not declared to the model: ${warned.slice(0, 200)}`);
+      const patchedStat: any = applyEditSlide([clone51(COVER51), { layout: "stat", title: "Why", stats: [{ value: "26", label: "AI citations" }] }], { slideNumber: 2, imageQuery: "concrete skyline at dusk" })[1];
+      A51(!patchedStat.image && patchedStat.imageQuery === "concrete skyline at dusk",
+        `51e a patch asking a stat slide for a photograph folded it into one it never draws: ${JSON.stringify({ image: patchedStat.image, imageQuery: patchedStat.imageQuery })}`);
+      let asked = 0;
+      const deckS: any[] = [clone51(COVER51), clone51(stat51)];
+      const saveBlob = process.env.BLOB_READ_WRITE_TOKEN;
+      delete process.env.BLOB_READ_WRITE_TOKEN;
+      try { await resolveDeckImages(deckS, async () => { asked++; return ""; }); } finally {
+        if (saveBlob !== undefined) process.env.BLOB_READ_WRITE_TOKEN = saveBlob;
+      }
+      A51(asked === 0 && !deckS[1].resolvedImage && !deckS[1].imageUnavailable,
+        `51e a stat slide's photograph was searched for (${asked} generation(s)) — paid for and never drawn`);
+      // AND DECLARED ONCE, not once per piece: a two-column slide draws no
+      // picture either, splits like prose, and the tail must not carry the
+      // brief — the same rule the splitter already keeps for `image`.
+      const paras51: string[] = [];
+      for (let i = 0; i < 24; i++) paras51.push(`A point about entity authority that takes a line or two to make (${i + 1}).`);
+      const twoCol: any = { layout: "two-column", title: "Before and after", body: paras51.join("\n"), bodyRight: "After", imageQuery: "concrete skyline at dusk" };
+      const cut51 = splitOverflowingSlides([clone51(COVER51), twoCol] as any) as any[];
+      A51(cut51.length > 2, `51e precondition: the long two-column slide did not split (${cut51.length})`);
+      A51(cut51[1].imageQuery === "concrete skyline at dusk" && cut51.slice(2).every((x: any) => x.imageQuery === undefined),
+        `51e a split carried the unfetched photo brief onto its continuation, so it is declared once per piece: ${JSON.stringify(cut51.map((x: any) => x.imageQuery))}`);
+    }
+
+    /* (f) THE STORED SLIDES GET THEIR PHOTOGRAPHS ON THE NEXT EDIT. */
+    {
+      const stored: any[] = [clone51(COVER51)];
+      for (let i = 0; i < QUERIES.length; i++) stored.push({ layout: "content", title: `Slide ${i + 2}`, body: "One\nTwo", imageQuery: QUERIES[i] });
+      const restoreF = __setStoredDraftReader(async () => ({ draft: { title: "AI Search Content Workshop", slides: clone51(stored) }, couldNotLook: false }));
+      let prepared: any = null;
+      try {
+        prepared = await prepareSlidesForBuild({ slides: [], editSlide: { insertAfter: 5, insertSlides: [{ layout: "content", title: "The 12-point checklist", body: "Title tag\nMeta description" }] } },
+          `c51f-${process.pid}`, ["after slide 16 add the 12-point checklist"]);
+      } finally { restoreF(); }
+      for (let i = 0; i < QUERIES.length; i++) {
+        const s = prepared && prepared.slides[i + 1];
+        A51(!!s && !!s.image && s.image.query === QUERIES[i] && s.imageQuery === undefined && !s.resolvedImage && !s.imageUnavailable,
+          `51f stored slide ${i + 2} is not a picture awaiting resolution after an unrelated edit: ${JSON.stringify({ image: s && s.image, imageQuery: s && s.imageQuery })}`);
+      }
+      const prompts: string[] = [];
+      const saveBlob = process.env.BLOB_READ_WRITE_TOKEN;
+      const saveUns = process.env.UNSPLASH_ACCESS_KEY;
+      delete process.env.BLOB_READ_WRITE_TOKEN;
+      delete process.env.UNSPLASH_ACCESS_KEY;
+      const realFetch = globalThis.fetch;
+      (globalThis as any).fetch = async () => { throw new Error("check 51f allows no network"); };
+      const quiet = { warn: console.warn, log: console.log };
+      console.warn = () => {}; console.log = () => {};
+      const ticks: string[] = [];
+      try {
+        await resolveDeckImages(prepared.slides, async (p: string) => { prompts.push(p); return "https://203.0.113.52/generated.jpg"; }, undefined, (d, t) => ticks.push(`${d}/${t}`));
+      } finally {
+        console.warn = quiet.warn; console.log = quiet.log;
+        (globalThis as any).fetch = realFetch;
+        if (saveBlob !== undefined) process.env.BLOB_READ_WRITE_TOKEN = saveBlob;
+        if (saveUns !== undefined) process.env.UNSPLASH_ACCESS_KEY = saveUns;
+      }
+      for (let i = 0; i < QUERIES.length; i++) {
+        A51(prompts.filter((p) => p.indexOf(QUERIES[i]) === 0).length === 1,
+          `51f the resolution loop did not look for stored slide ${i + 2}'s photograph exactly once (${JSON.stringify(QUERIES[i].slice(0, 30))})`);
+        A51(!!prepared.slides[i + 1].resolvedImage, `51f stored slide ${i + 2} came out of resolution with no picture`);
+      }
+      A51(ticks.length === QUERIES.length && ticks[ticks.length - 1] === `${QUERIES.length}/${QUERIES.length}`,
+        `51f the build's progress counted ${ticks.join(" ")} for ${QUERIES.length} pictures`);
+    }
+  }
+  if (failures === before51) {
+    pass(`an image-split slide with a second column is drawn whole as photo-rail on every path, its picture re-cut from the same file`
+      + ` to the new box; a screenshot keeps the layout that points; imageQuery becomes a photograph wherever one is drawn, loses to \`image\`,`
+      + ` and is declared rather than bought where none is`);
+  }
+
+  /* ─────────────────────────────────────────────────────────────────────────
+   * 52. A TABLE OR COMPARISON PAST ITS CAP SAYS WHICH ROWS IT DROPPED — ON THE
+   *     SLIDE WHERE THE ROOM CAN READ IT, AND TO THE MODEL BY NAME — AND A
+   *     TABLE THE MODEL SPLIT BY HAND STAYS SPLIT (Amrize, 2026-09-23)
+   *
+   * The update Chris was about to send to thread 3ec51a09 asks for the
+   * 12-point editorial checklist scored across four articles. The natural
+   * shape is 12 checks plus a SCORE row: 13 rows, one past TABLE_MAX_ROWS.
+   * Built through the real edit path, a read-only dry run found four things
+   * wrong at once, all of them silent:
+   *   - the SCORE row was dropped, which is the cap doing its job;
+   *   - the "Showing 12 of 13 rows" line meant to declare that was drawn UNDER
+   *     the takeaway bar (three pixels of it showed), because the notice's
+   *     slot came off the page edge and never off the band;
+   *   - deckWarnings never named the row: "SCORE", "5.5 / 12" and the rest are
+   *     all under droppedContent's eleven-character floor, so all the model
+   *     heard was "text runs 1pt past its box";
+   *   - and the honest fix, six rows and seven on two slides, was UNDONE when
+   *     the second was titled "(continued)": mergeContinuedTables rejoined
+   *     them past the cap and dropped SCORE again, one slide short of what the
+   *     model sent, with nothing in the tool result to say so.
+   * The same scorecard as a `comparison` lost five rows past its eight and
+   * named three of them — never "12. Schema", never "SCORE".
+   *
+   * THE CAP WAS MEASURED, NOT RAISED. At `read`, under a standfirst and a
+   * takeaway, twelve one-line rows need 191pt at the 7.5pt floor against a
+   * 157pt band, so twelve already draws by the squeezed fallback; see the
+   * comment on TABLE_MAX_ROWS. What these assertions pin is that the loss is
+   * SAID, where each reader looks.
+   *
+   * DRIVEN THE WAY THE CHAT BUILDS: prepareSlidesForBuild's guard, the
+   * splitter (which is where the merge runs), validateDeck, and deckWarnings
+   * over geometryNotes — the exact composition in all four chains' tool
+   * result. Geometry is read off the built requests by object id.
+   *
+   * MUTATION LOG (detached worktree at 4571a26 plus this change, 2026-09-23)
+   * — kills AND survivors, each mutant applied alone and restored:
+   *   killed  T1 the notice's slot not taken out of the band → (a) at both
+   *           densities: the line ends at 351pt under a bar at 345, and the
+   *           validator's own 1pt overrun comes back.
+   *   killed  T2 the table's drop note removed → (b) three times; the model
+   *           is back to hearing nothing about SCORE.
+   *   killed  T3 the note naming the first four rather than three and the
+   *           LAST → (b) TOTAL unnamed, (d) SCORE unnamed.
+   *   killed  T4 the merge rejoining past the cap again → (c): two slides not
+   *           three, SCORE not drawn, the drop reported.
+   *   killed  T5 the merge switched off altogether → (c): the reference
+   *           deck's nine engines split across two slides again.
+   *   killed  T6 / T7 the comparison's row / option note removed → (d).
+   *   killed  T8 the note counting raw rows where the builder counts rows
+   *           with something in them → (b), after the blank-row fixture was
+   *           added for it: twelve rows and a blank reported "12. Schema" as
+   *           dropped.
+   *   killed  T9 comparisonRequests keeping a private 8 → (d), SECOND run
+   *           only. It SURVIVED the first: every assertion read the note, and
+   *           a note that names the wrong cut reads exactly like one that
+   *           names the right one. The (d) assertion that the row before the
+   *           cut is drawn and the first named one is not was added for it.
+   *   killed  T10 the table drawing one row past the cap its note reports →
+   *           (a), (d) and the older 20x8 drop-note assertion.
+   *   NOT COVERED, and said so in the report: at `present` a standfirst plus
+   *           a takeaway leaves a band that ten rows already overrun, before
+   *           the cap is reached. That is (a)'s reason for building its
+   *           present fixture without a standfirst.
+   * ───────────────────────────────────────────────────────────────────────── */
+  const before52 = failures;
+  console.log(`\n52. A table past its cap names what it dropped, where the room and the model can both see it`);
+  const A52 = (ok: boolean, m: string) => { if (!ok) fail(`52: ${m}`); };
+  {
+    const CHECKS52 = [
+      "1. Title tag", "2. Meta description", "3. TL;DR block", "4. Question headings",
+      "5. Answer-first", "6. Entity in sentence", "7. Verifiable specifics", "8. Named experts",
+      "9. Byline and dates", "10. FAQ + schema", "11. Internal links", "12. Schema",
+    ];
+    const MARKS52 = [
+      ["P", "P", "N", "Y"], ["N", "N", "N", "P"], ["N", "P", "N", "Y"], ["Y", "Y", "N", "P"],
+      ["P", "P", "N", "P"], ["P", "P", "P", "P"], ["Y", "Y", "Y", "P"], ["Y", "N", "P", "Y"],
+      ["N", "P", "N", "N"], ["N", "N", "N", "P"], ["P", "Y", "N", "P"], ["N", "N", "N", "n/a"],
+    ];
+    const COLS52 = ["Check", "Meta data center", "10 Things", "Denver dam", "Obama Center"];
+    const SCORE52 = ["SCORE", "5.5 / 12", "6.5 / 12", "2.5 / 12", "6.5 / 11"];
+    const ROWS52 = CHECKS52.map((c, i) => [c].concat(MARKS52[i]));
+    const SUB52 = "Y = present, P = partial, N = absent. Obama scored against the final version.";
+    const NOTE52 = "Written to spec from the start, the Obama piece already ties the best published article.";
+    const COVER52: any = { layout: "cover", title: "AI Search Content Workshop" };
+    const table52 = (title: string, rows: string[][], extra?: any): any =>
+      ({ layout: "table", title, subtitle: SUB52, table: { columns: COLS52, rows }, ...(extra || {}) });
+    const T13: any = table52("Four articles against the {12-point checklist}", ROWS52.concat([SCORE52]), { note: NOTE52 });
+    const textOf52 = (reqs: any[]) => reqs.filter((r: any) => r.insertText).map((r: any) => String(r.insertText.text));
+    const shape52 = (reqs: any[], suffix: string) => {
+      for (const r of reqs) {
+        const o = r.createShape;
+        if (o && String(o.objectId).slice(-suffix.length) === suffix) {
+          const e = o.elementProperties;
+          return { y: e.transform.translateY as number, h: e.size.height.magnitude as number };
+        }
+      }
+      return null;
+    };
+    /** The chat's own composition, minus the photograph resolver (nothing
+     *  here names a picture): guard, split, measure, warn. */
+    const chat52 = async (slides: any[], density?: "read" | "present") => {
+      const prepared = await prepareSlidesForBuild({ title: "Amrize workshop", slides: JSON.parse(JSON.stringify(slides)) }, null);
+      const built = splitOverflowingSlides(prepared.slides);
+      if (density) for (let i = 0; i < built.length; i++) (built[i] as any).density = density;
+      const g = validateDeck(built, "c52");
+      return { slides: built, geometry: g, warn: deckWarnings(built, geometryNotes(g)) };
+    };
+
+    try {
+      /* PRECONDITION: the fixture is over the cap by exactly the SCORE row,
+       * and every string in that row is too short for droppedContent — the
+       * reason the model heard nothing. */
+      A52(T13.table.rows.length === TABLE_MAX_ROWS + 1, `precondition: the scorecard has ${T13.table.rows.length} rows, not TABLE_MAX_ROWS + 1`);
+      A52(SCORE52.every((c) => c.replace(/[^a-z0-9]+/gi, " ").trim().length <= 10),
+        "precondition: every SCORE cell is under droppedContent's eleven-character floor");
+
+      /* (a) THE NOTICE IS ON THE SLIDE, ABOVE THE TAKEAWAY, AT BOTH DENSITIES.
+       *
+       * At `present` WITHOUT the standfirst, and that is a measured limit, not
+       * a convenience: at `present` a standfirst plus a takeaway leaves a band
+       * that ten one-line rows already overrun — the squeezed fallback floors
+       * a row at 11pt, so the rows themselves run under the bar before the cap
+       * is reached (twelve rows: ten overlap faults, the last cell box ending
+       * at 375.8pt against a bar at 345). That is its own defect, older than
+       * this one and not on Amrize's path (its deck is `read`); it is recorded
+       * in the implementation report rather than hidden by this fixture. */
+      const densities: ("read" | "present")[] = ["read", "present"];
+      for (let d = 0; d < densities.length; d++) {
+        const fixture = densities[d] === "read" ? T13 : { ...T13, subtitle: undefined };
+        const built = await chat52([COVER52, fixture], densities[d]);
+        const k = built.slides.length - 1;
+        const reqs = buildSlideRequests(built.slides[k], k, `c52a${d}`) as any[];
+        const notice = shape52(reqs, "_tdrop");
+        const bar = shape52(reqs, "_noteBar");
+        const said = textOf52(reqs).filter((t) => /^Showing /.test(t))[0] || "";
+        A52(said.indexOf(`${TABLE_MAX_ROWS} of ${TABLE_MAX_ROWS + 1} rows`) >= 0, `(a ${densities[d]}) the slide does not say "Showing ${TABLE_MAX_ROWS} of ${TABLE_MAX_ROWS + 1} rows" (${JSON.stringify(said)})`);
+        A52(!!notice && !!bar, `(a ${densities[d]}) precondition: the notice and the takeaway bar are both drawn (${!!notice}/${!!bar})`);
+        if (notice && bar) {
+          A52(notice.y + notice.h <= bar.y,
+            `(a ${densities[d]}) the "Showing N of M" line ends at ${(notice.y + notice.h).toFixed(1)}pt, under the takeaway bar that starts at ${bar.y.toFixed(1)}pt`);
+        }
+        const onTable = built.geometry.faults.filter((f: any) => f.slide === k + 1);
+        A52(onTable.length === 0, `(a ${densities[d]}) the scorecard slide has geometry faults: ${onTable.map((f: any) => f.note).join(" | ").slice(0, 240)}`);
+
+        /* (b) THE MODEL IS TOLD WHICH ROW, BY NAME. */
+        A52(/draws 12 of its 13 rows/.test(built.warn) && built.warn.indexOf(`"SCORE"`) >= 0,
+          `(b ${densities[d]}) the tool result does not name the dropped SCORE row: ${built.warn.slice(built.warn.indexOf("Notes:"), built.warn.indexOf("Notes:") + 260)}`);
+      }
+
+      /* (b) Past five, the first three AND THE LAST are named: the last row
+       * of a table is where its total lives. */
+      const long: string[][] = [];
+      for (let i = 0; i < 19; i++) long.push([`Engine number ${i + 1}`, "1", "2", "3", "4"]);
+      long.push(["TOTAL", "19", "38", "57", "76"]);
+      const b20 = await chat52([COVER52, table52("Twenty engines", long)]);
+      A52(b20.warn.indexOf(`"TOTAL"`) >= 0 && /draws 12 of its 20 rows/.test(b20.warn),
+        `(b) a 20-row table's note does not name its last row, TOTAL: ${b20.warn.slice(b20.warn.indexOf("Notes:"), b20.warn.indexOf("Notes:") + 300)}`);
+      /* And a table AT the cap says nothing: no false alarm — including one
+       * carrying an empty row, which the builder skips and the note must
+       * count the same way, or the model is told a row is missing that the
+       * slide never meant to draw. */
+      const b12 = await chat52([COVER52, table52("Twelve checks", ROWS52, { note: NOTE52 })]);
+      A52(!/draws 12 of its/.test(b12.warn), `(b) a 12-row table was reported as dropping rows: ${b12.warn.slice(0, 200)}`);
+      A52(!shape52(buildSlideRequests(b12.slides[1], 1, "c52b12") as any[], "_tdrop"), "(b) a 12-row table printed a Showing-N-of-M line");
+      const gap = ROWS52.slice(0, 6).concat([["", "", "", "", ""]]).concat(ROWS52.slice(6));
+      const b12gap = await chat52([COVER52, table52("Twelve checks and a blank", gap, { note: NOTE52 })]);
+      A52(!/rows — /.test(b12gap.warn), `(b) twelve rows and a blank one were reported as a dropped row: ${b12gap.warn.slice(b12gap.warn.indexOf("Notes:"), b12gap.warn.indexOf("Notes:") + 200)}`);
+
+      /* (c) A HAND-SPLIT TABLE STAYS SPLIT WHEN THE HALVES CANNOT BE ONE. */
+      const title = "Four articles against the 12-point checklist";
+      const split = await chat52([COVER52,
+        table52(title, ROWS52.slice(0, 6)),
+        table52(`${title} (continued)`, ROWS52.slice(6).concat([SCORE52]), { note: NOTE52 })]);
+      A52(split.slides.length === 3, `(c) 6 + 7 rows titled "(continued)" were rejoined past the cap: ${split.slides.length} slides, not 3`);
+      const tail = split.slides[split.slides.length - 1];
+      const tailText = textOf52(buildSlideRequests(tail, split.slides.length - 1, "c52c") as any[]);
+      A52(tailText.indexOf("SCORE") >= 0 && tailText.indexOf("6.5 / 11") >= 0, `(c) the SCORE row is not drawn on the second half: ${tailText.slice(-8).join(" | ")}`);
+      A52(!/rows — /.test(split.warn), `(c) the split scorecard still reports dropped rows: ${split.warn.slice(0, 200)}`);
+      /* ...and the reference-deck case, halves that DO fit, is still one table. */
+      const small = await chat52([COVER52,
+        table52("Nine engines", ROWS52.slice(0, 5)),
+        table52("Nine engines (continued)", ROWS52.slice(5, 9))]);
+      A52(small.slides.length === 2 && (small.slides[1] as any).table.rows.length === 9,
+        `(c) 5 + 4 rows titled "(continued)" are no longer merged into one table (${small.slides.length} slides)`);
+
+      /* (d) A COMPARISON PAST ITS CAPS NAMES WHAT IT DROPPED. */
+      const cmpRows = CHECKS52.map((c, i) => ({ label: c, cells: MARKS52[i] })).concat([{ label: "SCORE", cells: SCORE52.slice(1) } as any]);
+      A52(cmpRows.length > COMPARISON_MAX_ROWS + 4, "precondition: the comparison fixture drops at least five rows");
+      const cmp = await chat52([COVER52, { layout: "comparison", title: "Four articles, twelve checks",
+        comparison: { columns: COLS52.slice(1), rows: cmpRows } }]);
+      A52(new RegExp(`draws ${COMPARISON_MAX_ROWS} of its 13 rows`).test(cmp.warn) && cmp.warn.indexOf(`"SCORE"`) >= 0 && cmp.warn.indexOf(`"12. Schema"`) >= 0,
+        `(d) the comparison does not name its dropped SCORE and "12. Schema" rows: ${cmp.warn.slice(cmp.warn.indexOf("Notes:"), cmp.warn.indexOf("Notes:") + 300)}`);
+      /* ...and what the note names is what the SLIDE lacks. A note sharing a
+       * cap with nothing would keep saying "8" after the builder drew nine:
+       * the row before the cut is drawn, the first one named is not — for the
+       * comparison and for the table both. */
+      const cmpDrawn = textOf52(buildSlideRequests(cmp.slides[1], 1, "c52d") as any[]);
+      A52(cmpDrawn.indexOf(CHECKS52[COMPARISON_MAX_ROWS - 1]) >= 0 && cmpDrawn.indexOf(CHECKS52[COMPARISON_MAX_ROWS]) < 0,
+        `(d) the comparison's note and its drawing disagree about where the cut is: "${CHECKS52[COMPARISON_MAX_ROWS - 1]}" drawn ${cmpDrawn.indexOf(CHECKS52[COMPARISON_MAX_ROWS - 1]) >= 0}, "${CHECKS52[COMPARISON_MAX_ROWS]}" drawn ${cmpDrawn.indexOf(CHECKS52[COMPARISON_MAX_ROWS]) >= 0}`);
+      const t13 = await chat52([COVER52, T13]);
+      const t13Drawn = textOf52(buildSlideRequests(t13.slides[1], 1, "c52d13") as any[]);
+      A52(t13Drawn.indexOf("12. Schema") >= 0 && t13Drawn.indexOf("SCORE") < 0,
+        `(d) the table's note and its drawing disagree: "12. Schema" drawn ${t13Drawn.indexOf("12. Schema") >= 0}, "SCORE" drawn ${t13Drawn.indexOf("SCORE") >= 0}`);
+      const wide = await chat52([COVER52, { layout: "comparison", title: "Five options",
+        comparison: { columns: ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"], rows: [{ label: "Fast", cells: ["y", "n", "y", "n", "y"] }] } }]);
+      A52(new RegExp(`draws ${COMPARISON_MAX_COLS} of its 5 options`).test(wide.warn) && wide.warn.indexOf(`"Epsilon"`) >= 0,
+        `(d) a fifth comparison option is dropped unnamed: ${wide.warn.slice(wide.warn.indexOf("Notes:"), wide.warn.indexOf("Notes:") + 200)}`);
+    } catch (e: any) {
+      fail(`52 threw before finishing: ${e && e.stack ? e.stack : e}`);
+    }
+  }
+  if (failures === before52) {
+    pass(`a table past ${TABLE_MAX_ROWS} rows and a comparison past ${COMPARISON_MAX_ROWS} name the rows they drop to the model, the table's`
+      + ` "Showing N of M" line sits above the takeaway at both densities, and a hand-split table stays split when its halves cannot be one`);
+  }
+
+  /* ─────────────────────────────────────────────────────────────────────────
+   * 53. A SCORECARD'S TOTAL ADDS UP FROM ITS OWN MARKS — ACROSS THE SLIDES IT
+   *     SPANS — OR THE MODEL IS TOLD WHICH COLUMN DOES NOT (Amrize, 2026-09-23)
+   *
+   * The editorial doc written for Amrize scores three published articles against
+   * its 12-point checklist and totals them 5.5, 6.5 and 2.5 out of 12. Its own
+   * cells add to 5, 5.5 and 2 — a yes as 1 and a partial as a half, the only
+   * reading that reaches a ".5" at all. The update Chris was about to send
+   * asks for that scorecard across two slides "with the scores at the end",
+   * and the dry run — the model's calls written by hand from the real
+   * sources — did exactly what was asked: copied the marks, copied the
+   * totals, and wrote a takeaway under them — "the Obama piece
+   * already ties the best published article" — that the slide's own ticks
+   * contradict. Recounted, Obama's 6.5 of 11 (59%) LEADS 10 Things' 5.5 of 12
+   * (46%). Every string was drawn, nothing overlapped, nothing was dropped,
+   * and no check in this repo could see it.
+   *
+   * DRIVEN THE WAY THE CHAT BUILDS IT: the stored deck read back through
+   * __setStoredDraftReader, the edit inserting the two comparison slides after
+   * slide 16 through prepareSlidesForBuild, then the splitter, validateDeck
+   * and deckWarnings over geometryNotes — the composition all four chains put
+   * in the tool result. The note is asserted on that STRING, because a
+   * function that finds the mismatch and a tool result that never mentions it
+   * are the same outcome for Chris.
+   *
+   * HALF OF THIS CHECK IS SILENCE. A recount that cries wolf is worse than
+   * none, so (c) builds the scorecards that must NOT be reported: the right
+   * totals; totals under the other two readings (a partial worth nothing, or
+   * a whole mark); a bare figure under ticks, which is as likely a rating as
+   * a sum; the real Amrize success-metrics table with "Total AI citations"
+   * fifth of eight over figures; a column with a word in it; and a second
+   * half whose first half is not next to it, where "/ 12" over six marks means
+   * the recount cannot see the whole scorecard.
+   *
+   * MUTATION LOG (detached worktree at 4571a26 plus the working tree,
+   * 2026-09-23) — kills AND survivors, each mutant applied alone and restored:
+   *   killed  S1 the note removed from deckWarnings → (a) and (b) ten times;
+   *           the tool result is back to saying nothing about the totals.
+   *   killed  S2 the walk back through earlier slides removed → (a) and the
+   *           hand-split table in (b): six marks under "/ 12" and silence.
+   *   killed  S3 the walk not stopping at different column heads → (e).
+   *   killed  S4 the walk not stopping at a slide with its own total → (e).
+   *   killed  S5 the denominator gate removed → (c) twice: the bare rating,
+   *           and the second half read without its first.
+   *   killed  S6 a bare figure checked → (c): "Alpha says 8.5 where its
+   *           marks give 2" — a rating out of ten reported as a bad sum.
+   *   killed  S7 only the half reading accepted → (c): totals counting a
+   *           partial as nothing, and as a whole mark, both reported.
+   *   killed  S8 the label exactly "SCORE" → (b) "Total score", (e) parts.
+   *   killed  S9 the label matched inside a word → (g) ONLY, which calls the
+   *           predicate directly. No scorecard reaches the label rule
+   *           through the gates, so a deck-level fixture for it would be
+   *           invented; the direct assertion is the honest one.
+   *   killed  S10 the qualifier split removed → (b): the doc's own cells
+   *           ("P - no brand") read as words and the column skipped.
+   *   killed  S11 n/a read as a no → (d), and (f): drawn as text, read as 0.
+   *   killed  S12 an unreadable cell counted as a no → (c) "Limited".
+   *   killed  S13 the drawing's tick list drifting ("\u2714" drawn as a tick,
+   *           unknown to the recount) → (f).
+   *   killed  S14 the recount reported with partials as whole marks → (a),
+   *           (b), (d): "gives 7" where the slide's marks give 5.
+   *   killed  S15 a second total on a slide summing from the slide's top → (e).
+   *   killed  S16 notes grouped by slide rather than by total row → (e),
+   *           SECOND run only. It SURVIVED the first, whose two-section
+   *           fixture had only part B wrong, so a note under the wrong label
+   *           read the same; part A was made wrong in a different column.
+   *   killed  S17 P not read as a mark at all → (a), (b): every column with
+   *           a partial falls out and the Amrize totals go unreported.
+   *   First run: S9 and S16 SURVIVED; (g) and the two-wrong-sections fixture
+   *   were added for them. The corpus is the other half of the proof: over
+   *   all 94 stored drafts (1,267 slides) the recount reports nothing.
+   * ───────────────────────────────────────────────────────────────────────── */
+  const before53 = failures;
+  console.log(`\n53. A scorecard's total adds up from its own marks, or the model is told which column does not`);
+  const A53 = (ok: boolean, m: string) => { if (!ok) fail(`53: ${m}`); };
+  {
+    const CHECKS53 = [
+      "1. Title tag", "2. Meta description", "3. TL;DR block", "4. Question headings",
+      "5. Answer-first", "6. Entity in sentence", "7. Verifiable specifics", "8. Named experts",
+      "9. Byline and dates", "10. FAQ + schema", "11. Internal links", "12. Schema",
+    ];
+    // The doc's own cells for the three published articles, and the Obama
+    // column scored from the final article (schema cannot be judged from a doc).
+    const MARKS53 = [
+      ["P", "P", "N", "Y"], ["N", "N", "N", "P"], ["N", "P", "N", "Y"], ["Y", "Y", "N", "P"],
+      ["P", "P", "N", "P"], ["P", "P", "P", "P"], ["Y", "Y", "Y", "P"], ["Y", "N", "P", "Y"],
+      ["N", "P", "N", "N"], ["N", "N", "N", "P"], ["P", "Y", "N", "P"], ["N", "N", "N", "n/a"],
+    ];
+    // The same cells the way the doc prints them: the mark, then its reason.
+    const QUALIFIED53 = [
+      ["P - no brand", "P - has brand", "N - no brand, no keyword", "Y - brand + project, 51 chars"],
+      ["N", "N", "N", "P - written, no figure"], ["N", "P - intro does some of the job", "N", "Y - four bullets"],
+      ["Y - all seven", "Y - all ten", "N - labels, not questions", "P - 4 of 5 H2s"], ["P", "P", "N", "P"],
+      ["P - heavy we/our", "P - heavy we/our", "P - heavy we/our", "P - top facts unbranded"],
+      ["Y - strong", "Y - strong", "Y - strong", "P - 3 unsourced superlatives"],
+      ["Y - with titles", "N", "P - one, repeated", "Y - six, titled"], ["N", "P - date only", "N", "N"],
+      ["N", "N", "N", "P - short answers"], ["P - navigation only", "Y - good product links", "N", "P - MAXtect only"],
+      ["N", "N", "N", "n/a - not visible in a doc"],
+    ];
+    const COLS53 = ["Meta data center", "10 Things", "Denver dam", "Obama Center"];
+    const DOC53 = ["5.5 / 12", "6.5 / 12", "2.5 / 12", "6.5 / 11"];
+    const NOTE53 = "Written to spec from the start, the Obama piece already ties the best published article.";
+    const SUB53 = "Y present, P partial, N absent. Obama scored against the final version; schema cannot be seen in a doc.";
+    const cmpHalves = (totals: string[], label?: string, marks?: string[][]): any[] => {
+      const m = marks || MARKS53;
+      return [
+        { layout: "comparison", title: "Checks 1 to 6: is the page {shaped to be quoted?}", subtitle: SUB53,
+          comparison: { columns: COLS53, rows: CHECKS53.slice(0, 6).map((c, i) => ({ label: c, cells: m[i] })) } },
+        { layout: "comparison", title: "Checks 7 to 12: can a model {trust it?}", subtitle: SUB53,
+          comparison: { columns: COLS53, rows: CHECKS53.slice(6).map((c, i) => ({ label: c, cells: m[i + 6] }))
+            .concat([{ label: label || "SCORE", cells: totals, highlight: true } as any]) },
+          note: NOTE53 },
+      ];
+    };
+    const COVER53: any = { layout: "cover", title: "AI Search Content Workshop" };
+    const chat53 = async (slides: any[]) => {
+      const prepared = await prepareSlidesForBuild({ title: "Amrize workshop", slides: JSON.parse(JSON.stringify(slides)) }, null);
+      const built = splitOverflowingSlides(prepared.slides);
+      const g = validateDeck(built, "c53");
+      return { slides: built, warn: deckWarnings(built, geometryNotes(g)) };
+    };
+    const noteOf53 = (warn: string) => {
+      const at = warn.indexOf("does not add up");
+      return at < 0 ? "" : warn.slice(Math.max(0, warn.lastIndexOf("slide ", at)), warn.indexOf("does not add up") + 700);
+    };
+    const silent53 = (warn: string, what: string) =>
+      A53(warn.indexOf("does not add up") < 0, `(c) ${what} was reported as a total that does not add up: ${noteOf53(warn).slice(0, 300)}`);
+
+    try {
+      /* PRECONDITION: an independent recount — not scoreMark — of the doc's
+       * cells. If the fixture drifted until its totals agreed, every positive
+       * assertion below would be testing nothing. */
+      const hand: number[] = [];
+      const na: number[] = [];
+      for (let c = 0; c < COLS53.length; c++) {
+        let t = 0, skip = 0;
+        for (let r = 0; r < MARKS53.length; r++) {
+          const v = MARKS53[r][c];
+          if (v === "Y") t += 1; else if (v === "P") t += 0.5; else if (v === "n/a") skip += 1;
+        }
+        hand.push(t); na.push(skip);
+      }
+      A53(hand.join(",") === "5,5.5,2,6.5" && na.join(",") === "0,0,0,1",
+        `precondition: the doc's marks recount to ${hand.join(", ")} (n/a ${na.join(", ")}), not 5, 5.5, 2 and 6.5 with one n/a in the Obama column`);
+      const RECOUNT53 = ["5 / 12", "5.5 / 12", "2 / 12", "6.5 / 11"];
+
+      /* (a) THE LIVE SHAPE: the recommended prompt's two comparison slides,
+       * inserted after slide 16 of a stored deck, through the edit path. */
+      const stored53: any[] = [JSON.parse(JSON.stringify(COVER53))];
+      for (let i = 2; i <= 16; i++) stored53.push({ layout: "content", title: `Slide ${i}`, body: "One point\nAnother point" });
+      const restore53 = __setStoredDraftReader(async () => ({ draft: { title: "AI Search Content Workshop", slides: JSON.parse(JSON.stringify(stored53)) }, couldNotLook: false }));
+      let edited: any = null;
+      try {
+        edited = await prepareSlidesForBuild({ slides: [], editSlide: { insertAfter: 16, insertSlides: cmpHalves(DOC53) } },
+          `c53-stored-${process.pid}`, ["After slide 16, add the 12-point checklist as ticks and crosses, six checks per slide with the scores at the end"]);
+      } finally { restore53(); }
+      const deckA = splitOverflowingSlides(edited.slides);
+      A53(deckA.length === 18 && deckA[16].layout === "comparison" && deckA[17].layout === "comparison",
+        `(a) precondition: the edit did not land the two halves as slides 17 and 18 (${deckA.length} slides: ${deckA.slice(15).map((s: any) => s.layout).join(", ")})`);
+      const warnA = deckWarnings(deckA, geometryNotes(validateDeck(deckA, "c53a")));
+      A53(warnA.indexOf(`slide 18's "SCORE" row does not add up from the marks above it on slides 17-18`) >= 0,
+        `(a) the tool result does not say slide 18's SCORE row fails to add up across slides 17-18: ${noteOf53(warnA).slice(0, 200) || warnA.slice(warnA.indexOf("Notes:"), warnA.indexOf("Notes:") + 200)}`);
+      for (let c = 0; c < 3; c++) {
+        const want = `"${COLS53[c]}" says "${DOC53[c]}" where its marks give ${hand[c]}`;
+        A53(warnA.indexOf(want) >= 0, `(a) the tool result does not say ${want}: ${noteOf53(warnA).slice(0, 400)}`);
+      }
+      A53(warnA.indexOf(`"Obama Center" says`) < 0, `(a) the Obama column, whose 6.5 / 11 is right, was reported: ${noteOf53(warnA).slice(0, 400)}`);
+
+      /* (b) THE OTHER SHAPES THE SAME SCORECARD TAKES. One 13-row table with
+       * the doc's own qualified cells and a "Total score" label (past the cap:
+       * the total is checked though the row is not drawn — it is the spec the
+       * model will resend when it splits), and the hand split titled
+       * "(continued)", which stays two slides. */
+      const tRows = CHECKS53.map((c, i) => [c].concat(QUALIFIED53[i]));
+      const t13 = await chat53([COVER53, { layout: "table", title: "Four articles against the {12-point checklist}", subtitle: SUB53,
+        table: { columns: ["Check"].concat(COLS53), rows: tRows.concat([["Total score (Y = 1, P = half)"].concat(DOC53)]) }, note: NOTE53 }]);
+      A53(t13.warn.indexOf(`slide 2's "Total score (Y = 1, P = half)" row does not add up from the marks above it, counting`) >= 0 &&
+        t13.warn.indexOf(`"10 Things" says "6.5 / 12" where its marks give 5.5`) >= 0,
+        `(b) a 13-row table in the doc's own words ("P - no brand") and a "Total score" row is not reported: ${noteOf53(t13.warn).slice(0, 300) || "(no note)"}`);
+      const tSplit = await chat53([COVER53,
+        { layout: "table", title: "Four articles against the 12-point checklist", table: { columns: ["Check"].concat(COLS53), rows: tRows.slice(0, 6) } },
+        { layout: "table", title: "Four articles against the 12-point checklist (continued)", table: { columns: ["Check"].concat(COLS53), rows: tRows.slice(6).concat([["SCORE"].concat(DOC53)]) }, note: NOTE53 }]);
+      A53(tSplit.slides.length === 3 && tSplit.warn.indexOf(`slide 3's "SCORE" row does not add up from the marks above it on slides 2-3`) >= 0,
+        `(b) the hand-split table's total is not checked across both halves (${tSplit.slides.length} slides): ${noteOf53(tSplit.warn).slice(0, 300) || "(no note)"}`);
+
+      /* (d) AN n/a IS OUT OF THE DENOMINATOR, NOT A ZERO — and a wrong total
+       * in a column that has one is still found. */
+      const withNa = await chat53([COVER53].concat(cmpHalves(["5 / 12", "5.5 / 12", "2 / 12", "7.5 / 11"])));
+      A53(withNa.warn.indexOf(`"Obama Center" says "7.5 / 11" where its marks give 6.5`) >= 0 && withNa.warn.indexOf(`"10 Things" says`) < 0,
+        `(d) a wrong total over eleven checks and one n/a is not reported, or a right one is: ${noteOf53(withNa.warn).slice(0, 300) || "(no note)"}`);
+
+      /* (e) THE WALK BACK STOPS WHERE THE SCORECARD DOES: at a slide under
+       * different column heads, and at a slide carrying a total of its own.
+       * Each second scorecard here is six checks totalled "/ 6" and wrong in
+       * its first column only (3 where its marks give 2.5); walked too far,
+       * it would be twelve marks against a denominator of six and fall
+       * silent. */
+      const six = (cols: string[], total: string[]): any => ({ layout: "comparison", title: `Six checks, ${cols[0]}`,
+        comparison: { columns: cols, rows: CHECKS53.slice(0, 6).map((c, i) => ({ label: c, cells: MARKS53[i].slice(0, cols.length) }))
+          .concat(total.length ? [{ label: "SCORE", cells: total } as any] : []) } });
+      const other = await chat53([COVER53, six(["Alpha", "Beta", "Gamma", "Delta"], []), six(COLS53, ["3 / 6", "3 / 6", "0.5 / 6", "4 / 6"])]);
+      A53(other.warn.indexOf(`slide 3's "SCORE" row does not add up from the marks above it, counting`) >= 0 &&
+        other.warn.indexOf(`"Meta data center" says "3 / 6" where its marks give 2.5`) >= 0,
+        `(e) a scorecard after a comparison under different heads is recounted with the wrong rows: ${noteOf53(other.warn).slice(0, 300) || "(no note)"}`);
+      const twice = await chat53([COVER53, six(COLS53, ["2.5 / 6", "3 / 6", "0.5 / 6", "4 / 6"]), six(COLS53, ["3 / 6", "3 / 6", "0.5 / 6", "4 / 6"])]);
+      A53(twice.warn.indexOf(`slide 3's "SCORE" row does not add up from the marks above it, counting`) >= 0 && twice.warn.indexOf(`slide 2's "SCORE"`) < 0,
+        `(e) a second self-contained scorecard is recounted with the first one's rows: ${noteOf53(twice.warn).slice(0, 300) || "(no note)"}`);
+      /* ...and a total sums back to the total before it ON ITS OWN SLIDE too:
+       * one slide scored in two sections, each wrong in a different column —
+       * part A's 10 Things says 1.5 where its three marks give 1, part B's
+       * Meta data center says 2.5 where they give 2 — and each note carries
+       * its own row's name, or part A's error is reported under part B. */
+      const sections = await chat53([COVER53, { layout: "comparison", title: "Two sections",
+        comparison: { columns: COLS53, rows: CHECKS53.slice(0, 3).map((c, i) => ({ label: c, cells: MARKS53[i] }))
+          .concat([{ label: "Score (part A)", cells: ["0.5 / 3", "1.5 / 3", "0 / 3", "2.5 / 3"] } as any])
+          .concat(CHECKS53.slice(3, 6).map((c, i) => ({ label: c, cells: MARKS53[i + 3] })))
+          .concat([{ label: "Score (part B)", cells: ["2.5 / 3", "2 / 3", "0.5 / 3", "1.5 / 3"] } as any]) } }]);
+      const partA = sections.warn.indexOf(`slide 2's "Score (part A)" row does not add up from the marks above it, counting`);
+      const partB = sections.warn.indexOf(`slide 2's "Score (part B)" row does not add up from the marks above it, counting`);
+      const tenA = sections.warn.indexOf(`"10 Things" says "1.5 / 3" where its marks give 1`);
+      const metaB = sections.warn.indexOf(`"Meta data center" says "2.5 / 3" where its marks give 2`);
+      A53(partA >= 0 && partB > partA && tenA > partA && tenA < partB && metaB > partB,
+        `(e) a slide scored in two sections is not checked, and named, section by section: ${noteOf53(sections.warn).slice(0, 500) || "(no note)"}`);
+
+      /* (c) SILENCE. */
+      silent53((await chat53([COVER53].concat(cmpHalves(RECOUNT53)))).warn, "the recounted totals");
+      silent53((await chat53([COVER53].concat(cmpHalves(["7 / 12", "8 / 12", "3 / 12", "10 / 11"])))).warn, "totals counting a partial as a whole mark");
+      silent53((await chat53([COVER53].concat(cmpHalves(["3 / 12", "3 / 12", "1 / 12", "3 / 11"])))).warn, "totals counting a partial as nothing");
+      silent53((await chat53([COVER53, { layout: "comparison", title: "Three platforms",
+        comparison: { columns: ["Alpha", "Beta", "Gamma"], rows: [
+          { label: "SSO", cells: ["yes", "yes", "no"] }, { label: "Audit log", cells: ["yes", "no", "no"] },
+          { label: "Data residency", cells: ["no", "yes", "no"] }, { label: "Score", cells: ["8.5", "7", "9"] },
+          { label: "Total seats", cells: ["50", "20", "10"] }] } }])).warn, "a bare rating under ticks, and a total that is a figure");
+      silent53((await chat53([COVER53, { layout: "table", title: "What proves it worked: baselines and targets",
+        table: { columns: ["Metric", "Baseline", "3 mo", "6 mo", "12 mo"], highlight: [4, 5], rows: [
+          ["Organic traffic, US", "7,316", "8,800", "11,000", "15,000"], ["Organic traffic, Canada", "2,714", "3,300", "4,500", "7,000"],
+          ["Non-branded organic, US", "184", "600", "1,800", "5,000"], ["Ranking keywords, US", "216", "400", "800", "1,500"],
+          ["Total AI citations", "26", "80", "200", "500"], ["Google AI Overview citations", "0", "5", "25", "75"],
+          ["Pages with FAQ schema", "0", "5", "20", "50"], ["holcimelevate.com traffic", "5,410", "2,500", "500", "0"]] } }])).warn,
+        "the stored Amrize success-metrics table (f7266b59, slide 30)");
+      // "Limited" where the doc has a yes, and a total of 5 — what the author
+      // gets counting it as one. The recount cannot know that, so it leaves
+      // the column alone; read as a zero, 5 would be unreachable and reported.
+      const worded = MARKS53.map((r) => r.slice());
+      worded[3][0] = "Limited";
+      const wordedDeck = await chat53([COVER53].concat(cmpHalves(["5 / 12", "5.5 / 12", "2 / 12", "6.5 / 11"], undefined, worded)));
+      A53(wordedDeck.warn.indexOf(`"Meta data center" says`) < 0,
+        `(c) a column with a word in it ("Limited") was recounted as if the word were a mark: ${noteOf53(wordedDeck.warn).slice(0, 300)}`);
+      silent53((await chat53([COVER53, cmpHalves(DOC53)[0], { layout: "section", title: "Now the second half" }, cmpHalves(DOC53)[1]])).warn,
+        "a second half whose first half is not next to it (six marks under a total over twelve)");
+
+      /* (f) ONE VOCABULARY. The recount reads a cell as a yes or a no exactly
+       * when the comparison DRAWS it as a tick or a cross: a word drawn as a
+       * tick that the recount does not know takes its column out of the
+       * check, and a word counted that is drawn as text is a mark nobody in
+       * the room can see. Swept over the builder's own words and the near
+       * misses a model writes. */
+      const words = ["yes", "y", "true", "\u2713", "no", "n", "false", "\u2717", "x", "\u2714", "\u2718", "pass", "fail", "p", "partial", "n/a", "Yes", "N"];
+      const disagree: string[] = [];
+      for (let w = 0; w < words.length; w++) {
+        const reqs = buildSlideRequests({ layout: "comparison", title: "One row", comparison: { columns: ["A"], rows: [{ label: "Row", cells: [words[w]] }] } } as any, 1, `c53f${w}`) as any[];
+        const drawn = reqs.filter((r: any) => r.insertText && String(r.insertText.objectId).indexOf("cc0_0") >= 0).map((r: any) => String(r.insertText.text))[0];
+        const mark = scoreMark(words[w]);
+        const tick = drawn === "\u2713", cross = drawn === "\u2717";
+        if (tick !== (mark === 1) || cross !== (mark === 0)) disagree.push(`${JSON.stringify(words[w])} drawn ${JSON.stringify(drawn)}, read as ${JSON.stringify(mark)}`);
+      }
+      A53(disagree.length === 0, `(f) the recount and the drawing disagree about what is a tick or a cross: ${disagree.join("; ")}`);
+      A53(TICK_CELLS.length > 0 && CROSS_CELLS.length > 0, "(f) precondition: the shared tick and cross lists are empty");
+
+      /* (g) WHAT COUNTS AS A TOTAL'S LABEL. Loose at the front — any label
+       * starting with score, total, overall or sum as a WORD, because the
+       * gates are what stop a false report — but never inside a word:
+       * "Summary", "Summit pass" and "Scorecard" are not totals. No natural
+       * scorecard reaches this through the gates (a row so labelled would also
+       * need an "N / M" over a column of marks with M equal to its checks),
+       * so it is asserted on the predicate the recount calls. */
+      const labels: [string, boolean][] = [["SCORE", true], ["Total", true], ["Total score (Y = 1, P = half)", true], ["Overall", true],
+        ["Sum of checks", true], ["**Score**", true], ["Summary", false], ["Summit pass", false], ["Scorecard", false], ["Totally new", false], ["Subtotal", false]];
+      const wrongLabels = labels.filter((l) => isScoreLabel(l[0]) !== l[1]).map((l) => `${JSON.stringify(l[0])} read as ${!l[1] ? "" : "not "}a total`);
+      A53(wrongLabels.length === 0, `(g) ${wrongLabels.join("; ")}`);
+    } catch (e: any) {
+      fail(`53 threw before finishing: ${e && e.stack ? e.stack : e}`);
+    }
+  }
+  if (failures === before53) {
+    pass(`a scorecard total its own marks do not reach is named to the model by column, across the slides the scorecard spans,`
+      + ` and every total a mark-sum could mean is left alone`);
   }
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);

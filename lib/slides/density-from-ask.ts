@@ -20,7 +20,19 @@
  * how often it fires on the asks that happened to build a deck — it is how
  * often the WORD occurs in this workspace at all. Four triggers died on that
  * second measurement and they are named below with the number that killed
- * them. The rule flips 7 of 42 creations, 16.7%.
+ * them. The rule flipped 7 of 42 creations, 16.7%.
+ *
+ * AND A THIRD TIME, 2026-09-23, for the possession form (HELD, below), over
+ * the corpus as it then stood: 2,974 stored user messages (2,970 with text)
+ * and 45 conversations holding a deck. Creations: 7 of 45 before (15.6%), 8
+ * of 45 after (17.8%), and the eighth is the ask the form was written for —
+ * 3ec51a09, the Amrize workshop — and no other. Every message: 63 before
+ * (2.1%), 72 after (2.4%), none lost; the nine new ones are eight distinct
+ * sentences, all an occasion the writer is about to attend ("I have an
+ * editorial meeting tomorrow", "I am holding a farewell meeting with the team
+ * … today", "I have a meeting with Gabi and Rob to define our roles"), and
+ * none of those seven conversations holds a deck, so no stored deck would
+ * have been built differently by any of them.
  *
  *   - "presentation" IS NOT A TRIGGER. It is a plain synonym for deck in this
  *     corpus ("Can you make this presentation in TCE format", "can you make me
@@ -56,7 +68,8 @@
  *
  * NOTHING WIDER WITHOUT A REAL SENTENCE TO POINT AT. Every pattern here is
  * answerable with a message somebody actually sent: five are needed by one of
- * the seven decks that flip, and the three `present`-verb forms are needed by
+ * the seven decks that flipped first, the possession form by the eighth, and
+ * the three `present`-verb forms are needed by
  * real messages of this workspace that mean somebody will speak ("I want to
  * present and launch EngineGPT to the company tomorrow morning", "I now need
  * to present to the team"), measured to fire on nothing else. A trigger with
@@ -159,9 +172,69 @@ const WHEN = "(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorr
  * messages — "for the board meeting" is already an occasion because of the
  * word meeting — while "for the board pack", a document, would have flipped.
  */
+const OCCASION_NOUN = "(?:meeting|briefing|workshop|all-hands|all hands|off-?site|stand-?up|webinar|conference|keynote|session|kick-?off|away ?day|demo|pitch(?:es)?|talk)";
+
 const OCCASION = new RegExp(
   "\\b(?:for|at|ahead of|before)\\s+(?:my|our|the|this|next|" + WHEN + "(?:'s|’s)?)?\\s*(?:\\w+\\s+){0,3}?" +
-  "(?:meeting|briefing|workshop|all-hands|all hands|off-?site|stand-?up|webinar|conference|keynote|session|kick-?off|away ?day|demo|pitch(?:es)?|talk)\\b",
+  OCCASION_NOUN + "\\b",
+  "i"
+);
+
+/**
+ * AN OCCASION THE USER HAS, rather than one the deck is FOR. The same event,
+ * owned instead of served, and it is the canonical `present` ask: thread
+ * 3ec51a09 (2026-09-22) opened "we have a workshop with Amrize toi show them
+ * how to create and optimise content for AI. Can you build a presentation…",
+ * and the deck was built at `read` because OCCASION needs its preposition —
+ * nine of its eighteen slides ended below 72% of the canvas, where at
+ * `present` two do.
+ *
+ * WIDENED PER OBSERVED ASK, and each verb has a real sentence behind it:
+ * "we have a workshop with Amrize" (have), "I'm having a workshop with Gabi
+ * and Roberts this morning" and "We are having a morning meeting to say
+ * goodbye to Holly" (having), "I am holding a farewell meeting with the team
+ * and her today" (holding — a speech, asked for in the same message). `have
+ * got` / `'ve got` occurs NOWHERE in the 2,974 stored user messages and is
+ * admitted anyway, as the British spelling of the observed verb rather than a
+ * new trigger; it was measured to fire on nothing (both stored "got a"
+ * messages miss). "Hosting" was drafted beside holding and taken back out: the
+ * one stored sentence it was meant for, "we are co hosting this session",
+ * does not have the shape (a word sits between the verb and its tense) and
+ * was already `present` by another rule, so it had no sentence of its own.
+ * "I'm running a workshop for" needs nothing new — SPOKEN already binds
+ * `running` to its noun.
+ *
+ * FOUR THINGS KEEP IT FROM BEING THE BARE NOUN LIST AGAIN, and the corpus
+ * says plainly which of them it needs today and which it does not:
+ *   - PAST TENSE IS NOT AN OCCASION TO PREPARE FOR, and this is the one the
+ *     corpus demands. "We had a meeting with Siemens yesterday. Can you give
+ *     me a summary" — five stored messages say `had` before an occasion noun,
+ *     every one asks about a meeting that is over, and four of them flip the
+ *     moment `had` is admitted. Only have, have got and the progressive are
+ *     read.
+ *   - A DETERMINER DIRECTLY AFTER THE VERB, so the verb is POSSESSION rather
+ *     than an auxiliary: "we have finished the workshop with Amrize" is a
+ *     perfect tense about something over, and with the determiner optional
+ *     "finished" is one of the three words allowed before the noun.
+ *   - THE NOUN MUST BE THE HEAD, followed by what follows an event — with,
+ *     for, to, on, a day — or ending the clause. "we have the meeting notes
+ *     from Tuesday" is a document, and MeetingBrain means this workspace
+ *     writes that sentence every week.
+ *   - A QUESTION IS NOT A STATEMENT: "do we have a meeting with Siemens
+ *     tomorrow?" is the shape of the calendar questions this app answers.
+ * The last three are NOT demanded by any stored message — measured, each can
+ * be removed on its own and no message of the 2,970 changes its answer (the
+ * real near-miss, "I have attached the briefing document for SCOPE", is
+ * stopped by the determiner and the head-noun rule each on its own). They are
+ * kept because this is a new trigger on a word as common as `have`, and each
+ * is pinned by a SYNTHETIC fixture in check 16a of verify-slide-edit.ts, said
+ * to be synthetic there, for the reason the clamp's word-boundary fixture is.
+ */
+const HELD = new RegExp(
+  "(?<!\\b(?:do|did)\\s)\\b(?:we|i)" +
+  "(?:\\s+have(?:\\s+got)?|(?:'ve|’ve)\\s+got|(?:'re|’re|'m|’m|\\s+are|\\s+am)\\s+(?:having|holding))" +
+  "\\s+(?:a|an|the|our|my|this)\\s+(?:\\w+\\s+){0,3}?" + OCCASION_NOUN +
+  "(?=\\s+(?:with|for|at|on|in|to|about|tomorrow|today|tonight|this|next|later)\\b|\\s*(?:[.,;:!?]|$))",
   "i"
 );
 
@@ -186,6 +259,7 @@ export function densityFromAsk(text: string | undefined): Density {
     if (SPOKEN[i].test(opening)) return "present";
   }
   if (OCCASION.test(opening)) return "present";
+  if (HELD.test(opening)) return "present";
   if (TIMED_CALL.test(opening)) return "present";
   return "read";
 }

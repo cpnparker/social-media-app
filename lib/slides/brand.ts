@@ -1533,6 +1533,32 @@ export const LAYOUT_STYLE: Record<SlideLayout, {
   closing:      { background: null,           logo: "white", logoPlacement: "closing", onDark: true },
 };
 
+/** The layout to draw, from whatever the model actually said.
+ *
+ *  `LAYOUT_STYLE[slide.layout]` was read straight from the tool argument, so a
+ *  name outside the enum returned undefined and the next line threw — taking
+ *  out the WHOLE deck, not one slide, and surfacing as "Google Slides creation
+ *  failed" for a call that never reached Google. The aliases are the sibling
+ *  .pptx tool's enum, which the model sees in the same turn and reaches for.
+ *
+ *  HERE, BESIDE THE TABLE IT READS, rather than in the builder, because two
+ *  modules ask it now: the builder, and normaliseSlide's picture fold in
+ *  lib/slides/edit.ts, which has to know whether a slide's layout DRAWS a
+ *  picture before it spends a search on one — and "bullets" is drawn as
+ *  `content`, which does, while "chart" is drawn as `bar-chart`, which does
+ *  not. edit.ts cannot import the builder, and a second copy of the aliases
+ *  is a second answer to drift from the first. */
+export const LAYOUT_ALIASES: Record<string, SlideLayout> = {
+  title: "cover", blank: "content", bullets: "content", text: "content",
+  image: "feature", photo: "feature", chart: "bar-chart", divider: "section",
+  agenda: "content", "thank-you": "closing", end: "closing",
+};
+
+export function layoutOf(raw: string | undefined, index: number): SlideLayout {
+  if (raw && Object.prototype.hasOwnProperty.call(LAYOUT_STYLE, raw)) return raw as SlideLayout;
+  return LAYOUT_ALIASES[(raw || "").toLowerCase()] ?? (index === 0 ? "cover" : "content");
+}
+
 /** One layout's ground, lockup and ink. Named so a resolver can return it
  *  for a slide whose ground is decided per instance. */
 export type LayoutStyle = (typeof LAYOUT_STYLE)[SlideLayout];

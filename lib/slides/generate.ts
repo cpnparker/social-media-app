@@ -19,7 +19,7 @@ import {
   SERIES_LIGHT, SERIES_DARK, CARDS, QUOTE, PROCESS, LOGO_WALL, RULE, LAYOUT_STYLE, LOGO_PLACEMENT, SECTION, VENN,
   SHOT, FEATURE_SHOT_STYLE, FRAME, STEPPER, DENSITY, DEFAULT_DENSITY, density, withDensity,
   PHOTO_RAIL, SERPENTINE, columnBand,
-  rgb, logoUrl, textOn, assetUrl, type SlideLayout, type TypeStyle, type LayoutStyle, type Density,
+  rgb, logoUrl, textOn, assetUrl, layoutOf, type SlideLayout, type TypeStyle, type LayoutStyle, type Density,
 } from "@/lib/slides/brand";
 import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "@/lib/slides/token";
 import { captureThumbnails } from "@/lib/slides/preview";
@@ -29,7 +29,7 @@ import {
 } from "@/lib/slides/images";
 import { resolveIcon } from "@/lib/slides/icons";
 import {
-  normaliseSlide, hubHasConnections, stampSteps, CONTINUATION_CLEARS, STEP_BOUNDS, type SlideStep,
+  normaliseSlide, hubHasConnections, stampSteps, isScreenshotImage, CONTINUATION_CLEARS, STEP_BOUNDS, type SlideStep,
 } from "@/lib/slides/edit";
 import { SLIDES_TEXT_INSET, BULLET_INDENT } from "@/lib/slides/preview-style";
 import { refreshSignedMediaUrl } from "@/lib/media/signed";
@@ -221,6 +221,11 @@ export interface SlideInput {
      *  on image-split and feature; declared, not drawn, anywhere else. */
     callouts?: { x: number; y: number; text: string }[];
   };
+  /** The name editSlide takes for `image: { query }`, which the model also
+   *  carries into a full `slides` build. normaliseSlide folds it into `image`
+   *  on every layout that draws a picture; it is still here only on one that
+   *  draws none, where it is declared rather than fetched. */
+  imageQuery?: string;
   /** Filled in by resolution — not supplied by the model. */
   resolvedImage?: {
     url: string; scrim: number; credit?: string; logo?: "white" | "navy";
@@ -231,6 +236,11 @@ export interface SlideInput {
     /** Its pixel width, for the legibility note — how much interface is being
      *  asked to survive being drawn at 295 points. */
     sourceWidth?: number;
+    /** The layout whose box this file was CROPPED for, when that is not the
+     *  layout now drawing it. Set only by normaliseSlide's image-split →
+     *  photo-rail promotion (lib/slides/edit.ts), read by resolveDeckImages,
+     *  which re-bakes the same file to the new box and drops the mark. */
+    bakedFor?: string;
   };
   /** Set when resolution ran and found nothing, so publishing does not quietly
    *  search again and build a deck different from the one that was approved. */
@@ -2945,7 +2955,9 @@ export function namesAPicture(image: SlideInput["image"]): image is NonNullable<
  *  gets a navy stage instead of a full bleed. Callouts imply it — a slide that
  *  points at a control is pointing at an interface. */
 export function isScreenshot(slide: Pick<SlideInput, "image">): boolean {
-  return !!(slide.image?.screenshot || (slide.image?.callouts && slide.image.callouts.length > 0));
+  // The predicate itself lives in lib/slides/edit.ts, because normaliseSlide's
+  // image-split promotion has to ask it and that file cannot import this one.
+  return isScreenshotImage(slide.image);
 }
 
 /** The layouts that DRAW callouts, and the phrase every note names them with.
@@ -3775,23 +3787,11 @@ export function fitHeading(
   return { style: size === style.size ? style : { ...style, size }, y: opts.bottom - height, height };
 }
 
-/** The layout to draw, from whatever the model actually said.
- *
- *  `LAYOUT_STYLE[slide.layout]` was read straight from the tool argument, so a
- *  name outside the enum returned undefined and the next line threw — taking
- *  out the WHOLE deck, not one slide, and surfacing as "Google Slides creation
- *  failed" for a call that never reached Google. The aliases are the sibling
- *  .pptx tool's enum, which the model sees in the same turn and reaches for. */
-const LAYOUT_ALIASES: Record<string, SlideLayout> = {
-  title: "cover", blank: "content", bullets: "content", text: "content",
-  image: "feature", photo: "feature", chart: "bar-chart", divider: "section",
-  agenda: "content", "thank-you": "closing", end: "closing",
-};
-
-export function layoutOf(raw: string | undefined, index: number): SlideLayout {
-  if (raw && Object.prototype.hasOwnProperty.call(LAYOUT_STYLE, raw)) return raw as SlideLayout;
-  return LAYOUT_ALIASES[(raw || "").toLowerCase()] ?? (index === 0 ? "cover" : "content");
-}
+/* `layoutOf` — the layout to draw, from whatever the model actually said —
+ * lives in lib/slides/brand.ts beside LAYOUT_STYLE, the table it reads. It was
+ * defined here until the picture fold in normaliseSlide (lib/slides/edit.ts)
+ * had to answer the same question — "what will this name be DRAWN as?" — and
+ * edit.ts cannot import this file. One answer, one place. */
 
 /** A deliberately generous estimate of how many lines a string takes in a box,
  *  and how far down the box its last line reaches.
@@ -5010,6 +5010,13 @@ const NON_CONTENT_KEYS = new Set([
   // reported as text the slide dropped, and real icons were swapped out for
   // shorter ones on the strength of it.
   "url", "src", "query", "icon", "resolvedUrl", "resolvedIcon", "imageError",
+  // `imageQuery` is the same photo search as `query`, under the name editSlide
+  // takes. Counted as content, a picture brief on a content slide was reported
+  // to the model as slide TEXT the layout had dropped — four of the eight
+  // "dropped" strings in the Amrize deck (3ec51a09) were photo searches. Where
+  // one is left unfolded, on a layout that draws no picture, the builder's own
+  // note says so in the right words.
+  "imageQuery", "bakedFor",
   // The names that failed to resolve are the same instructions again, and
   // "google-drive" is long enough to be reported as text the slide dropped.
   "iconsMissing",
@@ -5153,6 +5160,230 @@ export function quoteClip(t: string): string {
   return `"${s.length > 48 ? s.slice(0, 45) + "..." : s}"`;
 }
 
+/** `the row "SCORE" is` / `the rows "9. Byline", "SCORE" and 3 more are` —
+ *  the subject of a drop note, quoted through quoteClip so droppedContent
+ *  recognises the strings as already named. */
+function namedList(items: string[], noun: string): string {
+  const named = items.filter((x) => x);
+  const unnamed = items.length - named.length;
+  // All of them up to five; past that the first three AND THE LAST, because
+  // the last row of a table is where a total or a score lives, and "and 2
+  // more" in its place hides the row the slide was built to show.
+  const pick = named.length <= 5 ? named : named.slice(0, 3).concat([named[named.length - 1]]);
+  const shown = pick.map(quoteClip);
+  const more = named.length - shown.length + unnamed;
+  if (!shown.length) return `${items.length} ${noun}${items.length === 1 ? " is" : "s are"}`;
+  const many = items.length > 1;
+  return `the ${noun}${many ? "s" : ""} ${shown.join(", ")}${more > 0 ? ` and ${more} more` : ""} ${many ? "are" : "is"}`;
+}
+
+/** THE CELLS A COMPARISON DRAWS AS A TICK OR A CROSS, and therefore the cells
+ *  a scorecard's recount reads as a yes or a no.
+ *
+ *  ONE LIST FOR BOTH, because the recount below exists to check a total
+ *  against the marks THE ROOM SEES. A word the builder draws as a tick and
+ *  the recount does not know takes its whole column out of the check; a word
+ *  the recount counts and the builder prints as text is a mark nobody at the
+ *  table can see. Compared lower-cased and trimmed, as the builder always has. */
+export const TICK_CELLS = ["yes", "y", "true", "\u2713"];
+export const CROSS_CELLS = ["no", "n", "false", "\u2717", "x"];
+/** Half a mark. The comparison prints it as text — there is no half-tick
+ *  glyph — and every scorecard this was measured on reads it as a half: the
+ *  Amrize editorial doc's "5.5 / 12" is only reachable in halves. */
+export const PARTIAL_CELLS = ["p", "partial", "partly", "half", "\u00bd"];
+/** A check that does not apply. Out of the denominator, not a zero: the
+ *  Obama column's "6.5 / 11" is twelve checks with schema unjudgeable. */
+export const NOT_APPLICABLE_CELLS = ["n/a", "na", "n.a.", "not applicable"];
+
+/** A scorecard cell read as a mark: 1, a half, 0, "na" — or null for
+ *  anything else (a figure, a word, a blank), which takes its whole column out
+ *  of the recount rather than guessing what it was worth.
+ *
+ *  THE MARK IS THE CELL'S FIRST WORD. A source scorecard writes its reason
+ *  beside the mark — "P - no brand", "Y — strong", "N (labels, not
+ *  questions)" — and the model copies the cell whole, which is how the Amrize
+ *  doc's own table reads. A spaced hyphen or colon, either dash, an opening
+ *  bracket, a comma or a semicolon ends the mark; an UNSPACED hyphen or slash
+ *  does not, so "n/a" stays one word, and so does "no brand" — which is not a
+ *  mark at all and must not be read as a "no". */
+export function scoreMark(cell: unknown): 1 | 0.5 | 0 | "na" | null {
+  const raw = String(cell ?? "").trim().toLowerCase();
+  if (!raw) return null;
+  const head = raw.split(/\s+[-:]\s+|\s*[\u2013\u2014(,;]\s*/)[0].trim();
+  if (TICK_CELLS.indexOf(head) >= 0) return 1;
+  if (PARTIAL_CELLS.indexOf(head) >= 0) return 0.5;
+  if (CROSS_CELLS.indexOf(head) >= 0) return 0;
+  if (NOT_APPLICABLE_CELLS.indexOf(head) >= 0) return "na";
+  return null;
+}
+
+/** A total row's label: one that STARTS with score, total, overall or sum as
+ *  a word — "SCORE", "Total score (Y = 1, P = half)", "Total checks met",
+ *  "Overall". Loose on purpose, because the label is not what stops a false
+ *  report; the gates in scorecardMismatches are. A row that merely starts
+ *  with "Total" — the stored Amrize success-metrics table has "Total AI
+ *  citations" fifth of eight, over figures — fails the mark gate, because the
+ *  cells above it are figures, and a "Total seats: 50" under a feature
+ *  comparison's ticks fails the denominator gate. What the label must NOT do
+ *  is match inside a word: "Scorecard" and "Summary" are headings, not totals. */
+const SCORE_ROW_LABEL = /^(?:score|total|overall|sum)\b/;
+export function isScoreLabel(label: unknown): boolean {
+  const t = String(label ?? "").toLowerCase().replace(/[{}*_`]/g, "").replace(/\s+/g, " ").trim();
+  return SCORE_ROW_LABEL.test(t);
+}
+
+/** "5.5 / 12", "5.5/12", "5.5 out of 12", "7" — a total as a figure and an
+ *  optional denominator. A percentage, a fraction glyph or a word is null and
+ *  that column is not checked: a recount that has to guess what a stated
+ *  total MEANS is a recount that cries wolf. (A bare figure parses, and is
+ *  then not checked either; see scorecardMismatches.) */
+export function statedScore(cell: unknown): { value: number; outOf: number | null } | null {
+  const t = String(cell ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+  const m = /^(\d+(?:\.\d+)?)(?: ?(?:\/|out of|of) ?(\d+(?:\.\d+)?))?$/.exec(t);
+  if (!m) return null;
+  return { value: Number(m[1]), outOf: m[2] !== undefined ? Number(m[2]) : null };
+}
+
+/** A slide's grid, as a scorecard: row labels, and the cells of each row
+ *  under the option columns. The `key` is what makes two slides ONE
+ *  scorecard — the same layout under the same column heads. */
+function scoreGridOf(s: SlideInput, index: number): { key: string; columns: string[]; labels: string[]; cells: unknown[][] } | null {
+  if (!s) return null;
+  const layout = layoutOf(s.layout, index);
+  const norm = (xs: unknown[]) => xs.map((x) => String(x ?? "").toLowerCase().replace(/[{}]/g, "").replace(/\s+/g, " ").trim()).join("|");
+  if (layout === "comparison" && s.comparison) {
+    const rows = s.comparison.rows || [];
+    const columns = (s.comparison.columns || []).map((c) => String(c ?? ""));
+    return {
+      key: `comparison|${norm(columns)}`, columns,
+      labels: rows.map((r) => String((r && r.label) || "")),
+      cells: rows.map((r) => ((r && r.cells) || []) as unknown[]),
+    };
+  }
+  if (layout === "table" && s.table) {
+    const rows = tableRowsOf(s.table);
+    const head = (s.table.columns || []).map((c) => String(c ?? ""));
+    return {
+      key: `table|${norm(head)}`, columns: head.slice(1),
+      labels: rows.map((r) => String(r[0] ?? "")),
+      cells: rows.map((r) => r.slice(1)),
+    };
+  }
+  return null;
+}
+
+/**
+ * Every total on a scorecard that its own marks do not add up to.
+ *
+ * THE AMRIZE SCORECARD, 2026-09-23. The editorial optimisation doc written
+ * for Amrize scores three published articles against its 12-point checklist
+ * and totals them 5.5, 6.5 and 2.5 out of 12. Its own cells add to 5, 5.5
+ * and 2 — counting a yes as 1 and a partial as a half, which is the only
+ * reading that reaches a ".5" at all. The dry run of the deck update built
+ * from it copied the marks AND the totals, and the takeaway under them — "the
+ * Obama piece already ties the best published article" — was false by the
+ * slide's own ticks: recounted, Obama's 6.5 of 11 (59%) LEADS 10 Things' 5.5
+ * of 12 (46%). Nothing in the pipeline could see it. Every string was drawn,
+ * nothing overlapped, and the model had faithfully reproduced a source that
+ * disagreed with itself.
+ *
+ * THE RECOUNT SPANS THE SLIDES THE SCORECARD SPANS. Twelve checks and a
+ * total are thirteen rows, past both caps, so the honest build is two slides
+ * — checks 1-6, then 7-12 and the SCORE row — and a recount of the second
+ * slide alone would check a total of twelve marks against six. The run is
+ * walked back through the slides immediately before, for as long as they are
+ * the same layout under the same column heads and carry no total of their
+ * own. A total sums back to the total before it, so a slide scored in two
+ * sections — "Score (part A)", "Score (part B)" — has each checked against
+ * its own rows.
+ *
+ * IT IS BUILT NOT TO CRY WOLF, because a check that does is worse than none,
+ * and every rule below takes a column OUT rather than guessing:
+ *   - the row's label must start with a total's word (isScoreLabel);
+ *   - every cell above it in the column must read as a mark (scoreMark) — a
+ *     figure, a word or a blank and the column is not a column of marks;
+ *   - the total must be a figure OVER A DENOMINATOR, and the denominator
+ *     must equal the checks counted, with or without the ones marked n/a.
+ *     That is what makes a total a claim to be the SUM of the marks above
+ *     it. A bare "8.5" under a vendor comparison's ticks is as likely an
+ *     analyst's rating out of ten, and nothing in the cell tells the two
+ *     apart. A denominator that does not match means the recount is not
+ *     seeing the whole scorecard (a first half somewhere else in the deck),
+ *     and it says nothing;
+ *   - and the total is accepted under ANY of the three readings a scorecard
+ *     can mean: partials worth nothing, a half, or a whole mark. Only a total
+ *     no reading reaches is reported.
+ * Measured against every stored deck (94 drafts in 45 conversations on
+ * 2026-09-23): 16 comparison and 108 table slides, three total rows — all
+ * "Total AI citations" over figures — and nothing reported.
+ */
+export type ScoreMismatch = {
+  /** 1-based: the slide the total is on, the slide its marks start on, and
+   *  the total's row on its slide (0-based) — two totals can share a slide. */
+  slide: number; from: number; row: number; label: string; column: string; stated: string;
+  counted: number; yes: number; partial: number; no: number;
+};
+export function scorecardMismatches(slides: SlideInput[]): ScoreMismatch[] {
+  const out: ScoreMismatch[] = [];
+  const grids: ({ key: string; columns: string[]; labels: string[]; cells: unknown[][] } | null)[] = [];
+  for (let i = 0; i < slides.length; i++) grids.push(scoreGridOf(slides[i], i));
+  for (let k = 0; k < slides.length; k++) {
+    const g = grids[k];
+    if (!g) continue;
+    // The marks a total sums: back to the total before it. On this slide
+    // that is the rows since the previous total; for the FIRST total on the
+    // slide it also reaches back through the slides before, while they are
+    // the same scorecard (same layout, same heads) and carry no total of
+    // their own. A second total on a slide — part A, part B — sums its own
+    // section and nothing above the total that closed the last one.
+    let prefix: unknown[][] = [];
+    let from = k;
+    for (let j = k - 1; j >= 0; j--) {
+      const p = grids[j];
+      if (!p || p.key !== g.key) break;
+      let ownTotal = false;
+      for (let r = 0; r < p.labels.length; r++) if (isScoreLabel(p.labels[r])) ownTotal = true;
+      if (ownTotal) break;
+      prefix = p.cells.concat(prefix);
+      from = j;
+    }
+    let since = 0;
+    for (let at = 0; at < g.labels.length; at++) {
+      if (!isScoreLabel(g.labels[at])) continue;
+      const rows = prefix.concat(g.cells.slice(since, at));
+      const start = prefix.length ? from : k;
+      prefix = [];
+      since = at + 1;
+      for (let c = 0; c < g.columns.length; c++) {
+        const said = String(((g.cells[at] || [])[c]) ?? "").trim();
+        const stated = statedScore(said);
+        if (!stated) continue;
+        let yes = 0, partial = 0, no = 0, na = 0, unread = false;
+        for (let r = 0; r < rows.length; r++) {
+          const m = scoreMark((rows[r] || [])[c]);
+          if (m === null) { unread = true; break; }
+          if (m === "na") na += 1;
+          else if (m === 1) yes += 1;
+          else if (m === 0.5) partial += 1;
+          else no += 1;
+        }
+        const scored = yes + partial + no;
+        if (unread || !scored) continue;
+        if (stated.outOf === null || (stated.outOf !== scored && stated.outOf !== scored + na)) continue;
+        const readings = [yes, yes + partial / 2, yes + partial];
+        let reached = false;
+        for (let r = 0; r < readings.length; r++) if (Math.abs(readings[r] - stated.value) < 0.001) reached = true;
+        if (reached) continue;
+        out.push({
+          slide: k + 1, from: start + 1, row: at, label: g.labels[at], column: g.columns[c] || `column ${c + 1}`,
+          stated: said, counted: yes + partial / 2, yes, partial, no,
+        });
+      }
+    }
+  }
+  return out;
+}
+
 /** What the deck could not do, in a sentence the model can relay.
  *
  *  The slide says it too — a truncated chart carries its own note — but the
@@ -5267,6 +5498,32 @@ export function deckWarnings(slides: SlideInput[], measured: string[] = []): str
     if (runs.length) {
       notes.push(`a run of identical layouts reads as one long slide: ${runs.join("; ")} — break it with a different format`);
     }
+  }
+
+  // A TOTAL ITS OWN MARKS DO NOT ADD UP TO (scorecardMismatches). One note
+  // per total row, naming each column with what it says and what its marks give,
+  // because "the scores look off" is not actionable and "10 Things says 6.5 /
+  // 12 where its marks give 5.5" is. The instruction is about what the model
+  // SAYS as much as what it fixes: the Amrize dry run's takeaway was a
+  // ranking read off the wrong totals, and a source that disagrees with itself is a
+  // thing the user needs to hear, not have quietly corrected.
+  const wrong = scorecardMismatches(slides);
+  for (let w = 0; w < wrong.length; ) {
+    const at = wrong[w];
+    const parts: string[] = [];
+    let e = w;
+    for (; e < wrong.length && wrong[e].slide === at.slide && wrong[e].row === at.row; e++) {
+      const x = wrong[e];
+      parts.push(`${quoteClip(x.column)} says ${quoteClip(x.stated)} where its marks give ${Math.round(x.counted * 100) / 100}` +
+        ` (${x.yes} yes, ${x.partial} partial, ${x.no} no)`);
+    }
+    notes.push(
+      `slide ${at.slide}'s ${quoteClip(at.label)} row does not add up from the marks above it` +
+      `${at.from < at.slide ? ` on slides ${at.from}-${at.slide}` : ""}, counting a yes as 1 and a partial as a half: ${parts.join("; ")}.` +
+      ` Correct the total or the marks, and do NOT present these totals, or any ranking or takeaway drawn from them, as checked` +
+      ` — if they came from a source document, tell the user that the source does not add up`
+    );
+    w = e;
   }
 
   // The house dash rule. Em and en dashes are not part of TCE materials.
@@ -7549,8 +7806,8 @@ function comparisonRequests(
   page: string, id: (s: string) => string,
   cmp: NonNullable<SlideInput["comparison"]>, bandTop: number, bandBottom?: number
 ): Req[] {
-  const cols = (cmp.columns || []).slice(0, 4);
-  const rows = (cmp.rows || []).slice(0, 8);
+  const cols = (cmp.columns || []).slice(0, COMPARISON_MAX_COLS);
+  const rows = (cmp.rows || []).slice(0, COMPARISON_MAX_ROWS);
   if (!cols.length || !rows.length) return [];
   const out: Req[] = [];
   const top = bandTop;
@@ -7582,12 +7839,14 @@ function comparisonRequests(
     }));
     (r.cells || []).slice(0, cols.length).forEach((cell, j) => {
       const cx = GRID.margin + labelW + j * colW;
+      // The vocabulary is shared with the scorecard recount (TICK_CELLS), so a
+      // total is checked against exactly the marks this draws.
       const v = cell.trim().toLowerCase();
-      if (v === "yes" || v === "y" || v === "true" || v === "✓") {
+      if (TICK_CELLS.indexOf(v) >= 0) {
         out.push(...textBox(id(`cc${i}_${j}`), page, "\u2713", { ...TYPE.cellText, size: 13, bold: true, color: COLOR.inkTeal }, {
           x: cx, y: ry + rowH / 2 - 9, width: colW, height: 18,
         }, { align: "CENTER" }));
-      } else if (v === "no" || v === "n" || v === "false" || v === "\u2717" || v === "x") {
+      } else if (CROSS_CELLS.indexOf(v) >= 0) {
         out.push(...textBox(id(`cc${i}_${j}`), page, "\u2717", { ...TYPE.cellText, size: 13, bold: true, color: COLOR.inkCoral }, {
           x: cx, y: ry + rowH / 2 - 9, width: colW, height: 18,
         }, { align: "CENTER" }));
@@ -7608,9 +7867,32 @@ function comparisonRequests(
 }
 
 /** The most columns a slide can carry before the cells are too narrow to read,
- *  and the most rows before it is a spreadsheet on a projector. */
+ *  and the most rows before it is a spreadsheet on a projector.
+ *
+ *  TWELVE IS ALREADY PAST WHAT FITS WHOLE ON A BUSY SLIDE, which is why this
+ *  was measured rather than raised when a 12-check scorecard plus its SCORE
+ *  row (13 rows, Amrize, 2026-09-23) lost the SCORE row. At `read`, under a
+ *  standfirst and a takeaway bar, the band holds 157pt of rows; twelve
+ *  one-line rows need 191pt even at the 7.5pt floor, so a twelve-row table
+ *  there is already drawn by the squeezed single-line fallback, and a
+ *  thirteenth row would need 207pt. The cap stays; what changed is that a row
+ *  past it is now NAMED to the model (see the table branch in
+ *  buildSlideRequestsAt) and a hand-split table is no longer rejoined past it
+ *  (mergeContinuedTables). */
 export const TABLE_MAX_COLS = 6;
 export const TABLE_MAX_ROWS = 12;
+
+/** The rows a table will actually consider: arrays with anything in them. One
+ *  answer for the builder, the drop note and the "(continued)" merge, so the
+ *  count the slide prints and the count the model is told cannot disagree. */
+export function tableRowsOf(spec: SlideInput["table"] | undefined): unknown[][] {
+  return ((spec && spec.rows) || []).filter((r) => Array.isArray(r) && r.some((c) => String(c ?? "").trim() !== "")) as unknown[][];
+}
+
+/** A comparison's own caps: four options across, eight criteria down. Past
+ *  either, the rest are not drawn and the builder says which. */
+export const COMPARISON_MAX_COLS = 4;
+export const COMPARISON_MAX_ROWS = 8;
 
 /** The narrowest a column may be drawn. Below this even a three-character
  *  figure loses characters to the ellipsis, which is worse than no table. */
@@ -7742,7 +8024,7 @@ function tableRequests(
 ): Req[] {
   const onDark = !!opts.onDark;
   const columns = (spec.columns || []).map((c) => String(c ?? "")).slice(0, TABLE_MAX_COLS);
-  const allRows = (spec.rows || []).filter((r) => Array.isArray(r) && r.some((c) => String(c ?? "").trim() !== ""));
+  const allRows = tableRowsOf(spec);
   if (!columns.length || !allRows.length) return [];
   // With a rail the table gives up a third of the width. Cells clip earlier,
   // which is the trade: a table that fills the slide while its argument sits in
@@ -7783,7 +8065,17 @@ function tableRequests(
   // the page edge and ignored the takeaway bar entirely, so on a nine-row
   // engine table the bar sat squarely on top of the ninth row — DeepSeek was
   // drawn, and then painted over.
-  const bottom = Math.min(CANVAS.height - GRID.margin - tail, bandBottom ?? Infinity);
+  //
+  // AND THE "Showing N of M" LINE IS INSIDE THE BAND, NOT UNDER IT. The tail
+  // above was only ever subtracted from the page edge, so on a slide with a
+  // takeaway bar — whose band ends NOTE.gap above the bar — the rows ran to the
+  // band's floor and the line was drawn 4pt below them, straight under the
+  // bar. The Amrize scorecard (13 rows, 2026-09-23) showed three pixels of
+  // "Showing 12 of 13 rows" above "Written to spec from the start…", and the
+  // only thing the model heard about it was a 1pt text overrun. The slot is
+  // the one meta.bottom already adds below: 4pt of air and a 12pt line.
+  const NOTICE_SLOT = 16;
+  const bottom = Math.min(CANVAS.height - GRID.margin - tail, (bandBottom ?? Infinity) - (note ? NOTICE_SLOT : 0));
   // Never into the footer: the "Showing N of M" line sits under the last row,
   // and it was drawn 5pt into the footer once the footer came up off the bezel.
   const bottomClear = Math.min(bottom, FOOTER_Y - 6 - ((spec.rows || []).length > TABLE_MAX_ROWS ? 14 : 0));
@@ -8059,7 +8351,7 @@ function tableRequests(
   });
 
   const lastRowBottom = rowYs[rowYs.length - 1] + rowHs[rowHs.length - 1];
-  if (opts.meta) opts.meta.bottom = lastRowBottom + (note ? 16 : 0);
+  if (opts.meta) opts.meta.bottom = lastRowBottom + (note ? NOTICE_SLOT : 0);
   if (note) {
     const parts: string[] = [];
     if (dropped > 0) parts.push(`${rows.length} of ${allRows.length} rows`);
@@ -8328,6 +8620,19 @@ function buildSlideRequestsAt(
     if (asked && !drawsCallouts(layout)) {
       shotNote(`callouts are drawn on ${CALLOUT_LAYOUTS} only — this slide is a ${layout}, so its ${asked}` +
         ` callout${asked === 1 ? "" : "s"} ${asked === 1 ? "was" : "were"} not drawn; move it to image-split`);
+    }
+  }
+  // A PHOTOGRAPH ASKED FOR ON A LAYOUT THAT DRAWS NONE, declared the same way.
+  // normaliseSlide folds `imageQuery` into `image` only where a picture is
+  // drawn, because on a stat or a table the fold would buy a search or a
+  // generation for nothing; so a brief still standing here, after the slide
+  // was normalised above, is one nothing will fetch. Said, because the model
+  // asked for a picture and will describe one unless it is told otherwise.
+  {
+    const q = typeof slide.imageQuery === "string" ? slide.imageQuery.trim() : "";
+    if (q) {
+      shotNote(`a photograph was asked for (${quoteClip(q)}) and this ${layout} slide draws none, so none was fetched;` +
+        ` move it to content, photo-rail or image-split to show one, or drop imageQuery`);
     }
   }
   /** Where this slide's content ENDS, set by layouts that size their boxes to
@@ -8971,8 +9276,52 @@ function buildSlideRequestsAt(
     }
     if (layout === "swot" && slide.swot) requests.push(...swotRequests(page, id, slide.swot, aTop, GRID.bodyY + band));
     else if (layout === "matrix" && slide.matrix) requests.push(...matrixRequests(page, id, slide.matrix, aTop, GRID.bodyY + band));
-    else if (layout === "comparison" && slide.comparison) requests.push(...comparisonRequests(page, id, slide.comparison, aTop, GRID.bodyY + band));
+    else if (layout === "comparison" && slide.comparison) {
+      requests.push(...comparisonRequests(page, id, slide.comparison, aTop, GRID.bodyY + band));
+      // A comparison cut to four options and eight criteria used to say
+      // NOTHING. droppedContent caught a lost label only when it ran past ten
+      // characters, so a 13-row scorecard lost five rows and the model was told
+      // about three of them — never "12. Schema", never "SCORE", which was the
+      // row the slide existed to show.
+      const cRows = slide.comparison.rows || [];
+      const cCols = slide.comparison.columns || [];
+      if (cRows.length > COMPARISON_MAX_ROWS) {
+        const lost = cRows.slice(COMPARISON_MAX_ROWS).map((r) => String((r && r.label) || "").trim());
+        shotNote(`a comparison draws ${COMPARISON_MAX_ROWS} of its ${cRows.length} rows — ${namedList(lost, "row")} NOT on the slide;` +
+          ` split the rows across two comparison slides, or use \`table\`, which draws ${TABLE_MAX_ROWS}`);
+      }
+      if (cCols.length > COMPARISON_MAX_COLS) {
+        shotNote(`a comparison draws ${COMPARISON_MAX_COLS} of its ${cCols.length} options — ${namedList(cCols.slice(COMPARISON_MAX_COLS).map((c) => String(c || "").trim()), "option")} NOT on the slide;` +
+          ` use \`table\`, which draws ${TABLE_MAX_COLS} columns`);
+      }
+    }
     else if (layout === "table" && slide.table) {
+      // ROWS AND COLUMNS PAST THE CAP ARE NAMED, not just counted. The slide
+      // prints "Showing 12 of 13 rows", and that line was the only record: the
+      // cells of a dropped row are usually short ("SCORE", "5.5 / 12") and
+      // droppedContent ignores anything under eleven characters, so the model
+      // was told nothing, and a model told nothing describes a scorecard with
+      // scores on it. Named here by each lost row's first cell, which is how a
+      // reader names a row.
+      {
+        const all = tableRowsOf(slide.table);
+        const heads = (slide.table.columns || []).map((c) => String(c ?? "").trim());
+        if (all.length > TABLE_MAX_ROWS) {
+          const lost: string[] = [];
+          for (let r = TABLE_MAX_ROWS; r < all.length; r++) {
+            const row = all[r];
+            let first = "";
+            for (let c = 0; c < row.length && !first; c++) first = String(row[c] ?? "").trim();
+            lost.push(first);
+          }
+          shotNote(`the table draws ${TABLE_MAX_ROWS} of its ${all.length} rows — ${namedList(lost, "row")} NOT on the slide;` +
+            ` split the rows across two table slides, or cut to ${TABLE_MAX_ROWS}`);
+        }
+        if (heads.length > TABLE_MAX_COLS) {
+          shotNote(`the table draws ${TABLE_MAX_COLS} of its ${heads.length} columns — ${namedList(heads.slice(TABLE_MAX_COLS), "column")} NOT on the slide;` +
+            ` drop a column or split the table`);
+        }
+      }
       // THE TABLE DRAWS ITS `body`, BENEATH THE ROWS.
       //
       // It never did, at any row count: the gate here passed only `bodyRight`
@@ -10148,8 +10497,15 @@ async function googleFetch(url: string, token: string, init: RequestInit = {}) {
 /** A table the writer split by hand — "Title (continued)" over the same
  *  columns — is one table again. The engine never splits a table (the
  *  splitter excludes them on purpose), so a "(continued)" table is always the
- *  MODEL's doing, and the reference deck keeps nine engines on one page. The
- *  renderer declares "Showing N of M" if the rejoined rows exceed the cap. */
+ *  MODEL's doing, and the reference deck keeps nine engines on one page.
+ *
+ *  BUT NEVER PAST THE CAP. This used to rejoin whatever it was given and leave
+ *  the renderer to print "Showing 12 of 13 rows" — so a model that had split a
+ *  thirteen-row scorecard correctly, six rows and seven, had its SCORE row
+ *  dropped for it, and the deck came back one slide shorter than it sent with
+ *  nothing in the tool result to say so (splitCount went to -1, and only a
+ *  positive count is reported). When the two halves cannot be one table
+ *  whole, the split was the right call, and it stands. */
 export function mergeContinuedTables(slides: SlideInput[]): SlideInput[] {
   const out: SlideInput[] = [];
   for (const s of slides) {
@@ -10157,7 +10513,9 @@ export function mergeContinuedTables(slides: SlideInput[]): SlideInput[] {
     const cont = !!(s && s.layout === "table" && s.table && /\(continued\)\s*$/i.test(String(s.title || "")));
     const sameCols = !!(prev && prev.layout === "table" && prev.table &&
       JSON.stringify(prev.table.columns || []) === JSON.stringify(s?.table?.columns || []));
-    if (cont && sameCols) {
+    const fits = !!(prev && prev.table && s && s.table &&
+      tableRowsOf(prev.table).length + tableRowsOf(s.table).length <= TABLE_MAX_ROWS);
+    if (cont && sameCols && fits) {
       prev.table = { ...prev.table, rows: [...(prev.table!.rows || []), ...(s.table!.rows || [])] };
       if (s.note?.trim()) prev.note = s.note;
       if (s.notes?.trim()) prev.notes = [prev.notes, s.notes].filter(Boolean).join("\n");
@@ -10169,6 +10527,16 @@ export function mergeContinuedTables(slides: SlideInput[]): SlideInput[] {
 }
 
 export function splitOverflowingSlides(slides: SlideInput[]): SlideInput[] {
+  // NORMALISED BEFORE ANYTHING IS CUT. The body is measured by building the
+  // slide, and the builder normalises — so a stored image-split slide carrying
+  // `bodyRight` was MEASURED as the photo-rail it will be drawn as, and then
+  // COPIED as the image-split it was stored as. Its continuation, with
+  // `bodyRight` cleared, no longer qualified for the promotion, and one slide
+  // came out as two different layouts. Every path that builds a deck splits
+  // first, so this is also where the preview and PDF routes — which resolve
+  // nothing and are handed the client's copy of the draft — first see the
+  // slide as it will be drawn.
+  slides = slides.map((s) => normaliseSlide(s));
   // A "(continued)" table is rejoined BEFORE anything is split, on every path
   // that builds a deck, so the preview and the Drive build agree.
   slides = mergeContinuedTables(slides);
@@ -10385,6 +10753,10 @@ function splitOnce(slide: SlideInput, index: number): SlideInput[] {
       // along. The callouts do NOT come with it: the pins and their numbered
       // lines belong to the half of the body that explains them.
       image: isScreenshot(slide) ? { screenshot: true } : undefined,
+      // The same brief under editSlide's name, left standing only on a layout
+      // that draws no picture. Carried, it would be declared twice — once per
+      // half — for one photograph that was never going to be fetched.
+      imageQuery: undefined,
       ...cleared,
       subtitle: undefined, note: undefined, strip: undefined, tones: undefined,
       continuation: true,
@@ -10501,6 +10873,17 @@ export type AttachmentSupplier = (
   index: number
 ) => Promise<{ bytes: Buffer; contentType: string } | null>;
 
+/** The box a slide's resolved picture has to be re-cut to, or null when it
+ *  was cut for the box it is drawn in. Only a picture marked `bakedFor` — the
+ *  image-split → photo-rail promotion — and only where the layout draws a
+ *  picture of a fixed shape. A continuation inherits its parent's instead. */
+export function rebakeShape(slide: SlideInput): { width: number; height: number } | null {
+  const r = slide.resolvedImage;
+  if (!r || !r.bakedFor || !r.url || slide.continuation || isScreenshot(slide)) return null;
+  if (r.bakedFor === slide.layout) return null;
+  return pictureShape(slide.layout);
+}
+
 export async function resolveDeckImages(
   slides: SlideInput[],
   generate?: ImageGenerator,
@@ -10547,15 +10930,73 @@ export async function resolveDeckImages(
     return { ...req, query: `${req.query}. ${deckStyle}` };
   };
 
-  const pending = slides.filter((sx) => namesAPicture(sx.image) && !sx.resolvedImage && !sx.imageUnavailable).length;
+  // A CONTINUATION OF A PROMOTED SLIDE takes its parent's re-baked picture
+  // rather than baking its own copy. The splitter copies every field, so a
+  // stored slide re-split after promotion carries the SAME marked file as its
+  // parent; baked twice, it is two uploads of one crop. Cleared, it inherits
+  // at the foot of this function — the parent's new file if the bake worked,
+  // the parent's old one (still marked, for the next pass) if it did not.
+  for (let i = 0; i < slides.length; i++) {
+    const sx = slides[i];
+    if (sx.continuation && sx.resolvedImage?.bakedFor) delete sx.resolvedImage;
+  }
+
+  const pending = slides.filter((sx) => (namesAPicture(sx.image) && !sx.resolvedImage && !sx.imageUnavailable) || !!rebakeShape(sx)).length;
   let done = 0;
   const tick = () => { done++; try { onProgress?.(done, pending); } catch { /* progress must never break a build */ } };
 
   await Promise.all(
     slides.map(async (slide, slideIndex) => {
-      const counted = !!(namesAPicture(slide.image) && !slide.resolvedImage && !slide.imageUnavailable);
+      const counted = !!(namesAPicture(slide.image) && !slide.resolvedImage && !slide.imageUnavailable) || !!rebakeShape(slide);
       try {
       await (async () => {
+      // A PICTURE CUT FOR ANOTHER LAYOUT'S BOX, re-cut from THE SAME FILE.
+      //
+      // normaliseSlide draws an image-split slide that carries `bodyRight` as
+      // photo-rail, and a picture resolved before that was baked to
+      // image-split's half-slide: 339.84 x 405pt, a 0.839 crop. photo-rail
+      // draws a 0.736 portrait. Google Slides fits an image INSIDE the box it
+      // is given, preserving aspect — it letterboxes, it does not crop — so the
+      // old file would reach the deck with bars top and bottom. The chat
+      // preview letterboxes the same way (it draws with `contain` to match
+      // Slides); the PDF print covers, and would have looked right, which is
+      // the one view that would never have shown it.
+      //
+      // Re-cut from the file the user already approved, not re-searched: the
+      // search is not guaranteed to return the same photograph (see the
+      // `imageUnavailable` comment below — the deck the user approved must be
+      // the deck they get). The file is image-split's own bake, which carries
+      // no gradient — neither layout writes on its picture — so cropping it
+      // again loses nothing but the width the narrower box does not show. An
+      // ATTACHED photograph was fitted whole rather than cropped, and is again.
+      //
+      // A failed bake keeps the old file and its mark: letterboxed, which is
+      // what the deck had before, and retried on the next pass.
+      //
+      // FETCHED AS STORED, NOT REISSUED FIRST. refreshSignedMediaUrl renews a
+      // grant for whoever holds the URL, and on the draft path these slides
+      // can arrive in the MODEL's call — so reissuing here would be a new way
+      // to turn a leaked, expired link into a live copy. An expired link
+      // simply fails the fetch, and publishing, which reissues every stored
+      // link before it gets here (refreshDeckImageUrls), re-cuts it then.
+      {
+        const shape = rebakeShape(slide);
+        const was = slide.resolvedImage;
+        if (shape && was) {
+          const r = await bakeImageSource(
+            { url: was.url, source: "supplied", credit: was.credit },
+            {
+              aspect: shape.width / shape.height, gradient: false,
+              ...(slide.image?.attachment ? { fit: "contain" as const } : {}),
+            },
+          );
+          if (!r.degraded && !r.unusable) {
+            slide.resolvedImage = { url: r.url, scrim: 0, credit: was.credit, logo: r.logo };
+          } else {
+            console.warn(`[SlideImages] slide ${slideIndex + 1}: could not re-cut its picture for ${slide.layout} — ${r.degraded || r.unusable}; kept the ${was.bakedFor} crop`);
+          }
+        }
+      }
       // `imageUnavailable` means we already tried and could not find one. It
       // is checked as well as `resolvedImage` because publishing re-runs this
       // whole resolution: a slide that previewed as flat navy — because

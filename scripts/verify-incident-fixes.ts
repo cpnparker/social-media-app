@@ -2024,6 +2024,31 @@ function msgSrcForPaths(): string {
  *           LENGTH halves are independently observable, and both now are.
  *           Kept as defence in depth in front of a hardcoded URL template,
  *           and recorded rather than tidied away.
+ *
+ * THIRD ROUND — the pasted link reads the whole document (Amrize, 2026-09-23;
+ * detached worktree at 4571a26 plus the change, each mutant alone, re-run
+ * against the final code after the cache was bounded):
+ *   KILLED  the link read cut at the name cap -> 7 red; the article stops at
+ *           8,000 again and its FAQ never arrives
+ *   KILLED  the formatter's slice back at 9,000 -> 2 red: the link reads the
+ *           article whole and the NEXT layer cuts it, at the same sentence
+ *   KILLED  the formatter's slice at 25,000 -> 1 red, the full-cap read only.
+ *           The article alone (13,700 characters formatted) would not have
+ *           caught it; the escape-heavy 24,000-character read, whose JSON is
+ *           25,312, is the boundary that matters
+ *   KILLED  the cache holding the first reader's cut -> 4 red: a name read
+ *           first leaves the link read at 8,000
+ *   KILLED  the name read raised to the link cap -> 2 red. That is a cost
+ *           decision, not a correctness one, and it is pinned so it is made
+ *           on purpose if it is made at all
+ *   KILLED  a cache hit ignoring the reader's cap -> 2 red, and only because
+ *           the second name read and the second link read were added for it:
+ *           name-then-link alone could not see it
+ *   KILLED  the cache forgetting the document's real length -> 1 red, and it
+ *           is the dangerous one: the cached 24,000-character prefix comes
+ *           back with NO marker, which reads as the whole document
+ *   KILLED  the cache holding whole documents again -> 1 red (40,000 cached).
+ *           Nothing evicts that map, so what it holds is bounded here
  *   NOTE    the description mutation was malformed on its first attempt —
  *           it concatenated a one-liner in FRONT of the real text instead of
  *           replacing it, so the assertions still found what they look for and
@@ -2524,6 +2549,98 @@ console.log("\n19. A pasted Drive link resolves by id, and a miss is never serve
     const provSrc2 = readFileSync(join(process.cwd(), "lib/ai/providers.ts"), "utf8");
     check("and nothing in providers.ts still tells the model a link cannot be fetched",
       !/cannot fetch a link/i.test(provSrc2) && !/URL alone is not enough/i.test(provSrc2));
+  }
+
+  // ── A PASTED LINK READS THE WHOLE DOCUMENT (Amrize, 2026-09-23) ──
+  //
+  // The final Obama Presidential Center article is 12,474 characters as Drive
+  // exports it. Read by link it was cut at 8,000 — mid-sentence — so the FAQ
+  // at 10,834, two of the five question headings and the wind-test figure
+  // never reached a model that was being asked to score it against a
+  // checklist whose tenth point IS the FAQ. The fixture below has that shape:
+  // the same length, the FAQ at the same offset, and a sentinel after it.
+  // Built, not copied: a client's article does not belong in this repo.
+  {
+    const OBAMA_ID = "1lTHT3rU7m5brn54N83u7KAY5yAKdkXNEvhh5nG5HuZs";
+    const OBAMA_URL = `https://docs.google.com/document/d/${OBAMA_ID}/edit?tab=t.0`;
+    const para = (i: number) =>
+      `The panel team said "we tested panel ${i} twice" before it was lifted.\nEach panel weighed up to 14,000 pounds and carried "an invisible connection".\n`;
+    const articleOf = (len: number, faqAt: number, sentinel: string) => {
+      let t = "";
+      let i = 0;
+      while (t.length < faqAt) t += para(i++);
+      t += "\nFrequently asked questions\n";
+      while (t.length < len - sentinel.length - 1) t += para(i++);
+      return t.slice(0, len - sentinel.length - 1) + "\n" + sentinel;
+    };
+    const ARTICLE = articleOf(12474, 10834, "END-OF-ARTICLE-SENTINEL");
+    const OBAMA: FakeFile = { id: OBAMA_ID, name: "Obama Presidential Center (final)", mimeType: DOC, modifiedTime: "2026-09-22T10:00:00.000Z", body: ARTICLE };
+
+    check("PRECONDITION: the fixture is the article's size, with its FAQ where the 8,000 cut used to hide it",
+      ARTICLE.length === 12474 && ARTICLE.indexOf("Frequently asked questions") > 8000 && ARTICLE.indexOf("END-OF-ARTICLE-SENTINEL") > 12000,
+      `${ARTICLE.length} chars, FAQ at ${ARTICLE.indexOf("Frequently asked questions")}`);
+
+    const s1 = scenario(OTHERS, OTHERS.concat([OBAMA]));
+    const r1 = await queryDriveDocs("read", `Final Obama article: ${OBAMA_URL}`, s1.deps);
+    const c1 = String(r1.data && (r1.data as any).content);
+    check("a pasted link reads the whole 12,474-character article, FAQ and last line included",
+      c1.indexOf("Frequently asked questions") >= 0 && c1.indexOf("END-OF-ARTICLE-SENTINEL") >= 0 && c1.indexOf("showing the first") < 0,
+      `${c1.length} chars read, ends ${JSON.stringify(c1.slice(-60))}`);
+    const shown1 = providers.formatDriveDocsResult(r1 as any);
+    check("and the model is handed all of it: the formatter does not cut what the link read",
+      shown1.indexOf("END-OF-ARTICLE-SENTINEL") >= 0 && !/truncated to fit/.test(shown1),
+      `${shown1.length} chars formatted`);
+
+    // AT THE CAP, WITH THE ESCAPING. The formatter slices JSON, and JSON
+    // escapes every quote and newline, so the number that matters is the
+    // largest thing a link read can return, dressed as JSON. An interview is
+    // the prose most full of both.
+    const LONG = articleOf(40000, 20000, "BEYOND-THE-CAP-SENTINEL");
+    const HUGE: FakeFile = { id: "1HUGEhuge222CCCccc333DDDddd444EEEeee55", name: "Long interview", mimeType: DOC, modifiedTime: "2026-09-22T10:00:00.000Z", body: LONG };
+    const s2 = scenario(OTHERS, OTHERS.concat([HUGE]));
+    const r2 = await queryDriveDocs("read", `https://docs.google.com/document/d/${HUGE.id}/edit`, s2.deps);
+    const c2 = String(r2.data && (r2.data as any).content);
+    const escapes = (c2.match(/["\n]/g) || []).length;
+    check("PRECONDITION: the full-cap read is escape-heavy prose (a quote or newline in every 25 characters or fewer)",
+      escapes * 25 >= c2.length, `${escapes} in ${c2.length}`);
+    check("a link read longer than the cap says how much of it was read, at the link's own cap",
+      /showing the first 24,000 of 40,000 characters/.test(c2), c2.slice(-260, -120));
+    const shown2 = providers.formatDriveDocsResult(r2 as any);
+    check("and that full-cap read survives the formatter whole — its own marker reaches the model, and nothing is sliced after it",
+      /showing the first 24,000 of 40,000 characters/.test(shown2) && !/truncated to fit/.test(shown2),
+      `${JSON.stringify(r2.data).length} chars of JSON`);
+    // The cache holds only what the largest reader may be handed, so a second
+    // read comes back from 24,000 characters — and must still know there were
+    // 40,000. A cache that forgot the real length would hand over the prefix
+    // with NO marker at all, which reads as the whole document.
+    const again2 = await queryDriveDocs("read", `https://docs.google.com/document/d/${HUGE.id}/edit`, s2.deps);
+    const c2b = String(again2.data && (again2.data as any).content);
+    check("a second read of it, from the cache, still says it is 24,000 of 40,000 — the cache keeps the real length",
+      /showing the first 24,000 of 40,000 characters/.test(c2b) && s2.drive.calls.filter((u) => u.indexOf("/export?") >= 0).length === 1,
+      `${c2b.length} chars; ${s2.drive.calls.filter((u) => u.indexOf("/export?") >= 0).length} export(s)`);
+    const cachedEntry = s2.deps.caches.content.get(HUGE.id);
+    check("and the cache holds no more of a document than a link read may be handed",
+      !!cachedEntry && cachedEntry.text.length <= 24000, `${cachedEntry && cachedEntry.text.length} chars cached`);
+
+    // A NAME READ KEEPS ITS OWN CAP, and whichever read comes first, the cache
+    // does not hand one cap's cut to the other.
+    const s3 = scenario(OTHERS.concat([OBAMA]), OTHERS.concat([OBAMA]));
+    const byName = await queryDriveDocs("read", "Obama Presidential Center", s3.deps);
+    check("a read by NAME is still cut at 8,000 — a partial-name match may be the wrong document",
+      /showing the first 8,000 of 12,474 characters/.test(String(byName.data && (byName.data as any).content)),
+      String(byName.error || "").slice(0, 120));
+    const exports = () => s3.drive.calls.filter((u) => u.indexOf("/export?") >= 0).length;
+    const before = exports();
+    const thenLink = await queryDriveDocs("read", OBAMA_URL, s3.deps);
+    check("and a link read straight after it, from the same cache, still gets the whole article",
+      String(thenLink.data && (thenLink.data as any).content).indexOf("END-OF-ARTICLE-SENTINEL") >= 0,
+      `${String(thenLink.data && (thenLink.data as any).content).length} chars`);
+    check("without a second export: the cache holds the document, not one reader's cut of it",
+      exports() === before, `${before} -> ${exports()} exports`);
+    const nameAgain = await queryDriveDocs("read", "Obama Presidential Center", s3.deps);
+    check("and a name read after the link read is still cut at the name's own cap, from that same cache",
+      /showing the first 8,000 of 12,474 characters/.test(String(nameAgain.data && (nameAgain.data as any).content)),
+      `${String(nameAgain.data && (nameAgain.data as any).content).length} chars`);
   }
 
   // ── DEFECT 3: the tool says what it does and does not do ──

@@ -903,6 +903,33 @@ console.log("\n15. An insert renumbers every step after it");
 //   And the one that shows why 16i has to exist: under the stampDeckChrome
 //   mutation, `npx tsx scripts/verify-slide-layouts.ts` exits 0 with zero 47b
 //   failures while every present deck silently reverts to read at publish.
+//
+// THE POSSESSION FORM (HELD), 2026-09-23 — detached worktree at 4571a26 plus
+// the change, each mutant alone. The ask it exists for is 3ec51a09's "we have
+// a workshop with Amrize", which built the canonical present deck at read.
+//   killed   HELD removed from densityFromAsk → 16a, six cases: the Amrize
+//            ask, the two stored progressive/`holding` sentences, the
+//            synthetic `'ve got` — and 16m's precondition.
+//   killed   `had` admitted → 16a on two real messages ("We had a meeting with
+//            Siemens yesterday. Can you give me a summary"). Measured over the
+//            corpus, four stored messages flip under it; this guard is the
+//            one the corpus demands.
+//   killed   the determiner made optional → 16a perfect-synth only.
+//   killed   the head-noun rule removed → 16a notes-synth only.
+//   killed   the question guard removed → 16a question-synth only.
+//            THOSE THREE ARE KILLED BY SYNTHETIC FIXTURES AND BY NOTHING
+//            REAL: measured, removing any one of them changes the answer for
+//            none of the 2,970 stored messages. Recorded rather than hidden,
+//            the way the clamp's word-boundary fixture is — the guards are
+//            there because `have` is one of the commonest verbs in the
+//            corpus, not because a stored sentence has needed them yet.
+//   killed   `'ve got` dropped → 16a got-synth (synthetic: 0 stored uses).
+//   killed   `holding` dropped → 16a b443f6fe, the farewell-speech message.
+//   killed   an edit inferring its density from the ask, and a resend into a
+//            thread that has a deck re-inferring → 16d, 16g, 16k and 16l as
+//            before, and 16m on the Amrize thread's own shape: an insert, a
+//            patch and a resend of its stored read deck, with the ask that
+//            now infers present one turn back, all re-stamped present.
 ;(async () => {
 const before16 = failures;
 console.log("\n16. Density is decided once, at creation, and an edit never changes it");
@@ -995,6 +1022,31 @@ try {
     // the strength of sounding like an occasion. A board MEETING still is one.
     ["board-pack", "Turn this proposal into slides for the board pack", "read"],
     ["board-meeting", "Turn this proposal into slides for the board meeting on Thursday", "present"],
+    // THE POSSESSION FORM (HELD), 2026-09-23. The occasion OWNED rather than
+    // served: no binding preposition, so OCCASION missed it, and the canonical
+    // present deck was built at read. The first is that ask, verbatim, typo
+    // and all; the next two are the other stored sentences that carry the
+    // progressive and `holding`, each an occasion the writer is about to run.
+    ["3ec51a09", "we have a workshop with Amrize toi show them how to create and optimise content for AI. Can you build a presentation based on the work we have done for them and best practice.", "present"],
+    ["0e26a900", "I'm having a workshop with Gabi and Roberts this morning. This is to discuss how we ^split respionsibilities and operational duties between the three directors.", "present"],
+    ["b443f6fe", "Can you help me write up a speech for Georgie's departure? I am holding a farewell meeting with the team and her today and would like to say a few nice words.", "present"],
+    // THE BRITISH SPELLING OF THE SAME VERB — synthetic, because it occurs
+    // nowhere in the 2,974 stored messages; admitted as `have`, not as a new
+    // trigger, and measured to fire on nothing else.
+    ["got-synth", "we've got a meeting with Siemens on Thursday, can you pull a deck together", "present"],
+    // PAST TENSE: real, and the guard the corpus demands — four of the five
+    // stored `had` sentences flip the moment it is admitted.
+    ["02fb7331", "We had a meeting with Siemens yesterday. Can you give me a summary", "read"],
+    ["5d8e9224", "we had a meeting in which we discussed how we should commission CUs for the contract", "read"],
+    // THE REAL NEAR-MISS: "have" as an auxiliary, the noun as a modifier.
+    ["d03ae52c", "I have attached the briefing document for SCOPE now. This should help.", "read"],
+    // SYNTHETIC, one per guard no stored message needs today (the header of
+    // density-from-ask.ts says which): the perfect tense (the determiner), a
+    // document named after an occasion (the head noun), and a calendar
+    // QUESTION, which is the commonest thing this app is asked about meetings.
+    ["perfect-synth", "We have finished the workshop with Amrize, can you write up the actions", "read"],
+    ["notes-synth", "we have the meeting notes from Tuesday, can you turn them into a summary", "read"],
+    ["question-synth", "Do we have a meeting with Siemens tomorrow?", "read"],
   ];
   for (let i = 0; i < CASES.length; i++) {
     const got = densityFromAsk(CASES[i][1]);
@@ -1301,6 +1353,35 @@ try {
     const editedWindow = await prepareSlidesForBuild(
       { slides: [], editSlide: { slideNumber: 2, body: "One, rewritten" } }, convR, ["tidy up slide 2", FIRST]);
     if (!allAt(editedWindow.slides, "read")) fail(`16l an edit inherited from the window instead of from the deck: ${densities(editedWindow.slides)}`);
+  }
+
+  // (m) THE AMRIZE THREAD ITSELF (3ec51a09). Its deck was CREATED at `read`
+  //     on 2026-09-22, before the possession form existed, and the widening
+  //     must not reach back and reshape it: the next turn in that thread
+  //     attaches two files and asks for new slides, and the original ask —
+  //     which now infers present — is still inside DECK_ASK_WINDOW. So the
+  //     same ask is driven both ways: a NEW deck from it is present, and an
+  //     edit, an insert and a full-deck resend of the STORED read deck, with
+  //     that ask one turn back, all stay read.
+  {
+    const AMRIZE = "we have a workshop with Amrize toi show them how to create and optimise content for AI. Can you build a presentation based on the work we have done for them and best practice.";
+    const NEXT = "Attached: our editorial optimisation doc and demand analysis. Final Obama article: https://docs.google.com/document/d/x. Update the deck: swap the stats on slides 3 and 5 for Amrize's own baseline from the spreadsheet, then after slide 16 add the 12-point checklist scored across all four articles.";
+    if (densityFromAsk(AMRIZE) !== "present") fail("16m precondition: the Amrize ask does not infer present, so nothing below is tested");
+    if (densityFromAsk(NEXT) !== "read") fail("16m precondition: the follow-up ask infers present on its own, so the window is not what is being tested");
+    const convNew = `verify-density-amrize-new-${process.pid}`;
+    const made = await prepareSlidesForBuild({ title: "AI Search Content Workshop — Amrize", slides: plainDeck() }, convNew, [AMRIZE]);
+    if (!allAt(made.slides, "present")) fail(`16m a NEW deck from the Amrize ask was created at ${densities(made.slides)}`);
+    const convOld = `verify-density-amrize-stored-${process.pid}`;
+    STORE.set(convOld, { title: "AI Search Content Workshop — Amrize", slides: stampDensity(plainDeck() as any, "read") });
+    const asks = [NEXT, AMRIZE];
+    const inserted = await prepareSlidesForBuild(
+      { slides: [], editSlide: { insertAfter: 3, insertSlides: [{ layout: "content", title: "The 12-point checklist", body: "Title tag\nMeta description" }] } },
+      convOld, asks);
+    if (inserted.density !== "read" || !allAt(inserted.slides, "read")) fail(`16m an insert into the stored Amrize deck re-stamped it: ${densities(inserted.slides)}`);
+    const patched = await prepareSlidesForBuild({ slides: [], editSlide: { slideNumber: 3, body: "26 AI citations against GAF's 3,967" } }, convOld, asks);
+    if (patched.density !== "read" || !allAt(patched.slides, "read")) fail(`16m a patch to the stored Amrize deck re-stamped it: ${densities(patched.slides)}`);
+    const resentOld = await prepareSlidesForBuild({ title: "AI Search Content Workshop — Amrize", slides: plainDeck() }, convOld, asks);
+    if (resentOld.density !== "read" || !allAt(resentOld.slides, "read")) fail(`16m a full-deck resend of the stored Amrize deck re-inferred it: ${densities(resentOld.slides)}`);
   }
 } catch (e: any) {
   fail(`16 driving the density decision threw: ${String(e?.message || e).slice(0, 160)}`);
