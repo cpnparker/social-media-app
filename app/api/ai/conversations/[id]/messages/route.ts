@@ -21,6 +21,7 @@ import type { Attachment } from "@/lib/types/ai";
 import { workbookToText, delimitedToText } from "@/lib/ai/spreadsheet-text";
 import { rtfToText } from "@/lib/ai/rtf-text";
 import { deckToText } from "@/lib/ai/pptx-text";
+import { docxToText } from "@/lib/ai/docx-text";
 import { isSpreadsheet, isPlainTextish } from "@/lib/media/allowed-types";
 import { assertServiceAllowed, ServiceControlError } from "@/lib/admin/service-control";
 import { calculateCostTenths } from "@/lib/ai/model-costs";
@@ -99,9 +100,10 @@ async function extractDocumentText(att: Attachment): Promise<string | undefined>
     }
 
     if (att.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
-      const mammoth = await import("mammoth");
-      const result = await mammoth.extractRawText({ buffer });
-      return (result.value || "").trim() || undefined;
+      // docxToText, not extractRawText: the same text to the byte, with each
+      // link's target kept beside its words. An article's internal links were
+      // invisible to the model that was scoring them (lib/ai/docx-text.ts).
+      return (await docxToText(buffer)) || undefined;
     }
 
     const isPptx =

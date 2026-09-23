@@ -70,6 +70,24 @@
  *           `break` -> the keyword tab starves behind the paragraph tab (N18:
  *           survived before the third fixture)
  *
+ * Section 7e, a Word document keeps its links (detached worktree at c01300d
+ * plus the change, 2026-09-23; each mutant alone):
+ * KILLED  the route back on extractRawText -> the route-use assertion
+ * KILLED  link targets dropped -> four assertions, the three MAXtect links first
+ * KILLED  each run of a link annotated separately -> a link cut into runs, and
+ *           the HYPERLINK field, carry the target two and three times
+ * KILLED  bookmark links annotated -> the contents entry, and the byte-identity
+ *           of the text with its targets taken out
+ * KILLED  a link that is its own address written twice
+ * KILLED  the target written after the link's trailing space
+ * KILLED  paragraphs joined by one newline, not extractRawText's two -> both
+ *           byte-identity assertions
+ * KILLED  mailto targets dropped
+ * SURVIVED, then killed: a <w:tab/> dropped. The plain fixture's "tab" was a
+ *   TAB CHARACTER inside a <w:t>, which mammoth reads as text, so the element
+ *   the walk has its own case for was never in a document. It is now a real
+ *   <w:tab/>, and the byte-identity assertion fails without the case.
+ *
  * SURVIVED, then killed by section 7: that same UTC-formatting mutation, run on
  *   a machine whose own timezone is UTC. Local and UTC fields are identical
  *   there, so every date assertion stayed green while the formatter was wrong
@@ -102,6 +120,8 @@ import {
 import { readFileSync } from "fs";
 import { join } from "path";
 import { execFileSync } from "child_process";
+import JSZip from "jszip";
+import { docxToText } from "../lib/ai/docx-text";
 
 const root = join(__dirname, "..");
 const read = (p: string) => readFileSync(join(root, p), "utf8");
@@ -700,7 +720,119 @@ console.log("\n7d. Deck progress");
     "and resets the counter everywhere the build indicator drops, so a stale count cannot survive into the next turn");
 }
 
+// ── 7e. A Word document keeps its links ────────────────────────────────────
+//
+// THE DEFECT (2026-09-23, thread 3ec51a09). The messages route read a .docx
+// with mammoth.extractRawText, which keeps a link's words and drops its
+// target. An article whose product name linked to its product page three
+// times was scored "no internal links" by a model that had been handed the
+// article with every link already gone. docxToText keeps each target beside
+// its words — and must change NOTHING else, because the extraction is cached
+// in ai_messages.attachments and re-sent every turn inside the prompt cache.
+//
+// A REAL .docx, built in memory — content types, relationships (one of them
+// External), runs, a table, a HYPERLINK field and a bookmark link — read by the
+// real mammoth. A mock of mammoth would assert only that the mock works.
+const W_NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
+  'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"';
+const PRODUCT = "https://www.amrize.com/us/en/products/maxtect";
+const wRun = (text: string, bold?: boolean) =>
+  `<w:r>${bold ? "<w:rPr><w:b/></w:rPr>" : ""}<w:t xml:space="preserve">${text}</w:t></w:r>`;
+const wPara = (inner: string) => `<w:p>${inner}</w:p>`;
+const wLink = (rel: string, inner: string) => `<w:hyperlink r:id="${rel}">${inner}</w:hyperlink>`;
+async function buildDocx7e(body: string[], links: { [id: string]: string }): Promise<Buffer> {
+  const zip = new JSZip();
+  zip.file("[Content_Types].xml",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+    `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+    `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+    `<Default Extension="xml" ContentType="application/xml"/>` +
+    `<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+    `</Types>`);
+  zip.file("_rels/.rels",
+    `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+    `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>` +
+    `</Relationships>`);
+  const rels = Object.keys(links).map((id) =>
+    `<Relationship Id="${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${links[id]}" TargetMode="External"/>`);
+  zip.file("word/_rels/document.xml.rels",
+    `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rels.join("")}</Relationships>`);
+  zip.file("word/document.xml", `<w:document ${W_NS}><w:body>${body.join("")}</w:body></w:document>`);
+  return zip.generateAsync({ type: "nodebuffer" }) as unknown as Promise<Buffer>;
+}
+/** The article, shaped like the one that was misread: the product linked three
+ *  times — once whole, once cut into two runs by a change of weight, once as
+ *  a HYPERLINK field — beside a bookmark link, a link that is its own address,
+ *  a mailto and a link inside a table cell. */
+const ARTICLE_7E = [
+  wPara(wRun("Amrize ") + wLink("rIdP", wRun("MAXtect")) + wRun(" is a single-ply roof system.")),
+  wPara(wRun("Specify ") + wLink("rIdP", wRun("MAX") + wRun("tect", true)) + wRun(" for low-slope roofs.")),
+  wPara(wRun("See the ") +
+    `<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> HYPERLINK "${PRODUCT}" </w:instrText></w:r>` +
+    `<w:r><w:fldChar w:fldCharType="separate"/></w:r>` + wRun("MAX") + wRun("tect", true) +
+    `<w:r><w:fldChar w:fldCharType="end"/></w:r>` + wRun(" range.")),
+  wPara(`<w:hyperlink w:anchor="_Toc1">${wRun("1. Introduction")}</w:hyperlink>`),
+  wPara(wRun("Visit ") + wLink("rIdH", wRun("https://www.amrize.com/")) + wRun(" today.")),
+  wPara(wRun("Ask ") + wLink("rIdM", wRun("our press office ")) + wRun("for images.")),
+  `<w:tbl><w:tr><w:tc>${wPara(wLink("rIdR", wRun("Roofing range")))}</w:tc><w:tc>${wPara(wRun("12 products"))}</w:tc></w:tr></w:tbl>`,
+];
+const LINKS_7E = {
+  rIdP: PRODUCT, rIdH: "https://www.amrize.com", rIdM: "mailto:press@amrize.com", rIdR: "https://www.amrize.com/us/en/roofing",
+};
+const PLAIN_7E = [
+  wPara(wRun("A plain paragraph with ") + wRun("bold", true) + wRun(" words") + "<w:r><w:tab/></w:r>" + wRun("and a tab.")),
+  `<w:tbl><w:tr><w:tc>${wPara(wRun("Region"))}</w:tc><w:tc>${wPara(wRun("Rate"))}</w:tc></w:tr></w:tbl>`,
+  wPara(wRun("Last line.")),
+];
+/** What the self-test needs from 7e, which runs before it. */
+const seen7e = { rawKeepsTargets: true, rawText: "" };
+
+async function section7e(): Promise<void> {
+  console.log("\n7e. A Word document keeps its links");
+  const mammothModule: any = await import("mammoth");
+  const mammoth = mammothModule.default ?? mammothModule;
+  const linked = await buildDocx7e(ARTICLE_7E, LINKS_7E);
+  const plain = await buildDocx7e(PLAIN_7E, {});
+  const rawLinked = String((await mammoth.extractRawText({ buffer: linked })).value || "").trim();
+  const rawPlain = String((await mammoth.extractRawText({ buffer: plain })).value || "").trim();
+  seen7e.rawText = rawLinked;
+  seen7e.rawKeepsTargets = rawLinked.indexOf(PRODUCT) >= 0;
+  // PRECONDITION: the fixture is a real document mammoth reads, and the old
+  // extraction really does lose the targets — or everything below is vacuous.
+  assert(/MAXtect is a single-ply roof system/.test(rawLinked) && /Roofing range/.test(rawLinked) && !seen7e.rawKeepsTargets,
+    "precondition: mammoth reads the built .docx, and extractRawText drops every link target from it");
+
+  const got = await docxToText(linked);
+  const annotated = (got.match(new RegExp(`MAXtect \\(${PRODUCT.replace(/[.\/]/g, "\\$&")}\\)`, "g")) || []).length;
+  assert(annotated === 3,
+    `the product link reads "MAXtect (${PRODUCT})" all three times — whole, cut into two runs, and as a HYPERLINK field (${annotated})`);
+  assert(got.indexOf("MAX (") < 0 && got.indexOf("tect (") === got.indexOf("tect (" + PRODUCT) && (got.match(/\(https:\/\/www\.amrize\.com\/us\/en\/products\/maxtect\)/g) || []).length === 3,
+    "a link cut into runs is ONE link: its target written once, after its last piece");
+  assert(got.indexOf("our press office (mailto:press@amrize.com) for images.") >= 0,
+    "a mailto target is kept, inside the link's trailing space");
+  assert(got.indexOf("Roofing range (https://www.amrize.com/us/en/roofing)") >= 0, "a link inside a table cell is kept");
+  assert(got.indexOf("_Toc") < 0 && got.indexOf("1. Introduction\n") >= 0, "a bookmark link (a contents entry) is left as its words");
+  assert(got.indexOf("https://www.amrize.com/ today.") >= 0 && got.indexOf("https://www.amrize.com/ (") < 0,
+    "a link whose words ARE its address is not written twice");
+  // EVERYTHING ELSE TO THE BYTE: with the annotations taken out, the text is
+  // extractRawText's; and a document with no links is extractRawText's whole.
+  const stripped = got.replace(/ \((?:https?:\/\/|mailto:)[^)]*\)/g, "");
+  assert(stripped === rawLinked, "with its link targets taken out, the text is exactly extractRawText's — paragraphs, table cells and all");
+  const gotPlain = await docxToText(plain);
+  assert(gotPlain === rawPlain && gotPlain.length > 0,
+    "a document with no links extracts to exactly what extractRawText gave, so no cached attachment changes");
+  // AND THE ROUTE USES IT. Read out of the route, as section 5 reads its
+  // branches, because the extractor is a closure over a blob fetch: the Word
+  // branch calls docxToText, and nothing in the route calls extractRawText.
+  const route = read("app/api/ai/conversations/[id]/messages/route.ts");
+  const wordBranch = route.slice(route.indexOf('wordprocessingml.document"'), route.indexOf("const isPptx"));
+  assert(/docxToText\(buffer\)/.test(wordBranch) && !/\.extractRawText\(/.test(route),
+    "the messages route reads a .docx with docxToText, and nothing in it calls extractRawText");
+}
+
 // ── Self-test ──────────────────────────────────────────────────────────────
+(async () => {
+await section7e();
 if (process.argv.indexOf("--self-test") >= 0) {
   console.log("\n── self-test: each detector against input that should trip it ──");
   const before = failures;
@@ -787,9 +919,15 @@ if (process.argv.indexOf("--self-test") >= 0) {
   const naive = String.raw`{\rtf1\pard\plain\f0\fs24 Hello\par}`.replace(/[{}]/g, "").replace(/\\/g, " ");
   detector("RTF control words emitted as words", /pard|fs24/.test(naive) && !/pard|fs24/.test(rtfToText(String.raw`{\rtf1\pard\plain\f0\fs24 Hello\par}`)));
 
-  if (fired < 9) { console.log("  a detector stayed silent — this run proves nothing"); failures++; }
+  // A link's target dropped: the extraction the route used to run, on the
+  // fixture 7e built, must lose the target — or 7e is testing nothing.
+  detector("a Word link's target dropped by extractRawText (the old extraction)",
+    !seen7e.rawKeepsTargets && /MAXtect is a single-ply roof system/.test(seen7e.rawText));
+
+  if (fired < 10) { console.log("  a detector stayed silent — this run proves nothing"); failures++; }
   else if (failures === before) console.log("  all detectors fire");
 }
 
 console.log(failures === 0 ? "\n✓ what can be uploaded can be read\n" : `\n✗ ${failures} failure(s)\n`);
 process.exit(failures === 0 ? 0 : 1);
+})();

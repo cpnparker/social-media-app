@@ -8,12 +8,15 @@
  * SDKs and server-only config), so logic that lived there could not be tested
  * at all. Guarded by scripts/verify-slide-edit.ts.
  *
- * brand.ts is the one thing it imports: the stepper's bounds, and layoutOf,
- * which the picture fold needs in order to know what a layout name will be
- * drawn as. That module is a true leaf — no imports of its own, no server
- * config — so the property this file's seam was cut for is intact.
+ * brand.ts is one of two things it imports: the stepper's bounds, and
+ * layoutOf, which the picture fold needs in order to know what a layout name
+ * will be drawn as. marks.ts is the other: the scorecard's mark vocabulary, so
+ * a key the model wrote can be retired once the comparison draws its own. Both
+ * are true leaves — no imports of their own, no server config — so the
+ * property this file's seam was cut for is intact.
  */
-import { STEPPER, layoutOf } from "@/lib/slides/brand";
+import { STEPPER, layoutOf, LAYOUTS, LAYOUT_ALIASES } from "@/lib/slides/brand";
+import { comparisonMarkPlan, withoutMarkKey } from "@/lib/slides/marks";
 
 /** What each layout is DRAWN FROM. A layout in this table with its field
  *  missing has nothing to render: the slide comes out as a title over empty
@@ -349,6 +352,9 @@ function normaliseHub<T>(slide: T): T {
  *      connections called a hub.
  *   2. IMAGE-SPLIT WITH A SECOND COLUMN IS DRAWN AS PHOTO-RAIL
  *      (promoteSplitColumns).
+ *   3. A KEY THE MODEL WROTE, ON A COMPARISON THAT NOW DRAWS ITS OWN, IS
+ *      RETIRED (retireWrittenKey): a change to what is drawn and never to
+ *      what is bought, so it belongs here, on read as well as on write.
  *
  * The hub goes first because it can SETTLE a layout — a layout-less slide
  * with connections becomes "hub" — and the promotion reads the layout. Each
@@ -370,7 +376,48 @@ function normaliseHub<T>(slide: T): T {
  * shown — normaliseSlideForWrite, below — and nowhere else.
  */
 export function normaliseSlide<T>(slide: T): T {
-  return promoteSplitColumns(normaliseHub(slide));
+  return retireWrittenKey(promoteSplitColumns(normaliseHub(slide)));
+}
+
+/**
+ * A MARK KEY THE MODEL WROTE, TAKEN OUT OF `note` AND `subtitle` ON A
+ * COMPARISON THAT DRAWS ITS OWN.
+ *
+ * The comparison draws its key itself now (comparisonMarkPlan decides when),
+ * so a key the model wrote is at best a duplicate and at worst the Amrize one
+ * — "Check met - P partly met (half a point) - X not met" above a grid that
+ * shows ✓, ½ and ✗ (lib/slides/marks.ts). A drawn key that is right beside a
+ * written key that is wrong is two keys, and the room reads the wrong one.
+ *
+ * RETIRED, NOT REPORTED. Nothing is lost that the slide does not now say
+ * itself, and the stored spec the next turn replays is the one without it, so
+ * the model sees its note as the slide draws it. Telling it "your key was
+ * removed" is an invitation to put it back. Only the key's own sentences go —
+ * withoutMarkKey keeps every sentence that says anything else, so "Scored from
+ * each article's final text." survives the key in front of it — and a field
+ * left with nothing in it is removed rather than drawn as an empty bar.
+ *
+ * ONLY WHERE THE SLIDE DRAWS A KEY: a grid of ticks and crosses draws none,
+ * and neither does a grid of words with a "Partial" among them, and a key
+ * written for either is the only one there is.
+ */
+function retireWrittenKey<T>(slide: T): T {
+  const s: any = slide;
+  if (!isObj(s) || !isObj(s.comparison)) return slide;
+  if (layoutOf(typeof s.layout === "string" ? s.layout : undefined, 1) !== "comparison") return slide;
+  if (!comparisonMarkPlan(s).key.length) return slide;
+  let out: any = null;
+  const fields = ["note", "subtitle"];
+  for (let i = 0; i < fields.length; i++) {
+    const f = fields[i];
+    if (typeof s[f] !== "string") continue;
+    const kept = withoutMarkKey(s[f]);
+    if (kept === s[f]) continue;
+    out = out || { ...s };
+    if (kept.trim()) out[f] = kept;
+    else delete out[f];
+  }
+  return out || slide;
 }
 
 /**
@@ -803,6 +850,83 @@ export const PAYLOAD_FIELDS: string[] = Object.keys(REQUIRED_PAYLOAD)
   // them, because a batch entry is copied whole.
   .concat(["panel", "strip", "tones", "note", "columns"])
   .filter((f, i, all) => all.indexOf(f) === i);
+
+/**
+ * WHICH PAYLOADS EACH LAYOUT DRAWS, beyond the one REQUIRED_PAYLOAD names: the
+ * takeaway bar on every layout, the panel on the prose family, the strip under
+ * a cards row, and the two-column slide's headers and tints.
+ *
+ * MEASURED, NOT REMEMBERED: check 17 of scripts/verify-slide-edit.ts builds
+ * every layout in the enum with and without every field in PAYLOAD_FIELDS and
+ * asserts that layoutDrawsPayload answers exactly as the builder's requests
+ * do. This table decides what a patch is allowed to CLEAR, so a layout it
+ * wrongly says does not draw a field is a layout whose drawn content a patch
+ * would delete — the check is what keeps that from being a guess.
+ */
+const PAYLOAD_DRAWN_ALSO: { [field: string]: string[] } = {
+  panel: ["content", "case-study", "dark-index"],
+  strip: ["cards"],
+  tones: ["two-column"],
+  columns: ["two-column"],
+};
+/** Does `layout` (as drawn — see layoutOf) draw the payload `field`? */
+export function layoutDrawsPayload(layout: string, field: string): boolean {
+  if (field === "note") return true;
+  if (REQUIRED_PAYLOAD[layout] === field) return true;
+  const also = PAYLOAD_DRAWN_ALSO[field];
+  return !!also && also.indexOf(layout) >= 0;
+}
+/** What resolution writes beside a payload, cleared with it: a grid's
+ *  resolved thumbnails and its count of the ones not found. */
+const PAYLOAD_COMPANIONS: { [field: string]: string[] } = { images: ["resolvedImages", "imagesDropped"] };
+
+/** A payload as the tool result names it: "table", "chart", "cards". */
+const PAYLOAD_NOUN: { [field: string]: string } = {
+  cards: "cards", stats: "figures", chart: "chart", swot: "SWOT grid", matrix: "matrix", comparison: "comparison grid",
+  table: "table", scatter: "scatter plot", venn: "Venn diagram", milestones: "milestones", tracks: "tracks",
+  stages: "stages", logos: "logos", quote: "quote", images: "thumbnails", layers: "layers", hub: "hub diagram",
+  panel: "panel", strip: "strip", tones: "tints", columns: "column headings",
+};
+
+/**
+ * WHAT A LAYOUT PATCH TOOK OFF A SLIDE THAT THE SLIDE WAS SHOWING, as
+ * sentences for the tool result.
+ *
+ * A patch landing a layout drawn from a payload of its own clears the payloads
+ * that layout does not draw (applyEditSlideTo). Most of what goes is what the
+ * patch REPLACED — bar-chart to table takes the chart — but some of it was on
+ * screen beside it: a `panel` beside prose moved to a table, the `strip` under
+ * a row of cards. The first cut deleted those in silence, where c01300d kept
+ * them and named them as undrawn on every build. Now they go, once, and the
+ * model is told once, in the same result that shows the new slide. A payload
+ * the old layout never drew either was invisible before and after, and goes
+ * unmentioned — that is the stale chart the clearing exists for.
+ *
+ * Only for a single-slide patch: an insert, a removal or a whole deck clears
+ * nothing.
+ */
+export function payloadsTakenBy(before: any[], after: any[], edit: any): string[] {
+  if (!edit || edit.insertAfter != null || !Number.isInteger(edit.slideNumber)) return [];
+  if (Array.isArray(edit.removeSlides) && edit.removeSlides.length) return [];
+  if (!Array.isArray(before) || !Array.isArray(after) || before.length !== after.length) return [];
+  const idx = edit.slideNumber - 1;
+  const was: any = before[idx], now: any = after[idx];
+  if (!isObj(was) || !isObj(now)) return [];
+  const drewAs = layoutOf(promoteSplitColumns(normaliseSlide(was)).layout, idx);
+  const gone: string[] = [];
+  for (const f of PAYLOAD_FIELDS) {
+    if (f === "note" || isEmptyPayload(was[f]) || now[f] !== undefined) continue;
+    if (!layoutDrawsPayload(drewAs, f)) continue;
+    gone.push(PAYLOAD_NOUN[f] || f);
+  }
+  if (!gone.length) return [];
+  const list = gone.length > 1 ? `${gone.slice(0, -1).join(", ")} and ${gone[gone.length - 1]}` : gone[0];
+  const many = gone.length > 1 || /s$/.test(gone[0]);
+  return [
+    `slide ${idx + 1}'s ${list} ${many ? "were" : "was"} removed with the change to the ${layoutOf(now.layout, idx)} layout, which does not draw ${many ? "them" : "it"}` +
+    ` — ${many ? "they are" : "it is"} no longer in the deck, so do NOT describe ${many ? "them" : "it"} as there`,
+  ];
+}
 
 /** Plain-string fields a single-slide insert or patch carries beside the text
  *  ones: speaker notes and the parallel timeline's "today". Strings, not
@@ -1408,6 +1532,49 @@ function applyEditSlideTo(
         delete next.imageError;
       }
       next.layout = wanted;
+      // A PAYLOAD THE LAYOUT DOES NOT DRAW GOES WITH A PATCH THAT LANDS A
+      // LAYOUT DRAWN FROM A PAYLOAD OF ITS OWN, unless the patch sends it
+      // again. 3ec51a09's slide 19 was patched from bar-chart to table
+      // (2026-09-23) and kept its `chart`: stored, never drawn, replayed into
+      // every turn, counted as a visual by the audit, and named on every build
+      // by the dropped-text warning — which the model, correctly for once and
+      // fatally as a habit, dismissed as "stale". A warning a model learns to
+      // dismiss is a warning it will dismiss when it is true.
+      //
+      // ONLY WHEN THE NEW LAYOUT HAS SOMETHING TO DRAW: a layout in the enum
+      // (or an alias of one) with a payload of its own, present once the patch
+      // is applied — bar-chart to table with its table, table to comparison
+      // with its grid. The first cut cleared on EVERY layout patch and ran
+      // before the guards, so "make slide 5 content" deleted a table that
+      // c01300d refused to strand, "photo-rail" deleted three gap cards and the
+      // warning that would have named them, and a name outside the enum
+      // ("data-table") deleted rows for a layout that does not exist — all in
+      // silence (a verifier's finding, reproduced through prepareSlidesForBuild).
+      // Onto a layout drawn from words alone, from an unknown name, or with
+      // its payload missing, nothing is cleared, and the guards say what they
+      // always said: a stranded table is refused, other stranded text is
+      // named in the tool result, and a missing payload is refused as blank.
+      // And what IS cleared, if the slide was showing it, is named in the tool
+      // result too (payloadsTakenBy), so no content leaves a slide unsaid.
+      //
+      // A patch that RESTATES the layout counts: the stored slide 19 already
+      // carries the stale chart, and restating "table" is the one call that
+      // can clear it — a patch cannot send a payload as nothing. Clearing a
+      // field the layout does not draw never changes what is drawn (check 17
+      // of verify-slide-edit measures that per layout and field), so the
+      // restatement costs the slide nothing on screen. The picture fields are
+      // not payloads and keep the rules above; `note` is drawn by every layout
+      // and is never cleared here.
+      const drawnAs = layoutOf(drawnWanted, idx);
+      const own = REQUIRED_PAYLOAD[drawnAs];
+      const known = LAYOUTS.indexOf(wanted as any) >= 0 || Object.prototype.hasOwnProperty.call(LAYOUT_ALIASES, wanted.toLowerCase());
+      const landed = !!own && known && payloadDraws(drawnAs, { ...next, [own]: isEmptyPayload(edit[own]) ? next[own] : edit[own] });
+      for (const f of landed ? PAYLOAD_FIELDS : []) {
+        if (next[f] === undefined || !isEmptyPayload(edit[f]) || layoutDrawsPayload(drawnAs, f)) continue;
+        delete next[f];
+        const with_ = PAYLOAD_COMPANIONS[f] || [];
+        for (let c = 0; c < with_.length; c++) delete next[with_[c]];
+      }
     }
     for (const f of PAYLOAD_FIELDS) {
       if (!isEmptyPayload(edit[f])) next[f] = edit[f];

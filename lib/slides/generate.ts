@@ -33,6 +33,10 @@ import {
   namesAPicture as briefNamesAPicture, payloadOf, drawsSlidePicture, PAYLOAD_FIELDS,
 } from "@/lib/slides/edit";
 import { SLIDES_TEXT_INSET, BULLET_INDENT } from "@/lib/slides/preview-style";
+import {
+  TICK_CELLS, CROSS_CELLS, PARTIAL_CELLS, NOT_APPLICABLE_CELLS, scoreMark, cellMark, comparisonMarkPlan, isScoreLabel,
+  saysScorecard, MARK_GLYPH, COMPARISON_MAX_COLS, COMPARISON_MAX_ROWS, type MarkPlan,
+} from "@/lib/slides/marks";
 import { refreshSignedMediaUrl } from "@/lib/media/signed";
 
 const SLIDES_API = "https://slides.googleapis.com/v1/presentations";
@@ -5128,7 +5132,11 @@ export function droppedContent(slide: SlideInput, index: number, notes?: string[
     if (Array.isArray(v)) { for (const x of v) walk(x, key); return; }
     if (v && typeof v === "object") { for (const k of Object.keys(v)) walk(v[k], k); }
   };
-  const any = slide as any;
+  // THE SLIDE AS IT IS DRAWN, not as it was sent: normaliseSlide moves a
+  // hub's misplaced fields (the same strings, elsewhere) and retires a mark
+  // key the model wrote on a comparison that draws its own — text the builder
+  // leaves out on purpose, which must not be reported as text it lost.
+  const any = normaliseSlide(slide) as any;
   for (const k of Object.keys(any)) walk(any[k], k);
   // Text a layout NOTE already quotes — a hub caption too long for its circle —
   // is left to that note, whose fix is the right one. The generic advice below
@@ -5219,60 +5227,14 @@ function namedList(items: string[], noun: string): string {
   return `the ${noun}${many ? "s" : ""} ${shown.join(", ")}${more > 0 ? ` and ${more} more` : ""} ${many ? "are" : "is"}`;
 }
 
-/** THE CELLS A COMPARISON DRAWS AS A TICK OR A CROSS, and therefore the cells
- *  a scorecard's recount reads as a yes or a no.
- *
- *  ONE LIST FOR BOTH, because the recount below exists to check a total
- *  against the marks THE ROOM SEES. A word the builder draws as a tick and
- *  the recount does not know takes its whole column out of the check; a word
- *  the recount counts and the builder prints as text is a mark nobody at the
- *  table can see. Compared lower-cased and trimmed, as the builder always has. */
-export const TICK_CELLS = ["yes", "y", "true", "\u2713"];
-export const CROSS_CELLS = ["no", "n", "false", "\u2717", "x"];
-/** Half a mark. The comparison prints it as text — there is no half-tick
- *  glyph — and every scorecard this was measured on reads it as a half: the
- *  Amrize editorial doc's "5.5 / 12" is only reachable in halves. */
-export const PARTIAL_CELLS = ["p", "partial", "partly", "half", "\u00bd"];
-/** A check that does not apply. Out of the denominator, not a zero: the
- *  Obama column's "6.5 / 11" is twelve checks with schema unjudgeable. */
-export const NOT_APPLICABLE_CELLS = ["n/a", "na", "n.a.", "not applicable"];
-
-/** A scorecard cell read as a mark: 1, a half, 0, "na" — or null for
- *  anything else (a figure, a word, a blank), which takes its whole column out
- *  of the recount rather than guessing what it was worth.
- *
- *  THE MARK IS THE CELL'S FIRST WORD. A source scorecard writes its reason
- *  beside the mark — "P - no brand", "Y — strong", "N (labels, not
- *  questions)" — and the model copies the cell whole, which is how the Amrize
- *  doc's own table reads. A spaced hyphen or colon, either dash, an opening
- *  bracket, a comma or a semicolon ends the mark; an UNSPACED hyphen or slash
- *  does not, so "n/a" stays one word, and so does "no brand" — which is not a
- *  mark at all and must not be read as a "no". */
-export function scoreMark(cell: unknown): 1 | 0.5 | 0 | "na" | null {
-  const raw = String(cell ?? "").trim().toLowerCase();
-  if (!raw) return null;
-  const head = raw.split(/\s+[-:]\s+|\s*[\u2013\u2014(,;]\s*/)[0].trim();
-  if (TICK_CELLS.indexOf(head) >= 0) return 1;
-  if (PARTIAL_CELLS.indexOf(head) >= 0) return 0.5;
-  if (CROSS_CELLS.indexOf(head) >= 0) return 0;
-  if (NOT_APPLICABLE_CELLS.indexOf(head) >= 0) return "na";
-  return null;
-}
-
-/** A total row's label: one that STARTS with score, total, overall or sum as
- *  a word — "SCORE", "Total score (Y = 1, P = half)", "Total checks met",
- *  "Overall". Loose on purpose, because the label is not what stops a false
- *  report; the gates in scorecardMismatches are. A row that merely starts
- *  with "Total" — the stored Amrize success-metrics table has "Total AI
- *  citations" fifth of eight, over figures — fails the mark gate, because the
- *  cells above it are figures, and a "Total seats: 50" under a feature
- *  comparison's ticks fails the denominator gate. What the label must NOT do
- *  is match inside a word: "Scorecard" and "Summary" are headings, not totals. */
-const SCORE_ROW_LABEL = /^(?:score|total|overall|sum)\b/;
-export function isScoreLabel(label: unknown): boolean {
-  const t = String(label ?? "").toLowerCase().replace(/[{}*_`]/g, "").replace(/\s+/g, " ").trim();
-  return SCORE_ROW_LABEL.test(t);
-}
+/* THE MARK VOCABULARY — TICK_CELLS, CROSS_CELLS, PARTIAL_CELLS,
+ * NOT_APPLICABLE_CELLS, scoreMark, and isScoreLabel, a total row's label —
+ * lives in lib/slides/marks.ts, a leaf, and is re-exported here for every
+ * reader that already imports it from the builder. It moved because edit.ts
+ * now needs it too (a key the model wrote is retired on write once the
+ * comparison draws its own, and whether it does depends on its total rows),
+ * and edit.ts cannot import this module. */
+export { TICK_CELLS, CROSS_CELLS, PARTIAL_CELLS, NOT_APPLICABLE_CELLS, scoreMark, isScoreLabel };
 
 /** "5.5 / 12", "5.5/12", "5.5 out of 12", "7" — a total as a figure and an
  *  optional denominator. A percentage, a fraction glyph or a word is null and
@@ -5426,6 +5388,370 @@ export function scorecardMismatches(slides: SlideInput[]): ScoreMismatch[] {
   return out;
 }
 
+/**
+ * Every total ON ANOTHER SLIDE that the scorecard beside it does not add up to.
+ *
+ * THE AMRIZE SCORECARD AGAIN, SAME DAY. scorecardMismatches recounts a total
+ * ROW inside the scorecard, and within the hour the model moved the totals
+ * out of it: first to a bar chart on slide 19 plotting the source doc's own
+ * wrong totals under a caption saying they were "recounted", then to a table
+ * — Article, Published, Our edit — whose "Our edit" column gave Meta data
+ * center 6.5 / 11 where the marks on slides 17-18 give 5.5. Neither was a
+ * total row, so neither was checked, and the model reported the table as
+ * "true on these numbers".
+ *
+ * WHAT IS CHECKED. A `table` or `bar-chart` slide within two slides of a
+ * scorecard that LABELS its rows (or its column heads, or its bars) with the
+ * scorecard's option names. Each column of such a table (each row, when the
+ * options are the heads; the drawn series of a chart) is a candidate total,
+ * recounted from ALL the scorecard's marks, with the same three readings
+ * scorecardMismatches accepts.
+ *
+ * WHAT A SCORECARD IS — the run of slides whose marks are summed. Each rule
+ * here was a wrong tally in the first cut, found by a verifier:
+ *   - THE SAME OPTIONS, read as optionKey reads them: "Obama Center (draft)"
+ *     on one half and "Obama Center" on the other, or a head in bold, are one
+ *     scorecard. Compared byte for byte they were two, each total was
+ *     recounted against half the marks, right percentages were reported
+ *     wrong, and the real Meta 6.5 / 11 was missed.
+ *   - ONE SLIDE BETWEEN HALVES — a divider, a note — does not end it, when
+ *     the grid after it carries the same options and new checks.
+ *   - A HALF THAT REPEATS A CHECK ALREADY COUNTED STARTS A NEW SCORECARD:
+ *     the published articles' marks and then the edited articles' marks under
+ *     the same heads are two scorecards, and summed as one they double every
+ *     tally — which flagged right totals and picked the "Published" column.
+ *   - AND IT SAYS IT IS A SCORECARD: a title or standfirst that is scoring
+ *     (saysScorecard), a partial or n/a mark, or a total row. Yes and No under
+ *     vendor names is a feature comparison, and a "G2 score" or a "CSAT (out
+ *     of 5)" chart beside it is not a sum of its ticks.
+ *
+ * WHICH SERIES ARE TOTALS OF THESE MARKS, because most numbers beside a
+ * scorecard are not:
+ *   - EXPLICIT: a cell written over the scorecard's own denominator ("6.5 /
+ *     11"), the series' own heading or axis naming it ("Score out of 12"),
+ *     or the slide CLAIMING to be a count of these marks — "Recounted from
+ *     the marks", "Y=1, P=0.5", "the Y/P/N marks". That last is the doc
+ *     chart of 6b836288: "Score out of 11 assessable checks (Y=1, P=0.5,
+ *     schema excluded)" over marks that score twelve, three bars wrong and
+ *     the fourth unreadable — no agreement anywhere, and exactly the chart
+ *     the model captioned as recounted. A cell over ANOTHER denominator ("7 /
+ *     10") is on another scale and is not judged; a series naming another
+ *     denominator for itself cannot be explicit by it.
+ *   - NAMED: a heading, title, axis or source naming a score or the checks —
+ *     score, scored, scorecard, checks, checklist — or a heading or title
+ *     that is a bare "Total". "Total AI citations", "Total seats" and
+ *     "Key points" name a total of something else and are not totals here. A
+ *     named total counts only when THE MARKS DESCRIBE IT: it agrees with them
+ *     on a strict majority of the options it states. "AI visibility score"
+ *     at 12% / 31% / 4% / 0% agrees nowhere and is some other score; a
+ *     percentage agreeing on three bars of four is these checks with one bar
+ *     wrong.
+ * Then, WHICH COLUMN THE MARKS DESCRIBE, because a totals table is often a
+ * before and an after and only one of them is today's marks: of several
+ * totals, the one that agrees on the most options (one clear leader, at least
+ * one agreement); failing that, the one total not headed as another version
+ * (published, before, original, previous, baseline, live, current). A lone explicit
+ * total that agrees nowhere and is headed as another version is left alone;
+ * one that is not — the bar chart of the doc's own totals — is checked, and
+ * every bar is named. Within the chosen column a cell is judged only when it
+ * reads on the scorecard's scale: "N / M" with M the checks counted (with or
+ * without the n/a ones), a percentage of them, or a bare figure no larger
+ * than the checks. "Written to the brief" is not a total and is skipped. And
+ * a series whose points are not in halves — 4.6, 4.2, 3.9 — is a rating, not
+ * a count of marks, and is left alone whatever it is headed.
+ */
+export type TotalMismatch = {
+  /** 1-based: the totals slide, and the scorecard's first and last slides. */
+  slide: number; from: number; to: number;
+  /** What the total is on its slide: a table's column or row, or a chart. */
+  what: "column" | "row" | "chart"; series: string;
+  /** The option as the totals slide labels it, and what it says. */
+  option: string; stated: string;
+  /** The recount, and the scale the stated figure was read on. */
+  counted: number; percent: boolean; outOf: number;
+  yes: number; partial: number; no: number; na: number;
+};
+type MarkTally = { yes: number; partial: number; no: number; na: number };
+/** A heading, title, axis or source that names a score or the checks. */
+const NAMED_TOTAL = /\b(?:scores?|scored|scorecard|checks|checklist)\b/;
+/** A slide that CLAIMS its figures are a count of the scorecard's marks. */
+const RECOUNT_CLAIM = /\brecount(?:ed)?\b|\b(?:from|of) the (?:[a-z\/]+ )?marks\b|\by ?= ?1\b|\by\/p\/n\b/;
+/** A heading or title that is nothing but a total: "Total", "Totals",
+ *  "Overall", "Total score". "Total AI citations" is a total of citations. */
+const BARE_TOTAL = /^(?:(?:the|our|final|grand)\s+)?(?:totals?|overall|sum)(?:\s+(?:scores?|checks|points))?$/;
+/** A heading that says its figures are percentages. */
+const PERCENT_WORDS = /%|\bpercent|\bshare\b/;
+/** A heading that names a version other than the one being marked. "Current"
+ *  is the live article beside an edit of it, as often as not — a lone
+ *  "Current score" column of the published scores agreeing with none of the
+ *  edited marks was reported, in the first cut, as four wrong totals. */
+const OTHER_VERSION_WORDS = /\b(?:published|before|original|previous|prior|baseline|old|was|live|existing|current)\b/;
+
+/** An option's name as another slide might write it: case, markup, brackets
+ *  ("Obama Center (draft)") and punctuation aside. */
+function optionKey(s: unknown): string {
+  return String(s ?? "").toLowerCase().replace(/[{}*_`]/g, "").replace(/\([^)]*\)/g, " ")
+    .replace(/[\s.,;:!?'"‘’“”–—/\\|-]+/g, " ").trim();
+}
+/** A check's label as two halves of one scorecard would repeat it. */
+function checkKey(s: unknown): string {
+  return String(s ?? "").toLowerCase().replace(/[{}*_`]/g, "").replace(/\s+/g, " ").trim();
+}
+/** The scorecard option a label names, or -1: the same name, or — when only
+ *  one option fits — one name that starts the other on a word. */
+function optionOf(label: unknown, keys: string[]): number {
+  const k = optionKey(label);
+  if (!k) return -1;
+  let hit = -1, hits = 0;
+  for (let i = 0; i < keys.length; i++) if (keys[i] && keys[i] === k) { hit = i; hits += 1; }
+  if (hits === 1) return hit;
+  if (hits > 1) return -1;
+  for (let i = 0; i < keys.length; i++) {
+    const o = keys[i];
+    if (o && (k.indexOf(o + " ") === 0 || o.indexOf(k + " ") === 0)) { hit = i; hits += 1; }
+  }
+  return hits === 1 ? hit : -1;
+}
+/** A denominator a series states for ITSELF — "Score out of 11 assessable
+ *  checks", "Score / 12" — in its own heading, name or axis, never the slide
+ *  title: "3 out of 4 articles improved" is not a scale. */
+function ownDenominator(text: string): number | null {
+  const m = /\bout of (\d+(?:\.\d+)?)\b|(?:^|\s)\/ ?(\d+(?:\.\d+)?)\b/.exec(text.toLowerCase());
+  if (!m) return null;
+  return Number(m[1] !== undefined ? m[1] : m[2]);
+}
+
+export function scorecardTotalMismatches(slides: SlideInput[]): TotalMismatch[] {
+  const out: TotalMismatch[] = [];
+  const grids: ({ key: string; columns: string[]; labels: string[]; cells: unknown[][] } | null)[] = [];
+  for (let i = 0; i < slides.length; i++) grids.push(scoreGridOf(slides[i], i));
+  // A grid's run key: its kind and its options as optionKey reads them.
+  const runKey = (g: { key: string; columns: string[] }) => `${g.key.split("|")[0]}|${g.columns.map(optionKey).join("|")}`;
+  const checksOf = (g: { labels: string[] }) => g.labels.filter((l) => !isScoreLabel(l)).map(checkKey).filter((l) => l !== "");
+  // THE SCORECARDS (see above for what joins two slides into one). Each
+  // option's marks are tallied over every slide of the run; a column with
+  // anything that is not a mark in it is not recounted at all, exactly as
+  // scorecardMismatches leaves it.
+  const runs: { from: number; to: number; keys: string[]; tallies: (MarkTally | null)[] }[] = [];
+  const inRun: boolean[] = slides.map(() => false);
+  for (let i = 0; i < slides.length; ) {
+    const g = grids[i];
+    if (!g) { i += 1; continue; }
+    const key = runKey(g);
+    const members = [i];
+    const seen = checksOf(g);
+    let j = i;
+    for (;;) {
+      // The next slide, or the one after a single slide that is no grid.
+      let n = j + 1;
+      if (n < slides.length && !grids[n] && n + 1 < slides.length && grids[n + 1]) n += 1;
+      const gn = n < slides.length ? grids[n] : null;
+      if (!gn || runKey(gn) !== key) break;
+      const checks = checksOf(gn);
+      let repeats = false;
+      for (let c = 0; c < checks.length; c++) if (seen.indexOf(checks[c]) >= 0) repeats = true;
+      if (repeats) break;
+      for (let c = 0; c < checks.length; c++) seen.push(checks[c]);
+      members.push(n);
+      j = n;
+    }
+    let says = false;
+    const tallies: (MarkTally | null)[] = [];
+    for (let m = 0; m < members.length; m++) {
+      const s = slides[members[m]];
+      if (saysScorecard(s && s.title) || saysScorecard(s && s.subtitle)) says = true;
+      const gm = grids[members[m]] as { labels: string[] };
+      for (let r = 0; r < gm.labels.length; r++) if (isScoreLabel(gm.labels[r])) says = true;
+    }
+    for (let c = 0; c < g.columns.length; c++) {
+      const t: MarkTally = { yes: 0, partial: 0, no: 0, na: 0 };
+      let ok = true;
+      for (let m = 0; m < members.length && ok; m++) {
+        const gk = grids[members[m]] as { labels: string[]; cells: unknown[][] };
+        for (let r = 0; r < gk.labels.length; r++) {
+          if (isScoreLabel(gk.labels[r])) continue;
+          const mk = scoreMark((gk.cells[r] || [])[c]);
+          if (mk === null) { ok = false; break; }
+          if (mk === "na") t.na += 1; else if (mk === 1) t.yes += 1; else if (mk === 0.5) t.partial += 1; else t.no += 1;
+        }
+      }
+      if (ok && (t.partial || t.na)) says = true;
+      tallies.push(ok && t.yes + t.partial + t.no > 0 ? t : null);
+    }
+    if (says && tallies.some((t) => t !== null)) {
+      runs.push({ from: i, to: j, keys: g.columns.map(optionKey), tallies });
+      for (let m = 0; m < members.length; m++) inRun[members[m]] = true;
+    }
+    i = j + 1;
+  }
+
+  for (let ru = 0; ru < runs.length; ru++) {
+    const run = runs[ru];
+    // A denominator this scorecard can have: its checks, with or without n/a.
+    const fits = (d: number) => run.tallies.some((t) => !!t && (d === t.yes + t.partial + t.no || d === t.yes + t.partial + t.no + t.na));
+    for (let k = Math.max(0, run.from - 2); k <= Math.min(slides.length - 1, run.to + 2); k++) {
+      if (k >= run.from && k <= run.to) continue;
+      if (inRun[k]) continue;
+      const s = slides[k];
+      if (!s) continue;
+      const layout = layoutOf(normaliseSlide(s).layout, k);
+      const title = String(s.title || "");
+      const context = [s.title, s.subtitle].map((x) => String(x || "")).join(" ");
+      // The candidates, as drawn: a table's first TABLE_MAX_COLS columns and
+      // TABLE_MAX_ROWS rows, a bar chart's first series. `own` is what the
+      // series says of itself: its heading, or a chart's series name and axis.
+      const series: { what: "column" | "row" | "chart"; name: string; own: string; context: string; cells: { option: number; label: string; raw: unknown }[] }[] = [];
+      if (layout === "table" && s.table) {
+        const head = (s.table.columns || []).slice(0, TABLE_MAX_COLS).map((c) => String(c ?? ""));
+        const rows = tableRowsOf(s.table).slice(0, TABLE_MAX_ROWS);
+        const rowOpt = rows.map((r) => optionOf(r[0], run.keys));
+        const headOpt = head.map((h, c) => (c === 0 ? -1 : optionOf(h, run.keys)));
+        const distinct = (xs: number[]) => xs.filter((x, i) => x >= 0 && xs.indexOf(x) === i).length;
+        if (distinct(rowOpt) >= 2) {
+          for (let c = 1; c < head.length; c++) {
+            const cells: { option: number; label: string; raw: unknown }[] = [];
+            for (let r = 0; r < rows.length; r++) if (rowOpt[r] >= 0) cells.push({ option: rowOpt[r], label: String(rows[r][0] ?? ""), raw: rows[r][c] });
+            series.push({ what: "column", name: head[c], own: head[c], context: `${context} ${head[c]}`, cells });
+          }
+        } else if (distinct(headOpt) >= 2) {
+          for (let r = 0; r < rows.length; r++) {
+            const cells: { option: number; label: string; raw: unknown }[] = [];
+            for (let c = 1; c < head.length; c++) if (headOpt[c] >= 0) cells.push({ option: headOpt[c], label: head[c], raw: rows[r][c] });
+            series.push({ what: "row", name: String(rows[r][0] ?? ""), own: String(rows[r][0] ?? ""), context: `${context} ${rows[r][0] ?? ""}`, cells });
+          }
+        }
+      } else if (layout === "bar-chart" && s.chart && s.chart.series && s.chart.series[0]) {
+        const sr = s.chart.series[0];
+        const pts = sr.points || [];
+        const cells: { option: number; label: string; raw: unknown }[] = [];
+        const seen: number[] = [];
+        for (let p = 0; p < pts.length; p++) {
+          const o = optionOf(pts[p] && pts[p].label, run.keys);
+          if (o < 0) continue;
+          cells.push({ option: o, label: String(pts[p].label), raw: pts[p].value });
+          if (seen.indexOf(o) < 0) seen.push(o);
+        }
+        if (seen.length >= 2) {
+          const axis = String((s.chart as any).yAxisLabel || "");
+          series.push({ what: "chart", name: String(sr.name || ""), own: `${sr.name || ""} ${axis}`,
+            context: `${context} ${sr.name || ""} ${axis} ${s.chart.source || ""}`, cells });
+        }
+      }
+      if (!series.length) continue;
+
+      // Each candidate judged: is it a total of THESE marks, and where does
+      // it agree with them?
+      type Judged = { i: number; agree: number; verdicts: ("reached" | "missed" | "skip")[]; stated: ({ kind: string; value: number; outOf: number | null } | null)[] };
+      const totals: Judged[] = [];
+      for (let si = 0; si < series.length; si++) {
+        const sr = series[si];
+        const ctx = sr.context.toLowerCase();
+        const percentTyped = PERCENT_WORDS.test(ctx);
+        // A scale the series names for itself, if it is this scorecard's; a
+        // claim to be a recount of these very marks.
+        const denom = ownDenominator(sr.own);
+        let explicit = (denom !== null && fits(denom)) || RECOUNT_CLAIM.test(ctx);
+        const verdicts: ("reached" | "missed" | "skip")[] = [];
+        const stated: ({ kind: string; value: number; outOf: number | null } | null)[] = [];
+        let offScale = false;
+        for (let c = 0; c < sr.cells.length; c++) {
+          const t = run.tallies[sr.cells[c].option];
+          const st = readTotal(sr.cells[c].raw);
+          stated.push(st);
+          if (!t || !st) { verdicts.push("skip"); continue; }
+          const scored = t.yes + t.partial + t.no;
+          // A COUNT OF MARKS MOVES IN HALVES. 4.6, 4.2 or 3.9 read as points
+          // is a rating ("CSAT (out of 5)" beside a five-row grid with one
+          // "Partial" in it), never a sum of ticks, and the series is not
+          // one — whatever its denominator happens to match.
+          if ((st.kind === "fraction" || (st.kind === "bare" && !percentTyped && st.value <= scored + t.na))
+            && Math.abs(st.value * 2 - Math.round(st.value * 2)) > 1e-9) offScale = true;
+          if (st.kind === "fraction" && (st.outOf === scored || st.outOf === scored + t.na)) explicit = true;
+          verdicts.push(totalVerdict(st, t, percentTyped));
+        }
+        if (offScale) continue;
+        const named = NAMED_TOTAL.test(ctx) || BARE_TOTAL.test(optionKey(sr.name)) || BARE_TOTAL.test(optionKey(title));
+        if (!explicit && !named) continue;
+        const judged = verdicts.filter((v) => v !== "skip").length;
+        if (!judged) continue;
+        const agree = verdicts.filter((v) => v === "reached").length;
+        // A total only by its name has to be one the marks DESCRIBE.
+        if (!explicit && agree * 2 <= judged) continue;
+        totals.push({ i: si, agree, verdicts, stated });
+      }
+      if (!totals.length) continue;
+      const other = (j: Judged) => OTHER_VERSION_WORDS.test(series[j.i].name.toLowerCase());
+      let pick: Judged | null = null;
+      if (totals.length === 1) {
+        pick = totals[0].agree === 0 && other(totals[0]) ? null : totals[0];
+      } else {
+        let top = -1;
+        for (let t = 0; t < totals.length; t++) top = Math.max(top, totals[t].agree);
+        const leaders = totals.filter((j) => j.agree === top);
+        const mine = totals.filter((j) => !other(j));
+        if (top >= 1 && leaders.length === 1) pick = leaders[0];
+        else if (mine.length === 1) pick = mine[0];
+      }
+      if (!pick) continue;
+      const sr = series[pick.i];
+      for (let c = 0; c < sr.cells.length; c++) {
+        if (pick.verdicts[c] !== "missed") continue;
+        const t = run.tallies[sr.cells[c].option] as MarkTally;
+        const st = pick.stated[c] as { kind: string; value: number; outOf: number | null };
+        const scored = t.yes + t.partial + t.no;
+        out.push({
+          slide: k + 1, from: run.from + 1, to: run.to + 1, what: sr.what, series: sr.name,
+          // A chart's figure as its axis reads it: "42%" on an axis of
+          // shares, where the bar is a bare 42.
+          option: sr.cells[c].label,
+          stated: typeof sr.cells[c].raw === "number" ? `${sr.cells[c].raw}${PERCENT_WORDS.test(sr.context.toLowerCase()) ? "%" : ""}` : String(sr.cells[c].raw ?? "").trim(),
+          counted: t.yes + t.partial / 2, percent: st.kind === "pct" || (st.kind === "bare" && PERCENT_WORDS.test(sr.context.toLowerCase())),
+          outOf: st.kind === "fraction" && st.outOf !== null ? st.outOf : scored,
+          yes: t.yes, partial: t.partial, no: t.no, na: t.na,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/** A total as written on a totals slide: "6.5 / 11", "46%", 5.5 — or null. */
+function readTotal(raw: unknown): { kind: "fraction" | "bare" | "pct"; value: number; outOf: number | null } | null {
+  if (typeof raw === "number") return isFinite(raw) ? { kind: "bare", value: raw, outOf: null } : null;
+  const t = String(raw ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+  const pct = /^(\d+(?:\.\d+)?) ?%$/.exec(t);
+  if (pct) return { kind: "pct", value: Number(pct[1]), outOf: null };
+  const s = statedScore(t);
+  if (!s) return null;
+  return s.outOf === null ? { kind: "bare", value: s.value, outOf: null } : { kind: "fraction", value: s.value, outOf: s.outOf };
+}
+
+/** Does a stated total match the marks under ANY reading a scorecard can mean
+ *  — partials worth nothing, a half, or a whole mark — on the scale it is
+ *  written on? "skip" when the figure is on no scale these marks have. */
+function totalVerdict(st: { kind: string; value: number; outOf: number | null }, t: MarkTally, percentTyped: boolean): "reached" | "missed" | "skip" {
+  const scored = t.yes + t.partial + t.no;
+  const readings = [t.yes, t.yes + t.partial / 2, t.yes + t.partial];
+  let pts = false, pct = false;
+  for (let r = 0; r < readings.length; r++) {
+    if (Math.abs(readings[r] - st.value) < 0.001) pts = true;
+    if (Math.abs((100 * readings[r]) / scored - st.value) < 1) pct = true;
+    if (t.na && Math.abs((100 * readings[r]) / (scored + t.na) - st.value) < 1) pct = true;
+  }
+  if (st.kind === "fraction") {
+    if (st.outOf !== scored && st.outOf !== scored + t.na) return "skip";
+    return pts ? "reached" : "missed";
+  }
+  if (st.kind === "pct") return st.value <= 100 ? (pct ? "reached" : "missed") : "skip";
+  // A bare figure: a percentage when its heading says so; POINTS when it is
+  // no larger than the checks — and only points, or "9" under "Score out of
+  // 12" would pass as 9.1%, one yes of eleven; and a percentage or another
+  // scale altogether, skipped unless it is one, when it is larger than that.
+  if (percentTyped) return st.value <= 100 ? (pct ? "reached" : "missed") : "skip";
+  if (st.value > scored + t.na) return pct ? "reached" : "skip";
+  return pts ? "reached" : "missed";
+}
+
 /** What the deck could not do, in a sentence the model can relay.
  *
  *  The slide says it too — a truncated chart carries its own note — but the
@@ -5562,6 +5888,36 @@ export function deckWarnings(slides: SlideInput[], measured: string[] = []): str
     notes.push(
       `slide ${at.slide}'s ${quoteClip(at.label)} row does not add up from the marks above it` +
       `${at.from < at.slide ? ` on slides ${at.from}-${at.slide}` : ""}, counting a yes as 1 and a partial as a half: ${parts.join("; ")}.` +
+      ` Correct the total or the marks, and do NOT present these totals, or any ranking or takeaway drawn from them, as checked` +
+      ` — if they came from a source document, tell the user that the source does not add up`
+    );
+    w = e;
+  }
+
+  // A TOTAL ON ANOTHER SLIDE THAT THE SCORECARD'S MARKS DO NOT GIVE
+  // (scorecardTotalMismatches). One note per column, row or chart, naming each
+  // option with what it says and what the marks give — the Amrize table's
+  // "Our edit" column saying 6.5 / 11 for Meta data center where slides 17-18
+  // give 5.5 was reported by the model as "true on these numbers".
+  const off = scorecardTotalMismatches(slides);
+  for (let w = 0; w < off.length; ) {
+    const at = off[w];
+    const parts: string[] = [];
+    let e = w;
+    for (; e < off.length && off[e].slide === at.slide && off[e].series === at.series && off[e].what === at.what && off[e].from === at.from; e++) {
+      const x = off[e];
+      const n = Math.round(x.counted * 100) / 100;
+      const scored = x.yes + x.partial + x.no;
+      const tally = `${x.yes} yes, ${x.partial} partial, ${x.no} no${x.na ? `, ${x.na} n/a` : ""}`;
+      parts.push(x.percent
+        ? `${quoteClip(x.option)} says ${quoteClip(x.stated)} where its marks give ${Math.round((1000 * x.counted) / scored) / 10}% (${n} of ${scored}: ${tally})`
+        : `${quoteClip(x.option)} says ${quoteClip(x.stated)} where its marks give ${n} (${tally})`);
+    }
+    const what = at.what === "chart" ? `chart${at.series.trim() ? ` ${quoteClip(at.series)}` : ""}`
+      : `${quoteClip(at.series)} ${at.what}`;
+    notes.push(
+      `slide ${at.slide}'s ${what} does not match the marks on ${at.from === at.to ? `slide ${at.from}` : `slides ${at.from}-${at.to}`},` +
+      ` counting a yes as 1 and a partial as a half: ${parts.join("; ")}.` +
       ` Correct the total or the marks, and do NOT present these totals, or any ranking or takeaway drawn from them, as checked` +
       ` — if they came from a source document, tell the user that the source does not add up`
     );
@@ -7924,8 +8280,90 @@ function fitComparisonCell(
   return { text: shown, size, cut: shown !== text, short };
 }
 
-/** A comparison table: a header row of options, then criterion rows. A cell of
- *  "yes"/"no" draws a tick or cross; anything else prints as text.
+/** Each mark's ink: the tick teal, the half amber, the cross coral, as on the
+ *  brand's categorical ramps — dark enough to carry a 13pt glyph and an 8pt
+ *  key on off-white. n/a is plain navy text. */
+const MARK_INK: { [m: string]: string } = { met: COLOR.inkTeal, partial: COLOR.inkAmber, not: COLOR.inkCoral, na: COLOR.navy };
+/** The key's type: quieter than the cells, and small enough that four marks
+ *  fit in two lines of the 28pt header row. */
+const KEY_TYPE: TypeStyle = { font: "Roboto", size: 8, weight: 300, color: COLOR.ink };
+/** Between two entries of the key: three NO-BREAK spaces, because the chat
+ *  preview keeps runs of spaces and the PDF preview collapses them — three
+ *  ordinary spaces would be three in Slides and one in the PDF. A no-break
+ *  space is never collapsed, and the rows are broken here, by measure, never
+ *  by the renderer. */
+const KEY_GAP = "\u00a0\u00a0\u00a0";
+
+/**
+ * THE KEY A SCORECARD DRAWS FOR ITSELF: each mark its grid uses, drawn as the
+ * cells draw it, and what it means — "✓ met   ½ partly met   ✗ not met   n/a
+ * not scored" — so no model ever has to write one (lib/slides/marks.ts has the
+ * incident).
+ *
+ * ONE TEXT BOX, THE MARKS AS STYLED RUNS. A run's colour and weight are read
+ * back by the preview (preview-model's FIXED_RANGE accents) and drawn by both
+ * renderers, so the key needs no request kind that is not already emitted. The
+ * rows are broken HERE, by the deck's own ruler (labelWidthPt), into at most
+ * two lines — at 8pt, then 7.5, then 7 — so no renderer ever decides where the
+ * key wraps and two renderers cannot wrap it differently.
+ *
+ * A plan with no key draws nothing: see comparisonMarkPlan for when a grid
+ * needs none, and for which words the key uses.
+ */
+function comparisonKey(
+  page: string, id: (s: string) => string, plan: MarkPlan,
+  x: number, y: number, width: number, height: number
+): Req[] {
+  const marks = plan.key;
+  if (!marks.length) return [];
+  const entries = marks.map((m) => `${MARK_GLYPH[m]} ${plan.meaning[m]}`);
+  let size = KEY_TYPE.size;
+  let rows: string[][] = [];
+  for (; ; size -= 0.5) {
+    rows = [];
+    let row: string[] = [];
+    for (let e = 0; e < entries.length; e++) {
+      const trial = row.concat([entries[e]]);
+      if (row.length && labelWidthPt(trial.join(KEY_GAP), size) + TEXT_INSET_X > width) {
+        rows.push(row);
+        row = [entries[e]];
+      } else row = trial;
+    }
+    if (row.length) rows.push(row);
+    if (rows.length <= 2 || size <= 7) break;
+  }
+  const text = rows.map((r) => r.join(KEY_GAP)).join("\n");
+  const style = size === KEY_TYPE.size ? KEY_TYPE : { ...KEY_TYPE, size };
+  const objectId = id("ckey");
+  const out = textBox(objectId, page, text, style, { x, y, width, height }, { lineSpacing: 1.0, spaceBelow: 0 });
+  if (!out.length) return out;
+  // The marks, as the cells draw them: bold, in their own ink.
+  let at = 0;
+  for (let r = 0; r < rows.length; r++) {
+    for (let e = 0; e < rows[r].length; e++) {
+      const m = marks[entries.indexOf(rows[r][e])];
+      const glyph = MARK_GLYPH[m];
+      out.push({
+        updateTextStyle: {
+          objectId,
+          textRange: { type: "FIXED_RANGE", startIndex: at, endIndex: at + glyph.length },
+          style: { bold: true, foregroundColor: { opaqueColor: { rgbColor: rgb(MARK_INK[m]) } } },
+          fields: "bold,foregroundColor",
+        },
+      });
+      at += rows[r][e].length + (e < rows[r].length - 1 ? KEY_GAP.length : 0);
+    }
+    at += 1;   // the line break
+  }
+  return out;
+}
+
+/** A comparison table: a header row of options, then criterion rows. A whole
+ *  cell of "yes" or "no" draws a tick or a cross, as it always has; on a grid
+ *  whose every cell is a mark (lib/slides/marks.ts, comparisonMarkPlan) a
+ *  partial also draws as ½ and n/a as "n/a", and the grid draws its own KEY in
+ *  the header row's empty corner (comparisonKey). Anything else prints as
+ *  text — "Partial" among prices included.
  *
  *  `cut` collects the cells and labels that had to be shortened to fit their
  *  row, and `short` is set when a row is too shallow for one line of the
@@ -7933,8 +8371,11 @@ function fitComparisonCell(
 function comparisonRequests(
   page: string, id: (s: string) => string,
   cmp: NonNullable<SlideInput["comparison"]>, bandTop: number, bandBottom?: number,
-  cut?: string[], short?: { rowH: number }
+  cut?: string[], short?: { rowH: number }, plan?: MarkPlan
 ): Req[] {
+  // The slide decides the plan (its title says whether it is a scorecard);
+  // a caller without one gets the plan of an untitled grid.
+  const markPlan = plan || comparisonMarkPlan({ comparison: cmp });
   const cols = (cmp.columns || []).slice(0, COMPARISON_MAX_COLS);
   const rows = (cmp.rows || []).slice(0, COMPARISON_MAX_ROWS);
   if (!cols.length || !rows.length) return [];
@@ -7956,6 +8397,9 @@ function comparisonRequests(
       x: GRID.margin + labelW + j * colW, y: top, width: colW, height: headH,
     }, { align: "CENTER" }));
   });
+  // The key, in the corner above the criterion labels, which the header row
+  // has always left empty: it costs the rows no room at all.
+  out.push(...comparisonKey(page, id, markPlan, GRID.margin + 6, top, labelW - 12, headH));
   out.push(...filledShape(id("crh"), page, "RECTANGLE", COLOR.navy, {
     x: GRID.margin, y: top + headH, width: GRID.contentWidth, height: RULE.hairlineThickness,
   }, 0.4));
@@ -7989,15 +8433,28 @@ function comparisonRequests(
     (r.cells || []).slice(0, cols.length).forEach((cell, j) => {
       const cx = GRID.margin + labelW + j * colW;
       const box = { x: cx, y: cy, width: colW, height: cellH };
-      // The vocabulary is shared with the scorecard recount (TICK_CELLS), so a
-      // total is checked against exactly the marks this draws.
-      const v = cell.trim().toLowerCase();
-      if (TICK_CELLS.indexOf(v) >= 0) {
-        out.push(...textBox(id(`cc${i}_${j}`), page, "\u2713", { ...TYPE.cellText, size: 13, bold: true, color: COLOR.inkTeal }, box,
+      // The vocabulary is shared with the scorecard recount (lib/slides/marks),
+      // so a total is checked against exactly the marks this draws — and the
+      // key above is computed from the same cells, so it names exactly them.
+      // ½ and a normalised "n/a" only on a grid of marks: among words, a
+      // "Partial" is a word and is drawn as one (comparisonMarkPlan).
+      const mark = cellMark(cell);
+      if (mark === "met" || mark === "not") {
+        out.push(...textBox(id(`cc${i}_${j}`), page, MARK_GLYPH[mark], { ...TYPE.cellText, size: 13, bold: true, color: MARK_INK[mark] }, box,
           { align: "CENTER", vCenter: true }));
-      } else if (CROSS_CELLS.indexOf(v) >= 0) {
-        out.push(...textBox(id(`cc${i}_${j}`), page, "\u2717", { ...TYPE.cellText, size: 13, bold: true, color: COLOR.inkCoral }, box,
+      } else if (mark === "partial" && markPlan.marks) {
+        // AT 700, where the tick and the cross are sent at the cell's 300.
+        // They are not in Roboto (lib/slides/marks.ts), so they come from a
+        // fallback face and its own stroke; ½ IS in Roboto, and at 300 it drew
+        // as a hairline beside them. The tick and cross are left exactly as
+        // they were sent, so no stored comparison without a half draws
+        // differently.
+        out.push(...textBox(id(`cc${i}_${j}`), page, MARK_GLYPH.partial, { ...TYPE.cellText, size: 13, bold: true, weight: 700, color: MARK_INK.partial }, box,
           { align: "CENTER", vCenter: true }));
+      } else if (mark === "na" && markPlan.marks) {
+        // The letters, normalised, so "NA" and "not applicable" draw what the
+        // key says: "n/a".
+        out.push(...textBox(id(`cc${i}_${j}`), page, MARK_GLYPH.na, TYPE.cellText, box, { align: "CENTER", vCenter: true }));
       } else {
         const f = fitted(cell, colW, TYPE.cellText);
         out.push(...textBox(id(`cc${i}_${j}`), page, f.text, f.style, box, { align: "CENTER", vCenter: true }));
@@ -8036,10 +8493,10 @@ export function tableRowsOf(spec: SlideInput["table"] | undefined): unknown[][] 
   return ((spec && spec.rows) || []).filter((r) => Array.isArray(r) && r.some((c) => String(c ?? "").trim() !== "")) as unknown[][];
 }
 
-/** A comparison's own caps: four options across, eight criteria down. Past
- *  either, the rest are not drawn and the builder says which. */
-export const COMPARISON_MAX_COLS = 4;
-export const COMPARISON_MAX_ROWS = 8;
+/** A comparison's own caps — four options across, eight criteria down — are
+ *  in lib/slides/marks.ts, because the key is computed over exactly the cells
+ *  that are drawn and edit.ts asks the same question. Re-exported here. */
+export { COMPARISON_MAX_COLS, COMPARISON_MAX_ROWS };
 
 /** The narrowest a column may be drawn. Below this even a three-character
  *  figure loses characters to the ellipsis, which is worse than no table. */
@@ -9469,7 +9926,7 @@ function buildSlideRequestsAt(
     else if (layout === "comparison" && slide.comparison) {
       const cut: string[] = [];
       const short = { rowH: 0 };
-      requests.push(...comparisonRequests(page, id, slide.comparison, aTop, GRID.bodyY + band, cut, short));
+      requests.push(...comparisonRequests(page, id, slide.comparison, aTop, GRID.bodyY + band, cut, short, comparisonMarkPlan(slide)));
       // ROWS TOO SHALLOW FOR A LINE OF TYPE: the words are drawn whole, on one
       // line at the floor, and overhang their row. Fewer words would not help
       // — the fix is room, and only the model can give it some.

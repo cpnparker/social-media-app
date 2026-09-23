@@ -22,9 +22,10 @@ import {
   stampDeckSteps, stepperRail, stepperBox, bulletBlockHeight, deckSteps,
   photoRailBox, pictureShape, hungDotSize, stampDeckChrome, stampDensity, refreshDeckImageUrls, rebakeShape,
   TABLE_MAX_ROWS, COMPARISON_MAX_ROWS, COMPARISON_MAX_COLS,
-  scoreMark, isScoreLabel, TICK_CELLS, CROSS_CELLS,
+  scoreMark, isScoreLabel, TICK_CELLS, CROSS_CELLS, scorecardTotalMismatches,
   type SlideInput,
 } from "../lib/slides/generate";
+import { MARK_GLYPH, comparisonMarkPlan, withoutMarkKey } from "../lib/slides/marks";
 import { toPreviewModel, readPath } from "../lib/slides/preview-model";
 import { applyEditSlide, unrenderableSlides, undrawnTableSlides, undrawnTableFaults, PAYLOAD_FIELDS, insertableLayout, normaliseSlide, normaliseSlideForWrite, retireDeclaredBriefs, SlideCallRefusal,
   TEXT_EXTRAS, CONTINUATION_KEEPS, CONTINUATION_CLEARS, PICTURE_LAYOUTS, drawsSlidePicture } from "../lib/slides/edit";
@@ -9735,7 +9736,9 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     // build decks nothing measures, and nothing else in this file would notice.
     const provSrc = readFileSync(join(__dirname, "..", "lib/ai/providers.ts"), "utf8")
       .replace(/^[ \t]*\/\*[\s\S]*?\*\//gm, "").replace(/(^|[ \t])\/\/[^\n]*/gm, "$1");
-    const wired = provSrc.split("deckWarnings(draft.slides, geometryNotes(built.geometry))").length - 1;
+    // The prefix: a chain may hand deckWarnings more notes after the geometry
+    // (verify-slide-edit 17h: what a layout patch took off a slide).
+    const wired = provSrc.split("deckWarnings(draft.slides, geometryNotes(built.geometry)").length - 1;
     const built = provSrc.split("buildSlidesDraft(").length - 1;
     A46(wired === 4 && built === 5,
       `46h ${wired} of the chains pass the geometry notes to deckWarnings across ${built - 1} draft builds`);
@@ -15657,14 +15660,16 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
        * check, and a word counted that is drawn as text is a mark nobody in
        * the room can see. Swept over the builder's own words and the near
        * misses a model writes. */
-      const words = ["yes", "y", "true", "\u2713", "no", "n", "false", "\u2717", "x", "\u2714", "\u2718", "pass", "fail", "p", "partial", "n/a", "Yes", "N"];
+      const words = ["yes", "y", "true", "\u2713", "no", "n", "false", "\u2717", "x", "\u2714", "\u2718", "pass", "fail", "p", "partial", "n/a", "Yes", "N",
+        "P", "partly", "half", "\u00bd", "NA", "N/A", "n.a.", "not applicable", "tbc"];
       const disagree: string[] = [];
       for (let w = 0; w < words.length; w++) {
         const reqs = buildSlideRequests({ layout: "comparison", title: "One row", comparison: { columns: ["A"], rows: [{ label: "Row", cells: [words[w]] }] } } as any, 1, `c53f${w}`) as any[];
         const drawn = reqs.filter((r: any) => r.insertText && String(r.insertText.objectId).indexOf("cc0_0") >= 0).map((r: any) => String(r.insertText.text))[0];
         const mark = scoreMark(words[w]);
-        const tick = drawn === "\u2713", cross = drawn === "\u2717";
-        if (tick !== (mark === 1) || cross !== (mark === 0)) disagree.push(`${JSON.stringify(words[w])} drawn ${JSON.stringify(drawn)}, read as ${JSON.stringify(mark)}`);
+        const tick = drawn === "\u2713", cross = drawn === "\u2717", half = drawn === "\u00bd", na = drawn === "n/a";
+        if (tick !== (mark === 1) || cross !== (mark === 0) || half !== (mark === 0.5) || na !== (mark === "na"))
+          disagree.push(`${JSON.stringify(words[w])} drawn ${JSON.stringify(drawn)}, read as ${JSON.stringify(mark)}`);
       }
       A53(disagree.length === 0, `(f) the recount and the drawing disagree about what is a tick or a cross: ${disagree.join("; ")}`);
       A53(TICK_CELLS.length > 0 && CROSS_CELLS.length > 0, "(f) precondition: the shared tick and cross lists are empty");
@@ -15707,7 +15712,8 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
    *       and all — at both densities: every cell and label's ink inside its
    *       own box, measured on words, no box across a rule, no geometry fault
    *       on either slide.
-   *   (b) A tick, a cross and a letter in one row: ONE box, centred.
+   *   (b) A tick, a cross and a partial mark in one row: ONE box, centred.
+   *       (The partial was the letter P until check 55 drew it as ½.)
    *   (c) A cell too long for its row even at the floor is cut on a word,
    *       and the cut is NAMED in the tool result; a cell is shrunk only as
    *       far as its row needs, and never cut for HEIGHT — a row shallower
@@ -15822,7 +15828,7 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     const clone54 = (x: any) => JSON.parse(JSON.stringify(x));
     const words54 = new Set<string>();
     for (const s of [S17, S18]) for (const r of s.comparison.rows) { words54.add(r.label); for (const c of r.cells) words54.add(c); }
-    const isCell = (t: string) => words54.has(t) || t === "✓" || t === "✗"
+    const isCell = (t: string) => words54.has(t) || t === "✓" || t === "✗" || t === "½"
       || (/…$/.test(t) && Array.from(words54).some((w) => w.indexOf(t.slice(0, -1).trim()) === 0));
     try {
       /* (a) THE LIVE SHAPE, AT BOTH DENSITIES. */
@@ -15857,8 +15863,10 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       const mp = previewSlideFrom(mixed, buildSlideRequests(mixed, 1, "c54b") as any[]);
       const tick = mp.elements.find((e: any) => e.kind === "text" && e.text === "✓") as any;
       const cross = mp.elements.find((e: any) => e.kind === "text" && e.text === "✗") as any;
-      const letter = mp.elements.find((e: any) => e.kind === "text" && e.text === "P") as any;
-      A54(!!tick && !!cross && !!letter, `(b) precondition: the row drew a tick, a cross and a letter (${!!tick}/${!!cross}/${!!letter})`);
+      // The partial mark is drawn as ½ since check 55; it is the third mark
+      // of the row either way, and shares the one box.
+      const letter = mp.elements.find((e: any) => e.kind === "text" && e.text === "½") as any;
+      A54(!!tick && !!cross && !!letter, `(b) precondition: the row drew a tick, a cross and a half (${!!tick}/${!!cross}/${!!letter})`);
       if (tick && cross && letter) {
         const same = (p: any, q: any) => Math.abs(p.y - q.y) < 1e-9 && Math.abs(p.h - q.h) < 1e-9;
         A54(same(tick, letter) && same(cross, letter) && tick.vCenter && cross.vCenter && letter.vCenter,
@@ -16064,7 +16072,630 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   }
   if (failures === before54) {
     pass(`a comparison cell is fitted inside its row at both densities, on words — cut and named when it cannot be — its tick, cross and`
-      + ` letter share one centred box, and the validator, on the same ruler, reports text that leaves its box through a rule above or below it`);
+      + ` half share one centred box, and the validator, on the same ruler, reports text that leaves its box through a rule above or below it`);
+  }
+
+
+  /* ─────────────────────────────────────────────────────────────────────────
+   * 55. A SCORECARD DRAWS ITS OWN PARTIAL MARK AND ITS OWN KEY, AND A KEY THE
+   *     MODEL WROTE IS RETIRED (Amrize, 3ec51a09, 2026-09-23)
+   *
+   * The comparison drew Y as ✓ and N as ✗, drew P as the bare letter, and drew
+   * no key, so the model wrote one in `note` — wrongly both times: "Y =
+   * present, P = partial, N = absent" named letters the slide never showed,
+   * and asked for "✓ met · P partly met (half a point) · ✗ not met" it wrote
+   * "Check met - P partly met (half a point) - X not met". A key is part of
+   * the drawing; a drawing the model has to finish in prose it finishes wrong.
+   *
+   *   (a) THE LIVE SCORECARD — the user's own marks for checks 1-12 on two
+   *       comparison slides — draws every P as ½, bold, in the amber ink,
+   *       in the same centred box as the ✓ beside it, and no bare "P";
+   *       n/a draws "n/a". ½ because it is Latin-1, which the deck's own
+   *       Roboto carries — measured in Chrome against Google's webfont, where
+   *       ◐, ✓ and ✗ all come from a fallback (lib/slides/marks.ts) — and a
+   *       drawn half-circle is a shape the Slides API cannot make and the
+   *       preview cannot read back.
+   *   (b) THE KEY is drawn in the header row's empty corner, naming exactly
+   *       the marks that slide shows (17: ✓ ½ ✗; 18: ½ ✗ n/a), its marks
+   *       as bold runs in their own inks — and the PREVIEW READS THEM BACK:
+   *       one accent per mark, at the mark, in that colour. A run the
+   *       preview dropped would be a key that is right in Slides and plain in
+   *       the chat. It stays inside its corner and above the header rule.
+   *   (c) EXACTLY THE MARKS IT USES, swept over every combination of the four
+   *       kinds, on a slide that says it is scoring and on one that does not:
+   *       a key iff ½ is drawn, or n/a on a scorecard, listing every kind
+   *       drawn in the key's order, in the words of that kind of slide ("met"
+   *       only on a scorecard: a tick on a feature comparison means "yes"); a
+   *       mark in a row or column past the caps is not drawn and not keyed; a
+   *       qualified cell ("P - intro …") is words, not a mark.
+   *   (d) THE KEY FITS: all four entries, at both densities, under long
+   *       option names — two lines at most, no geometry fault on the slide.
+   *   (e) A KEY THE MODEL WROTE IS RETIRED on write AND on read — the three
+   *       keys stored in 3ec51a09 and the verifier's subtitle key — keeping
+   *       every sentence that says anything else ("Scored from each
+   *       article's final text.", slide 18's n/a reason). Kept where the
+   *       slide draws no key, on a slide that is not a comparison, and in a
+   *       sentence that mixes a definition with a reason. The retired text
+   *       is not reported to the model as dropped.
+   *   (f) The tool tells the model the slide draws the key itself.
+   *   (g) NOT EVERY GRID WITH A "PARTIAL" IN IT IS A SCORECARD — a verifier's
+   *       finding against the first cut, which drew "✓ met ½ partly met ✗ not
+   *       met / n/a not scored" over a HubSpot / Salesforce / Pipedrive
+   *       feature grid with prices in it and turned its "Partial" into ½. A
+   *       grid with any cell of words draws "Partial" and "n/a" as written,
+   *       no ½ and no key, and keeps a key the model wrote; a grid of marks
+   *       alone under vendor names draws ½ with a key that says yes, partly,
+   *       no; and a scorecard with a blank cell or a SCORE row is still a
+   *       grid of marks.
+   *
+   * No other stored deck moves: of the 28 stored comparison slides (106
+   * drafts, 47 conversations, 2026-09-23), the 8 that draw a key are the
+   * Amrize scorecard's; the other 20 build byte-identical requests at both
+   * densities, against c01300d.
+   *
+   * MUTATION LOG (detached worktree at c01300d plus this change, 2026-09-23;
+   * each mutant alone, restored and compared after) — kills AND survivors:
+   *   killed  A1 the partial drawn as its own text again (the letter P) →
+   *           (a), and 53(f) and 54(b) with it.
+   *   killed  A2 no key drawn → (b), (c), (d).
+   *   killed  A3 the key's marks not styled, A4 styled bold but not in their
+   *           inks → (b): the preview reads back what the builder sends, so a
+   *           run missing from the requests is missing from the accents.
+   *   killed  A5 the key counting rows past COMPARISON_MAX_ROWS → (c).
+   *   killed  A6 a key on a grid of ticks and crosses alone → (c), (e), and
+   *           54(c) — the verifier's scorecard keeps its written key then.
+   *   killed  A7 the key listing all four marks whatever is drawn → (b), (c).
+   *   killed  A9 the written key never retired, A11 retired where the slide
+   *           draws no key, A10 a sentence retired when ANY clause defines a
+   *           mark, A15 key clauses not split on a spaced dash (the stored
+   *           "Check met - P … - X not met") → (e).
+   *   killed  A12 droppedContent walking the slide as SENT → (e): the retired
+   *           key reported to the model as text the slide dropped.
+   *   killed  A13 ½ at the cell's 300 weight → (a).
+   *   killed  A14 n/a drawn as written rather than normalised → 53(f), whose
+   *           sweep now carries "NA", "N/A" and "not applicable".
+   *   killed  A16 the tool description reverted → (f).
+   *   SURVIVED A8 the key never broken into rows — one line, left to the
+   *           renderer to wrap — on the first run: (d) asked for at most two
+   *           lines and no geometry fault, and a one-line key satisfies both.
+   *           Killed on the second, once (d) asserted that every line fits its
+   *           box by the deck's own ruler.
+   * SECOND RUN, after the verifier's finding (detached worktree at c01300d
+   * plus this change, each mutant alone, restored after):
+   *   killed  A17 the mark-grid gate removed, A23 the builder drawing ½
+   *           whatever the plan says → (g): the CRM grid of prices draws ½.
+   *   killed  A18 the scorecard wording on every grid → (c), (g).
+   *   killed  A19 n/a keyed on a grid that is not a scorecard → (c), (g).
+   *   killed  A21 a blank cell counted as words → (g).
+   *   killed  A22 the scorecard exception removed → (g): one reason in a
+   *           cell turns every other half back into a letter.
+   *   killed  A24 the builder not handed the slide's plan, so the title is
+   *           never read → (b), (c), (g).
+   *   killed  A25 the tool description reverted to the first cut's → (f).
+   *   SURVIVED A20 a total row counted in the words test. EQUIVALENT: a
+   *           grid with a total row is a scorecard (isScorecardSlide), and a
+   *           scorecard draws its marks whatever else its cells say. Kept
+   *           because it is what keeps "5.5 / 12" out of the key's count.
+   * ───────────────────────────────────────────────────────────────────────── */
+  const before55 = failures;
+  console.log(`\n55. A scorecard draws \u00bd and its own key, and a key the model wrote is retired`);
+  const A55 = (ok: boolean, m: string) => { if (!ok) fail(`55: ${m}`); };
+  const COLS55 = ["Meta data center", "10 Things", "Denver dam", "Obama Center"];
+  // The marks the user gave for checks 1-12, in order (3ec51a09, 12:43).
+  const BY_ARTICLE55 = [
+    "P Y P Y P P P P N P N n/a", "P Y P Y P P P N N P P n/a",
+    "P P P P N P P P N P P n/a", "Y P P P P P P P N P P n/a",
+  ];
+  const CHECKS55 = [
+    "1. Title tag", "2. Meta description", "3. TL;DR block", "4. Question headings", "5. Answer-first", "6. Entity in sentence",
+    "7. Verifiable specifics", "8. Named experts", "9. Byline and dates", "10. FAQ section", "11. Internal links", "12. Schema",
+  ];
+  const cells55 = (r: number) => BY_ARTICLE55.map((a) => a.split(" ")[r]);
+  const KEY17_STORED = "Check met - P partly met (half a point) - X not met";
+  const NOTE18 = "Schema is not scored - n/a for all four, assessed separately from the live page rather than the draft.";
+  const half55 = (from: number, note: string): any => ({
+    layout: "comparison", title: `The 12-point checklist, scored: checks ${from + 1}-${from + 6}`, note,
+    comparison: { columns: COLS55, rows: CHECKS55.slice(from, from + 6).map((c, i) => ({ label: c, cells: cells55(from + i) })) },
+  });
+  const page55 = (s: any, k: number) => previewSlideFrom(s, buildSlideRequests(JSON.parse(JSON.stringify(s)), k, `c55-${k}`) as any[]);
+  const GAP55 = "\u00a0\u00a0\u00a0";
+  const INK55: { [g: string]: string } = { "\u2713": "#0f6e56", "\u00bd": "#854f0b", "\u2717": "#993c1d", "n/a": "#023250" };
+  const keyOf55 = (page: any) => page.elements.find((e: any) => e.kind === "text"
+    && /(^|\u00a0)(\u2713 met|\u00bd partly met|\u2717 not met|n\/a not scored|\u2713 yes|\u00bd partly|\u2717 no|n\/a not applicable)/.test(String(e.text))) as any;
+  const entries55 = (key: any) => key ? String(key.text).split("\n").join(GAP55).split(GAP55) : [];
+  try {
+    /* (a) THE LIVE SCORECARD. */
+    const s17 = half55(0, KEY17_STORED), s18 = half55(6, NOTE18);
+    const p17 = page55(s17, 16), p18 = page55(s18, 17);
+    const halves = p17.elements.filter((e: any) => e.kind === "text" && e.text === "\u00bd") as any[];
+    const wantHalves = [0, 1, 2, 3, 4, 5].reduce((n, r) => n + cells55(r).filter((c) => c === "P").length, 0);
+    A55(wantHalves === 18, `(a) precondition: checks 1-6 carry ${wantHalves} P marks, not 18`);
+    A55(halves.length === wantHalves, `(a) slide 17 drew ${halves.length} \u00bd marks for its ${wantHalves} P cells`);
+    A55(!p17.elements.some((e: any) => e.kind === "text" && e.text === "P") && !p18.elements.some((e: any) => e.kind === "text" && e.text === "P"),
+      "(a) a bare letter P is still drawn on the scorecard");
+    A55(halves.every((e: any) => e.size === 13 && e.weight === 700 && e.color === INK55["\u00bd"] && e.vCenter && e.align === "center"),
+      `(a) a \u00bd is not drawn as the tick and cross are (13pt, bold, centred) in the amber ink: ${JSON.stringify(halves[0] && { size: halves[0].size, weight: halves[0].weight, color: halves[0].color })}`);
+    const tick55 = p17.elements.find((e: any) => e.kind === "text" && e.text === "\u2713") as any;
+    const rowHalf = tick55 && halves.find((e: any) => Math.abs(e.y - tick55.y) < 1e-6);
+    A55(!!rowHalf && Math.abs(rowHalf.h - tick55.h) < 1e-6, "(a) a \u00bd and a \u2713 in one row do not share one box");
+    A55(p18.elements.filter((e: any) => e.kind === "text" && e.text === "n/a").length === 4, "(a) slide 18's four n/a cells are not drawn as n/a");
+    A55(MARK_GLYPH.partial === "\u00bd" && MARK_GLYPH.partial.charCodeAt(0) <= 0xff,
+      `(a) the partial mark is ${JSON.stringify(MARK_GLYPH.partial)}, which is not a Latin-1 glyph the deck's Roboto carries`);
+
+    /* (b) THE KEY, AND THE PREVIEW READS ITS RUNS BACK. */
+    const k17 = keyOf55(p17), k18 = keyOf55(p18);
+    A55(!!k17 && entries55(k17).join("|") === "\u2713 met|\u00bd partly met|\u2717 not met",
+      `(b) slide 17's key is not exactly \u2713 met, \u00bd partly met, \u2717 not met: ${JSON.stringify(k17 && k17.text)}`);
+    A55(!!k18 && entries55(k18).join("|") === "\u00bd partly met|\u2717 not met|n/a not scored",
+      `(b) slide 18's key is not exactly \u00bd partly met, \u2717 not met, n/a not scored: ${JSON.stringify(k18 && k18.text)}`);
+    const pairs: [any, any][] = [[k17, p17], [k18, p18]];
+    for (let q = 0; q < pairs.length; q++) {
+      const key = pairs[q][0], page = pairs[q][1];
+      if (!key) continue;
+      const text = String(key.text);
+      const want: { start: number; color: string }[] = [];
+      const gl = ["\u2713", "\u00bd", "\u2717", "n/a"];
+      for (let g = 0; g < gl.length; g++) {
+        const at = text.indexOf(gl[g] + " ");
+        if (at >= 0) want.push({ start: at, color: INK55[gl[g]] });
+      }
+      const acc = (key.accents || []) as any[];
+      const readBack = want.every((w) => acc.some((a) => a.start === w.start && a.bold && a.color === w.color));
+      A55(acc.length === want.length && readBack,
+        `(b) the preview did not read back one bold accent per mark in its ink (${acc.length} accents for ${want.length} marks: ${JSON.stringify(acc)})`);
+      const heads = page.elements.filter((e: any) => e.kind === "text" && COLS55.map((c) => c.toUpperCase()).indexOf(String(e.text)) >= 0) as any[];
+      const rule = page.elements.filter((e: any) => e.kind === "rect" && e.h <= 1.5 && e.w > 600 && e.y > key.y).sort((x: any, y: any) => x.y - y.y)[0] as any;
+      const firstHead = heads.length ? Math.min.apply(null, heads.map((h: any) => h.x)) : 0;
+      A55(heads.length === 4 && !!rule, `(b) precondition: slide ${17 + q} drew ${heads.length} column heads and ${rule ? "a" : "no"} header rule`);
+      if (heads.length && rule) {
+        A55(key.x >= GRID.margin - 0.01 && key.x + key.w <= firstHead + 0.01, `(b) the key runs into the first column head (${(key.x + key.w).toFixed(1)} > ${firstHead.toFixed(1)})`);
+        A55(inkBottom(key) <= rule.y + 0.01 && key.y >= heads[0].y - 0.01, `(b) the key's ink ends at ${inkBottom(key).toFixed(1)}, past the header rule at ${rule.y.toFixed(1)}`);
+      }
+    }
+
+    /* (c) EXACTLY THE MARKS IT USES, IN THE WORDS OF ITS KIND OF SLIDE. */
+    const KINDS = ["Y", "P", "N", "n/a"];
+    const SHOWN: { [k: string]: string } = { Y: "\u2713 met", P: "\u00bd partly met", N: "\u2717 not met", "n/a": "n/a not scored" };
+    const PLAIN: { [k: string]: string } = { Y: "\u2713 yes", P: "\u00bd partly", N: "\u2717 no", "n/a": "n/a not applicable" };
+    const bad55: string[] = [];
+    const kinds55: [string, boolean][] = [["The checklist, scored", true], ["Marks", false]];
+    for (let kk = 0; kk < kinds55.length; kk++) {
+      for (let mask = 1; mask < 16; mask++) {
+        const used = KINDS.filter((_, b) => (mask >> b) & 1);
+        const cells = [0, 1, 2, 3].map((c) => used[c % used.length]);
+        const s = { layout: "comparison", title: kinds55[kk][0], comparison: { columns: ["A", "B", "C", "D"], rows: [{ label: "Row one", cells }, { label: "Row two", cells: cells.slice().reverse() }] } };
+        const key = keyOf55(page55(s, 1));
+        const scoring = kinds55[kk][1];
+        const wantKey = used.indexOf("P") >= 0 || (scoring && used.indexOf("n/a") >= 0);
+        const got = entries55(key).join("|");
+        const want = wantKey ? KINDS.filter((k) => used.indexOf(k) >= 0).map((k) => (scoring ? SHOWN : PLAIN)[k]).join("|") : "";
+        if (got !== want) bad55.push(`"${kinds55[kk][0]}" {${used.join(",")}}: key ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
+      }
+    }
+    A55(bad55.length === 0, `(c) the key does not name exactly the marks drawn, in its slide's words: ${bad55.slice(0, 4).join("; ")}`);
+    const deep: any[] = [];
+    for (let r = 0; r < COMPARISON_MAX_ROWS + 1; r++) deep.push({ label: `Row ${r + 1}`, cells: r === COMPARISON_MAX_ROWS ? ["P", "Y", "N", "Y", "P"] : ["Y", "N", "Y", "N", "P"] });
+    const past = { layout: "comparison", title: "Past the caps", comparison: { columns: ["A", "B", "C", "D", "E"], rows: deep } };
+    A55(!keyOf55(page55(past, 1)) && comparisonMarkPlan(past as any).key.length === 0,
+      "(c) a partial mark in a row or column the comparison does not draw put a key on the slide");
+    const qual = { layout: "comparison", title: "Qualified", comparison: { columns: ["A", "B"], rows: [{ label: "Row", cells: ["P - intro does some of the job", "Y"] }] } };
+    const qp = page55(qual, 1);
+    A55(!keyOf55(qp) && qp.elements.some((e: any) => e.kind === "text" && e.text === "P - intro does some of the job"),
+      "(c) a qualified cell was drawn as a mark, or keyed");
+
+    /* (d) THE KEY FITS, AT BOTH DENSITIES, UNDER LONG HEADS, IN BOTH WORDINGS. */
+    const LONGCOLS = ["Meta data center campaign", "Ten Things you need to know", "Denver dam feature story", "Obama Presidential Center"];
+    const all4of = (title: string) => ({ layout: "comparison", title, comparison: { columns: LONGCOLS, rows: [
+      { label: "One", cells: ["Y", "P", "N", "n/a"] }, { label: "Two", cells: ["P", "Y", "n/a", "N"] }, { label: "Three", cells: ["N", "N", "Y", "P"] }] } });
+    const dens55: Density[] = ["read", "present"];
+    const titles55 = ["Every mark there is", "Every mark there is, scored"];
+    for (let d = 0; d < dens55.length * titles55.length; d++) {
+      const all4 = all4of(titles55[Math.floor(d / dens55.length)]);
+      const deck55: any[] = [{ layout: "cover", title: "Workshop", density: dens55[d % 2] }, { ...JSON.parse(JSON.stringify(all4)), density: dens55[d % 2] }];
+      const key = keyOf55(page55(deck55[1], 1));
+      A55(!!key && entries55(key).length === 4 && String(key.text).split("\n").length <= 2,
+        `(d ${dens55[d % 2]}, "${all4.title}") the four-mark key is not drawn in at most two lines: ${JSON.stringify(key && key.text)}`);
+      // AND EVERY LINE IS ONE THE BUILDER BROKE: each fits its box by the
+      // deck's own ruler, so no renderer is left to wrap it — two renderers
+      // wrapping one line differently is a key that reads differently in
+      // Slides and in the chat, and a wrap can land inside "✗ not met".
+      const lines55 = key ? String(key.text).split("\n") : [];
+      const wide55 = lines55.filter((l) => labelWidthPt(l, key.size) + TEXT_INSET_X > key.w + 0.01);
+      A55(wide55.length === 0, `(d ${dens55[d % 2]}, "${all4.title}") a key line is wider than its box and left to the renderer to wrap: ${JSON.stringify(wide55)}`);
+      const f55 = validateDeck(deck55, `c55d${d}`).faults.filter((f: any) => f.slide === 2);
+      A55(f55.length === 0, `(d ${dens55[d % 2]}, "${all4.title}") the keyed comparison has geometry faults: ${f55.map((f: any) => f.note).join(" | ").slice(0, 300)}`);
+    }
+
+    /* (e) A KEY THE MODEL WROTE IS RETIRED — ON WRITE, AND ON READ. */
+    const stored55: [string, string | undefined][] = [
+      ["Y = present, P = partial, N = absent. Scored from each article's final text.", "Scored from each article's final text."],
+      ["\u2713 present \u00b7 P partial (half a point) \u00b7 \u2717 absent", undefined],
+      [KEY17_STORED, undefined],
+    ];
+    for (let k = 0; k < stored55.length; k++) {
+      const got = (normaliseSlide(half55(0, stored55[k][0])) as any).note;
+      A55(got === stored55[k][1], `(e) the stored key ${JSON.stringify(stored55[k][0])} became ${JSON.stringify(got)}, not ${JSON.stringify(stored55[k][1])}`);
+    }
+    const sub55 = normaliseSlide({ ...half55(0, ""), subtitle: "Y present, P partial, N absent. Obama scored against the final version; schema cannot be seen in a doc." }) as any;
+    A55(sub55.subtitle === "Obama scored against the final version; schema cannot be seen in a doc.",
+      `(e) a key in the subtitle was not retired, or took the sentence after it: ${JSON.stringify(sub55.subtitle)}`);
+    const prepared55 = await prepareSlidesForBuild({ title: "Amrize workshop", slides: [{ layout: "cover", title: "Workshop" }, s17, s18] }, null);
+    A55(prepared55.slides[1].note === undefined && prepared55.slides[2].note === NOTE18,
+      `(e) on write, slide 17 kept ${JSON.stringify(prepared55.slides[1].note)} or slide 18's reason changed to ${JSON.stringify(prepared55.slides[2].note)}`);
+    const drawn17 = (buildSlideRequests(JSON.parse(JSON.stringify(s17)), 16, "c55e") as any[]).filter((r: any) => r.insertText).map((r: any) => String(r.insertText.text)).join(" | ");
+    A55(drawn17.indexOf("Check met") < 0, "(e) on read, a stored draft still draws the model's key beside the slide's own");
+    A55(droppedContent(JSON.parse(JSON.stringify(s17)), 16).length === 0 && deckWarnings([{ layout: "cover", title: "W" } as any, JSON.parse(JSON.stringify(s17))]).indexOf("Check met") < 0,
+      "(e) the retired key is reported to the model as text the slide dropped");
+    const kept55: [string, any][] = [
+      ["a key on a grid of ticks and crosses, which draws none", { layout: "comparison", title: "Features", note: "\u2713 = met, \u2717 = not met", comparison: { columns: ["A", "B"], rows: [{ label: "SSO", cells: ["yes", "no"] }] } }],
+      ["a key on a slide that is not a comparison", { layout: "content", title: "Scoring", body: "One", note: "Y = present, P = partial, N = absent." }],
+      ["a sentence mixing a definition with a reason", { ...half55(0, "Y present, P partial, N absent, and Obama leads on every check.") }],
+      ["slide 18's reason for its n/a marks", { ...half55(6, NOTE18) }],
+    ];
+    for (let k = 0; k < kept55.length; k++) {
+      const s: any = kept55[k][1];
+      A55((normaliseSlide(s) as any).note === s.note, `(e) ${kept55[k][0]} was changed: ${JSON.stringify((normaliseSlide(s) as any).note)}`);
+    }
+    A55(withoutMarkKey("Yes, no, partial.") === "Yes, no, partial." && withoutMarkKey("No brand, no keyword.") === "No brand, no keyword.",
+      "(e) marks without meanings, or words that start like marks, were read as a key");
+
+    /* (f) THE MODEL IS TOLD. */
+    const cmpDesc = String((SLIDES_GEN_OPENAI_TOOL as any).function.parameters.properties.comparison?.description
+      || JSON.stringify(SLIDES_GEN_OPENAI_TOOL).match(/A comparison table \(comparison layout\)[^"]*/)?.[0] || "");
+    A55(/draws their key itself: never write one/.test(cmpDesc) && /partial/.test(cmpDesc) && /grid of only/.test(cmpDesc),
+      `(f) the tool does not tell the model that a grid of marks draws \u00bd and its own key: ${cmpDesc.slice(0, 200)}`);
+
+    /* (g) NOT EVERY GRID WITH A "PARTIAL" IN IT IS A SCORECARD. */
+    const F8 = { layout: "comparison", title: "Which CRM fits the team", note: "\u2713 = yes, \u2717 = no, Partial = mobile web only.", comparison: { columns: ["HubSpot", "Salesforce", "Pipedrive"], rows: [
+      { label: "Price per seat", cells: ["\u00a340/mo", "\u00a375/mo", "\u00a324/mo"] }, { label: "Mobile app", cells: ["yes", "yes", "Partial"] },
+      { label: "Offline mode", cells: ["no", "yes", "no"] }, { label: "On-prem option", cells: ["n/a", "yes", "n/a"] },
+      { label: "Support", cells: ["Email + chat", "Phone 24/7", "Email"] }] } };
+    const f8 = page55(F8, 3);
+    const f8texts = f8.elements.filter((e: any) => e.kind === "text").map((e: any) => String(e.text));
+    A55(!keyOf55(f8) && f8texts.indexOf("\u00bd") < 0 && f8texts.indexOf("Partial") >= 0 && f8texts.filter((t: string) => t === "n/a").length === 2
+      && f8texts.indexOf("\u2713") >= 0 && f8texts.indexOf("\u2717") >= 0,
+      `(g) a feature grid of prices and marks drew a scorecard's \u00bd or key, or lost its ticks: ${JSON.stringify(f8texts.filter((t: string) => t.length < 40).slice(0, 24))}`);
+    A55((normaliseSlide(F8) as any).note === F8.note, `(g) the key the model wrote for a grid that draws none was retired: ${JSON.stringify((normaliseSlide(F8) as any).note)}`);
+    const vendor = { layout: "comparison", title: "Which CRM fits the team", comparison: { columns: ["HubSpot", "Salesforce", "Pipedrive"], rows: [
+      { label: "Mobile app", cells: ["yes", "yes", "Partial"] }, { label: "Offline mode", cells: ["no", "yes", "no"] }, { label: "On-prem option", cells: ["n/a", "yes", "n/a"] }] } };
+    const vk = keyOf55(page55(vendor, 3));
+    A55(!!vk && entries55(vk).join("|") === "\u2713 yes|\u00bd partly|\u2717 no|n/a not applicable",
+      `(g) a grid of marks under vendor names is not keyed yes / partly / no: ${JSON.stringify(vk && vk.text)}`);
+    const blankVendor = JSON.parse(JSON.stringify(vendor));
+    blankVendor.comparison.rows[1].cells[2] = "";
+    const bv = keyOf55(page55(blankVendor, 3));
+    A55(!!bv && entries55(bv).join("|").indexOf("\u00bd partly") >= 0, `(g) a blank cell made a grid of marks a grid of words: ${JSON.stringify(bv && bv.text)}`);
+    const vendorNa = { layout: "comparison", title: "Which CRM fits the team", comparison: { columns: ["HubSpot", "Pipedrive"], rows: [
+      { label: "Mobile app", cells: ["yes", "no"] }, { label: "On-prem option", cells: ["NA", "yes"] }] } };
+    const vn = page55(vendorNa, 3);
+    A55(!keyOf55(vn) && vn.elements.some((e: any) => e.kind === "text" && e.text === "n/a"),
+      "(g) a feature grid with n/a and no partial drew a key, or did not draw n/a");
+    const withTotal = half55(0, "");
+    withTotal.comparison.rows.push({ label: "SCORE", cells: ["2.5 / 6", "3 / 6", "1.5 / 6", "3 / 6"] });
+    withTotal.comparison.rows[0].cells[1] = "";
+    const wt = page55(withTotal, 16);
+    A55(!!keyOf55(wt) && wt.elements.filter((e: any) => e.kind === "text" && e.text === "\u00bd").length >= 10,
+      "(g) a scorecard with a SCORE row and a blank cell lost its \u00bd marks or its key");
+    // A reason written in one cell of a SCORECARD (6b836288's slide 18, for
+    // most of a day) does not turn the other halves back into letters.
+    const reason = half55(6, "");
+    reason.comparison.rows[5].cells[3] = "Can't assess from doc";
+    const rp = page55(reason, 17);
+    const rk = keyOf55(rp);
+    A55(!!rk && entries55(rk).join("|").indexOf("\u00bd partly met") >= 0 && !rp.elements.some((e: any) => e.kind === "text" && e.text === "P")
+      && rp.elements.some((e: any) => e.kind === "text" && e.text === "Can't assess from doc"),
+      `(g) a scorecard with one reason in a cell drew its partials as letters or lost its key: ${JSON.stringify(rk && rk.text)}`);
+  } catch (e: any) {
+    fail(`55 threw before finishing: ${e && e.stack ? e.stack : e}`);
+  }
+  if (failures === before55) {
+    pass(`a scorecard draws its partial mark as \u00bd and its own key for exactly the marks it shows, the preview reads the key's marks back,`
+      + ` and a key the model wrote is retired on write and on read, keeping every sentence that says anything else`);
+  }
+
+  /* ─────────────────────────────────────────────────────────────────────────
+   * 56. A TOTAL ON ANOTHER SLIDE IS RECOUNTED FROM THE SCORECARD'S MARKS
+   *     (Amrize, 3ec51a09, 2026-09-23)
+   *
+   * d1c7faf recounted a total ROW inside a scorecard. The model then moved the
+   * totals out of it: a bar chart of the source doc's own wrong totals (5.5,
+   * 6.5, 2.5, 9) captioned "recounted", and then a table — Article,
+   * Published, Our edit — whose "Our edit" column gave Meta data center 6.5 /
+   * 11 where slides 17-18 give 5.5. It reported the table "true on these
+   * numbers". scorecardTotalMismatches recounts a totals table or bar chart
+   * within two slides of a scorecard, labelled with its option names.
+   *
+   *   (a) THE LIVE SHAPE, through the real edit path: slide 19 patched from
+   *       the bar chart to the table, as the model did. The tool result names
+   *       "Our edit"'s Meta data center 6.5 / 11 against 5.5 (2 yes, 7
+   *       partial, 2 no, 1 n/a) — and nothing else: not the other three
+   *       options, which are right, and not the "Published" column, a score
+   *       of the live articles from another source, which is right to
+   *       disagree with today's marks.
+   *   (b) THE BAR CHART OF THE DOC'S OWN TOTALS, bare figures under a "Score
+   *       out of 12" axis — every bar its marks do not reach is named.
+   *   (c) A CHART OF SHARES: right percentages are silent; a wrong one is
+   *       named as a percentage of the checks.
+   *   (d) THE TABLE TURNED ROUND — options as the heads, "Before" and "After"
+   *       as the rows — is read the same way.
+   *   (e) SILENCE where the recount would be guessing: the recounted totals;
+   *       a "Published" column wrong everywhere beside a right "Our edit"; a
+   *       lone "Published" column agreeing nowhere; two unmarked totals tied;
+   *       a totals table three slides away; rows that are not the options;
+   *       scores on another scale (61 of 100); a stacked bar, whose segments
+   *       are parts, not totals; a bar chart of citations; and the stored
+   *       Amrize success-metrics table beside a scorecard. AND, from the
+   *       verifier's finding against the first cut, which reported every one
+   *       of these: a "Total AI citations" column, a "Key points" column, an
+   *       "AI visibility score" in percent, a lone "Current score" column of
+   *       the published scores; and beside a Yes/No vendor comparison, a "G2
+   *       score" table, a "Total seats" table and a "CSAT (out of 5)" chart
+   *       — the last also beside a grid with one "Partial" in it, whose five
+   *       rows its "out of 5" matches: 4.6 is a rating, not a count.
+   *       And right totals beside scorecards the first cut cut wrongly: the
+   *       published articles' marks and then the edited ones under the same
+   *       heads, with a right chart of the edit or a right bare "Score out of
+   *       11, before and after" table; halves split by a divider; halves
+   *       whose heads differ by "(draft)".
+   *   (f) THE SCORECARD IS FOUND WHOLE, so a wrong total is still found where
+   *       the first cut missed it: halves split by a divider, halves whose
+   *       heads differ by "(draft)" or by bold, and the edited scorecard
+   *       after a published one — each names Meta data center's 6.5 / 11
+   *       against 5.5, the edited marks alone, never a doubled tally.
+   *
+   * THE CORPUS: over all 106 stored drafts (47 conversations, 1,402 slides,
+   * 2026-09-23) the recount raises 7 notes, in 3 drafts, all Amrize and all
+   * true: the bar chart of the doc's totals (Denver 2.5 for 2, Meta 5.5 for
+   * 5, 10 Things 6.5 for 5.5) in the two drafts that carried it, and
+   * today's Meta data center 6.5 for 5.5. The draft plotting recounted
+   * percentages (17/42/46/77) is silent, as its marks at the time agree.
+   *
+   * MUTATION LOG (same worktree, same day, each mutant alone) — kills AND
+   * survivors:
+   *   killed  B1 the recount not reported → (a), (b), (c), (d).
+   *   killed  B2 the first total column checked, whichever the marks
+   *           describe → (a): "Published" reported for disagreeing with
+   *           today's marks; and (d), (e).
+   *   killed  B3 a lone column headed as another version checked, B4 a tie
+   *           resolved to the first column, B5 three slides away counted as
+   *           near, B6 every column a total (no gate), B8 a stacked bar's
+   *           segments read as totals → (e), each its own fixture.
+   *   killed  B7 a bare figure within the checks also accepted as a
+   *           percentage → (b): the doc chart's "9" passes as 9.1%, one yes
+   *           of eleven. The first cut of the recount shipped this leniency,
+   *           and (b) is where it was found.
+   *   killed  B10 the table turned round not read → (d).
+   *   killed  B11 n/a tallied as a no → (a), (c), (d), (e).
+   *   killed  B12 a chart's share shown without its % sign → (c).
+   *   SURVIVED B9 a fraction over another denominator judged anyway, on the
+   *           first run: no fixture carried one. Killed on the second by the
+   *           "Editor's score" column out of ten.
+   *   The patch-clearing mutant D1 (verify-slide-edit check 17) is also
+   *   killed here, by (a)'s precondition: the edit path must hand back slide
+   *   19 without its old chart.
+   * SECOND RUN, after the verifier's finding (detached worktree at c01300d
+   * plus this change, each mutant alone, restored after):
+   *   killed  B13 the run key compared byte for byte → (f): "(draft)" and
+   *           bold heads split the scorecard and Meta's 6.5 goes unnamed.
+   *   killed  B14 no slide skipped between halves → (f), the divider.
+   *   killed  B15 a repeated check not starting a new scorecard → (f): the
+   *           published and edited marks summed as one.
+   *   killed  B16 the scorecard gate removed → (e), the CSAT chart.
+   *   killed  B17 a named total judged without the marks describing it →
+   *           (e), the AI visibility score.
+   *   killed  B18 total, points and met back among the naming words → (e),
+   *           the Total internal links column — which survived until that
+   *           fixture existed: the majority gate hides the word list from
+   *           every fixture whose figures agree nowhere.
+   *   killed  B19 a claim to be a recount not read as explicit → (b2): the
+   *           stored doc chart, "out of 11" over twelve checks, no bar right.
+   *   killed  B20 "current" not another version → (e).
+   *   killed  B21 a series' own denominator not read as explicit → (b3).
+   *   killed  B22 a bare "Totals" title not naming a total → (c2), added
+   *           for it: no fixture carried one.
+   *   killed  B23 points not required to move in halves → (e), the CSAT
+   *           chart beside a vendor grid with one "Partial" in it — a case
+   *           found after the verifier's round, by asking what the partial
+   *           signal lets in.
+   * ───────────────────────────────────────────────────────────────────────── */
+  const before56 = failures;
+  console.log(`\n56. A total on another slide is recounted from the scorecard's marks`);
+  const A56 = (ok: boolean, m: string) => { if (!ok) fail(`56: ${m}`); };
+  const TOTALS19 = { columns: ["Article", "Published", "Our edit"], rows: [
+    ["Meta data center", "3.5 / 11", "6.5 / 11"], ["10 Things", "4.5 / 11", "5.5 / 11"],
+    ["Denver dam", "2 / 11", "4.5 / 11"], ["Obama Center", "Written to the brief", "5.5 / 11"]] };
+  const chat56 = async (slides: any[]) => {
+    const prepared = await prepareSlidesForBuild({ title: "Amrize workshop", slides: JSON.parse(JSON.stringify(slides)) }, null);
+    const built = splitOverflowingSlides(prepared.slides);
+    return deckWarnings(built, geometryNotes(validateDeck(built, "c56")));
+  };
+  const noteOf56 = (warn: string) => {
+    const at = warn.indexOf("does not match the marks");
+    return at < 0 ? "" : warn.slice(Math.max(0, warn.lastIndexOf("slide ", at)), at + 600);
+  };
+  const silent56 = (warn: string, what: string) => A56(warn.indexOf("does not match the marks") < 0, `(e) ${what} was reported: ${noteOf56(warn).slice(0, 300)}`);
+  const COVER56: any = { layout: "cover", title: "AI Search Content Workshop" };
+  // A one-column totals table: the options down the side, one figure each.
+  const col56 = (title: string, head: string, vals: string[], cols: string[] = COLS55) => ({ layout: "table", title,
+    table: { columns: ["Article", head], rows: cols.map((c, i) => [c, vals[i]]) } });
+  const pad56 = (n: number) => { const o: any[] = []; for (let i = 0; i < n; i++) o.push({ layout: "content", title: `Slide ${i + 2}`, body: "One point\nAnother point" }); return o; };
+  try {
+    const s17 = half55(0, ""), s18 = half55(6, NOTE18);
+    delete s17.note;
+    const score = (col: number) => { let t = 0; for (let r = 0; r < 12; r++) { const v = cells55(r)[col]; t += v === "Y" ? 1 : v === "P" ? 0.5 : 0; } return t; };
+    A56([0, 1, 2, 3].map(score).join(",") === "5.5,5.5,4.5,5.5", `precondition: the marks recount by hand to ${[0, 1, 2, 3].map(score).join(", ")}, not 5.5, 5.5, 4.5, 5.5`);
+
+    /* (a) THE LIVE SHAPE, THROUGH THE EDIT PATH. */
+    const barChart19: any = { layout: "bar-chart", title: "Recounted from the marks", chart: { series: [{ name: "Share of assessable checks met",
+      points: [{ label: "Denver dam", value: 41 }, { label: "Meta data center", value: 50 }, { label: "10 Things", value: 50 }, { label: "Obama Center (draft)", value: 50 }] }],
+      yAxisLabel: "Share of assessable checks met (%)", source: "Recounted from the Y/P/N marks on slides 17-18" } };
+    const stored56 = [COVER56].concat(pad56(15), [s17, s18, barChart19], pad56(3));
+    const restore56 = __setStoredDraftReader(async () => ({ draft: { title: "Amrize workshop", slides: JSON.parse(JSON.stringify(stored56)) }, couldNotLook: false }));
+    let edited: any = null;
+    try {
+      edited = await prepareSlidesForBuild({ slides: [], editSlide: { slideNumber: 19, layout: "table", title: "Our edits moved every article forward, and none is finished yet", table: TOTALS19 } },
+        `c56-stored-${process.pid}`, ["Replace slide 19 with a table (Article, Published, Our edit)"]);
+    } finally { restore56(); }
+    const deckA = splitOverflowingSlides(edited.slides);
+    A56(deckA.length === 22 && deckA[18].layout === "table" && deckA[18].chart === undefined,
+      `(a) precondition: slide 19 is not a table without its old chart (${deckA.length} slides, ${deckA[18] && deckA[18].layout})`);
+    const warnA = deckWarnings(deckA, geometryNotes(validateDeck(deckA, "c56a")));
+    const WANT56 = `slide 19's "Our edit" column does not match the marks on slides 17-18, counting a yes as 1 and a partial as a half:`
+      + ` "Meta data center" says "6.5 / 11" where its marks give 5.5 (2 yes, 7 partial, 2 no, 1 n/a).`;
+    A56(warnA.indexOf(WANT56) >= 0, `(a) the tool result does not name Meta data center's 6.5 / 11 against 5.5: ${noteOf56(warnA).slice(0, 400) || "(no note)"}`);
+    A56((warnA.match(/does not match the marks/g) || []).length === 1 && warnA.indexOf(`"10 Things" says`) < 0 && warnA.indexOf(`"Published"`) < 0,
+      `(a) more than Meta data center's total was reported: ${noteOf56(warnA).slice(0, 400)}`);
+
+    /* (b) THE BAR CHART OF THE DOC'S OWN TOTALS. */
+    const DOC56 = [["Meta data center", 5.5], ["10 Things", 6.5], ["Denver dam", 2.5], ["Obama Center", 9]];
+    const docChart = { layout: "bar-chart", title: "The four articles, scored", chart: { series: [{ name: "Score",
+      points: DOC56.map((p) => ({ label: p[0] as string, value: p[1] as number })) }], yAxisLabel: "Score out of 12", source: "Recounted from the marks" } };
+    const warnB = await chat56([COVER56, s17, s18, docChart]);
+    const wantB = [`"Meta data center" says "5.5" where its marks give 5.5`, `"10 Things" says "6.5" where its marks give 5.5`,
+      `"Denver dam" says "2.5" where its marks give 4.5`, `"Obama Center" says "9" where its marks give 5.5`];
+    A56(warnB.indexOf(`slide 4's chart "Score" does not match the marks on slides 2-3`) >= 0 && wantB.slice(1).every((w) => warnB.indexOf(w) >= 0)
+      && warnB.indexOf(wantB[0]) < 0,
+      `(b) the chart of the doc's totals is not reported bar by bar (Meta's 5.5 is right and must not be): ${noteOf56(warnB).slice(0, 500) || "(no note)"}`);
+
+    // (b2) THE STORED DOC CHART, AS IT WAS (6b836288, 12:16): "out of 11" over
+    // marks that score twelve, a reason in Obama's schema cell, no bar right —
+    // a chart that agrees nowhere, and says it is a recount of these marks.
+    const early = (from: number, rows: string[][]) => ({ layout: "comparison", title: `The 12-point checklist, scored: checks ${from + 1}-${from + 6}`,
+      comparison: { columns: COLS55, rows: rows.map((r, i) => ({ label: CHECKS55[from + i], cells: r })) } });
+    const e17 = early(0, [["P", "P", "N", "Y"], ["N", "N", "N", "Y"], ["N", "P", "N", "Y"], ["Y", "Y", "N", "Y"], ["P", "P", "N", "P"], ["P", "P", "P", "P"]]);
+    const e18 = early(6, [["Y", "Y", "Y", "Y"], ["Y", "N", "P", "Y"], ["N", "P", "N", "P"], ["N", "N", "N", "P"], ["P", "Y", "N", "N"], ["N", "N", "N", "Can't assess from doc"]]);
+    const e19 = { layout: "bar-chart", title: "Recounted from the marks: Obama scores highest before it's even live", chart: { series: [{
+      name: "Score out of 11 assessable checks (Y=1, P=0.5, schema excluded)", points: [{ label: "Denver dam", value: 2.5 }, { label: "Meta data center", value: 5.5 },
+        { label: "10 Things", value: 6.5 }, { label: "Obama Center (draft)", value: 9 }] }],
+      source: "Recounted from the Y/P/N marks in this deck, not copied from the source document's own totals, which did not add up." } };
+    const warnB2 = await chat56([COVER56, e17, e18, e19]);
+    A56([`"Denver dam" says "2.5" where its marks give 2`, `"Meta data center" says "5.5" where its marks give 5`, `"10 Things" says "6.5" where its marks give 5.5`]
+      .every((w) => warnB2.indexOf(w) >= 0) && warnB2.indexOf(`"Obama Center (draft)" says`) < 0,
+      `(b2) the stored doc chart captioned as a recount is not reported bar by bar: ${noteOf56(warnB2).slice(0, 500) || "(no note)"}`);
+
+    // (b3) The same chart with no claim to be a recount: its own axis, "out
+    // of 12", is this scorecard's denominator, and that alone makes it a sum
+    // of these marks.
+    const docChart3 = JSON.parse(JSON.stringify(docChart));
+    delete docChart3.chart.source;
+    const warnB3 = await chat56([COVER56, s17, s18, docChart3]);
+    A56(wantB.slice(1).every((w) => warnB3.indexOf(w) >= 0),
+      `(b3) a chart whose own axis gives this scorecard's denominator is not reported: ${noteOf56(warnB3).slice(0, 400) || "(no note)"}`);
+
+    /* (c) SHARES. 5.5 of 11 is 50%; 4.5 of 11 is 40.9%. */
+    const shares = (vals: number[]) => ({ layout: "bar-chart", title: "Share of the checks each article meets", chart: { series: [{ name: "Checks met",
+      points: COLS55.map((c, i) => ({ label: c, value: vals[i] })) }], yAxisLabel: "Share of assessable checks met (%)" } });
+    silent56(await chat56([COVER56, s17, s18, shares([50, 50, 41, 50])]), "a chart of right percentages");
+    // 46 would NOT do: it is 5.5 of 12, the share with the n/a check left in,
+    // which is a reading the recount accepts. 42 is no reading of these marks.
+    const warnC = await chat56([COVER56, s17, s18, shares([50, 42, 41, 50])]);
+    A56(warnC.indexOf(`"10 Things" says "42%" where its marks give 50% (5.5 of 11: 2 yes, 7 partial, 2 no, 1 n/a)`) >= 0,
+      `(c) a wrong share is not named as a percentage of the checks: ${noteOf56(warnC).slice(0, 300) || "(no note)"}`);
+
+    // (c2) A BARE FIGURE UNDER A SLIDE CALLED "TOTALS": the title names the
+    // column a total, and the marks describe it on three options of four.
+    const warnC2 = await chat56([COVER56, s17, s18, col56("Totals", "Our edit", ["5.5", "5.5", "4.5", "6"])]);
+    A56(warnC2.indexOf(`"Obama Center" says "6" where its marks give 5.5`) >= 0,
+      `(c2) a bare total under a slide titled Totals is not read: ${noteOf56(warnC2).slice(0, 300) || "(no note)"}`);
+
+    /* (d) THE TABLE TURNED ROUND. */
+    const turned = { layout: "table", title: "Before and after", table: { columns: ["Version"].concat(COLS55),
+      rows: [["Before", "3.5 / 11", "4.5 / 11", "2 / 11", "n/a"], ["After", "5.5 / 11", "5.5 / 11", "5 / 11", "5.5 / 11"]] } };
+    const warnD = await chat56([COVER56, s17, s18, turned]);
+    A56(warnD.indexOf(`slide 4's "After" row does not match the marks on slides 2-3`) >= 0 && warnD.indexOf(`"Denver dam" says "5 / 11" where its marks give 4.5`) >= 0
+      && warnD.indexOf(`"Before"`) < 0,
+      `(d) a totals table with the options as its heads is not read row by row: ${noteOf56(warnD).slice(0, 300) || "(no note)"}`);
+
+    /* (e) SILENCE. */
+    const right19 = { layout: "table", title: "Totals", table: { columns: ["Article", "Published", "Our edit"],
+      rows: [["Meta data center", "3.5 / 11", "5.5 / 11"], ["10 Things", "4.5 / 11", "5.5 / 11"], ["Denver dam", "2 / 11", "4.5 / 11"], ["Obama Center", "Written to the brief", "5.5 / 11"]] } };
+    silent56(await chat56([COVER56, s17, s18, right19]), "the recounted totals beside a Published column that disagrees with them");
+    const lonePublished = { layout: "table", title: "Where they started", table: { columns: ["Article", "Published"],
+      rows: [["Meta data center", "3.5 / 11"], ["10 Things", "4.5 / 11"], ["Denver dam", "2 / 11"]] } };
+    silent56(await chat56([COVER56, s17, s18, lonePublished]), "a lone Published column that agrees nowhere");
+    // Another rubric's score, out of ten: its denominator is not these
+    // checks', so it is not a sum of these marks, whatever it is headed.
+    silent56(await chat56([COVER56, s17, s18, { layout: "table", title: "The editor's own scores", table: { columns: ["Article", "Editor's score"],
+      rows: [["Meta data center", "7 / 10"], ["10 Things", "6 / 10"], ["Denver dam", "8 / 10"]] } }]), "a score out of ten, another rubric's denominator");
+    const tied = { layout: "table", title: "Two scorings", table: { columns: ["Article", "Draft A", "Draft B"],
+      rows: [["Meta data center", "5.5 / 11", "4 / 11"], ["10 Things", "3 / 11", "5.5 / 11"]] } };
+    silent56(await chat56([COVER56, s17, s18, tied]), "two unmarked totals tied on agreement");
+    silent56(await chat56([COVER56, s17, s18].concat(pad56(2), [{ layout: "table", title: "Totals", table: TOTALS19 }])), "a totals table three slides after the scorecard");
+    silent56(await chat56([COVER56, s17, s18, { layout: "table", title: "Other things", table: { columns: ["Market", "Score"],
+      rows: [["US", "6.5 / 11"], ["Canada", "2 / 11"]] } }]), "a table whose rows are not the scorecard's options");
+    silent56(await chat56([COVER56, s17, s18, { layout: "table", title: "Optimizer score", table: { columns: ["Article", "Score"],
+      rows: COLS55.map((c, i) => [c, String(55 + i * 3)]) } }]), "scores on another scale (out of 100)");
+    silent56(await chat56([COVER56, s17, s18, { layout: "stacked-bar", title: "Where the points come from", chart: { series: [
+      { name: "Met", points: COLS55.map((c) => ({ label: c, value: 7 })) }, { name: "Partly met", points: COLS55.map((c) => ({ label: c, value: 3 })) }] } }]),
+      "a stacked bar, whose segments are parts rather than totals");
+    silent56(await chat56([COVER56, s17, s18, { layout: "bar-chart", title: "AI citations per article", chart: { series: [{ name: "Citations",
+      points: COLS55.map((c, i) => ({ label: c, value: 3 + i })) }] } }]), "a bar chart of citations beside the scorecard");
+    silent56(await chat56([COVER56, s17, s18, { layout: "table", title: "What proves it worked: baselines and targets",
+      table: { columns: ["Metric", "Baseline", "3 mo", "6 mo", "12 mo"], rows: [
+        ["Organic traffic, US", "7,316", "8,800", "11,000", "15,000"], ["Total AI citations", "26", "80", "200", "500"],
+        ["Pages with FAQ schema", "0", "5", "20", "50"]] } }]), "the stored Amrize success-metrics table beside a scorecard");
+    A56(scorecardTotalMismatches([COVER56, s17, s18, { layout: "table", title: "Totals", table: TOTALS19 }] as any).length === 1,
+      "(e) precondition: the direct recount of the live table does not find exactly one total");
+    // The verifier's six, beside the Amrize scorecard or a vendor grid.
+    silent56(await chat56([COVER56, s17, s18, col56("AI citations by article", "Total AI citations", ["3", "7", "1", "0"])]), "a \"Total AI citations\" column");
+    silent56(await chat56([COVER56, s17, s18, col56("What each article covers", "Key points", ["4", "10", "3", "5"])]), "a \"Key points\" column");
+    silent56(await chat56([COVER56, s17, s18, col56("AI visibility by article", "AI visibility score", ["12%", "31%", "4%", "0%"])]), "an AI visibility score in percent");
+    // A total OF something else that happens to agree with the yes counts on
+    // three articles of four (2, 2, 0 — Obama's 3 is not its 1): "Total" is
+    // a word the heading uses, not a claim that these are the checks' sum.
+    silent56(await chat56([COVER56, s17, s18, col56("Internal links per article", "Total internal links", ["2", "2", "0", "3"])]), "a Total internal links column agreeing by coincidence");
+    silent56(await chat56([COVER56, s17, s18, col56("Where the articles stand", "Current score", ["3.5 / 11", "4.5 / 11", "2 / 11", "3 / 11"])]), "a lone Current score column of the published scores");
+    const VENDORS = ["Acme", "Globex", "Initech"];
+    const FEAT56 = { layout: "comparison", title: "Vendors compared", comparison: { columns: VENDORS, rows: [
+      { label: "SSO", cells: ["Yes", "Yes", "No"] }, { label: "API", cells: ["Yes", "No", "Yes"] }, { label: "Audit log", cells: ["Yes", "Yes", "Yes"] },
+      { label: "EU hosting", cells: ["No", "Yes", "No"] }, { label: "SLA", cells: ["Yes", "No", "No"] }] } };
+    silent56(await chat56([COVER56, FEAT56, col56("What users say", "G2 score", ["4.5", "4.2", "3.9"], VENDORS)]), "a G2 score table beside a vendor comparison");
+    silent56(await chat56([COVER56, FEAT56, { layout: "table", title: "Seats and price", table: { columns: ["Vendor", "Total seats", "Price"],
+      rows: [["Acme", "5", "$12k"], ["Globex", "3", "$9k"], ["Initech", "2", "$4k"]] } }]), "a Total seats table beside a vendor comparison");
+    silent56(await chat56([COVER56, FEAT56, { layout: "bar-chart", title: "Customer satisfaction score", chart: { series: [{ name: "CSAT (out of 5)",
+      points: [{ label: "Acme", value: 4.6 }, { label: "Globex", value: 4.1 }, { label: "Initech", value: 3.2 }] }] } }]), "a CSAT out of 5 chart beside a vendor comparison");
+    // The same, with one "Partial" in the grid: a partial mark is a
+    // scorecard's signal, the grid has five rows, and "out of 5" is its
+    // denominator — but 4.6 is no count of ticks.
+    const FEATP56 = JSON.parse(JSON.stringify(FEAT56)); FEATP56.comparison.rows[1].cells[1] = "Partial";
+    silent56(await chat56([COVER56, FEATP56, { layout: "bar-chart", title: "Customer satisfaction score", chart: { series: [{ name: "CSAT (out of 5)",
+      points: [{ label: "Acme", value: 4.6 }, { label: "Globex", value: 4.1 }, { label: "Initech", value: 3.2 }] }] } }]), "a CSAT out of 5 chart beside a vendor grid with a Partial in it");
+    // Right totals beside scorecards the first cut cut wrongly.
+    const published56 = (s: any) => { const x = JSON.parse(JSON.stringify(s)); x.title = "Published articles, scored: " + x.title;
+      x.comparison.rows.forEach((r: any, i: number) => { r.cells = r.cells.map((c: string, j: number) => (c === "n/a" ? c : ["N", "N", "P", "N", "Y"][(i + j) % 5])); }); return x; };
+    const B17 = published56(s17), B18 = published56(s18);
+    const shares56 = { layout: "bar-chart", title: "Share of checks met after our edit", chart: { series: [{ name: "Share met (%)",
+      points: COLS55.map((c, i) => ({ label: c, value: [50, 50, 41, 50][i] })) }] } };
+    silent56(await chat56([COVER56, B17, B18, s17, s18, shares56]), "a right chart of the edit after a published scorecard under the same heads");
+    const pubTally = [0, 1, 2, 3].map((col) => { let t = 0; for (let r = 0; r < 6; r++) { for (const h of [B17, B18]) { const v = h.comparison.rows[r].cells[col]; t += v === "Y" ? 1 : v === "P" ? 0.5 : 0; } } return t; });
+    silent56(await chat56([COVER56, B17, B18, s17, s18, { layout: "table", title: "Score out of 11, before and after", table: { columns: ["Article", "Published", "Our edit"],
+      rows: COLS55.map((c, i) => [c, String(pubTally[i]), ["5.5", "5.5", "4.5", "5.5"][i]]) } }]), "a right bare before-and-after table after two scorecards");
+    const divider56 = { layout: "section", title: "Checks 7-12" };
+    silent56(await chat56([COVER56, s17, divider56, s18, shares56]), "a right chart after halves split by a divider");
+    const draft17 = JSON.parse(JSON.stringify(s17)); draft17.comparison.columns = COLS55.slice(0, 3).concat(["Obama Center (draft)"]);
+    silent56(await chat56([COVER56, draft17, s18, col56("Share of checks met", "Share met", ["50%", "50%", "41%", "50%"])]), "a right percentage after halves whose heads differ by (draft)");
+
+    /* (f) THE SCORECARD IS FOUND WHOLE. */
+    const WRONG56 = { layout: "table", title: "Totals", table: TOTALS19 };
+    const META56 = `"Meta data center" says "6.5 / 11" where its marks give 5.5 (2 yes, 7 partial, 2 no, 1 n/a)`;
+    const bold18 = JSON.parse(JSON.stringify(s18)); bold18.comparison.columns = COLS55.map((c) => `**${c}**`);
+    const whole56: [string, any[]][] = [
+      ["halves split by a divider", [COVER56, s17, divider56, s18, WRONG56]],
+      ["heads differing by (draft)", [COVER56, draft17, s18, WRONG56]],
+      ["heads differing by bold", [COVER56, s17, bold18, WRONG56]],
+      ["the edited scorecard after a published one", [COVER56, B17, B18, s17, s18, WRONG56]],
+    ];
+    for (let w = 0; w < whole56.length; w++) {
+      const warnF = await chat56(whole56[w][1]);
+      A56(warnF.indexOf(META56) >= 0 && (warnF.match(/does not match the marks/g) || []).length === 1,
+        `(f) ${whole56[w][0]}: Meta data center's 6.5 / 11 is not named against the whole scorecard's 5.5, alone: ${noteOf56(warnF).slice(0, 300) || "(no note)"}`);
+    }
+  } catch (e: any) {
+    fail(`56 threw before finishing: ${e && e.stack ? e.stack : e}`);
+  }
+  if (failures === before56) {
+    pass(`a totals table or bar chart beside a scorecard is recounted from its marks and each wrong option named, in the column the marks describe,`
+      + ` and a before score, a tie, another scale, a stack of parts or a slide too far away is left alone`);
   }
 
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);

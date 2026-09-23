@@ -27,13 +27,16 @@
  *   is why 2 pins the POSITION and 3 pins the neighbours. "The deck grew" is
  *   not the same claim as "the slide went where it was asked for".
  */
-import { applyEditSlide, unrenderableSlides, normaliseSlide, insertableLayout, hubHasConnections, SlideCallRefusal, isSlideCallRefusal, blankSlideFaults } from "../lib/slides/edit";
+import { applyEditSlide, unrenderableSlides, normaliseSlide, insertableLayout, hubHasConnections, SlideCallRefusal, isSlideCallRefusal, blankSlideFaults,
+  layoutDrawsPayload, PAYLOAD_FIELDS, payloadsTakenBy } from "../lib/slides/edit";
 import { deleteSlide } from "../lib/slides/draft-edit";
 import { densityFromAsk, densityFromAsks, askOpening } from "../lib/slides/density-from-ask";
 import { prepareSlidesForBuild, recentUserAsks, __setStoredDraftReader, SLIDES_GEN_OPENAI_TOOL } from "../lib/ai/providers";
 import { DECK_ASK_WINDOW } from "../lib/slides/claim";
-import { stampDeckChrome, stampDensity, densityOf, splitOverflowingSlides } from "../lib/slides/generate";
-import { DEFAULT_DENSITY } from "../lib/slides/brand";
+import { stampDeckChrome, stampDensity, densityOf, splitOverflowingSlides, buildSlideRequests, deckWarnings } from "../lib/slides/generate";
+import { DEFAULT_DENSITY, LAYOUTS } from "../lib/slides/brand";
+import { readFileSync } from "fs";
+import { join } from "path";
 
 let failures = 0;
 const fail = (m: string) => { failures++; console.log(`  FAIL  ${m}`); };
@@ -1461,6 +1464,293 @@ try {
 }
 if (failures === before16) {
   pass("a new deck infers its density from the ask, and an edit, an insert, a reorder, a split, a full-deck resend and the publish all inherit it");
+}
+
+
+// ── 17. A PATCH THAT LANDS A PAYLOAD LAYOUT TAKES WHAT IT DOES NOT DRAW ─────
+//
+// WHY THIS EXISTS. 3ec51a09's slide 19 was patched from bar-chart to table on
+// 2026-09-23 and kept its `chart`: stored, never drawn, replayed into every
+// turn, and named on every build by the dropped-text warning — which the model
+// dismissed as "stale". It was stale, and a warning a model learns to dismiss
+// is one it will dismiss when it is true. So a patch that lands a layout drawn
+// from a payload of its own — in the enum, its payload present once the patch
+// is applied — clears every payload that layout does not draw, unless the
+// patch sends it again; the picture fields keep their own rules, and `note` —
+// drawn by every layout — is never cleared. What the slide was SHOWING and
+// lost is named in the tool result.
+//
+// THE FIRST CUT CLEARED ON EVERY LAYOUT PATCH, before the guards ran — a
+// verifier's finding, reproduced through prepareSlidesForBuild against
+// c01300d: "make slide 5 content" deleted a table c01300d refused to strand,
+// "photo-rail" deleted the Amrize gap cards and the warning naming them, and
+// "data-table", a name in no enum, deleted rows. All silent. (g) and (h) are
+// that finding, pinned.
+//
+// WHAT IS ASSERTED, on the shape of the result, never on "it did not throw":
+//   (a) the live patch — bar-chart to table — leaves the table and no chart,
+//       and every other slide byte-for-byte;
+//   (b) a payload the patch resends is kept, even one its layout never draws;
+//   (c) a patch that RESTATES the layout clears a stale payload already
+//       stored (the one call that can: a patch cannot send a payload as
+//       nothing), and a patch that names no layout clears nothing;
+//   (d) the picture brief and `note` survive, and a grid's resolved
+//       thumbnails go with its `images`;
+//   (e) THE TABLE IS MEASURED: for every layout and every payload field, the
+//       edit module's layoutDrawsPayload agrees with the builder — building
+//       the slide with and without the field gives different requests
+//       exactly when it says the layout draws it. That table decides what a
+//       patch may DELETE, so a guess in it would be a patch deleting what is
+//       on screen;
+//   (f) through the real edit path (prepareSlidesForBuild over a stored
+//       deck), the patched slide is stored without its chart and the tool
+//       result no longer names the chart's words as undrawn;
+//   (g) THE GUARDS STILL SPEAK, through the same path, exactly as at c01300d:
+//       a table patched to content, to the alias "bullets", to statement, or
+//       to a name outside the enum is REFUSED with the table kept; a
+//       comparison patched to an unknown name keeps its grid; the Amrize
+//       scorecard patched to content, and its gap cards patched to
+//       photo-rail, keep every mark and card, and the tool result names them
+//       as undrawn; a layout whose payload is missing is refused as blank;
+//   (h) WHAT A SLIDE WAS SHOWING AND LOST IS SAID: a panel beside prose moved
+//       to a table, a table replaced by a comparison, a strip under cards —
+//       each named once in prepareSlidesForBuild's notes, and every tool
+//       result that calls deckWarnings is handed them; the stale chart the
+//       clearing exists for (never drawn) and a patch that names no layout
+//       are not mentioned.
+//
+// MUTATION LOG (detached worktree at c01300d plus this change, 2026-09-23;
+// each mutant alone, restored and compared after) — kills AND survivors:
+//   killed  D1 the clearing loop doing nothing → (a), (c), (d), (f), and
+//           verify-slide-layouts 56(a).
+//   killed  D3 cleared only when the drawn layout CHANGES → (c) only: the
+//           restatement leaves the stale chart. (a) cannot see it, which is
+//           why (c) exists.
+//   killed  D4 `note` treated as a payload like the rest → (a), (d), (e).
+//   killed  D5 `panel` missing from dark-index in PAYLOAD_DRAWN_ALSO → (e):
+//           the builder draws it there.
+//   killed  D6 a grid's resolved thumbnails left behind with its `images`
+//           gone → (d).
+//   killed  D7 the raw layout name compared, so the alias "chart" reads as a
+//           layout drawing nothing → (c).
+//   SURVIVED D2 the loop's own resend test removed. EQUIVALENT: the payload
+//           copy that follows the loop re-applies every field the patch
+//           sends, so a resent chart cleared a line earlier is written back.
+//           The test is kept because it is the only guard if the clear is
+//           ever moved below the copy — (b) kills that version.
+// SECOND RUN (after the verifier's finding; detached worktree, each mutant
+// alone):
+//   killed  D8 clearing on every layout patch again (the first cut) → (d),
+//           (g): the table on a content patch deleted, not refused.
+//   killed  D11 payloadsTakenBy reporting nothing → (h).
+//   killed  D12 payloadsTakenBy naming payloads the old layout never drew →
+//           (h): the stale chart announced as removed.
+//   killed  D13 one tool result not handed the notes → (h), the wiring.
+//   SURVIVED D9 the known-name test removed. EQUIVALENT today: layoutOf sends
+//           an unknown name to content (cover at slide 1), and neither draws
+//           a payload, so nothing is cleared either way. Kept so that a
+//           fallback that one day draws something cannot start deleting.
+//   SURVIVED D10 the new layout's payload not required to be present.
+//           EQUIVALENT today: every layout drawn from a payload is refused as
+//           blank without it (measured over the enum), so the cleared slide
+//           is never stored. Kept so the clearing does not lean on a guard
+//           that runs after it.
+console.log("\n17. A patch that lands a payload layout takes what it does not draw, and says so");
+const before17 = failures;
+try {
+  const CHART17 = { series: [{ name: "Share of assessable checks met", points: [{ label: "Denver dam", value: 17 }, { label: "Meta data center", value: 42 }] }],
+    source: "Recounted from the Y/P/N marks on slides 17-18", yAxisLabel: "Share of assessable checks met (%)" };
+  const TABLE17 = { columns: ["Article", "Published", "Our edit"], rows: [["Meta data center", "3.5 / 11", "5.5 / 11"], ["Denver dam", "2 / 11", "4.5 / 11"]] };
+  const deck17 = (): any[] => {
+    const d = deck();
+    d[4] = { layout: "bar-chart", title: "Recounted from the marks", note: "One standard, out of 11.", chart: JSON.parse(JSON.stringify(CHART17)) };
+    return d;
+  };
+  // (a)
+  const before = deck17();
+  const a = applyEditSlide(before, { slideNumber: 5, layout: "table", title: "Our edits moved every article forward", table: TABLE17 });
+  if (a[4].layout !== "table" || !a[4].table) fail(`17a precondition: the patch did not land a table (${JSON.stringify(a[4]).slice(0, 120)})`);
+  if (a[4].chart !== undefined) fail("17a a bar chart patched to a table kept its `chart`: stored and never drawn");
+  if (a[4].note !== "One standard, out of 11.") fail(`17a the takeaway was lost with the chart: ${JSON.stringify(a[4].note)}`);
+  const others = a.filter((_: any, i: number) => i !== 4).map(withoutStep);
+  const origs = before.filter((_: any, i: number) => i !== 4).map(withoutStep);
+  if (JSON.stringify(others) !== JSON.stringify(origs)) fail("17a a patch to slide 5 changed another slide");
+  if (before[4].chart === undefined) fail("17a the input deck was mutated in place");
+  // (b)
+  const b = applyEditSlide(deck17(), { slideNumber: 5, layout: "table", table: TABLE17, chart: CHART17 });
+  if (!b[4].chart) fail("17b a chart the patch SENT, beside its layout, was cleared");
+  // (c)
+  const stale = deck();
+  stale[4] = { layout: "table", title: "Totals", table: TABLE17, chart: CHART17 };
+  const c = applyEditSlide(stale, { slideNumber: 5, layout: "table" });
+  if (c[4].chart !== undefined || !c[4].table) fail(`17c restating "table" did not clear the stale chart already stored (chart ${c[4].chart ? "kept" : "gone"}, table ${c[4].table ? "kept" : "gone"})`);
+  const alias = applyEditSlide(deck17(), { slideNumber: 5, layout: "chart" });
+  if (!alias[4].chart) fail("17c a patch naming the ALIAS \"chart\" (drawn as bar-chart) cleared the chart it draws");
+  const cStale = deck();
+  cStale[4] = { layout: "table", title: "Totals", table: TABLE17, chart: CHART17 };
+  const c2 = applyEditSlide(cStale, { slideNumber: 5, title: "Totals, recounted" });
+  if (!c2[4].chart) fail("17c a patch naming NO layout cleared a payload");
+  // (d)
+  const pic = deck();
+  pic[4] = { layout: "content", title: "Picture", body: "One", image: { query: "a roof" }, imageQuery: undefined,
+    panel: { title: "Panel", items: [{ title: "P1" }] }, note: "Keep me." };
+  const d1 = applyEditSlide(pic, { slideNumber: 5, layout: "table", table: TABLE17 });
+  if (d1[4].panel !== undefined) fail("17d a panel survived a move to a table, which draws none");
+  if (!d1[4].image || d1[4].image.query !== "a roof") fail("17d the picture brief was cleared as if it were a payload");
+  if (d1[4].note !== "Keep me.") fail("17d `note` was cleared: every layout draws it");
+  const grid = deck();
+  grid[4] = { layout: "image-grid", title: "Grid", images: [{ query: "a", caption: "A" }, { query: "b", caption: "B" }],
+    resolvedImages: [{ url: "a.jpg" }, { url: "b.jpg" }], imagesDropped: 1 };
+  const d2 = applyEditSlide(grid, { slideNumber: 5, layout: "table", table: TABLE17 });
+  if (d2[4].images !== undefined || d2[4].resolvedImages !== undefined || d2[4].imagesDropped !== undefined)
+    fail(`17d a grid moved to a table kept ${["images", "resolvedImages", "imagesDropped"].filter((k) => d2[4][k] !== undefined).join(", ")}`);
+  // Onto a layout drawn from words alone, nothing is cleared: the grid stays,
+  // undrawn, for the tool result to name (g).
+  const d3 = applyEditSlide(grid, { slideNumber: 5, layout: "content", body: "Now prose" });
+  if (!d3[4].images || !d3[4].resolvedImages) fail("17d a grid moved to content, which draws no payload of its own, was cleared");
+  // (e) MEASURED.
+  const FIX17: any = {
+    cards: [{ title: "Card one title", body: "Card one body words" }, { title: "Card two title", body: "Card two body words" }],
+    stats: [{ value: "42%", label: "Stat label one" }, { value: "7x", label: "Stat label two" }],
+    chart: { series: [{ name: "Series", points: [{ label: "Alpha", value: 3 }, { label: "Beta", value: 5 }] }], source: "Chart source line" },
+    swot: { strengths: ["S one"], weaknesses: ["W one"], opportunities: ["O one"], threats: ["T one"] },
+    matrix: { xAxis: ["Low x", "High x"], yAxis: ["Low y", "High y"], items: [{ label: "Item one", x: 0.2, y: 0.8 }] },
+    comparison: { columns: ["A", "B"], rows: [{ label: "Row one", cells: ["yes", "no"] }] },
+    table: { columns: ["Name", "Value"], rows: [["Row one", "1"], ["Row two", "2"]] },
+    scatter: { xAxis: "X axis", yAxis: "Y axis", points: [{ x: 1, y: 2, label: "Point one" }, { x: 2, y: 3, label: "Point two" }] },
+    venn: { sets: [{ label: "Set one" }, { label: "Set two" }], overlap: "Overlap words" },
+    milestones: [{ date: "1 Jan", title: "Milestone one" }, { date: "2 Feb", title: "Milestone two" }],
+    tracks: [{ name: "Track one", phases: [{ start: "2026-01-01", end: "2026-02-01", label: "Phase one" }] }],
+    stages: [{ name: "Stage one", caption: "Stage one caption" }, { name: "Stage two", caption: "Stage two caption" }, { name: "Stage three", caption: "Three" }],
+    logos: [{ name: "Logo one" }, { name: "Logo two" }],
+    quote: { text: "A quotation long enough to be drawn", name: "Quote Person" },
+    images: [{ caption: "Image one caption" }, { caption: "Image two caption" }],
+    layers: [{ title: "Layer one", caption: "Layer one caption" }, { title: "Layer two", caption: "Layer two caption" }],
+    hub: { title: "Hub centre", groups: [{ name: "Group one", items: [{ title: "Node one" }, { title: "Node two" }] }] },
+    panel: { title: "Panel title words", items: [{ title: "Panel item one", text: "Panel text" }] },
+    strip: { title: "Strip title words", items: [{ title: "Strip item one", text: "Strip text" }] },
+    tones: ["coral", "teal"],
+    note: "A takeaway sentence for the foot of the slide.",
+    columns: { left: "Left head", right: "Right head" },
+  };
+  const missingFix = PAYLOAD_FIELDS.filter((f) => FIX17[f] === undefined);
+  if (missingFix.length) fail(`17e precondition: no fixture for ${missingFix.join(", ")} — a payload field the measurement cannot test`);
+  const reqs17 = (s: any) => JSON.stringify(buildSlideRequests(s, 3, "m17")).replace(/"(?:page)?[oO]bjectId":"[^"]*"/g, "");
+  const wrong17: string[] = [];
+  let measured = 0;
+  for (let l = 0; l < LAYOUTS.length; l++) {
+    const L = LAYOUTS[l];
+    const base: any = { layout: L, title: "A title", subtitle: "A standfirst line", body: "One\nTwo", bodyRight: "Three\nFour" };
+    let own = "";
+    for (let f = 0; f < PAYLOAD_FIELDS.length; f++) if (layoutDrawsPayload(L, PAYLOAD_FIELDS[f]) && PAYLOAD_FIELDS[f] !== "note" && ["panel", "strip", "tones", "columns"].indexOf(PAYLOAD_FIELDS[f]) < 0) own = PAYLOAD_FIELDS[f];
+    if (own) base[own] = FIX17[own];
+    if (L === "image-grid") base.resolvedImages = [{ url: "p.jpg", caption: "Image one caption" }, { url: "p.jpg", caption: "Image two caption" }];
+    let without = "";
+    try { without = reqs17(base); } catch (e: any) { wrong17.push(`${L} does not build: ${e.message}`); continue; }
+    for (let f = 0; f < PAYLOAD_FIELDS.length; f++) {
+      const F = PAYLOAD_FIELDS[f];
+      if (F === own) {
+        // Its own payload: drawn, by construction — asked of the builder all
+        // the same, against the slide without it.
+        const bare = { ...base };
+        delete bare[F];
+        // A grid draws the thumbnails resolution made FROM `images`; the
+        // brief and what it resolved to go together, as a patch clears them.
+        if (F === "images") delete bare.resolvedImages;
+        let differs = false;
+        try { differs = reqs17(bare) !== without; } catch { differs = true; }
+        if (!differs) wrong17.push(`${L} draws nothing from its own \`${F}\``);
+        measured++;
+        continue;
+      }
+      let drawn = false;
+      try { drawn = reqs17({ ...base, [F]: FIX17[F] }) !== without; } catch (e: any) { wrong17.push(`${L} + ${F} throws: ${e.message}`); continue; }
+      measured++;
+      if (drawn !== layoutDrawsPayload(L, F)) wrong17.push(`${L} ${drawn ? "DRAWS" : "does not draw"} \`${F}\` and layoutDrawsPayload says it ${drawn ? "does not" : "does"}`);
+    }
+  }
+  if (measured < LAYOUTS.length * PAYLOAD_FIELDS.length) fail(`17e only ${measured} of ${LAYOUTS.length * PAYLOAD_FIELDS.length} layout-field pairs were measured`);
+  if (wrong17.length) fail(`17e the payload table disagrees with the builder: ${wrong17.slice(0, 6).join("; ")}`);
+  // (f) THE REAL EDIT PATH.
+  const conv17 = `verify-payload-clear-${process.pid}`;
+  const stored17 = deck17();
+  const restore17 = __setStoredDraftReader(async () => ({ draft: { title: "Amrize", slides: JSON.parse(JSON.stringify(stored17)) }, couldNotLook: false }));
+  try {
+    const out = await prepareSlidesForBuild({ slides: [], editSlide: { slideNumber: 5, layout: "table", table: TABLE17 } }, conv17, ["Replace slide 5 with a table"]);
+    const s5 = out.slides[4];
+    if (s5.chart !== undefined || s5.layout !== "table") fail(`17f the stored deck's slide 5 kept its chart through prepareSlidesForBuild (${s5.layout}, chart ${s5.chart ? "kept" : "gone"})`);
+    const warn = deckWarnings(splitOverflowingSlides(out.slides));
+    if (warn.indexOf("Share of assessable checks met") >= 0 || /slide 5 carries text its table layout never draws/.test(warn))
+      fail(`17f the tool result still names the old chart's words as undrawn: ${warn.slice(warn.indexOf("Notes:"), warn.indexOf("Notes:") + 240)}`);
+  } finally { restore17(); }
+
+  // (g) THE GUARDS STILL SPEAK, through the real path.
+  const through17 = async (stored: any[], editSlide: any, tag: string): Promise<{ refused: string; out: any }> => {
+    const restore = __setStoredDraftReader(async () => ({ draft: { title: "Amrize", slides: JSON.parse(JSON.stringify(stored)) }, couldNotLook: false }));
+    try {
+      return { refused: "", out: await prepareSlidesForBuild({ slides: [], editSlide }, `verify-17g-${tag}-${process.pid}`, ["Change slide 5"]) };
+    } catch (e: any) {
+      if (!isSlideCallRefusal(e)) throw e;
+      return { refused: String(e.message), out: null };
+    } finally { restore(); }
+  };
+  const with5 = (s5: any) => { const d = deck(); d[4] = JSON.parse(JSON.stringify(s5)); return d; };
+  const TABLE5 = { layout: "table", title: "Totals", table: TABLE17 };
+  const strand = ["content", "bullets", "statement", "data-table"];
+  for (let i = 0; i < strand.length; i++) {
+    const r = await through17(with5(TABLE5), { slideNumber: 5, layout: strand[i], ...(strand[i] === "statement" ? { title: "Every article moved" } : {}) }, strand[i]);
+    if (!/carries a table its layout cannot draw/.test(r.refused))
+      fail(`17g a table patched to "${strand[i]}" was not refused as a stranded table (${r.refused ? r.refused.slice(0, 90) : `stored as ${r.out && JSON.stringify(r.out.slides[4]).slice(0, 120)}`})`);
+  }
+  const CMP17 = { columns: ["Meta data center", "10 Things"], rows: [{ label: "1. Title tag", cells: ["P", "Y"] }, { label: "2. Meta description", cells: ["Y", "N"] }] };
+  const unknown = await through17(with5({ layout: "comparison", title: "The checklist, scored", comparison: CMP17 }), { slideNumber: 5, layout: "scorecard" }, "unknown");
+  if (!unknown.out || !unknown.out.slides[4].comparison) fail(`17g a comparison patched to a name outside the enum lost its grid (${unknown.refused.slice(0, 90) || JSON.stringify(unknown.out.slides[4]).slice(0, 120)})`);
+  const toContent = await through17(with5({ layout: "comparison", title: "The checklist, scored", comparison: CMP17 }), { slideNumber: 5, layout: "content", imageQuery: "a checklist on a desk" }, "content");
+  const warnG = toContent.out ? deckWarnings(splitOverflowingSlides(toContent.out.slides)) : "";
+  if (!toContent.out || !toContent.out.slides[4].comparison || !/slide 5 carries text its content layout never draws — [^.]*"1\. Title tag"/.test(warnG))
+    fail(`17g the scorecard patched to content lost its marks, or the tool result stopped naming them: ${warnG.slice(warnG.indexOf("slide 5"), warnG.indexOf("slide 5") + 160) || toContent.refused.slice(0, 90)}`);
+  const CARDS17 = [{ title: "No FAQ schema", body: "Zero of three published articles have one." }, { title: "No meta description", body: "None of the three carry one." }];
+  const toRail = await through17(with5({ layout: "cards", title: "Three gaps", cards: CARDS17 }), { slideNumber: 5, layout: "photo-rail", imageQuery: "a construction site" }, "rail");
+  const warnR = toRail.out ? deckWarnings(splitOverflowingSlides(toRail.out.slides)) : "";
+  if (!toRail.out || !Array.isArray(toRail.out.slides[4].cards) || !/slide 5 carries text its photo-rail layout never draws/.test(warnR))
+    fail(`17g gap cards patched to photo-rail were deleted, or the tool result stopped naming them: ${warnR.slice(warnR.indexOf("slide 5"), warnR.indexOf("slide 5") + 160) || toRail.refused.slice(0, 90)}`);
+  const noPayload = await through17(with5(TABLE5), { slideNumber: 5, layout: "comparison" }, "blank");
+  if (!/would be drawn blank/.test(noPayload.refused)) fail(`17g a table patched to comparison with no grid was not refused as blank (${noPayload.refused.slice(0, 90) || "stored"})`);
+
+  // (h) WHAT A SLIDE WAS SHOWING AND LOST IS SAID.
+  const PANEL17 = { title: "Why it matters", items: [{ title: "Point A", text: "Detail A" }] };
+  const said: [string, any, any, RegExp][] = [
+    ["a panel beside prose moved to a table", { layout: "content", title: "Prose", body: "One", panel: PANEL17 }, { slideNumber: 5, layout: "table", table: TABLE17 }, /^slide 5's panel was removed with the change to the table layout/],
+    ["a table replaced by a comparison", TABLE5, { slideNumber: 5, layout: "comparison", comparison: CMP17 }, /^slide 5's table was removed with the change to the comparison layout/],
+    ["a strip under cards moved to a table", { layout: "cards", title: "Gaps", cards: CARDS17, strip: { title: "Strip", items: [{ title: "x" }] } }, { slideNumber: 5, layout: "table", table: TABLE17 }, /^slide 5's cards and strip were removed/],
+  ];
+  for (let i = 0; i < said.length; i++) {
+    const r = await through17(with5(said[i][1]), said[i][2], `said${i}`);
+    const notes: string[] = (r.out && r.out.notes) || [];
+    if (notes.length !== 1 || !said[i][3].test(notes[0])) fail(`17h ${said[i][0]}: the tool result was handed ${JSON.stringify(notes)}`);
+  }
+  const staleStored = with5({ layout: "table", title: "Totals", table: TABLE17, chart: CHART17 });
+  const quiet = await through17(staleStored, { slideNumber: 5, layout: "table" }, "quiet");
+  if (!quiet.out || quiet.out.slides[4].chart !== undefined || (quiet.out.notes || []).length)
+    fail(`17h the stale chart (never drawn) was not cleared in silence: ${JSON.stringify(quiet.out && quiet.out.notes)}`);
+  const noLayout = await through17(staleStored, { slideNumber: 5, title: "Totals, recounted" }, "nolayout");
+  if (!noLayout.out || (noLayout.out.notes || []).length) fail(`17h a patch naming no layout reported a removal: ${JSON.stringify(noLayout.out && noLayout.out.notes)}`);
+  if (payloadsTakenBy(deck(), deck(), { insertAfter: 2, insertSlides: [{ layout: "content", title: "x" }] }).length)
+    fail("17h an insert was reported as taking payloads off a slide");
+  // AND EVERY TOOL RESULT IS HANDED THEM. The four chains each build their
+  // own result string; a chain that passes deckWarnings only the geometry
+  // is a chain whose model is never told. Read off the source because the
+  // results are assembled inside the streaming routes, which need a live
+  // model to reach — the notes themselves are asserted on the real path above.
+  const provSrc17 = readFileSync(join(__dirname, "..", "lib", "ai", "providers.ts"), "utf8");
+  const calls17 = provSrc17.match(/deckWarnings\(draft\.slides, [^)]*\)[^)]*\)/g) || [];
+  if (calls17.length < 4 || calls17.some((c) => c.indexOf("prepared.notes") < 0))
+    fail(`17h not every tool result hands deckWarnings the removal notes (${calls17.length} results: ${calls17.filter((c) => c.indexOf("prepared.notes") < 0).join(" | ").slice(0, 200)})`);
+} catch (e: any) {
+  fail(`17 threw: ${String(e?.stack || e).slice(0, 300)}`);
+}
+if (failures === before17) {
+  pass("a patch that lands a payload layout takes the payloads it does not draw and says what the slide lost, keeps what it resends, the picture and the takeaway; a patch onto words alone or an unknown name clears nothing and the guards speak as before; and the table of what each layout draws is the builder's own answer");
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
