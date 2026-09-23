@@ -29,8 +29,9 @@
  * goes red. A check that silently tests nothing passes just as loudly as one
  * that works, so this one proves its own preconditions before trusting itself.
  */
-import { MODEL_REGISTRY, getModelInfo } from "../lib/ai/providers";
-import { MODEL_COSTS, calculateCostTenths, RATES_VERIFIED_ON, RATE_EXPIRIES } from "../lib/ai/model-costs";
+import { MODEL_REGISTRY, getModelInfo, FALLBACK_MODEL, OPENAI_IMAGE_MODEL, OPENAI_IMAGE_FALLBACK_MODEL } from "../lib/ai/providers";
+import { MODEL_COSTS, calculateCostTenths, RATES_VERIFIED_ON, RATE_EXPIRIES, MODEL_SHUTDOWNS } from "../lib/ai/model-costs";
+import { CHEAP_MODEL } from "../lib/ai/cheap-model";
 import { AI_MODELS, getModelLabel } from "../lib/ai/models";
 import { FAST_MODEL, REASONING_MODEL, GROUNDED_MODEL } from "../lib/ai/auto-router";
 
@@ -187,6 +188,71 @@ for (let i = 0; i < RATE_EXPIRIES.length; i++) {
   else ok(v.message);
 }
 
+// ── 7. Nothing the app sends is past its shutdown ───────────────────────
+// A rate table cannot see a shutdown: the id keeps its correct price up to the
+// day every call 404s. Everything the app SENDS is gathered from the live
+// constants — imported, not retyped — and held against the dated table.
+type Shutdown = (typeof MODEL_SHUTDOWNS)[number];
+type ShutdownVerdict = { state: "dead" | "soon" | "fine"; message: string };
+export function shutdownVerdict(todayIso: string, sd: Shutdown, sentBy: string[]): ShutdownVerdict {
+  if (!sentBy.length) return { state: "fine", message: `${sd.model} shuts down ${sd.from}; nothing sends it` };
+  const days = Math.ceil((Date.parse(sd.from) - Date.parse(todayIso)) / 86_400_000);
+  if (todayIso >= sd.from) {
+    return { state: "dead", message: `${sd.model} was shut down on ${sd.from} and is still sent by ${sentBy.join(", ")} — move to ${sd.replacedBy} (${sd.source})` };
+  }
+  return days <= 30
+    ? { state: "soon", message: `${sd.model} shuts down in ${days} day(s), on ${sd.from}, and is still sent by ${sentBy.join(", ")} — move to ${sd.replacedBy}` }
+    : { state: "fine", message: `${sd.model} shuts down ${sd.from} (${days} days); sent by ${sentBy.join(", ")}` };
+}
+/** Every wire model the app can send, with who sends it. */
+function sentModels(): Record<string, string[]> {
+  const sent: Record<string, string[]> = {};
+  const add = (model: string, by: string) => { (sent[model] = sent[model] || []).push(by); };
+  for (let i = 0; i < registryIds.length; i++) add(MODEL_REGISTRY[registryIds[i]].apiModel, `registry:${registryIds[i]}`);
+  add(CHEAP_MODEL, "CHEAP_MODEL");
+  add(FALLBACK_MODEL, "FALLBACK_MODEL");
+  add(OPENAI_IMAGE_MODEL, "OPENAI_IMAGE_MODEL");
+  add(OPENAI_IMAGE_FALLBACK_MODEL, "OPENAI_IMAGE_FALLBACK_MODEL");
+  return sent;
+}
+console.log("\nNothing the app sends is past a dated shutdown");
+const sent = sentModels();
+const before7 = failures;
+for (let i = 0; i < MODEL_SHUTDOWNS.length; i++) {
+  const sd = MODEL_SHUTDOWNS[i];
+  const v = shutdownVerdict(todayIso, sd, sent[sd.model] || []);
+  if (v.state === "dead") fail(v.message);
+  else if (v.state === "soon") console.log(`  NOTE ${v.message}`);
+}
+if (failures === before7) ok(`${MODEL_SHUTDOWNS.length} dated shutdowns, none reached by anything the app sends`);
+
+// ── 8. A retired id resolves to a slug something LIVE also sends ────────
+// Check 2 skips legacy entries' prices on purpose, and that left their
+// DESTINATIONS unchecked: gemini-2.5-pro pointed at the bare "gemini-3-flash",
+// a slug the API does not know, and a saved preference 404'd on every turn.
+// So a legacy apiModel must be one a live (non-legacy) entry sends — which
+// keeps it exercised by everything that tests live entries — or be named here
+// with the reason it is known to still answer.
+const STILL_SERVED: Record<string, string> = {
+  "claude-opus-4-8": "Anthropic legacy list, retires not sooner than 2027-05-28 (platform.claude.com, 2026-09-23); kept for threads mid-flight on its thinking-off profile",
+  "grok-4.3": "a current xAI model with no deprecation (docs.x.ai, 2026-09-23); kept so saved Grok 4.3 preferences keep what they chose",
+};
+export function strandedLegacy(registry: Record<string, { apiModel: string; legacy?: boolean }>, stillServed: Record<string, string>): string[] {
+  const live: Record<string, boolean> = {};
+  const keys = Object.keys(registry);
+  for (let i = 0; i < keys.length; i++) if (!registry[keys[i]].legacy) live[registry[keys[i]].apiModel] = true;
+  const out: string[] = [];
+  for (let i = 0; i < keys.length; i++) {
+    const e = registry[keys[i]];
+    if (e.legacy && !live[e.apiModel] && !stillServed[e.apiModel]) out.push(`${keys[i]} → ${e.apiModel}`);
+  }
+  return out;
+}
+console.log("\nEvery retired id lands on a slug a live entry also sends");
+const stranded = strandedLegacy(MODEL_REGISTRY as any, STILL_SERVED);
+for (let i = 0; i < stranded.length; i++) fail(`${stranded[i]} — no live entry sends this slug; confirm it answers, then add it to STILL_SERVED with the source`);
+if (!stranded.length) ok("no retired id is stranded on a slug nothing live sends");
+
 // ── Self-test ───────────────────────────────────────────────────────────
 // Prove the detectors go red, without mutating a repo file. Break-test-restore
 // in a shared working tree already shipped one deliberate break to production
@@ -240,6 +306,20 @@ if (process.argv.indexOf("--self-test") >= 0) {
         /UNPUBLISHED/.test(expiryVerdict("2027-01-01", open, anyRow).message));
     }
   }
+
+  // The shutdown check, driven past its own date on a real entry.
+  const img = MODEL_SHUTDOWNS.filter((e) => e.model === "gpt-image-1")[0];
+  if (!img) { selfFails++; console.log("  FAIL no dated gpt-image-1 shutdown to test against"); }
+  else {
+    st("a sent model past its shutdown", shutdownVerdict("2026-10-23", img, ["OPENAI_IMAGE_FALLBACK_MODEL"]).state === "dead");
+    st("the 30-day shutdown notice", shutdownVerdict("2026-10-01", img, ["OPENAI_IMAGE_FALLBACK_MODEL"]).state === "soon");
+    st("a shutdown nothing sends is not a failure", shutdownVerdict("2027-01-01", img, []).state === "fine");
+  }
+  // The stranded-legacy check, against the exact entry that 404'd.
+  st("a retired id pointing at a slug nothing live sends (the gemini-2.5-pro bug)",
+    strandedLegacy({ "gemini-3.8-flash": { apiModel: "gemini-3.8-flash" }, "gemini-2.5-pro": { apiModel: "gemini-3-flash", legacy: true } }, {}).length === 1);
+  st("a retired id on a live slug is fine",
+    strandedLegacy({ "gemini-3.8-flash": { apiModel: "gemini-3.8-flash" }, "gemini-2.5-pro": { apiModel: "gemini-3.8-flash", legacy: true } }, {}).length === 0);
 
   // The real assertion behind check 1: Luna priced as Luna, not as Sonnet.
   const lunaPerM = calculateCostTenths("gpt-5-6-luna", 1_000_000, 0) / 1000; // tenths of a cent → dollars

@@ -197,6 +197,14 @@ const CHART_COLORS: Record<string, string> = {
   "dall-e-3": "#A78BFA",
   "gemini-3-flash": "#EC4899",
   "gemini-3.1-flash-lite": "#F472B6",
+  // The 2026-09-23 line-up, in its predecessors' shades.
+  "grok-4-7": "#0369A1",
+  "grok-4.7": "#0369A1",
+  "claude-opus-5-5": "#9C3408",
+  "claude-fable-5-1": "#7C2D12",
+  "gpt-6-luna": "#6EE7B7",
+  "gpt-6-sol": "#047857",
+  "gemini-3.8-flash": "#DB2777",
 };
 const DEFAULT_CHART_COLORS = ["#6366F1", "#8B5CF6", "#06B6D4", "#14B8A6", "#F59E0B", "#EF4444", "#84CC16", "#E879F9"];
 
@@ -216,6 +224,12 @@ const MODEL_COLORS: Record<string, string> = {
   "gpt-4o": "bg-green-500",
   "gpt-4o-mini": "bg-green-400",
   "grok-4-1-fast": "bg-slate-600",
+  "grok-4-7": "bg-slate-700",
+  "claude-opus-5-5": "bg-orange-700",
+  "claude-fable-5-1": "bg-orange-800",
+  "gpt-6-luna": "bg-green-300",
+  "gpt-6-sol": "bg-green-600",
+  "gemini-3.8-flash": "bg-blue-500",
   "grok-3-mini": "bg-slate-500",
   "grok-3": "bg-slate-400",
 };
@@ -644,7 +658,7 @@ function ContextTab({ workspaceId }: { workspaceId: string }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  const [aiModel, setAiModel] = useState("grok-4-1-fast");
+  const [aiModel, setAiModel] = useState("auto");
   const [availableModels, setAvailableModels] = useState<AIModel[]>([]);
   const [contextConfig, setContextConfig] = useState<ContextConfig>({
     contracts: "summary",
@@ -757,7 +771,7 @@ function ContextTab({ workspaceId }: { workspaceId: string }) {
                     </option>
                   ))
                 ) : (
-                  <option value="grok-4-1-fast">Grok 4 Fast — xAI</option>
+                  <option value="auto">EngineAI Auto</option>
                 )}
               </select>
               <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />

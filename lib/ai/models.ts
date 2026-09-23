@@ -4,18 +4,32 @@
  * Keep in sync with MODEL_REGISTRY in lib/ai/providers.ts.
  */
 
+/**
+ * The picker: one model per job, each the best price/performance for it as
+ * this app actually runs it (re-chosen 2026-09-23 — Artificial Analysis
+ * Intelligence Index v4.3.2, provider pricing pages, and live probes):
+ *
+ *   Opus 5.5    51.2 at $4/$20 — the quality pick. Scores what Fable 5.1 does
+ *               for 40% of the price, and beats GPT-6 Astra.
+ *   Sonnet 5    the CAPABILITY pick, not a quality one: native PDF, the only
+ *               chain Gmail is registered on (by contract), reliable image
+ *               calls, web_search. ~23 as run here (thinking disabled).
+ *   Grok 4.7    46.3 at $2/$6 — the workhorse, and the auto default.
+ *   Gemini 3.8  39.8 at $0.75/$3.75, 1M context. Registers no generation
+ *   Flash       tools (no decks, documents, images or charts).
+ *   GPT-6 Luna  18.3 at $0.10/$0.50 — the cheapest leg, simple queries.
+ *
+ * Retired the same day (still resolvable — see MODEL_REGISTRY): Fable 5 and
+ * 5.1, Opus 5, Haiku 4.5, GPT-6 Astra (cannot run with tools on this chain),
+ * GPT-5.6 Terra, Grok 4.6, Grok 4.3 and the Grok 4.3 Fast slot.
+ */
 export const AI_MODELS = [
   { id: "auto", label: "EngineAI Auto", provider: "auto", description: "Best model for each query" },
-  { id: "claude-fable-5", label: "Claude Fable 5", provider: "anthropic", description: "Anthropic's most powerful model" },
-  { id: "claude-opus-5", label: "Claude Opus 5", provider: "anthropic", description: "Complex agentic work, code & analysis" },
+  { id: "claude-opus-5-5", label: "Claude Opus 5.5", provider: "anthropic", description: "Complex agentic work, code & analysis" },
   { id: "claude-sonnet-5", label: "Claude Sonnet 5", provider: "anthropic", description: "Complex reasoning & analysis" },
-  { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", provider: "anthropic", description: "Fast, cheap Claude" },
-  { id: "gpt-6-astra", label: "GPT-6 Astra", provider: "openai", description: "OpenAI's most capable — premium" },
-  { id: "gpt-5-6-terra", label: "GPT-5.6 Terra", provider: "openai", description: "OpenAI's balanced model" },
-  { id: "grok-4-1-fast", label: "Grok 4.3 Fast", provider: "xai", description: "Cheapest — simple queries only" },
-  { id: "grok-4-6", label: "Grok 4.6", provider: "xai", description: "xAI's flagship — most capable" },
-  { id: "grok-4-3", label: "Grok 4.3", provider: "xai", description: "Strong and cheaper than 4.6" },
+  { id: "grok-4-7", label: "Grok 4.7", provider: "xai", description: "xAI's flagship — most capable" },
   { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", provider: "gemini", description: "Fast, cheap, 1M context" },
+  { id: "gpt-6-luna", label: "GPT-6 Luna", provider: "openai", description: "Cheapest — simple queries only" },
 ] as const;
 
 /**
@@ -85,6 +99,20 @@ const LEGACY_MODEL_LABELS: Record<string, string> = {
   // Superseded by gemini-3.8-flash. The label stays so historic messages and
   // saved preferences still render a name rather than a raw id.
   "gemini-3-flash": "Gemini 3 Flash",
+  // Retired from the picker 2026-09-23 (see AI_MODELS). True labels: a past
+  // answer is captioned with the model that wrote it, not its successor.
+  "claude-fable-5": "Claude Fable 5",
+  "claude-fable-5-1": "Claude Fable 5.1",
+  "claude-opus-5": "Claude Opus 5",
+  "claude-haiku-4-5": "Claude Haiku 4.5",
+  "gpt-6-astra": "GPT-6 Astra",
+  "gpt-6-sol": "GPT-6 Sol",
+  "gpt-5-6-terra": "GPT-5.6 Terra",
+  "grok-4-1-fast": "Grok 4.3 Fast",
+  "grok-4-6": "Grok 4.6",
+  "grok-4-3": "Grok 4.3",
+  // Wire slug of the current workhorse, for rows logged by apiModel.
+  "grok-4.7": "Grok 4.7",
 };
 
 /** Get display label for a model ID */

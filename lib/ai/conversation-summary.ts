@@ -15,7 +15,7 @@
 
 import { logAiUsage } from "@/lib/ai/usage-logger";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
-import { CHEAP_MODEL, getCheapModelClient } from "@/lib/ai/cheap-model";
+import { CHEAP_MODEL, cheapModelParams, getCheapModelClient } from "@/lib/ai/cheap-model";
 
 // ── Trigger logic ──
 
@@ -110,8 +110,7 @@ export async function generateConversationSummary(
         { role: "system", content: GENERATE_PROMPT },
         { role: "user", content: conversationText },
       ],
-      max_completion_tokens: 800,
-      temperature: 0.3,
+      ...cheapModelParams(800, 0.3),
     });
 
     logAiUsage({ model: CHEAP_MODEL, source: "summary-generate", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
@@ -151,8 +150,7 @@ export async function updateConversationSummary(
         { role: "system", content: systemPrompt },
         { role: "user", content: `New messages:\n\n${newConversationText}` },
       ],
-      max_completion_tokens: 800,
-      temperature: 0.3,
+      ...cheapModelParams(800, 0.3),
     });
 
     logAiUsage({ model: CHEAP_MODEL, source: "summary-update", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });

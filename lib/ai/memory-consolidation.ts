@@ -15,7 +15,7 @@
 
 import { logAiUsage } from "@/lib/ai/usage-logger";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
-import { CHEAP_MODEL, getCheapModelClient } from "@/lib/ai/cheap-model";
+import { CHEAP_MODEL, cheapModelParams, getCheapModelClient } from "@/lib/ai/cheap-model";
 
 // ── Types ──
 
@@ -144,8 +144,7 @@ export async function classifyMemoryAction(
         { role: "system", content: prompt },
         { role: "user", content: "Classify this memory." },
       ],
-      max_completion_tokens: 300,
-      temperature: 0.2,
+      ...cheapModelParams(300, 0.2),
     });
 
     logAiUsage({ model: CHEAP_MODEL, source: "memory-consolidate", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });

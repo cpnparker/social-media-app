@@ -110,7 +110,12 @@ export const MODEL_COSTS: Record<
   // fallback, both silently, so a half-added model routes somewhere else at
   // the wrong price and reports nothing.
   "claude-opus-5-5": { inputPer1M: 400, outputPer1M: 2000, cachedInputPer1M: 20, cacheWriteMultiplier: 1.25 }, // $4/$20, cache $0.20
+  // Cache read $0.25 — a quarter of Fable 5's $1.00, at the same $10/$50 base.
+  // Verified on platform.claude.com/docs/en/about-claude/pricing 2026-09-23.
+  "claude-fable-5-1": { inputPer1M: 1000, outputPer1M: 5000, cachedInputPer1M: 25, cacheWriteMultiplier: 1.25 }, // $10/$50, cache $0.25
   "grok-4.7": { inputPer1M: 200, outputPer1M: 600, cachedInputPer1M: 50 },        // $2/$6, cache $0.50 — same as 4.6
+  // The registry id, as its dashed twin: route.ts prices by registry id.
+  "grok-4-7": { inputPer1M: 200, outputPer1M: 600, cachedInputPer1M: 50 },        // $2/$6, cache $0.50
   "gpt-6-luna": { inputPer1M: 10, outputPer1M: 50, cachedInputPer1M: 1 },         // $0.10/$0.50, cache $0.01
   "gpt-6-sol": { inputPer1M: 200, outputPer1M: 1000, cachedInputPer1M: 20 },      // $2/$10, cache $0.20
   // $0.30/$2.50 on ai.google.dev. Was recorded at $0.15/$0.60 — understated
@@ -219,10 +224,11 @@ export const RATE_EXPIRIES: {
     until: "2026-11-21",
     then: null,
     why:
-      "OpenAI's pricing page marks GPT-5.6 Sol's $4/$20 as 'promotional pricing " +
-      "through November 21, 2026' and does NOT publish what replaces it " +
-      "(developers.openai.com/api/docs/pricing, verified 2026-09-23). There is no " +
-      "number to pre-apply, so this entry carries none — on that date, read the page.",
+      "OpenAI's pricing page says GPT-5.6 Sol's $4/$20 'promotional pricing is " +
+      "available at least through November 21, 2026' — a floor, not an end date — " +
+      "and does NOT publish what replaces it (developers.openai.com/api/docs/pricing, " +
+      "re-read 2026-09-23). There is no number to pre-apply, so this entry carries " +
+      "none — on that date, read the page.",
   },
   // REMOVED 2026-09-23: gemini-3-flash. It recorded a doubling on 2027-01-01
   // that Google does not publish for that id — the entry was written against
@@ -244,4 +250,58 @@ export const RATE_EXPIRIES: {
   // Worth keeping the near-miss written down. A check that fires on a date
   // nothing happens on is not a harmless spare alarm; it is the thing that
   // teaches people to skip the output, and it would have gone off in a week.
+];
+
+/**
+ * Models a provider has DATED for shutdown.
+ *
+ * The failure a rate table cannot see: a model keeps its correct price right
+ * up to the day every call to it 404s. scripts/verify-model-ids.ts fails the
+ * build from `from` onward while anything the app sends still names the
+ * model — a registry apiModel, a routing constant, the cheap tier, the
+ * fallback, an image model — and prints a warning in the 30 days before.
+ *
+ * Same rule as RATE_EXPIRIES: a date goes in only from the provider's own
+ * page, never a secondhand table. An alarm on a day nothing happens teaches
+ * people to skip the output.
+ */
+export const MODEL_SHUTDOWNS: { model: string; from: string; replacedBy: string; source: string }[] = [
+  {
+    model: "gpt-image-1",
+    from: "2026-10-23",
+    replacedBy: "gpt-image-2",
+    source: "developers.openai.com/api/docs/deprecations, checked 2026-09-23",
+  },
+  {
+    model: "dall-e-3",
+    from: "2026-05-12",
+    replacedBy: "gpt-image-2",
+    source: "developers.openai.com/api/docs/deprecations, checked 2026-09-23",
+  },
+  {
+    model: "sonar",
+    from: "2026-09-27",
+    replacedBy: "the Perplexity Agent API",
+    source: "docs.perplexity.ai/docs/agent-api/migrate-from-sonar/overview, checked 2026-09-23",
+  },
+  {
+    model: "sonar-pro",
+    from: "2026-09-27",
+    replacedBy: "the Perplexity Agent API",
+    source: "docs.perplexity.ai/docs/agent-api/migrate-from-sonar/overview, checked 2026-09-23",
+  },
+  {
+    // "No earlier than" — Google's own wording. Access is already limited to
+    // callers who used 2.5 before 2026-09-18.
+    model: "gemini-2.5-pro",
+    from: "2026-10-16",
+    replacedBy: "gemini-3.8-flash",
+    source: "ai.google.dev/gemini-api/docs/deprecations and release notes 2026-09-18, checked 2026-09-23",
+  },
+  {
+    model: "gemini-2.5-flash",
+    from: "2026-10-16",
+    replacedBy: "gemini-3.8-flash",
+    source: "ai.google.dev/gemini-api/docs/deprecations and release notes 2026-09-18, checked 2026-09-23",
+  },
 ];

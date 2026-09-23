@@ -83,7 +83,10 @@ export async function POST(req: NextRequest) {
         name_conversation: sessionTitle,
         type_visibility: isClientMeeting ? "team" : "private",
         id_client: clientId ? parseInt(String(clientId), 10) : null,
-        name_model: "grok-4-1-fast",
+        // "auto", not a pinned model: follow-up chat in the meeting thread is
+        // routed like any other turn. It was grok-4-1-fast, retired from the
+        // picker 2026-09-23 and the weakest model the app names.
+        name_model: "auto",
         type_conversation_mode: "meeting",
       })
       .select("id_conversation")

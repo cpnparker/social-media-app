@@ -62,7 +62,7 @@ export default function AIContextPage() {
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
 
   // Settings state
-  const [aiModel, setAiModel] = useState("grok-4-1-fast");
+  const [aiModel, setAiModel] = useState("auto");
   const [availableModels, setAvailableModels] = useState<AIModel[]>([]);
   const [contextConfig, setContextConfig] = useState<ContextConfig>({
     contracts: "summary",
@@ -310,7 +310,7 @@ export default function AIContextPage() {
                     </option>
                   ))
                 ) : (
-                  <option value="grok-4-1-fast">Grok 4 Fast — xAI</option>
+                  <option value="auto">EngineAI Auto</option>
                 )}
               </select>
               <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />

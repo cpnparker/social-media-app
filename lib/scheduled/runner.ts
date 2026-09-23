@@ -15,7 +15,7 @@ import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { createStreamingResponse, type AIMessage, type StreamResult } from "@/lib/ai/providers";
 import { buildSystemPrompt, normalizeContextConfig } from "@/lib/ai/system-prompts";
 import { routeQuery } from "@/lib/ai/query-router";
-import { routeModel, FAST_MODEL } from "@/lib/ai/auto-router";
+import { routeModel, FAST_MODEL, REASONING_MODEL } from "@/lib/ai/auto-router";
 import { logAiUsage } from "@/lib/ai/usage-logger";
 import { markdownToEmailHtml } from "@/lib/scheduled/email-html";
 
@@ -146,7 +146,11 @@ export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunR
     let model = task.name_model || "auto";
     if (model === "auto") {
       model = routeModel(task.document_prompt);
-      if (model === FAST_MODEL) model = "grok-4-3";
+      // REASONING_MODEL, imported like FAST_MODEL above. This was the literal
+      // "grok-4-3", which stopped being the reasoning tier on 2026-09-05 and is
+      // the weakest model the app still names (AA v4.3.2: 14.0 at effort none)
+      // — so the floor meant to protect unattended runs lowered them instead.
+      if (model === FAST_MODEL) model = REASONING_MODEL;
     }
     if (queryRoute.searchMode === "on" && !model.startsWith("claude")) model = "claude-sonnet-5";
 

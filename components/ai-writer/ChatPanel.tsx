@@ -1381,7 +1381,7 @@ export default function ChatPanel({
           conversationId,
           role: "assistant",
           content: fullText,
-          model: "claude-sonnet-4-6",
+          model: "claude-sonnet-5",
           createdBy: null,
           createdAt: new Date().toISOString(),
         };
@@ -2246,7 +2246,7 @@ export default function ChatPanel({
                 role="assistant"
                 content={streamingContent}
                 onImageComment={sendImageComment}
-                model={isFactChecking ? "claude-sonnet-4-6" : conversation.model}
+                model={isFactChecking ? "claude-sonnet-5" : conversation.model}
                 isStreaming
                 workspaceId={conversation?.workspaceId ?? null}
               />

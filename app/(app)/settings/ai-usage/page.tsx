@@ -168,6 +168,14 @@ const MODEL_COLORS: Record<string, string> = {
   "gpt-5.6-terra": "#059669",
   "gpt-5-6-luna": "#6EE7B7",
   "gpt-5.6-luna": "#6EE7B7",
+  // The 2026-09-23 line-up, in its predecessors' shades.
+  "grok-4-7": "#1E40AF",
+  "grok-4.7": "#1E40AF",
+  "claude-opus-5-5": "#B23A0B",
+  "claude-fable-5-1": "#7C2D12",
+  "gpt-6-luna": "#A7F3D0",
+  "gpt-6-sol": "#047857",
+  "gemini-3.8-flash": "#DB2777",
   "dall-e-3": "#A78BFA",
   "gemini-3-flash": "#EC4899",
   "gemini-3.1-flash-lite": "#F472B6",
@@ -300,7 +308,7 @@ export default function AIUsagePage() {
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
 
   // Settings state
-  const [aiModel, setAiModel] = useState("grok-4-1-fast");
+  const [aiModel, setAiModel] = useState("auto");
   const [availableModels, setAvailableModels] = useState<AIModel[]>([]);
   const [contextConfig, setContextConfig] = useState<ContextConfig>({
     contracts: "summary",

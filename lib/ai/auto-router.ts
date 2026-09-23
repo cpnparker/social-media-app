@@ -1,9 +1,9 @@
 /**
  * Auto-router: classifies user prompts to pick the best model.
  *
- * Default   → GPT-5.6 Luna    (cheap & fast — $0.20/$1.20, no web search)
- * Reasoning → Grok 4.6        (code, analysis, complex writing — $2/$6)
- * Grounded  → Claude Sonnet 5 (image-gen + web/fact-check, where Grok fails)
+ * Fast      → GPT-6 Luna      (trivial turns — $0.10/$0.50, no web search)
+ * Default   → Grok 4.7        (the workhorse: everything else — $2/$6)
+ * Grounded  → Claude Sonnet 5 (documents, mail, image-gen, web/fact-check)
  *
  * Why the Grounded carve-out: Grok has no discrete web_search tool — only
  * LiveSearch, which blends live results with training data and fabricates
@@ -17,42 +17,43 @@
  *
  * Uses keyword/pattern matching — no LLM call required.
  *
- * AA Intelligence Index note: Artificial Analysis rebased its index (v5,
- * 2026-09-04–09) — adding AA-Briefcase/GDP.pdf, upgrading Terminal-Bench to
- * 4.0, swapping AutomationBench-AA in for τ³-Banking, and reweighting private
- * tasks 40%→45%. Every launch-time score below moved: confirmed Grok 4.6
- * 61→44 and GPT-6 Astra 61→53 (artificialanalysis.ai, checked 2026-09-21).
- * Grok 4.3's and Claude Sonnet 5's current post-rebase scores were NOT
- * independently reconfirmed at that check — re-pull both, matching the exact
- * reasoning-effort variant actually shipped, before restating them here.
+ * AA Intelligence Index note: Artificial Analysis rebased its index in
+ * September 2026 (it is "v4.3.2" on the methodology page — an earlier note
+ * here called it v5). Every launch-time score moved: Grok 4.6 61→44, GPT-6
+ * Astra 61→53. Figures below are v4.3.2, re-pulled 2026-09-23, each for the
+ * reasoning effort THIS app actually runs — the only comparable number.
  */
 
 /** The CHEAP leg — background fan-out and demonstrably trivial turns.
  *
- *  Migrated off grok-4-1-fast per PLAN-cheap-tier-model-update.md §A-3.
- *  grok-4-1-fast was retired by xAI 2026-05-15 and had been silently
- *  redirected to grok-4.3 ($1.25/$2.50) ever since — a real model, but not
- *  the one this constant's name implied, and the reasoning-effort resolver
- *  only kept it at "none" by registry insertion order (see
- *  scripts/verify-model-params.ts).
+ *  GPT-6 Luna since 2026-09-23: 18.3 on AA v4.3.2 at effort "none" (the only
+ *  effort tools allow on the OpenAI chain) for $0.10/$0.50 — above GPT-5.6
+ *  Luna's 15.5 at twice the price, and grok-4.3's 14.0 at twelve times the
+ *  input price. Its predecessor, GPT-5.6 Luna, never answered a turn: the
+ *  chain sent it max_tokens and a temperature, both 400s, and every "fast"
+ *  turn fell back to Grok (fixed by lib/ai/openai-params.ts). Runs on the
+ *  OpenAI chain, which registers every generation tool, so it carries no
+ *  Gemini-style tool gap.
  *
- *  GPT-5.6 Luna: $0.20/$1.20, AA Intelligence Index 22–37 depending on
- *  reasoning effort (checked 2026-09-21, artificialanalysis.ai) — a wash
- *  against grok-4.3's current ~25–38, at roughly a sixth of the price. Same
- *  tool-registration surface as gpt-6-astra/gpt-5.6-terra (OpenAI chain), so
- *  it carries no Gemini-style generation-tool gap.
+ *  History: migrated off grok-4-1-fast per PLAN-cheap-tier-model-update.md
+ *  §A-3 (2026-09-21, to GPT-5.6 Luna). grok-4-1-fast was retired by xAI
+ *  2026-05-15 and had been silently redirected to grok-4.3 ($1.25/$2.50) ever
+ *  since — a real model, but not the one this constant's name implied, and
+ *  the reasoning-effort resolver only kept it at "none" by registry insertion
+ *  order (see scripts/verify-model-params.ts).
  *
  *  Has NO web search of its own (unlike the grok-4.3 wire slug it replaced,
  *  which had LiveSearch) — this is why the search-mode override below had to
  *  widen from "any Grok model" to "any non-Claude model". */
-export const FAST_MODEL = "gpt-5-6-luna" as const;
+export const FAST_MODEL = "gpt-6-luna" as const;
 /** The DEFAULT, and the workhorse.
  *
- *  Grok 4.6: $2/$6, AA Intelligence Index 44 under the current (post-rebase)
- *  index — down from the 61 quoted at its 2026-08-12 launch, but still the
- *  best value frontier leg available: GPT-6 Astra's post-rebase 53 costs 5x
- *  more for the edge (checked 2026-09-21, artificialanalysis.ai). */
-export const REASONING_MODEL = "grok-4-6" as const;
+ *  Grok 4.7 since 2026-09-23: 46.3 on AA v4.3.2 at its default (high) effort,
+ *  $2/$6 — the same price as Grok 4.6 (44.3), which it replaced as a free
+ *  upgrade. Still the best-value frontier leg: Claude Opus 5.5 scores 51.2
+ *  for $4/$20, GPT-6 Astra 52.7 for $10/$50 (and cannot run with tools on
+ *  this app's OpenAI chain). */
+export const REASONING_MODEL = "grok-4-7" as const;
 /** The CAPABILITY leg, not the quality leg.
  *
  *  Claude is here for three things no other chain does: it reads a PDF

@@ -22,12 +22,21 @@
  * Thinking on is the documented fix; effort is the lever if the spend needs
  * pulling back later.
  */
-export const ANTHROPIC_ADAPTIVE_ONLY = /^claude-(sonnet-5|opus-5|opus-4-[78]|fable-5|mythos-5)/;
-const ANTHROPIC_THINKING_DISABLEABLE = /^claude-(sonnet-5|opus-4-[78])/;
+//
+// Opus 5.5 and Fable 5.1 are named EXPLICITLY. They were already handled
+// correctly, but only because "opus-5" and "fable-5" happen to prefix-match
+// them — by coincidence, not design. Both are thinking-always-on (Opus 5.5
+// cannot disable thinking at any effort). The sonnet-5 entry in the disable
+// list is closed with (?!-\d) for the opposite reason: a future
+// claude-sonnet-5-5 would otherwise prefix-match it and be sent
+// {type:"disabled"}, which 400s on a model that cannot disable. Unmatched, it
+// gets no thinking field — adaptive, never a 400.
+export const ANTHROPIC_ADAPTIVE_ONLY = /^claude-(sonnet-5|opus-5-5|opus-5|opus-4-[78]|fable-5-1|fable-5|mythos-5)/;
+const ANTHROPIC_THINKING_DISABLEABLE = /^claude-(sonnet-5(?!-\d)|opus-4-[78])/;
 
 /** Adaptive-only models we do NOT disable thinking on — they think on every call.
  *  Keep in step with the two regexes above: it is the set difference. */
-const ANTHROPIC_THINKING_ALWAYS_ON = /^claude-(opus-5|fable-5|mythos-5)/;
+const ANTHROPIC_THINKING_ALWAYS_ON = /^claude-(opus-5-5|opus-5|fable-5-1|fable-5|mythos-5)/;
 
 /** Floor for a thinking model's max_tokens.
  *

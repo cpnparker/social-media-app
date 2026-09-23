@@ -9,6 +9,7 @@ import OpenAI from "openai";
 import { put } from "@vercel/blob";
 import { fetchBlobContent } from "./blob-utils";
 import { anthropicCallParams, anthropicMaxTokens } from "./anthropic-params";
+import { openAIRequestParams } from "./openai-params";
 import { supabase } from "@/lib/supabase";
 import { searchNotebook } from "@/lib/notebook/search";
 import { generateSlides, updateSlides, resolveDeckImages, splitOverflowingSlides, isVisualSlide, deckWarnings, stampDeckChrome, stampDensity, densityOf, undrawnTableBodies } from "@/lib/slides/generate";
@@ -853,36 +854,52 @@ interface ModelInfo {
   legacy?: boolean;
   hidden?: boolean; // Hide from user selector (used for background processing only)
   /**
-   * xAI reasoning effort. "none" reproduces the behaviour of the retired
-   * grok-4-1-fast-non-reasoning slug, which is what the cheap workhorse path
-   * has always assumed. Without it, grok-4.3 reasons by default and bills the
-   * reasoning as OUTPUT tokens — so migrating off the retired slug without
-   * this would have raised cost rather than only correcting it.
+   * Reasoning effort, sent verbatim by the xAI and OpenAI chains — so each
+   * entry must use a value ITS provider accepts. "none" reproduces the
+   * behaviour of the retired grok-4-1-fast-non-reasoning slug, which is what
+   * the cheap workhorse path has always assumed. Without it, grok-4.3 reasons
+   * by default and bills the reasoning as OUTPUT tokens — so migrating off the
+   * retired slug without this would have raised cost rather than only
+   * correcting it. Every OpenAI entry sets one explicitly: left unset, the
+   * API's default decides, and a reasoning model's default is not free.
    */
-  reasoningEffort?: "none" | "low" | "high";
+  reasoningEffort?: "none" | "low" | "medium" | "high";
 }
 
 // Exported so scripts/verify-model-ids.ts can see EVERY entry, including the
 // hidden and legacy ones. getAvailableModels() filters both out, so a check
 // built on it would be blind to exactly the entries most likely to rot.
 export const MODEL_REGISTRY: Record<string, ModelInfo> = {
+  // A LABEL, not a route. The chat route and the scheduled runner both resolve
+  // "auto" through routeModel() before a provider is chosen, so this apiModel
+  // is never called; it names the default leg (REASONING_MODEL) so that, if a
+  // path ever did skip the router, it would land where the router would have.
   "auto": {
     provider: "xai",
-    apiModel: "grok-4.3",
-    reasoningEffort: "none",
+    apiModel: "grok-4.7",
     label: "EngineAI Auto",
     description: "Best model for each query",
   },
-  "claude-fable-5": {
+  // Fable 5.1 and Opus 5.5 replaced Fable 5 and Opus 5 in the picker on
+  // 2026-09-23. Both successors answered the production request shape (no
+  // temperature, no thinking field, 16000 max_tokens; Opus 5.5 also with
+  // tools + tool_choice none, the forced-final shape) against the live API
+  // that day. Opus 5.5 is also CHEAPER: $4/$20 against $5/$25.
+  // Registered but NOT in the picker. Opus 5.5 scores the same at its
+  // default effort (Artificial Analysis v4.3.2: 51.2 medium vs Fable 5.1's
+  // 51.2 high) for 40% of the price, and higher at every effort above that.
+  // Kept so a saved Fable preference still gets Fable.
+  "claude-fable-5-1": {
     provider: "anthropic",
-    apiModel: "claude-fable-5",
-    label: "Claude Fable 5",
+    apiModel: "claude-fable-5-1",
+    label: "Claude Fable 5.1",
     description: "Anthropic's most powerful model",
+    hidden: true,
   },
-  "claude-opus-5": {
+  "claude-opus-5-5": {
     provider: "anthropic",
-    apiModel: "claude-opus-5",
-    label: "Claude Opus 5",
+    apiModel: "claude-opus-5-5",
+    label: "Claude Opus 5.5",
     description: "Complex agentic work, code & analysis",
   },
   "claude-sonnet-5": {
@@ -891,11 +908,18 @@ export const MODEL_REGISTRY: Record<string, ModelInfo> = {
     label: "Claude Sonnet 5",
     description: "Complex reasoning & analysis",
   },
+  // Hidden from the picker 2026-09-23: not chosen once in the 30 days before
+  // (the ledger's only Haiku rows are the optimizer calling it directly), and
+  // as a chat pick it is dominated — GPT-6 Luna is cheaper and Gemini 3.8
+  // Flash stronger, while every Claude-only capability (PDF, Gmail) already
+  // reaches Sonnet 5 through the auto-router. Kept resolvable, not legacy:
+  // callers that name it still get Haiku.
   "claude-haiku-4-5": {
     provider: "anthropic",
     apiModel: "claude-haiku-4-5-20251001",
     label: "Claude Haiku 4.5",
     description: "Fast, cheap Claude",
+    hidden: true,
   },
   // GA on 2026-09-02, slug verified on ai.google.dev 2026-09-05. Replaces the
   // 3-flash PREVIEW slug below in the picker: Gemini 3 Flash is deprecated,
@@ -912,14 +936,13 @@ export const MODEL_REGISTRY: Record<string, ModelInfo> = {
   },
   "gemini-3-flash": {
     provider: "gemini",
-    // The API's own model list calls it gemini-3-flash-preview; the bare name
-    // 404s. Verified against the live endpoint 2026-08-25 — the registry id
-    // stays stable so saved preferences and historic labels keep resolving.
-    apiModel: "gemini-3-flash-preview",
-    label: "Gemini 3 Flash",
+    // Was the PREVIEW slug gemini-3-flash-preview (the bare name 404s).
+    // Gemini 3 Flash is deprecated and a preview slug is one shutdown notice
+    // from 404ing, so a saved preference now resolves to its GA successor,
+    // gemini-3.8-flash, rather than to a model Google is switching off.
+    apiModel: "gemini-3.8-flash",
+    label: "Gemini 3.8 Flash",
     description: "Fast, large context window",
-    // Deprecated by Google and superseded by gemini-3.8-flash. Hidden rather
-    // than deleted so saved preferences still resolve to a real model.
     hidden: true,
     legacy: true,
   },
@@ -929,22 +952,63 @@ export const MODEL_REGISTRY: Record<string, ModelInfo> = {
     label: "Gemini 3.1 Flash-Lite",
     hidden: true,
   },
-  // OpenAI's flagship, released 2026-09-03. Slug verified on
-  // developers.openai.com 2026-09-05. Offered in the picker, never routed to:
-  // at $10/$50 it buys +0.3 Artificial Analysis points over grok-4.6 ($2/$6)
-  // for eight times the output cost, and it reprices the WHOLE request past
-  // 272K input tokens.
+  // ── OpenAI: every entry runs at reasoning_effort "none", and must. ──
+  // streamOpenAI uses Chat Completions and registers tools on every chat turn,
+  // and on /v1/chat/completions OpenAI refuses function tools with ANY
+  // reasoning effort but "none": "Function tools with reasoning_effort are not
+  // supported ... use /v1/responses or set reasoning_effort to 'none'". Left
+  // unset, the model's default effort applies and trips the same 400. Probed
+  // against the live API 2026-09-23 for gpt-6-astra/-sol/-luna and
+  // gpt-5.6-terra/-luna at unset/none/low/medium: "none" is the only value
+  // that works with tools. Reasoning on this chain needs a port to
+  // /v1/responses; until then an OpenAI pick is a non-reasoning pick.
+  //
+  // GPT-6 Sol replaced GPT-5.6 Terra 2026-09-23: newer generation, $2/$10
+  // against $2/$12.
+  //
+  // Registered, NOT in the picker: at effort "none" — the only setting tools
+  // allow on this chain — it scores 28.1 (Artificial Analysis v4.3.2) at
+  // $2/$10, against Grok 4.7's 46.3 at $2/$6. Dominated on both axes until the
+  // chain moves to /v1/responses. The target of every retired OpenAI pick.
+  "gpt-6-sol": {
+    provider: "openai",
+    apiModel: "gpt-6-sol",
+    reasoningEffort: "none",
+    label: "GPT-6 Sol",
+    description: "OpenAI's balanced model",
+    hidden: true,
+  },
+  // The cheapest leg: the auto-router's FAST_MODEL and the picker's
+  // "simple queries" option. $0.10/$0.50, half GPT-5.6 Luna on both axes.
+  "gpt-6-luna": {
+    provider: "openai",
+    apiModel: "gpt-6-luna",
+    reasoningEffort: "none",
+    label: "GPT-6 Luna",
+    description: "Cheapest — simple queries only",
+  },
+  // RETIRED 2026-09-23 without ever answering a turn here. It rejects
+  // reasoning_effort "none" outright ("does not support 'none' with this
+  // model"), so with tools registered it cannot run on Chat Completions at any
+  // setting — every pick since it was added fell back to Grok. A saved
+  // preference resolves to GPT-6 Sol, the OpenAI model that can actually
+  // answer on this chain.
   "gpt-6-astra": {
     provider: "openai",
-    apiModel: "gpt-6-astra",
-    label: "GPT-6 Astra",
-    description: "OpenAI's most capable — premium",
+    apiModel: "gpt-6-sol",
+    reasoningEffort: "none",
+    label: "GPT-6 Sol",
+    legacy: true,
   },
+  // Retired 2026-09-23 in favour of GPT-6 Sol ($2/$10 against $2/$12). No
+  // behaviour to preserve: until the openai-params fix every Terra pick 400'd
+  // and was answered by Grok.
   "gpt-5-6-terra": {
     provider: "openai",
-    apiModel: "gpt-5.6-terra",
-    label: "GPT-5.6 Terra",
-    description: "OpenAI's balanced model",
+    apiModel: "gpt-6-sol",
+    reasoningEffort: "none",
+    label: "GPT-6 Sol",
+    legacy: true,
   },
   // Registered first-class so a route can NAME it. Luna previously existed
   // only as the apiModel of the hidden legacy gpt-4o-mini entry, so the id
@@ -956,13 +1020,17 @@ export const MODEL_REGISTRY: Record<string, ModelInfo> = {
   // because the Sonnet call it logged is the Sonnet call it really made. The
   // saving would simply never have appeared, with no error to chase.
   //
-  // hidden until Decision 4 decides whether it belongs in the picker.
+  // Superseded 2026-09-23 by gpt-6-luna, which is half the price on both
+  // axes. Remapped rather than left on 5.6: this was FAST_MODEL, and it never
+  // answered a turn here (see the OpenAI note above), so there is no behaviour
+  // to preserve.
   "gpt-5-6-luna": {
     provider: "openai",
-    apiModel: "gpt-5.6-luna",
-    label: "GPT-5.6 Luna",
-    description: "Fastest and cheapest — no web search",
+    apiModel: "gpt-6-luna",
+    reasoningEffort: "none",
+    label: "GPT-6 Luna",
     hidden: true,
+    legacy: true,
   },
   // Retired from the picker 2026-08-14. OpenAI no longer lists 4o among active
   // models, and it cost MORE than the model replacing it ($2.50/$10 against
@@ -972,14 +1040,16 @@ export const MODEL_REGISTRY: Record<string, ModelInfo> = {
   // differ in thinking mode and token floor.
   "gpt-4o": {
     provider: "openai",
-    apiModel: "gpt-5.6-terra",
-    label: "GPT-5.6 Terra",
+    apiModel: "gpt-6-sol",
+    reasoningEffort: "none",
+    label: "GPT-6 Sol",
     legacy: true,
   },
   "gpt-4o-mini": {
     provider: "openai",
-    apiModel: "gpt-5.6-luna",
-    label: "GPT-5.6 Luna",
+    apiModel: "gpt-6-luna",
+    reasoningEffort: "none",
+    label: "GPT-6 Luna",
     legacy: true,
     hidden: true,
   },
@@ -987,18 +1057,35 @@ export const MODEL_REGISTRY: Record<string, ModelInfo> = {
   // 15 May 2026 and every request has silently redirected to grok-4.3 since —
   // this makes that explicit, and adds the "none" effort xAI's own migration
   // guidance calls for so the path stays as fast and cheap as its name claims.
+  // Retired from the picker 2026-09-23. The cheapest slot is now GPT-6 Luna
+  // ($0.10/$0.50 against grok-4.3's $1.25/$2.50). Still resolvable, on the
+  // model it has always run, for saved preferences.
   "grok-4-1-fast": {
     provider: "xai",
     apiModel: "grok-4.3",
     reasoningEffort: "none",
     label: "Grok 4 Fast",
     description: "Fast and cheapest — no reasoning",
+    legacy: true,
+  },
+  // grok-4.7 (2026-09-21) is the same price as 4.6 — $2/$0.50/$6, same >200k
+  // tier — and better on every benchmark xAI published. Verified live
+  // 2026-09-23: it accepts low/medium/high and REJECTS "none" (as 4.6 does),
+  // and in 18 production-style samples it refused nothing and reasoned no more
+  // than 4.6. Effort is left UNSET, exactly as 4.6 ran, so the switch changes
+  // the model and nothing else; the default reasons, and reasoning bills as
+  // OUTPUT (xaiBilledOutputTokens counts it).
+  "grok-4-7": {
+    provider: "xai",
+    apiModel: "grok-4.7",
+    label: "Grok 4.7",
+    description: "xAI's flagship — most capable",
   },
   "grok-4-6": {
     provider: "xai",
-    apiModel: "grok-4.6",
-    label: "Grok 4.6",
-    description: "xAI's flagship — most capable",
+    apiModel: "grok-4.7",
+    label: "Grok 4.7",
+    legacy: true,
   },
   "grok-4-3": {
     provider: "xai",
@@ -1013,29 +1100,41 @@ export const MODEL_REGISTRY: Record<string, ModelInfo> = {
     reasoningEffort: "none",
     label: "Grok 4.3",
     description: "Strong and cheaper — half the input cost of 4.6",
+    // Retired from the picker 2026-09-23: dominated. Grok 4.7 is far stronger
+    // for a little more; GPT-6 Luna and Gemini 3.8 Flash are cheaper.
+    legacy: true,
   },
   // Retired from the picker 2026-08-14: nothing in the app selects these, and
   // neither has been offered in MODEL_OPTIONS. Kept addressable so a saved
   // preference still resolves rather than falling through to the default.
+  // DeepSeek retired the deepseek-chat alias 2026-07-24, so a saved preference
+  // errored on every turn. Resolves to the cheap OpenAI leg instead — NOT to
+  // DeepSeek V4, because first-party DeepSeek stores data in the PRC.
   "deepseek-chat": {
-    provider: "deepseek",
-    apiModel: "deepseek-chat",
-    label: "DeepSeek Chat",
+    provider: "openai",
+    apiModel: "gpt-6-luna",
+    reasoningEffort: "none",
+    label: "GPT-6 Luna",
     legacy: true,
   },
+  // Perplexity ends Sonar on 2026-09-27 ("Sonar will be supported until
+  // September 27, 2026" — docs.perplexity.ai, migrate-from-sonar). Nothing in
+  // the app names either id, so rather than port them to the Agent API they
+  // resolve to the grounded leg: Claude with its web_search tool is what
+  // "every reply searches the web" means here.
   "sonar": {
-    provider: "perplexity",
-    apiModel: "sonar",
-    label: "Perplexity Sonar",
-    description: "Every reply searches the web",
+    provider: "anthropic",
+    apiModel: "claude-sonnet-5",
+    label: "Claude Sonnet 5",
     hidden: true,
+    legacy: true,
   },
   "sonar-pro": {
-    provider: "perplexity",
-    apiModel: "sonar-pro",
-    label: "Perplexity Sonar Pro",
-    description: "Deep web research & analysis",
+    provider: "anthropic",
+    apiModel: "claude-sonnet-5",
+    label: "Claude Sonnet 5",
     hidden: true,
+    legacy: true,
   },
   // Legacy mappings for old conversations
   //
@@ -1060,10 +1159,31 @@ export const MODEL_REGISTRY: Record<string, ModelInfo> = {
     label: "Claude Opus 4.8",
     legacy: true,
   },
+  // Opus 5 and Fable 5 retired from the picker 2026-09-23. Remapped, unlike
+  // Opus 4.8 above, because nothing about the runtime profile changes: all
+  // four are thinking-on under the same 16000 max_tokens floor, and neither
+  // successor accepts a thinking disable any more than its predecessor was
+  // sent one. Opus 5.5 is also cheaper, so a saved preference gets a better
+  // model for less.
+  "claude-opus-5": {
+    provider: "anthropic",
+    apiModel: "claude-opus-5-5",
+    label: "Claude Opus 5.5",
+    legacy: true,
+  },
+  "claude-fable-5": {
+    provider: "anthropic",
+    apiModel: "claude-fable-5-1",
+    label: "Claude Fable 5.1",
+    legacy: true,
+  },
+  // Was apiModel "gemini-3-flash" — the bare name, which 404s (the API only
+  // knows gemini-3-flash-preview). A saved 2.5 Pro preference failed on every
+  // turn and fell back to Grok.
   "gemini-2.5-pro": {
     provider: "gemini",
-    apiModel: "gemini-3-flash",
-    label: "Gemini 3 Flash",
+    apiModel: "gemini-3.8-flash",
+    label: "Gemini 3.8 Flash",
     legacy: true,
   },
   "gemini-2.5-flash": {
@@ -3982,6 +4102,36 @@ type ImageProvider = "openai" | "xai" | "anthropic" | "gemini";
  *   - anthropic: delegates to openai (DALL-E 3)
  *   - gemini: delegates to openai (DALL-E 3)
  */
+/** OpenAI's image model for generation AND edits. gpt-image-2 replaced
+ *  gpt-image-1, which OpenAI shuts down on 2026-10-23 (developers.openai.com
+ *  deprecations, checked 2026-09-23). Probed live that day with this file's
+ *  own shapes — generate (n 1, 1536x1024, quality) and edit (a reference file,
+ *  n 1, size, no moderation) — and both return b64_json exactly as before.
+ *  MODEL_SHUTDOWNS in lib/ai/model-costs.ts dates every model named here. */
+export const OPENAI_IMAGE_MODEL = "gpt-image-2";
+/** Tried only when the primary is UNAVAILABLE to this key (404, "verify your
+ *  organization") — the way gpt-image-1 itself once needed org verification.
+ *  Replaces a dall-e-3 fallback that could only fail: OpenAI shut dall-e-3
+ *  down on 2026-05-12. This one expires too, on 2026-10-23, and
+ *  scripts/verify-model-ids.ts fails the build from that day until it goes. */
+export const OPENAI_IMAGE_FALLBACK_MODEL = "gpt-image-1";
+/** "medium", not "high" — measured, one 1536x1024 prompt, 2026-09-23:
+ *    gpt-image-1 high   39s   6,208 image tokens   ~$0.25
+ *    gpt-image-2 high   80s   5,488                ~$0.16
+ *    gpt-image-2 medium 31s   1,372                ~$0.04
+ *  and medium was on a par with high by eye for illustration. High on the new
+ *  model doubles the wait, and a deck renders several images inside one
+ *  request budget. One line to flip if a photographic use needs "high". */
+const OPENAI_IMAGE_QUALITY = "medium";
+
+/** The model is not available to this key — the only case worth a fallback.
+ *  Content-policy refusals and bad input fail the same way on every model. */
+function isImageModelUnavailable(err: any): boolean {
+  const msg = err?.message || String(err);
+  const status = err?.status || err?.response?.status;
+  return status === 404 || /does not exist|model.*not.*found|verify your organization|access.*denied/i.test(msg);
+}
+
 export async function generateImage(
   prompt: string,
   size: "1024x1024" | "1792x1024" | "1024x1792" = "1024x1024",
@@ -4061,13 +4211,20 @@ export async function generateImage(
       // does) — don't add it, the API 400s and every edit would pay a doomed
       // first request. Content-policy refusals get a message the model can
       // actually relay to the user.
-      res = await openai.images.edit({
-        model: "gpt-image-1",
+      const edit = (model: string) => openai.images.edit({
+        model,
         image: (files.length === 1 ? files[0] : files) as any,
         prompt,
         n: 1,
         size: editSize,
       } as any);
+      try {
+        res = await edit(OPENAI_IMAGE_MODEL);
+      } catch (primaryErr: any) {
+        if (!isImageModelUnavailable(primaryErr)) throw primaryErr;
+        console.warn(`[Image Gen] ${OPENAI_IMAGE_MODEL} edit unavailable (${primaryErr?.message || primaryErr}); falling back to ${OPENAI_IMAGE_FALLBACK_MODEL}`);
+        res = await edit(OPENAI_IMAGE_FALLBACK_MODEL);
+      }
     } catch (e: any) {
       const msg = String(e?.message || e);
       if (/content policy|content_policy|moderation_blocked|safety system|rejected by the safety/i.test(msg)) {
@@ -4123,13 +4280,13 @@ export async function generateImage(
       size === "1024x1792" ? "1024x1536" :
       "1024x1024";
 
-    const generateWithGptImage1 = async (): Promise<Buffer> => {
+    const generateWith = async (model: string): Promise<Buffer> => {
       const res = await openai.images.generate({
-        model: "gpt-image-1",
+        model,
         prompt,
         n: 1,
         size: gptImageSize,
-        quality: "high",
+        quality: OPENAI_IMAGE_QUALITY,
       } as any);
       const data = res.data?.[0];
       if (data && (data as any).b64_json) {
@@ -4137,47 +4294,28 @@ export async function generateImage(
       }
       if (data?.url) {
         const r = await fetch(data.url);
-        if (!r.ok) throw new Error("Failed to download gpt-image-1 result");
+        if (!r.ok) throw new Error(`Failed to download ${model} result`);
         return Buffer.from(await r.arrayBuffer());
       }
-      throw new Error("gpt-image-1 returned no image data");
-    };
-
-    const generateWithDallE3 = async (): Promise<Buffer> => {
-      const res = await openai.images.generate({
-        model: "dall-e-3",
-        prompt,
-        n: 1,
-        size,
-        quality: "standard",
-      });
-      const tempUrl = res.data?.[0]?.url;
-      if (!tempUrl) throw new Error("DALL-E returned no image URL");
-      const imageRes = await fetch(tempUrl);
-      if (!imageRes.ok) throw new Error("Failed to download generated image");
-      return Buffer.from(await imageRes.arrayBuffer());
+      throw new Error(`${model} returned no image data`);
     };
 
     try {
-      imageBuffer = await generateWithGptImage1();
-      console.log(`[Image Gen] gpt-image-1 (${gptImageSize})`);
+      imageBuffer = await generateWith(OPENAI_IMAGE_MODEL);
+      console.log(`[Image Gen] ${OPENAI_IMAGE_MODEL} (${gptImageSize}, ${OPENAI_IMAGE_QUALITY})`);
     } catch (err: any) {
       const msg = err?.message || String(err);
-      const status = err?.status || err?.response?.status;
-      // Fall back to DALL-E 3 only on "model not available" type errors —
-      // not on content-policy violations or bad-input errors.
-      const isModelUnavailable =
-        status === 404 ||
-        /does not exist|model.*not.*found|verify your organization|access.*denied/i.test(msg);
-      if (!isModelUnavailable) throw err;
-      console.warn(`[Image Gen] gpt-image-1 unavailable (${msg}); falling back to dall-e-3`);
+      // Only "this key cannot use that model" earns a second attempt — a
+      // content-policy refusal or bad input fails the same way on either.
+      if (!isImageModelUnavailable(err)) throw err;
+      console.warn(`[Image Gen] ${OPENAI_IMAGE_MODEL} unavailable (${msg}); falling back to ${OPENAI_IMAGE_FALLBACK_MODEL}`);
       try {
-        imageBuffer = await generateWithDallE3();
-        console.log(`[Image Gen] dall-e-3 (${size})`);
+        imageBuffer = await generateWith(OPENAI_IMAGE_FALLBACK_MODEL);
+        console.log(`[Image Gen] ${OPENAI_IMAGE_FALLBACK_MODEL} (${gptImageSize}, ${OPENAI_IMAGE_QUALITY})`);
       } catch (fallbackErr: any) {
         const fmsg = fallbackErr?.message || String(fallbackErr);
         throw new Error(
-          `Image generation failed on both gpt-image-1 (${msg}) and dall-e-3 (${fmsg}). ` +
+          `Image generation failed on both ${OPENAI_IMAGE_MODEL} (${msg}) and ${OPENAI_IMAGE_FALLBACK_MODEL} (${fmsg}). ` +
             `Verify your OpenAI organization at https://platform.openai.com/settings/organization/general and enable image generation.`
         );
       }
@@ -8908,7 +9046,7 @@ export function createStreamingResponse(
             const errMsg = anthropicErr?.message || String(anthropicErr);
             const status = anthropicErr?.status || 0;
             console.warn(`[AI] Anthropic failed (status=${status}, ${errMsg.slice(0, 150)}), falling back to ${FALLBACK_MODEL}`);
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ fallback: true, reason: "Claude unavailable — using Grok 4.6" })}\n\n`));
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ fallback: true, reason: `Claude unavailable — using ${FALLBACK_LABEL}` })}\n\n`));
             // grok-4.6, not the grok-4.3 this used for months. 4.3 measures 38
             // on Artificial Analysis against 4.6's 60.9, so every Claude
             // failure was landing on the weakest model in the picker.
@@ -9076,17 +9214,24 @@ export function createStreamingResponse(
 
 /** The house fallback model.
  *
- *  Grok 4.6, on measured price/performance rather than habit: Artificial
- *  Analysis 60.9 at $2/$6 against Claude Sonnet 5's 55.3 at $2/$10 (audit of
- *  4 Sep 2026). It beats Sonnet on BOTH axes, so falling back to Claude was
- *  paying more for a weaker answer.
+ *  Grok 4.7, on measured price/performance rather than habit. Artificial
+ *  Analysis Intelligence Index v4.3.2 (2026-09-23): 46.3 at its default high
+ *  effort, $2/$6 — against Grok 4.6's 44.3 at the SAME price, and Claude
+ *  Sonnet 5's ~23 as this app runs it (thinking disabled) at $2/$10. Falling
+ *  back to Claude would be paying more for a weaker answer.
  *
  *  NOT grok-4.3, which is what the Anthropic path fell back to for months.
  *  That slug measures 38 — the weakest model in this picker, ~23 points below
  *  4.6 — so "fall back to Grok" done carelessly would have made every Claude
  *  failure land on the worst option available. The two slugs differ by one
  *  character and by a third of the quality range. */
-const FALLBACK_MODEL = "grok-4.6";
+export const FALLBACK_MODEL = "grok-4.7";
+/** What the user is told answered — read from the registry, so the notice
+ *  cannot keep naming a model after the constant above has moved on. It said
+ *  "Grok 4.6" as a literal in two places. Skips "auto", which shares this
+ *  apiModel and comes first, and would caption the fallback "EngineAI Auto". */
+export const FALLBACK_LABEL =
+  Object.entries(MODEL_REGISTRY).find(([id, m]) => id !== "auto" && m.apiModel === FALLBACK_MODEL && !m.legacy)?.[1].label ?? FALLBACK_MODEL;
 
 /** Run a provider chain, and on failure log it and fall back.
  *
@@ -9112,7 +9257,7 @@ async function withGrokFallback(
   } catch (err: any) {
     const errMsg = err?.message || String(err);
     console.warn(`[AI] ${label} failed (status=${err?.status ?? "?"}, ${errMsg.slice(0, 200)}), falling back to ${FALLBACK_MODEL}`);
-    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ fallback: true, reason: `${label} unavailable — using Grok 4.6` })}\n\n`));
+    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ fallback: true, reason: `${label} unavailable — using ${FALLBACK_LABEL}` })}\n\n`));
     return await streamXAI(messages, config, FALLBACK_MODEL, controller, encoder);
   }
 }
@@ -10047,7 +10192,7 @@ async function streamAnthropic(
               source: "dalle",
               blobUrl: imageUrl,
               prompt,
-              metadata: { size, model: "dall-e-3", brand_applied: !!brand },
+              metadata: { size, model: OPENAI_IMAGE_MODEL, brand_applied: !!brand },
             });
             // Studio mode: link to a shot
             if (designAssetId && config.designSessionId) {
@@ -13606,6 +13751,18 @@ async function streamOpenAI(
 ): Promise<StreamResult> {
   const client = options?.clientOverride ?? getOpenAIClient();
 
+  // Token cap, temperature and effort under the rules THIS model accepts
+  // (lib/ai/openai-params.ts). Written out as max_tokens + temperature, they
+  // 400'd every GPT-5+ request on round 0, and withGrokFallback answered every
+  // GPT-6 Astra, GPT-5.6 Terra and cheap-leg turn with Grok instead. Effort is
+  // resolved from the registry the way the xAI chain does it, and
+  // verify-model-params.ts holds every OpenAI entry to an explicit value.
+  const requestParams = openAIRequestParams(apiModel, {
+    maxTokens: config.maxTokens || 4096,
+    temperature: config.temperature ?? DEFAULT_CHAT_TEMPERATURE,
+    reasoningEffort: Object.values(MODEL_REGISTRY).find((m) => m.apiModel === apiModel)?.reasoningEffort,
+  });
+
   const openaiMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
 
   // Add system prompt
@@ -13775,8 +13932,7 @@ async function streamOpenAI(
     roundsUsed++;
     const stream = (await client.chat.completions.create({
       model: apiModel,
-      max_tokens: config.maxTokens || 4096,
-      temperature: config.temperature ?? DEFAULT_CHAT_TEMPERATURE,
+      ...requestParams,
       messages: openaiMessages,
       stream: true,
       stream_options: { include_usage: true },
@@ -14588,8 +14744,7 @@ async function streamOpenAI(
       roundsUsed++;
       const finalStream = await client.chat.completions.create({
         model: apiModel,
-        temperature: config.temperature ?? DEFAULT_CHAT_TEMPERATURE,
-        max_tokens: config.maxTokens || 4096,
+        ...requestParams,
         messages: openaiMessages as any,
         stream: true,
         // History contains tool_calls/tool messages — keep tools declared but

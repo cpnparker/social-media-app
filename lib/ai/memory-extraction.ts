@@ -9,7 +9,7 @@
  */
 
 import { logAiUsage } from "@/lib/ai/usage-logger";
-import { CHEAP_MODEL, getCheapModelClient } from "@/lib/ai/cheap-model";
+import { CHEAP_MODEL, cheapModelParams, getCheapModelClient } from "@/lib/ai/cheap-model";
 import type { MemorySuggestion } from "@/lib/types/ai";
 
 const EXTRACTION_PROMPT = `You are a memory extractor for an AI content assistant. Analyse the conversation exchange below and identify important facts, preferences, instructions, or insights that would be useful to remember for future conversations.
@@ -80,8 +80,7 @@ export async function extractMemories(
           content: `User message:\n${userMessage.slice(0, 2000)}\n\nAssistant response:\n${assistantResponse.slice(0, 3000)}`,
         },
       ],
-      max_completion_tokens: 500,
-      temperature: 0.3,
+      ...cheapModelParams(500, 0.3),
     });
 
     logAiUsage({ model: CHEAP_MODEL, source: "memory-extract", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
@@ -223,8 +222,7 @@ export async function extractMeetingMemories(
         { role: "system", content: systemPrompt },
         { role: "user", content: meetingText.slice(0, 4000) },
       ],
-      max_completion_tokens: 600,
-      temperature: 0.3,
+      ...cheapModelParams(600, 0.3),
     });
 
     logAiUsage({ model: CHEAP_MODEL, source: "memory-extract-meeting", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
@@ -348,8 +346,7 @@ export async function extractTaskMemories(
         { role: "system", content: systemPrompt },
         { role: "user", content: taskText.slice(0, 2000) },
       ],
-      max_completion_tokens: 400,
-      temperature: 0.3,
+      ...cheapModelParams(400, 0.3),
     });
 
     logAiUsage({ model: CHEAP_MODEL, source: "memory-extract-task", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });

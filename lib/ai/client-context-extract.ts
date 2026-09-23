@@ -15,7 +15,7 @@ import { Storage } from "@google-cloud/storage";
 import { google } from "googleapis";
 import OpenAI from "openai";
 import { logAiUsage } from "@/lib/ai/usage-logger";
-import { CHEAP_MODEL, getCheapModelClient } from "@/lib/ai/cheap-model";
+import { CHEAP_MODEL, cheapModelParams, getCheapModelClient } from "@/lib/ai/cheap-model";
 
 interface AssetFile {
   id_asset: number;
@@ -28,7 +28,7 @@ interface AssetFile {
   information_description: string | null;
 }
 
-interface FileSummary {
+export interface FileSummary {
   id_asset: number;
   name: string;
   type: string;
@@ -353,7 +353,9 @@ async function extractText(
 /**
  * Summarise a single document's extracted text.
  */
-async function summariseDocument(
+// Exported for scripts/verify-openai-chain.ts, which drives the three model
+// calls in this file against the OpenAI request contract without a database.
+export async function summariseDocument(
   client: OpenAI,
   text: string,
   fileName: string
@@ -388,8 +390,7 @@ Document: "${fileName}"`,
       },
       { role: "user", content: truncated },
     ],
-    max_completion_tokens: 500,
-    temperature: 0.2,
+    ...cheapModelParams(500, 0.2),
   });
 
   logAiUsage({ model: CHEAP_MODEL, source: "client-context", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
@@ -400,7 +401,7 @@ Document: "${fileName}"`,
 /**
  * Consolidate multiple file summaries into one structured client profile.
  */
-async function consolidateProfile(
+export async function consolidateProfile(
   client: OpenAI,
   fileSummaries: FileSummary[],
   clientName: string
@@ -439,8 +440,7 @@ Aim for 400-1000 tokens. Use bullet points.`,
       },
       { role: "user", content: input },
     ],
-    max_completion_tokens: 1500,
-    temperature: 0.2,
+    ...cheapModelParams(1500, 0.2),
   });
 
   logAiUsage({ model: CHEAP_MODEL, source: "client-context", inputTokens: response.usage?.prompt_tokens || 0, outputTokens: response.usage?.completion_tokens || 0 });
@@ -459,7 +459,7 @@ interface SkippedFile {
  * Design mode's buildBrandedImagePrompt to ground image/video generation in
  * deterministic brand rules.
  */
-async function extractVisualIdentity(
+export async function extractVisualIdentity(
   client: OpenAI,
   fileSummaries: FileSummary[],
   clientName: string
@@ -502,8 +502,7 @@ Rules:
       },
       { role: "user", content: input },
     ],
-    max_completion_tokens: 800,
-    temperature: 0.1,
+    ...cheapModelParams(800, 0.1),
     response_format: { type: "json_object" } as any,
   });
 

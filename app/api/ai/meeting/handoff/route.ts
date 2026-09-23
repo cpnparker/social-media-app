@@ -16,7 +16,9 @@ export const maxDuration = 30;
 // NOTE: this is the ONE path where the transcript is persisted — because the
 // user deliberately asked for it at review time. The default flows
 // (save-summary / discard) remain transcript-free.
-const HANDOFF_MODEL = "grok-4-1-fast";
+// The model the handed-off conversation is created with. "auto" so its
+// follow-ups are routed; it pinned grok-4-1-fast, retired 2026-09-23.
+const HANDOFF_MODEL = "auto";
 const MAX_TRANSCRIPT_CHARS = 40000;
 
 export async function POST(req: NextRequest) {

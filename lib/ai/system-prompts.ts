@@ -774,7 +774,7 @@ Example for daily CUs: query_engine({ report: "commissioned_units", date_from: "
 
 You're operating in Design Mode at \`/engineai/design\`. The user is a designer who needs visual / video assets fast and on-brand. Your job is to help them go from blank brief to finished asset with the minimum friction. You have ${artlistOn ? "three" : "two"} specialist tools beyond the normal toolset:
 
-- **generate_image** — stills (DALL-E 3 under the hood). Use for hero images, social tiles, illustrations, mockups, infographics.
+- **generate_image** — stills (OpenAI gpt-image-2 under the hood). Use for hero images, social tiles, illustrations, mockups, infographics.
 - **generate_video** — short clips (Runway Gen-4 Turbo). 5 or 10 seconds. Supports text-to-video AND image-to-video (pass image_url from a prior generate_image result to animate it).${artlistOn ? `
 - **search_artlist** — licensed stock footage (Artgrid). Use when the brief calls for real-world b-roll the user doesn't need to generate from scratch. Then \`license_artlist_asset\` once the user picks one.` : ""}
 

@@ -14,7 +14,7 @@
  * three silent-failure paths (registry mutation, blob ownership, context
  * truncation) behave.
  */
-import { routeModel, FAST_MODEL } from "../lib/ai/auto-router";
+import { routeModel, FAST_MODEL, REASONING_MODEL } from "../lib/ai/auto-router";
 import { routeQuery } from "../lib/ai/query-router";
 import { getModelInfo, isPersonnelSensitive } from "../lib/ai/providers";
 import * as providers from "../lib/ai/providers";
@@ -46,7 +46,7 @@ console.log("\n1. Routing — composition is flagged, but never loses its ground
   const q = routeQuery(DRAFT_PROMPT);
   check("the drafting turn is flagged as composition", q.composition === true);
   const m = routeModel(DRAFT_PROMPT);
-  check("an all-company message reaches the flagship, not the cheap leg", m === "grok-4-6", m);
+  check("an all-company message reaches the flagship, not the cheap leg", m === REASONING_MODEL, m);
   // The route suppresses the Sonnet override and the 8192 ceiling for a
   // composition turn; searchMode itself is left alone.
   //
@@ -103,14 +103,14 @@ console.log("\n3. Routing — the refinement inherits the stakes of what it refi
   // (PLAN-cheap-tier-model-update.md §A-3, cheap leg now GPT-5.6 Luna), and a
   // literal here would have quietly stopped asserting anything at all.
   check("classified alone it no longer falls to the cheap leg", alone !== FAST_MODEL, alone);
-  check("with the prior turn it inherits the flagship", withPrior === "grok-4-6", withPrior);
+  check("with the prior turn it inherits the flagship", withPrior === REASONING_MODEL, withPrior);
   // And the inheritance itself still works where it is still needed: a
   // genuinely trivial refinement — one that passes the trivial gate — of a
   // substantive draft.
   const trivialRefine = routeModel("ok, try again", [DRAFT_PROMPT]);
   check(
     "a TRIVIAL refinement of a substantive draft still inherits",
-    trivialRefine === "grok-4-6",
+    trivialRefine === REASONING_MODEL,
     trivialRefine
   );
   check(
@@ -121,19 +121,19 @@ console.log("\n3. Routing — the refinement inherits the stakes of what it refi
   // One-way only: a trivial thread must never drag a complex follow-up down.
   check(
     "inheritance never DOWNGRADES a turn that earned a better model",
-    routeModel(DRAFT_PROMPT, ["thanks!"]) === "grok-4-6"
+    routeModel(DRAFT_PROMPT, ["thanks!"]) === REASONING_MODEL
   );
   // THE CASE THAT WAS BROKEN: by the third turn the immediate predecessor is
   // itself a refinement, so a single-message lookup scored it as trivial and
   // the third draft of a sensitive message landed on the cheapest model.
   check(
     "a refinement OF a refinement still inherits (walks back)",
-    routeModel("make it a bit warmer", ["shorten it", DRAFT_PROMPT]) === "grok-4-6",
+    routeModel("make it a bit warmer", ["shorten it", DRAFT_PROMPT]) === REASONING_MODEL,
     routeModel("make it a bit warmer", ["shorten it", DRAFT_PROMPT])
   );
   check(
     "four turns deep it still holds",
-    routeModel("try again", ["make it warmer", "shorten it", DRAFT_PROMPT]) === "grok-4-6"
+    routeModel("try again", ["make it warmer", "shorten it", DRAFT_PROMPT]) === REASONING_MODEL
   );
   // Repetition must not beat rephrasing. Both chains refine the same draft, so
   // both must land on the same model.
