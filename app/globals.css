@@ -487,6 +487,56 @@
   height: 0.75rem;
 }
 
+/* Quote blocks — where a reply puts text the user will send somewhere else:
+   an email, a message, a post, one block per version. It reads as the letter
+   it is: body size, body colour, upright. The usual quote treatment — grey,
+   italic, a bar down the side — says "someone else's words", and a draft is
+   the user's own. What sets it apart is the frame, and the Copy button that
+   takes exactly this text and nothing around it.
+
+   The button FLOATS, so the first line runs beside it instead of under it —
+   an absolutely placed one sits on the first line of any long opening. The
+   frame is a flow root for one case only, measured: a single line of body
+   text (26px) is already taller than the button (24px), so the float can
+   outgrow the frame only while the block is EMPTY — the instant a streamed
+   reply has written ">" and nothing after it — when it pokes 5px out. */
+.ai-response .ai-quote-wrap {
+  display: flow-root;
+  margin: 0.875rem 0;
+  padding: 0.875rem 1.125rem;
+  background: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.75rem;
+}
+.ai-response .ai-quote {
+  margin: 0;
+}
+.ai-response .ai-quote-copy {
+  float: right;
+  margin: -0.25rem -0.375rem 0.25rem 0.75rem;
+  padding: 0.25rem 0.625rem;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.25;
+  color: hsl(var(--muted-foreground));
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.375rem;
+  transition: all 0.15s;
+  /* A hand selection across the reply must not pick up the label. */
+  user-select: none;
+}
+.ai-response .ai-quote-copy:hover {
+  color: hsl(var(--foreground));
+  background: hsl(var(--foreground)/0.08);
+}
+/* A quote inside a draft is only indented; it copies flattened into it. */
+.ai-response .ai-quote-nested {
+  margin: 0.5rem 0;
+  padding-left: 0.875rem;
+  border-left: 3px solid hsl(var(--border));
+}
+
 /* Tables */
 .ai-response .ai-table-wrap {
   margin: 0.75rem 0;

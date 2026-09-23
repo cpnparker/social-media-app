@@ -29,8 +29,8 @@
  *     quietly passing against a stale copy;
  *   · the CSS is app/globals.css compiled through the project's own Tailwind;
  *   · the assistant HTML is the real pipeline — parseSourcesFromContent →
- *     formatMarkdown → DOMPurify (the real bundle, run in the page, with the
- *     ADD_ATTR list read out of MessageBubble).
+ *     formatMarkdown → sanitizeReply, the sanitiser MessageBubble calls, run
+ *     in the page against the real DOMPurify bundle.
  *   · the user side is the real splitter too — `<UserText>` maps the same
  *     pieces onto React nodes, and the anchor's class is read out of the
  *     component so the two cannot drift apart unnoticed.
@@ -117,6 +117,7 @@ import { readFileSync, existsSync, mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { execFileSync } from "child_process";
+import * as ts from "typescript";
 import { formatMarkdown, parseSourcesFromContent, splitLinkedText, urlPieces } from "../lib/ai/chat-markdown";
 
 const root = join(__dirname, "..");
@@ -172,11 +173,18 @@ const userLinkCls = captureOnce(
   /href=\{piece\.url\}[\s\S]{0,80}?className="([^"]+)"/,
   "the link in a user's own message"
 );
-const addAttr = captureOnce(
+/** The sanitiser MessageBubble runs. The page runs the same function out of
+ *  chat-markdown.ts, so pinning the call is what makes it the real one. */
+const sanitizeCall = captureOnce(
   BUBBLE,
-  /ADD_ATTR: \[([^\]]*)\]/,
-  "the sanitiser's allowed attributes"
+  /__html: (sanitizeReply)\(DOMPurify, formatMarkdown\(cleanContent, sources\)\)/,
+  "the sanitiser MessageBubble runs"
 );
+/** chat-markdown.ts as a script the page can run — it imports nothing, and
+ *  TypeScript's own transpiler turns it into one. */
+const mdBundle = `var ChatMd = (function () { var m = { exports: {} }; (function (module, exports) {
+${ts.transpileModule(read("lib/ai/chat-markdown.ts"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2019 } }).outputText}
+})(m, m.exports); return m.exports; })();`;
 const listCls = captureOnce(
   PANEL,
   /<div ref=\{scrollContainerRef\} className="([^"]+)">/,
@@ -447,6 +455,7 @@ function harness(css: string, rowsHtml: string, aiRaw: string, mut: Mutation): s
   .h-shell { height: 100vh; display: flex; }
 </style>
 <script>${purify}</script>
+<script>${mdBundle}</script>
 </head><body>
 <div class="h-shell">
   <aside class="hidden lg:block w-[260px] shrink-0"></aside>
@@ -462,8 +471,7 @@ ${rowsHtml}
 </div>
 <script>
   var raw = ${JSON.stringify(aiRaw)};
-  document.getElementById("ai-slot").innerHTML =
-    DOMPurify.sanitize(raw, { ADD_ATTR: [${addAttr[0]}] });
+  document.getElementById("ai-slot").innerHTML = ChatMd.sanitizeReply(DOMPurify, raw);
 </script>
 </body></html>`;
 }
@@ -766,6 +774,7 @@ async function main() {
   assert(proseCls[0].length > 0, `the user bubble's paragraph: "${proseCls[0]}"`);
   assert(bubbleCls[1].length > 0, `the user bubble: "${bubbleCls[1]}"`);
   assert(listCls[0].length > 0, `the message list: "${listCls[0]}"`);
+  assert(sanitizeCall[0] === "sanitizeReply", "the reply is sanitised by sanitizeReply, the function the page runs");
   const css = compileCss();
   assert(css.length > 50000, `app/globals.css compiled through the project's Tailwind (${Math.round(css.length / 1024)}KB)`);
 

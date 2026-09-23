@@ -153,12 +153,21 @@ export function htmlToMarkdown(html: string, depth = 0): string {
       if (found) {
         const items = listItems(found.inner);
         const lines: string[] = [];
+        // Numbered the way HTML numbers it: from the list's start, and an
+        // item with its own value resets the count. Numbering from 1 whatever
+        // the markup said turned a list continued after a paragraph — Tiptap
+        // writes <ol start="3"> for one, and the chat's quote Copy writes the
+        // same — back into "1." (a six-step prompt copied as 1, 2, 1, 2, 1, 2).
+        const startAttr = /\sstart\s*=\s*"?(-?\d+)/i.exec(list[2] || "");
+        let ordinal = startAttr ? parseInt(startAttr[1], 10) : 1;
         for (let n = 0; n < items.length; n++) {
-          const marker = tag === "ol" ? `${n + 1}.` : "-";
+          if (items[n].value !== null) ordinal = items[n].value as number;
+          const marker = tag === "ol" ? `${ordinal}.` : "-";
+          ordinal++;
           // An item is its own text plus, possibly, a nested list. Split them:
           // the text goes on the marker's line, the nested list keeps its own
           // indentation from the recursive call.
-          const text = htmlToMarkdown(items[n], depth + 1).trim();
+          const text = htmlToMarkdown(items[n].inner, depth + 1).trim();
           const parts = text.split("\n");
           lines.push(`${pad}${marker} ${parts[0]}`);
           for (let k = 1; k < parts.length; k++) {
@@ -221,9 +230,10 @@ export function htmlToMarkdown(html: string, depth = 0): string {
   return blocks.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-/** Top-level <li> children of one list's inner HTML, in order. */
-function listItems(inner: string): string[] {
-  const out: string[] = [];
+/** Top-level <li> children of one list's inner HTML, in order, each with
+ *  the value it sets on the count, if it sets one. */
+function listItems(inner: string): { inner: string; value: number | null }[] {
+  const out: { inner: string; value: number | null }[] = [];
   let i = 0;
   while (i < inner.length) {
     const at = inner.slice(i).search(/<li(\s|>)/i);
@@ -231,7 +241,9 @@ function listItems(inner: string): string[] {
     const start = i + at;
     const found = matchBlock(inner, start, "li");
     if (!found) break;
-    out.push(found.inner);
+    const open = /^<li(\s[^>]*)?>/i.exec(inner.slice(start));
+    const value = open && open[1] ? /\svalue\s*=\s*"?(-?\d+)/i.exec(open[1]) : null;
+    out.push({ inner: found.inner, value: value ? parseInt(value[1], 10) : null });
     i = found.end;
   }
   return out;

@@ -86,8 +86,26 @@
  *   - the data-role / data-aria-level anchoring survived, because no fixture
  *     put a data- attribute on a <p>. One now does, with a conflicting
  *     aria-level, and both anchors are pinned.
+ *
+ * MUTATION LOG (2026-09-23) — quote blocks and "Start writing" from a chat
+ * answer, run in a throwaway worktree. The chat now puts every draft in a
+ * quote block, so what the import does with one stopped being an edge case.
+ *   one <blockquote> per line again (the shipped branch)  -> 4 fail  ✓
+ *   the lazy continuation line dropped                    -> 1 fail  ✓
+ *   no floor on quote nesting                             -> 1 fail  ✓
+ *   chatAnswerToImportText without the unwrap             -> 3 fail  ✓
+ *   the route's own strip chain back, no unwrap           -> 1 fail  ✓
+ *   (baseline: exit 0)
+ *
+ * The last is caught ONLY by the assertion that reads the route: every
+ * behavioural assertion drives chatAnswerToImportText, which still works, and
+ * verify-optimizer-chat-origin stays green because it is about who supplies
+ * the text, not what the text becomes. A function the route has stopped
+ * calling passes every test of the function.
  */
-import { plainTextToHtml, sanitizeImportedHtml, toEditorHtml } from "../lib/optimizer/import-html";
+import { readFileSync } from "fs";
+import { join } from "path";
+import { chatAnswerToImportText, plainTextToHtml, sanitizeImportedHtml, toEditorHtml } from "../lib/optimizer/import-html";
 
 let failures = 0;
 const pass = (m: string) => console.log(`  ok    ${m}`);
@@ -531,6 +549,79 @@ console.log(`\n8. Real clipboard shapes: Word desktop, Word for the web, Google 
     "none of the four rewrites lets an attribute, a script or a javascript: URL through",
     `a rewrite widened the sanitiser: ${hostile}`
   );
+}
+
+// ── Quote blocks, and a chat answer brought in with "Start writing" ───────
+//
+// The chat's prompt now puts anything the user will send — an email, a post,
+// an article — alone in a markdown quote block, so the chat can draw it as a
+// draft with its own Copy button. The plain-text floor used to make one
+// <blockquote> PER LINE: the reply in thread 74a2b95f imported as ten, four of
+// them empty, "Cheers," and "Chris" in two different ones, and a quoted
+// "## heading" stayed the literal text "## heading" (a verifier's probe,
+// 2026-09-23). The shapes below are that reply's, with the words changed.
+console.log(`\nQuote blocks, and a chat answer brought in with "Start writing"`);
+{
+  const draft = ["> Hi Sam,", ">", "> Lovely to hear from you.", ">", "> Cheers,", "> Chris"];
+  eq(
+    "a quote block is ONE blockquote, its paragraphs and its sign-off's line break intact",
+    plainTextToHtml(draft.join("\n")),
+    "<blockquote><p>Hi Sam,</p><p>Lovely to hear from you.</p><p>Cheers,<br>Chris</p></blockquote>"
+  );
+  eq(
+    "inside it, a heading, a list and a nested quote are what they are",
+    plainTextToHtml(["> ## Why it matters", ">", "> Para one", "> line two", ">", "> - one", "> - two", ">", "> > nested"].join("\n")),
+    "<blockquote><h2>Why it matters</h2><p>Para one<br>line two</p><ul><li><p>one</p></li><li><p>two</p></li></ul>" +
+      "<blockquote><p>nested</p></blockquote></blockquote>"
+  );
+  eq(
+    "a line without its marker carries on a quoted paragraph, as CommonMark and the chat both read it",
+    plainTextToHtml(["> Thanks for the note and the", "figures we agreed.", ">", "> Best,", "> Chris", "- a list after"].join("\n")),
+    "<blockquote><p>Thanks for the note and the<br>figures we agreed.</p><p>Best,<br>Chris</p></blockquote>" +
+      "<ul><li><p>a list after</p></li></ul>"
+  );
+  // Each level is a recursion. Three thousand levels on one line is nobody's
+  // document; five nested blockquotes, the rest flattened into the last, is.
+  let deep = "";
+  try { deep = plainTextToHtml("> ".repeat(3000) + "deep"); } catch (e: any) { deep = `THREW ${e && e.message}`; }
+  const depth = (deep.match(/<blockquote>/g) || []).length;
+  if (depth === 5 && /<p>deep<\/p>/.test(deep)) pass("quotes nest five deep and no further, and the text survives the flattening");
+  else fail(`3,000 nested markers gave ${depth} blockquotes: ${deep.slice(0, 80)}`);
+
+  // "Start writing" on a chat answer. In the chat the quote block is the
+  // frame a draft is drawn in, not a quotation — brought in as a quotation,
+  // the studio's parser reads the draft's prose as a pull-quote. So the frame
+  // comes off, and the piece is what it would have been before drafts were
+  // framed at all.
+  const answer = ["That reads well.", ""].concat(draft, ["", "Want it shorter?"]).join("\n");
+  const unframed = ["That reads well.", "", "Hi Sam,", "", "Lovely to hear from you.", "", "Cheers,", "Chris", "", "Want it shorter?"].join("\n");
+  if (answer.split("\n").filter((l) => l.charAt(0) === ">").length === draft.length) pass("the answer fixture really carries its draft in a quote block");
+  else fail("the answer fixture has no quote block — the next assertions prove nothing");
+  eq("a chat answer imports as its text with the frame taken off", chatAnswerToImportText(answer), unframed);
+  const imported = toEditorHtml(chatAnswerToImportText(answer));
+  eq("…so the studio gets the draft as body text", imported, toEditorHtml(unframed));
+  hasnt("…and no blockquote", imported, "<blockquote");
+  has(
+    "a \">\" inside fenced code in the answer is code, and stays",
+    chatAnswerToImportText("Run:\n\n```text\n> a quoted line in code\n```"),
+    "> a quoted line in code"
+  );
+  eq(
+    "the chat's own citation tokens and image markdown still come off",
+    chatAnswerToImportText("A claim.[__CITE_1__]\n\n![chart](/api/media/file?path=c.png)\n\n\n\nMore."),
+    "A claim.\n\nMore."
+  );
+
+  // And the route uses it: the text a chat answer becomes is this function's
+  // output, not a second strip chain beside it. Read with comments removed —
+  // a call in a comment is not a call.
+  const route = readFileSync(join(__dirname, "..", "app/api/optimizer/import/route.ts"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, "");
+  const uses = (route.match(/chatText = chatAnswerToImportText\(raw\);/g) || []).length;
+  const other = (route.match(/chatText = raw\b/g) || []).length;
+  if (uses === 1 && other === 0) pass("the import route turns the answer into text with chatAnswerToImportText, and nothing else");
+  else fail(`the route calls chatAnswerToImportText ${uses} time(s) and strips the raw answer itself ${other} time(s)`);
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);

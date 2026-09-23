@@ -20,8 +20,10 @@
  *   - genuinely plain text is converted conservatively, marking only what is
  *     explicitly marked
  *
- * Pure, synchronous and dependency-free, like the rest of lib/optimizer.
+ * Pure and synchronous, like the rest of lib/optimizer. Its one import is the
+ * chat's definition of a quote marker, which is pure string work too.
  */
+import { stripQuoteMarkers } from "../ai/chat-markdown";
 
 /**
  * Tags Tiptap can represent. Anything else is unwrapped (its children are kept)
@@ -514,7 +516,19 @@ function inlineMarks(s: string): string {
  * lib/gdrive/doc-link.ts now does. This is the floor, not the plan.
  */
 export function plainTextToHtml(text: string): string {
-  const src = (text || "").replace(/\r\n?/g, "\n").trim();
+  return plainBlocks((text || "").replace(/\r\n?/g, "\n").trim(), 0);
+}
+
+/** A line that starts a block of its own, so it ends a quoted paragraph
+ *  rather than continuing it lazily. */
+const STARTS_BLOCK = /^(#{1,6}\s|-{3,}$|\*{3,}$|_{3,}$|[-*+•·]\s|\d+[.)]\s)/;
+
+/** How deep quotes nest before the rest are flattened into the one around
+ *  them: each level is a recursion, and a line of two thousand ">" is not a
+ *  document anyone meant. */
+const MAX_QUOTE_DEPTH = 4;
+
+function plainBlocks(src: string, depth: number): string {
   if (!src) return "";
 
   const lines = src.split("\n");
@@ -567,9 +581,36 @@ export function plainTextToHtml(text: string): string {
       continue;
     }
 
+    // A quote block, whole: every line of it, a bare ">" included, and a line
+    // without a marker that carries on a quoted paragraph. ONE <blockquote>,
+    // its contents converted by this same function, so a heading, a list and
+    // the line break in a sign-off survive inside it. This used to make one
+    // <blockquote> PER LINE: the reply in thread 74a2b95f imported as ten of
+    // them, four empty, with "Cheers," and "Chris" in two different ones, and
+    // a quoted "## heading" arrived as the literal text "## heading"
+    // (a verifier's probe, 2026-09-23). The chat now puts every draft in a
+    // quote block, so this stopped being an edge case.
     if (trimmed.charAt(0) === ">") {
       flushPara(); closeList();
-      out.push(`<blockquote><p>${inlineMarks(escapeHtml(trimmed.replace(/^>\s?/, "")))}</p></blockquote>`);
+      const marker = depth < MAX_QUOTE_DEPTH ? /^\s*>\s?/ : /^\s*(?:>\s?)+/;
+      const body: string[] = [];
+      let open = false;
+      while (i < lines.length) {
+        const t = lines[i].trim();
+        if (t.charAt(0) === ">") {
+          const inner = lines[i].replace(marker, "");
+          body.push(inner);
+          open = inner.trim() !== "" && !STARTS_BLOCK.test(inner.trim());
+        } else if (open && t !== "" && !STARTS_BLOCK.test(t)) {
+          body.push(t);
+        } else {
+          break;
+        }
+        i++;
+      }
+      i--;
+      const inner = plainBlocks(body.join("\n").trim(), depth + 1);
+      if (inner) out.push(`<blockquote>${inner}</blockquote>`);
       continue;
     }
 
@@ -650,6 +691,32 @@ export function unwrapLayoutTables(html: string): string {
     return hasText || hasMedia ? whole : "";
   });
   return out;
+}
+
+/**
+ * A chat answer as the text a piece starts from ("Start writing").
+ *
+ * Two chat conventions come off at the door, because the studio is not the
+ * chat. Citation tokens are how the chat numbers its sources. Image markdown
+ * points at /api/media, which the editor cannot resolve and the export path
+ * deliberately skips.
+ *
+ * And the quote block. In the chat it is not a quotation: it is the frame the
+ * prompt tells every model to put a draft in, so the renderer can draw it as
+ * a draft with its own Copy button. Brought into a document as a quotation,
+ * the draft is misread — the studio's parser takes a <blockquote>'s prose as
+ * a pull-quote, not as the body, and every paragraph of a quoted draft
+ * merges into one "quote" block for the rubric to score. So the markers go,
+ * and the draft arrives as it would have before drafts were framed. The
+ * marker is the chat's own definition (stripQuoteMarkers), fenced code
+ * included in what it leaves alone. The cost, accepted: an older reply that
+ * quoted a source imports that quotation as a paragraph.
+ */
+export function chatAnswerToImportText(raw: string): string {
+  const stripped = raw
+    .replace(/\[__CITE_\d+__\]/g, "")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "");
+  return stripQuoteMarkers(stripped).replace(/\n{3,}/g, "\n\n").trim();
 }
 
 export function toEditorHtml(content: string, contentIsHtml?: boolean): string {

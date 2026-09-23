@@ -27,6 +27,11 @@
  *   2026-08-21  entity decode order — ampersand decoded first→ §4 red   ✓
  *   (baseline, unmutated: exit 0)
  *
+ *   2026-09-23  every ordered list numbered from 1 again     → §3 red   ✓
+ *               (the list's start and an item's value ignored — what this
+ *               converter did until the chat's quote Copy, which reuses it,
+ *               copied a six-step prompt as 1, 2, 1, 2, 1, 2)
+ *
  * Worth recording: the non-greedy mutation did NOT trip section 7's "every word
  * survives" check. Losing the nesting leaves "Outer two" in the output, just no
  * longer in the list — so the strongest-sounding property here is blind to the
@@ -95,6 +100,26 @@ console.log(`\n3. Lists`);
     "an ordered list numbers from one",
     htmlToMarkdown("<ol><li><p>First</p></li><li><p>Second</p></li><li><p>Third</p></li></ol>"),
     "1. First\n2. Second\n3. Third"
+  );
+  // HTML's own numbering: from the list's start, and an item with a value
+  // resets the count. Tiptap writes <ol start="3"> for a list resumed after a
+  // paragraph, and the chat's quote Copy writes the same for a list the
+  // renderer split, so numbering from 1 whatever the markup says turned 3, 4
+  // back into 1, 2 — in the plain text only, which is the half nobody looks at.
+  eq(
+    "an ordered list numbers from its start",
+    htmlToMarkdown("<ol start=\"3\"><li><p>Third</p></li><li><p>Fourth</p></li></ol>"),
+    "3. Third\n4. Fourth"
+  );
+  eq(
+    "an item with its own value resets the count",
+    htmlToMarkdown("<ol><li><p>One</p></li><li value=\"7\"><p>Seven</p></li><li><p>Eight</p></li></ol>"),
+    "1. One\n7. Seven\n8. Eight"
+  );
+  eq(
+    "the plain half keeps the numbers too",
+    htmlToPlainText("<ol><li>Open</li></ol><p>- carefully</p><ol start=\"2\"><li>Edit</li><li>Save</li></ol>"),
+    "1. Open\n\n- carefully\n\n2. Edit\n3. Save"
   );
 
   // Nesting is where a non-greedy `[\s\S]*?` match breaks: it closes the outer

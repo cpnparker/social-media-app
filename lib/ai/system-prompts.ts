@@ -321,6 +321,23 @@ export function buildSystemPrompt(ctx: {
    */
   let volatileTail = "";
 
+  // Where the reply will be SENT from, it goes in a quote block, because the
+  // chat draws a quote block as a framed draft with its own Copy button
+  // (lib/ai/chat-markdown.ts, lib/ai/chat-copy.ts). Not in Design Mode:
+  // DesignChat renders with lib/ai/lightweight-markdown.ts, which has no quote
+  // blocks, so the rule would put a literal ">" in front of every line of a
+  // caption there — the incident this rule was written for (thread 74a2b95f),
+  // caused on purpose — and "each block gets a copy button" would be false.
+  // designMode is fixed for a conversation, so the prefix stays cacheable.
+  // scripts/verify-chat-copy.ts holds the rule to every surface that renders
+  // quotes, and out of any that does not.
+  const sendReady = ctx.designMode
+    ? ""
+    : `
+SEND-READY TEXT (an email, message, post, reply, bio — anything the user will paste somewhere):
+- Put it alone in a \`>\` quote block, one block per version, commentary outside. Each block gets a copy button.
+`;
+
   const FORMATTING_GUIDELINES = `
 Guidelines:
 - Be direct, actionable, and creative — avoid generic advice
@@ -363,7 +380,7 @@ When the user asks you to WRITE content, you MUST write like a professional jour
 - If you must include a placeholder (e.g. a figure the client needs to supply), use [CLIENT TO CONFIRM: X] — one brief marker is acceptable; do not litter the draft with them.
 - LENGTH follows the FORM, not the effort. An article or thought-leadership piece earns its length. A message, email, announcement, note or Slack post does not: keep those to what someone will actually read standing up — a handful of short paragraphs, no subheadings unless there is a genuine list of items, and no section scaffolding. An all-company message that runs to two pages is not more thorough, it is less read. When the form is short, the prose-paragraph rules above still apply to how you write; they are not a reason to write more.
 - Do not pad with a restatement of the brief, an introduction to the introduction, or a closing paragraph that summarises what you just said.
-
+${sendReady}
 DATA QUERIES (lists of clients, contracts, tasks, metrics):
 - Use markdown tables with clear column headers. Show ALL returned rows — never truncate.
 

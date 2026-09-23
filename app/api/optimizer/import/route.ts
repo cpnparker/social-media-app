@@ -21,7 +21,7 @@ import { canAccessClient, requireAuth } from "@/lib/permissions";
 import { checkConversationAccess } from "@/lib/ai/access";
 import { detectContentType, DEFAULT_CONTENT_TYPE } from "@/lib/optimizer/content-types";
 import { RUBRIC_VERSION } from "@/lib/optimizer/rubric";
-import { importsAsPlainText, resanitizeEditorHtml, toEditorHtml } from "@/lib/optimizer/import-html";
+import { chatAnswerToImportText, importsAsPlainText, resanitizeEditorHtml, toEditorHtml } from "@/lib/optimizer/import-html";
 import { briefStructureFields, structureUnseenForImport } from "@/lib/optimizer/import-structure";
 
 export const maxDuration = 60;
@@ -258,17 +258,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "That answer has no text to start from" }, { status: 400 });
     }
 
-    // Two strips, both because the studio is not the chat surface.
-    //   Citation tokens are a chat rendering convention and mean nothing here.
-    //   Image markdown points at /api/media, which the editor cannot resolve and
-    //   the export path deliberately skips — leaving it would put broken images
-    //   in an exported document.
+    // The chat's own conventions come off, because the studio is not the chat
+    // surface: citation tokens, image markdown that would export as broken
+    // images, and the quote block every draft is now framed in — see
+    // chatAnswerToImportText for why that one is not a quotation here.
     if (!chatCardHandled) {
-      chatText = raw
-        .replace(/\[__CITE_\d+__\]/g, "")
-        .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
-        .replace(/\n{3,}/g, "\n\n")
-        .trim();
+      chatText = chatAnswerToImportText(raw);
       if (!chatText) {
         return NextResponse.json({ error: "That answer has no text to start from" }, { status: 400 });
       }

@@ -135,6 +135,24 @@ export function markdownToEmailHtml(md: string): { html: string; truncated: bool
 
     if (trimmed === "") { flushPara(para); i++; continue; }
 
+    // Quote block. The chat prompt tells every model to put anything the user
+    // will send — an email, a post — alone in one, and a scheduled run is built
+    // from the same prompt, so without this each line of the draft arrived in
+    // the inbox with "&gt;" in front of it. Its contents are markdown in their
+    // own right, hence the recursion.
+    if (/^ {0,3}>/.test(line)) {
+      flushPara(para);
+      const buf: string[] = [];
+      while (i < lines.length && /^ {0,3}>/.test(lines[i])) {
+        buf.push(lines[i].replace(/^ {0,3}> ?/, ""));
+        i++;
+      }
+      blocks.push(
+        `<blockquote style="margin:12px 0;padding:2px 0 2px 14px;border-left:3px solid #e5e7eb">${markdownToEmailHtml(buf.join("\n")).html}</blockquote>`
+      );
+      continue;
+    }
+
     // Fenced code
     if (/^```/.test(trimmed)) {
       flushPara(para);
