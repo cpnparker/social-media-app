@@ -8,6 +8,21 @@ function getXAIClient() {
   return new OpenAI({ apiKey: process.env.XAI_API_KEY, baseURL: "https://api.x.ai/v1" });
 }
 
+/**
+ * The model behind every content tool below. It was the literal
+ * "grok-4-1-fast" at fifteen call sites — a slug xAI retired on 2026-05-15 and
+ * has since redirected to grok-4.3, reasoning, at grok-4.3's price. Measured
+ * 2026-09-23 on the post generator's own prompt: Grok 4.7 at low effort
+ * answered in ~4.3s against ~7.2s, spent ~50 reasoning tokens against ~480,
+ * and wrote the sharper post, for ~$0.004 a post against ~$0.002. These tools
+ * logged one call in the 90 days before, so speed and quality decide here,
+ * not the rate.
+ */
+const CONTENT_MODEL = "grok-4.7";
+/** "low", explicitly: Grok 4.7 cannot turn reasoning off (it rejects "none"),
+ *  and its default is "high", which would slow an interactive tool for nothing. */
+const CONTENT_REASONING_EFFORT = "low";
+
 /** Wrapper that calls Grok and returns Anthropic-compatible shape with usage logging */
 async function createAndLog(
   params: { model: string; max_tokens: number; messages: { role: string; content: string }[] },
@@ -15,12 +30,20 @@ async function createAndLog(
 ): Promise<{ content: { type: "text"; text: string }[]; usage: { input_tokens: number; output_tokens: number } }> {
   const response = await getXAIClient().chat.completions.create({
     model: params.model,
-    max_tokens: params.max_tokens,
+    // Grok 4 takes max_completion_tokens (providers.ts sends the same).
+    max_completion_tokens: params.max_tokens,
+    reasoning_effort: CONTENT_REASONING_EFFORT,
     messages: params.messages as OpenAI.ChatCompletionMessageParam[],
-  });
+  } as OpenAI.ChatCompletionCreateParamsNonStreaming);
 
   const inputTokens = response.usage?.prompt_tokens || 0;
-  const outputTokens = response.usage?.completion_tokens || 0;
+  // xAI reports reasoning ON TOP of completion_tokens and bills it as output
+  // (docs.x.ai; the chat chains count it the same way — xaiBilledOutputTokens
+  // in lib/ai/providers.ts). Logging completion_tokens alone under-reported
+  // these calls by the whole reasoning share.
+  const outputTokens =
+    (response.usage?.completion_tokens || 0) +
+    ((response.usage as any)?.completion_tokens_details?.reasoning_tokens || 0);
 
   logAiUsage({ model: params.model, source, inputTokens, outputTokens });
 
@@ -98,7 +121,7 @@ async function handleGenerate(body: any) {
       : "Keep it around 80-150 words.";
 
   const message = await createAndLog({
-    model: "grok-4-1-fast",
+    model: CONTENT_MODEL,
     max_tokens: 1024,
     messages: [
       {
@@ -152,7 +175,7 @@ async function handleRewrite(body: any) {
       : "";
 
   const message = await createAndLog({
-    model: "grok-4-1-fast",
+    model: CONTENT_MODEL,
     max_tokens: 1024,
     messages: [
       {
@@ -185,7 +208,7 @@ async function handleHashtags(body: any) {
     platforms?.length > 0 ? `Target platforms: ${platforms.join(", ")}.` : "";
 
   const message = await createAndLog({
-    model: "grok-4-1-fast",
+    model: CONTENT_MODEL,
     max_tokens: 512,
     messages: [
       {
@@ -244,7 +267,7 @@ async function handleAdapt(body: any) {
     `${targetPlatform}: Adapt appropriately for this platform.`;
 
   const message = await createAndLog({
-    model: "grok-4-1-fast",
+    model: CONTENT_MODEL,
     max_tokens: 1024,
     messages: [
       {
@@ -281,7 +304,7 @@ async function handleBestTime(body: any) {
     : "No historical data available — use industry best practices.";
 
   const message = await createAndLog({
-    model: "grok-4-1-fast",
+    model: CONTENT_MODEL,
     max_tokens: 1024,
     messages: [
       {
@@ -327,7 +350,7 @@ async function handleInsights(body: any) {
   const { analyticsData } = body;
 
   const message = await createAndLog({
-    model: "grok-4-1-fast",
+    model: CONTENT_MODEL,
     max_tokens: 1024,
     messages: [
       {
@@ -376,7 +399,7 @@ async function handleAutoTag(body: any) {
   const { title, description } = body;
 
   const message = await createAndLog({
-    model: "grok-4-1-fast",
+    model: CONTENT_MODEL,
     max_tokens: 512,
     messages: [
       {
@@ -425,7 +448,7 @@ async function handleScoreIdea(body: any) {
     : "No historical performance data available — use general social media best practices.";
 
   const message = await createAndLog({
-    model: "grok-4-1-fast",
+    model: CONTENT_MODEL,
     max_tokens: 512,
     messages: [
       {
@@ -480,7 +503,7 @@ Best formats: ${JSON.stringify(performanceModel.formatPerformanceMap || {})}`
     : "";
 
   const message = await createAndLog({
-    model: "grok-4-1-fast",
+    model: CONTENT_MODEL,
     max_tokens: 1024,
     messages: [
       {
@@ -545,7 +568,7 @@ async function handlePromoDrafts(body: any) {
     .join("\n");
 
   const message = await createAndLog({
-    model: "grok-4-1-fast",
+    model: CONTENT_MODEL,
     max_tokens: 2048,
     messages: [
       {
@@ -688,7 +711,7 @@ Rules:
 - Do NOT include the title as an <h1> — it's already shown above the editor`;
 
     const message = await createAndLog({
-      model: "grok-4-1-fast",
+      model: CONTENT_MODEL,
       max_tokens: 4096,
       messages: [
         { role: "user", content: `${systemPrompt}\n\n${userPrompt}` },
@@ -714,7 +737,7 @@ async function handleResearchTopics(body: any) {
     const { title, brief, contentType, topicTags } = body;
 
     const message = await createAndLog({
-      model: "grok-4-1-fast",
+      model: CONTENT_MODEL,
       max_tokens: 2048,
       messages: [
         {
@@ -776,7 +799,7 @@ async function handleSuggestThemes(body: any) {
       : "No prior research available.";
 
     const message = await createAndLog({
-      model: "grok-4-1-fast",
+      model: CONTENT_MODEL,
       max_tokens: 1024,
       messages: [
         {
@@ -825,7 +848,7 @@ async function handleFactCheck(body: any) {
     const { content } = body;
 
     const message = await createAndLog({
-      model: "grok-4-1-fast",
+      model: CONTENT_MODEL,
       max_tokens: 2048,
       messages: [
         {
@@ -879,7 +902,7 @@ async function handleDetectAi(body: any) {
     const { content } = body;
 
     const message = await createAndLog({
-      model: "grok-4-1-fast",
+      model: CONTENT_MODEL,
       max_tokens: 1024,
       messages: [
         {

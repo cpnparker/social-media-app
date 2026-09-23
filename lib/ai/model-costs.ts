@@ -101,7 +101,10 @@ export const MODEL_COSTS: Record<
   // them at its rate. Priced at $3/$15 and $2/$10 they overstated every row
   // logged under either id.
   "grok-3": { inputPer1M: 125, outputPer1M: 250, cachedInputPer1M: 20 },          // serves grok-4.3
-  "grok-3-mini": { inputPer1M: 30, outputPer1M: 50 },                // $0.30/$0.50
+  // Also an alias now: on 2026-09-23 xAI answered "grok-3-mini" as grok-4.3,
+  // reasoning, so it bills at grok-4.3's rate. Was priced at $0.30/$0.50,
+  // under-reporting RFP summaries — which now run on the cheap tier instead.
+  "grok-3-mini": { inputPer1M: 125, outputPer1M: 250, cachedInputPer1M: 20 },    // serves grok-4.3
   "grok-4": { inputPer1M: 125, outputPer1M: 250, cachedInputPer1M: 20 },          // serves grok-4.3
   "mistral-large-latest": { inputPer1M: 200, outputPer1M: 600 },     // $2/$6
   // ── Added 2026-09-23. Priced BEFORE any routing constant names them, which

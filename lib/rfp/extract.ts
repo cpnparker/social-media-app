@@ -8,17 +8,7 @@
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { fetchBlobContent } from "@/lib/ai/blob-utils";
 import { logAiUsage } from "@/lib/ai/usage-logger";
-import OpenAI from "openai";
-
-function getXAIClient() {
-  if (!process.env.XAI_API_KEY) {
-    throw new Error("XAI_API_KEY is not set");
-  }
-  return new OpenAI({
-    apiKey: process.env.XAI_API_KEY,
-    baseURL: "https://api.x.ai/v1",
-  });
-}
+import { CHEAP_MODEL, cheapModelParams, getCheapModelClient } from "@/lib/ai/cheap-model";
 
 /**
  * Fire-and-forget: extract text from a document and generate a summary.
@@ -64,20 +54,21 @@ export async function extractRfpDocumentText(
       return;
     }
 
-    // Generate summary with grok-3-mini
+    // Generate the summary on the cheap tier.
+    //
+    // It was "grok-3-mini", flagged here as UNVERIFIED — and it was retired:
+    // on 2026-09-23 xAI answered that id as grok-4.3, reasoning (192 reasoning
+    // tokens for one sentence), while the ledger priced it as grok-3-mini at
+    // $0.30/$0.50. So every summary under-billed, in the direction that lets
+    // spend run past a cap. A document summary is the cheap tier's job, so it
+    // shares its model and its request rule (lib/ai/cheap-model.ts).
     let summary: string | null = null;
     try {
-      const xai = getXAIClient();
+      const client = getCheapModelClient();
       const truncatedText = extractedText.slice(0, 8000);
 
-      const response = await xai.chat.completions.create({
-        // UNVERIFIED. grok-3-mini is not on xAI's confirmed retirement list,
-        // unlike grok-3 — so it is left alone rather than repointed on a
-        // guess. But if it HAS been retired, this bills the wrong way round:
-        // a redirected call costs grok-4.3's $1.25/$2.50 while the ledger
-        // charges $0.30/$0.50, understating spend against a hard provider
-        // cap. Confirm in the xAI console before trusting this line's cost.
-        model: "grok-3-mini",
+      const response = await client.chat.completions.create({
+        model: CHEAP_MODEL,
         messages: [
           {
             role: "system",
@@ -92,15 +83,14 @@ Keep to 200-400 tokens. Return plain text only.`,
           },
           { role: "user", content: truncatedText },
         ],
-        max_tokens: 500,
-        temperature: 0.3,
+        ...cheapModelParams(500, 0.3),
       });
 
       summary = response.choices?.[0]?.message?.content?.trim() || null;
 
       // Log usage
       logAiUsage({
-        model: "grok-3-mini",
+        model: CHEAP_MODEL,
         source: "rfp-extract",
         inputTokens: response.usage?.prompt_tokens || 0,
         outputTokens: response.usage?.completion_tokens || 0,
