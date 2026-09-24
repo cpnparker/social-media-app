@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { requireAuth } from "@/lib/permissions";
 import { categorizeContentType } from "@/lib/content-type-utils";
+import { nextDay } from "@/lib/date-utils";
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -73,9 +74,10 @@ export async function GET(req: NextRequest) {
 
     if (clientId) contractQuery = contractQuery.eq("id_client", parseInt(clientId, 10));
 
-    // Date range overlap: contract starts before `to` and ends after `from`
-    if (from) contractQuery = contractQuery.gte("date_end", `${from}T00:00:00.000Z`);
-    if (to) contractQuery = contractQuery.lte("date_start", `${to}T23:59:59.999Z`);
+    // Date range overlap: contract starts before `to` and ends after `from`.
+    // TEXT bare-date columns — bare gte / lt(nextDay), see lib/date-utils.ts
+    if (from) contractQuery = contractQuery.gte("date_end", from);
+    if (to) contractQuery = contractQuery.lt("date_start", nextDay(to));
 
     const { data: contractRows, error: contractErr } = await contractQuery;
     if (contractErr) throw contractErr;

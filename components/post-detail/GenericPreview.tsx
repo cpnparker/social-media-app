@@ -87,7 +87,7 @@ export default function GenericPreview({
 
       {/* Content */}
       <div className="px-4 py-3">
-        <p className="text-sm leading-relaxed text-gray-900 dark:text-gray-100 whitespace-pre-wrap">
+        <p className="text-sm leading-relaxed text-gray-900 dark:text-gray-100 whitespace-pre-wrap break-anywhere">
           {content}
         </p>
       </div>

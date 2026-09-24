@@ -1,0 +1,1379 @@
+/**
+ * The Content Optimizer rubric, checked by making it fail.
+ *
+ * The house rule from CLAUDE.md, applied literally: "When you add a check,
+ * prove it fails: reintroduce the bug, watch it go red, then restore." So this
+ * script does not assert that criteria EXIST — it mutates one clean draft into
+ * 30-odd deliberately defective ones and asserts each defect drives its own
+ * criterion down. A check that asserts a constant is present while the thing it
+ * guards is wide open is the documented failure mode in this repo, and a
+ * scoring rubric is the easiest possible place to repeat it: every criterion
+ * here returns a number whether or not it is measuring anything at all.
+ *
+ * The section that matters most is 4. If a criterion cannot be driven down by
+ * a draft that obviously violates it, that criterion is decoration and the
+ * score it feeds is a lie told to a client.
+ *
+ * EVERYTHING IN THE FIXTURES IS FICTIONAL. Vaultline, Nordvale, Kessler and
+ * every .example host are invented, deliberately: the corpus is full of strings
+ * like "according to X, 38% of…", and attributing a fabricated statistic to a
+ * real institution would be a small lie that outlives this file.
+ *
+ *   npx tsx scripts/verify-optimizer-rubric.ts
+ *
+ * MUTATION LOG — proof this script has teeth. Every entry was actually run, in
+ * a throwaway git worktree (never the shared tree: `vercel deploy --prod`
+ * uploads the working directory, so a deliberate break sitting in it can ship).
+ * Re-run these whenever a criterion is added; a fixture nobody has watched go
+ * red is a fixture nobody should trust.
+ *
+ *   2026-08-21  tieredScore() always returns max     → 16 failures, exit 1  ✓
+ *   2026-08-21  keyword-stuffing guard inverted      →  2 failures, exit 1  ✓
+ *   2026-08-21  Math.min(100, sum) capping restored  → 13 failures, exit 1  ✓
+ *   2026-08-21  a criterion deleted from CRITERIA    →  diagnostic, exit 1  ✓
+ *   2026-08-21  injected clock → new Date()          →  1 failure,  exit 1  ✓
+ *   2026-08-21  word-boundary guard removed          →  2 failures, exit 1  ✓
+ *   2026-08-21  skip() marks criteria skipped:false  →  §6b red,   exit 1  ✓
+ *   2026-08-21  coverage counted per criterion       →  §6b red,   exit 1  ✓
+ *   2026-08-21  superlative guard always passes      →  1 failure, exit 1  ✓
+ *   2026-08-21  anon-fact guard skips first person   →  1 failure, exit 1  ✓
+ *   2026-08-21  experience exemption removed         →  1 failure, exit 1  ✓
+ *   2026-08-21  Updated-date preference removed      →  §3b red,   exit 1  ✓ (2nd try — no fixture carried both dates)
+ *   2026-08-21  tldr quality cap removed             →  1 failure, exit 1  ✓ (2nd try — no fixture had fragment bullets)
+ *   (baseline, unmutated: exit 0)
+ *
+ * The tldr fixture round also caught the CRITERION being wrong, not just the
+ * fixture: the first bullet-quality rule demanded a figure or brand name in
+ * every bullet and flagged a perfectly liftable definitional bullet on the
+ * clean draft — the number-sprinkling nudge the anti-checklist bans. The rule
+ * shrank to sentence-shaped-only; substance already has its own criteria.
+ *
+ * One mutation on §6b was SURVIVED and is recorded because the survival is the
+ * finding: replacing `if (queries.length === 0)` in pillar1 with `if (false)`
+ * changed nothing, because the code below it skips again on "no usable terms in
+ * the target queries". The engine has two independent paths to the same skip,
+ * so that is redundancy rather than a hole — but it is exactly the shape of
+ * mutation that would otherwise be logged as proof and prove nothing.
+ *
+ * Two of those mutations were survived by an earlier version of this script and
+ * the fixtures had to be fixed, not the engine: the boundary trap asserted on a
+ * criterion that never calls countTerm, and a deleted criterion crashed at
+ * module scope with no output at all, which reads as a broken script rather
+ * than a broken rubric. Both are the same lesson — a check you have not watched
+ * fail is a check you do not have.
+ *
+ * MUTATION LOG (2026-08-24) — section levels, run in a throwaway worktree.
+ *   sectionLevels hard-coded back to [2,3]        -> 3 fail  ✓
+ *   chunker reverts to its own hard-coded levels  -> 1 fail  ✓
+ *   (baseline: exit 0)
+ *
+ * The second entry is the interesting one. The chunker held a SECOND copy of
+ * the same rule, and while the two disagreed an H1 question heading had no
+ * chunk and so could never be answered — the criterion scored 0/10 on an
+ * article that answers its heading in the next sentence. One rule, two
+ * readers, and only one of them updated.
+ *
+ * MUTATION LOG — promotional load (2026-08-24), throwaway worktree.
+ *   gate A: self-reference no longer required     -> 1 fail  ✓
+ *   gate B: benefit verb no longer required       -> 1 fail  ✓
+ *   gate C: digit exemption removed               -> 1 fail  ✓
+ *   gate C: named-third-party exemption removed   -> 1 fail  ✓
+ *   gate C: experience-marker exemption removed   -> 1 fail  ✓
+ *   criterion computed but never pushed           -> 7 fail  ✓
+ *   (baseline: exit 0)
+ *
+ * THREE OF THESE FIRST SURVIVED, and the reason is the useful part. The defect
+ * fixture proved the criterion goes red, and the exemption fixtures each
+ * tripped two or three guards at once — so removing the figure test was masked
+ * by the experience-marker test, and the fixture passed for a reason that had
+ * nothing to do with what was broken. Every exemption case is now built so
+ * exactly ONE guard is load-bearing. A fixture that passes for the wrong
+ * reason is indistinguishable from one that works.
+ *
+ * MUTATION LOG — register/engine agreement (2026-08-24), throwaway worktree.
+ *   duplicate block reintroduced into pillar3()   -> caught (dupes + pillar)
+ *   a SINGLE copy emitted from the wrong pillar   -> caught (pillar only)
+ *   the criterion declared but never emitted      -> caught (missing)
+ *   (baseline before and after: exit 0)
+ *
+ * The middle entry is why the pillar-membership assertion exists. A single
+ * misplaced copy satisfies every set-equality test — right count, no
+ * duplicates, nothing undeclared, nothing missing — while misreporting TWO
+ * pillars at once: the one that gained the points and the one that lost them.
+ * Counting was never enough.
+ *
+ * MUTATION LOG — the founder's-draft regressions (2026-08-25), throwaway tree.
+ *   'recalls' dropped from the verb list             -> caught
+ *   the em-dash byline rule deleted                  -> caught
+ *   title modifier tolerance reverted                -> caught
+ *   fragment silence removed (flag everything)       -> caught
+ *   em-dash rule loosened to ANY dash anywhere       -> caught
+ *   countWithUnit/inQuote sourcing exemption removed -> caught
+ *   attributed-quote sourcing of figures removed     -> SURVIVED, then caught
+ *   quote-split exemption removed                    -> caught
+ *   placeholder keyword gate emptied                 -> caught
+ *   person-name matching loosened                    -> caught
+ *   'N times' multiplier reverted to x-only          -> caught
+ *   record-claim scan deleted entirely               -> caught
+ *   sourced exemption removed from record claims     -> caught
+ *   production-note gates removed                    -> caught
+ *
+ * Two process notes worth keeping. THREE attribution fixtures first survived
+ * their mutations because each tripped two attribution paths at once — the
+ * draft's own sentences attribute redundantly, so fixtures must be built
+ * artificial and single-shaped. And the attributed-quote sourcing mutation
+ * survived every SCORE-level fixture because the inQuote filter masks the
+ * sourced flag entirely at that layer; it is pinned at the PARSE level, the
+ * only place it is observable.
+ */
+import { computeDraftScores } from "../lib/optimizer/engine";
+import { sectionLevels, parseDraft } from "../lib/optimizer/parse";
+import type { DraftInput } from "../lib/optimizer/engine";
+import { CRITERIA, PILLARS, DROPPED_FROM_AUTHORITYON, RUBRIC_VERSION } from "../lib/optimizer/rubric";
+import { countTerm } from "../lib/optimizer/parse";
+import type { CriterionResult } from "../lib/optimizer/types";
+
+let failures = 0;
+const fail = (m: string, detail?: string) => {
+  failures++;
+  console.log(`  FAIL  ${m}`);
+  if (detail) console.log(`        ${detail}`);
+};
+const pass = (m: string) => console.log(`  ok    ${m}`);
+
+const NOW = new Date("2026-08-21T09:00:00Z");
+
+// ── The clean draft ──────────────────────────────────────────────────────
+// A plausible 1,200-word B2B explainer that should satisfy every criterion.
+
+const CLEAN_BODY = `By Dr. Ilse Brandt
+
+Dr. Brandt is a certified payments architect and the author of two books on transaction routing.
+
+Published 21 August 2026.
+
+Vaultline is a payment orchestration platform that routes card transactions across multiple acquirers from a single integration.
+
+**Key takeaways**
+
+- Orchestration routes each payment to the acquirer most likely to authorise it.
+- Authorisation rates rise around 4% with a fallback route configured, according to the Nordvale Treasury Benchmark.
+- Any useful comparison starts with volume: below EUR 5 million a year, Kessler Institute modelling shows the fees outweigh the gains.
+
+## What is a payment orchestration platform?
+
+A payment orchestration platform sits between a merchant checkout and several acquiring banks, choosing a route for every transaction. Vaultline and its competitors all work this way. The merchant maintains one integration rather than one per acquirer, and the routing logic decides which path a given card takes.
+
+Orchestration is not an acquirer. No orchestration vendor holds merchant funds or carries the settlement risk, which is the distinction finance teams most often get wrong in the first conversation. In our experience that single point causes more confusion than pricing does.
+
+## How much does orchestration improve authorisation rates?
+
+Authorisation rates improve by roughly 4% once a fallback route is live, according to the [2026 Nordvale Treasury Benchmark](https://nordvale.example/benchmark) of 900 European merchants. The gain concentrates in cross-border volume, where a domestic acquirer declines transactions a regional one would take.
+
+"The uplift is real but it is not uniform," says Marta Lindqvist, CFO at Ferrovia Retail. "We measured six points on cross-border and almost nothing domestically."
+
+Smaller merchants see less. Our own analysis of three mid-market retailers found a blended uplift closer to 1.5%, because their volume was almost entirely domestic. We worked with one of those retailers for a full year, and the case study is instructive: for example, its cross-border share never rose above a tenth of total volume.
+
+## Which merchants should not buy orchestration?
+
+Merchants below EUR 5 million in annual card volume rarely recover the cost, according to [Kessler Institute](https://kessler.example/thresholds) modelling of platform fees against authorisation gains. Below that line the fee outruns the benefit before integration effort is counted. We tell merchants below that threshold to wait, which costs us deals and remains the correct advice.
+
+Single-market merchants with one strong acquirer are the second group. Orchestration earns its fee on route diversity, and a merchant with no diversity to exploit is buying an abstraction layer for its own sake.
+
+## How do the two arrangements compare?
+
+| Dimension | Single provider | Orchestration layer |
+| --- | --- | --- |
+| Integrations to maintain | One | One plus an adapter per route |
+| Behaviour on provider outage | Volume stops | Volume reroutes |
+| Retry across acquirers | Not available | Available |
+| Reconciliation | One provider report | One normalised feed |
+| Commercial leverage | One rate card | Competing rate cards |
+
+The table understates the reconciliation difference. A normalised feed across five providers is the single most valuable operational output, and finance teams consistently underestimate it when they build the business case.
+
+## What does a migration involve?
+
+Migration runs in three stages, and the sequencing matters more than the tooling.
+
+1. Shadow routing, where the platform observes live traffic and scores decisions without taking any.
+2. Partial cutover, moving a single low-risk corridor onto real routing.
+3. Full cutover, once the corridor has run clean for a full settlement cycle.
+
+Shadow routing is the stage merchants try to skip. In every migration recorded since 2024, the shadow period surfaced at least one routing rule that would have declined good traffic. [Kessler Institute](https://kessler.example/migrations) research on 140 migrations found the same pattern.
+
+A fair comparison of vendors therefore has to include migration support, not just routing features and platform fees.
+
+## The bottom line
+
+Payment orchestration is a control layer rather than a payment provider, and it pays for itself on route diversity rather than on fees. A merchant with cross-border volume above EUR 5 million should model it seriously. A single-market merchant below that line should not.`;
+
+const CLEAN: DraftInput = {
+  body: CLEAN_BODY,
+  title: "Payment orchestration platform comparison: how to choose",
+  targetQueries: ["payment orchestration platform comparison"],
+  format: "explainer",
+  brandName: "Vaultline",
+  brandAliases: ["Vaultline"],
+  authorName: "Ilse Brandt",
+  now: NOW,
+};
+
+function withBody(body: string, over?: Partial<DraftInput>): DraftInput {
+  const base: DraftInput = {
+    body: body, title: CLEAN.title, targetQueries: CLEAN.targetQueries,
+    format: CLEAN.format, brandName: CLEAN.brandName, brandAliases: CLEAN.brandAliases,
+    authorName: CLEAN.authorName, now: NOW,
+  };
+  if (over) {
+    const keys = Object.keys(over);
+    for (let i = 0; i < keys.length; i++) (base as any)[keys[i]] = (over as any)[keys[i]];
+  }
+  return base;
+}
+
+/** Replace once, and fail loudly if the anchor is missing — a mutation that
+ *  silently no-ops turns a red fixture green and nobody notices. */
+function mutate(body: string, from: string, to: string): string {
+  if (body.indexOf(from) < 0) throw new Error("Fixture anchor not found: " + from.slice(0, 60));
+  return body.replace(from, to);
+}
+
+function criterionOf(scores: ReturnType<typeof computeDraftScores>, key: string): CriterionResult | null {
+  for (let i = 0; i < scores.pillars.length; i++) {
+    const cs = scores.pillars[i].criteria;
+    for (let c = 0; c < cs.length; c++) if (cs[c].key === key) return cs[c];
+  }
+  return null;
+}
+
+// Wrapped because the engine throws on an unknown criterion key — which is the
+// right behaviour there, but at module scope it would abort this script before
+// a single line of output, and "no output" reads like a broken script rather
+// than a broken rubric. Deleting a criterion from CRITERIA is exactly the
+// mutation that lands here.
+let cleanScores: ReturnType<typeof computeDraftScores>;
+try {
+  cleanScores = computeDraftScores(CLEAN);
+} catch (e) {
+  console.log(`\nverify-optimizer-rubric\n\n  FAIL  the engine threw on the clean draft: ${String(e)}`);
+  console.log(`        A criterion is referenced by the engine but missing from CRITERIA in rubric.ts.\n`);
+  process.exit(1);
+}
+
+// ── 1. Rubric shape ──────────────────────────────────────────────────────
+
+console.log(`\nverify-optimizer-rubric   rubric v${RUBRIC_VERSION} · ${CRITERIA.length} criteria`);
+console.log(`\n1. Rubric shape`);
+
+let weightSum = 0;
+for (let i = 0; i < PILLARS.length; i++) weightSum += PILLARS[i].weightBp;
+weightSum === 10000
+  ? pass(`weights sum to exactly 10000bp (${PILLARS.map((p) => p.weightBp).join("/")})`)
+  : fail(`weights sum to ${weightSum}bp, not 10000`);
+
+const seenKeys: { [k: string]: boolean } = {};
+let dupKey = "";
+for (let i = 0; i < CRITERIA.length; i++) {
+  if (seenKeys[CRITERIA[i].key]) dupKey = CRITERIA[i].key;
+  seenKeys[CRITERIA[i].key] = true;
+}
+dupKey ? fail(`duplicate criterion key: ${dupKey}`) : pass(`${CRITERIA.length} unique criterion keys`);
+
+let ungraded = 0;
+for (let i = 0; i < CRITERIA.length; i++) {
+  const c = CRITERIA[i];
+  // "X" is the research's own bottom rung — a measured vendor association with
+  // no causal control. It exists so a check with a big effect size and a weak
+  // warrant can say so, instead of borrowing a grade it has not earned.
+  const gradeOk = ["A", "A-", "B", "B/C", "C", "D", "X"].indexOf(c.evidence) >= 0;
+  const rollOk = ["retrievability", "citability", "both"].indexOf(c.rollUp) >= 0;
+  if (!gradeOk || !rollOk) { ungraded++; fail(`${c.key} is missing an evidence grade or roll-up`); }
+}
+if (!ungraded) pass("every criterion carries an evidence grade and a roll-up");
+
+let reintroduced = "";
+for (let i = 0; i < CRITERIA.length; i++) {
+  if (DROPPED_FROM_AUTHORITYON.indexOf(CRITERIA[i].key) >= 0) reintroduced = CRITERIA[i].key;
+}
+reintroduced
+  ? fail(`${reintroduced} is a page-only AuthorityOn criterion and cannot fire on a draft`)
+  : pass(`none of the ${DROPPED_FROM_AUTHORITYON.length} dropped AuthorityOn criteria reappeared`);
+
+// ── 2. The clean draft ───────────────────────────────────────────────────
+
+// ── 1c. What the engine EMITS is exactly what the rubric DECLARES ────────
+//
+// The rubric is the register of what this tool scores; the engine is six
+// pillar functions that each push their own results. Nothing tied the two
+// together, and they drifted: `anonymous-first-person-facts` was emitted from
+// BOTH pillar3() and pillar4() — byte-identical blocks, 1,889 characters each
+// — while rubric.ts declares it pillar 4. The engine returned 33 results for
+// 32 declared criteria, and pillar 3's renormalised score (earned/max*100 over
+// its own criteria) was computed over a 10-point criterion belonging to
+// another pillar. On a real 2,000-word draft that read 61 where it should read
+// 55, silently, for every piece with a brand and at least one statistic.
+//
+// Nothing caught it. Every criterion still had a fixture, every fixture still
+// went red, the duplicate scored the same in both places, and a duplicated
+// PASS is invisible in a total. The assertion has to be about the SET, which
+// no per-criterion check can express.
+console.log(`\n1c. The engine emits exactly the declared criteria, once each`);
+{
+  const scored = computeDraftScores(withBody(CLEAN_BODY));
+  const emitted: string[] = [];
+  for (let i = 0; i < scored.pillars.length; i++) {
+    for (let j = 0; j < scored.pillars[i].criteria.length; j++) emitted.push(scored.pillars[i].criteria[j].key);
+  }
+
+  const counts: { [k: string]: number } = {};
+  for (let i = 0; i < emitted.length; i++) counts[emitted[i]] = (counts[emitted[i]] || 0) + 1;
+  const dupes = Object.keys(counts).filter((k) => counts[k] > 1);
+  dupes.length === 0
+    ? pass(`no criterion is emitted twice (${emitted.length} results)`)
+    : fail(`emitted more than once: ${dupes.join(", ")}`,
+           "Two pillar functions are pushing the same criterion, so one pillar is renormalising over points that are not its own.");
+
+  const declared: { [k: string]: boolean } = {};
+  for (let i = 0; i < CRITERIA.length; i++) declared[CRITERIA[i].key] = true;
+  const undeclared = Object.keys(counts).filter((k) => !declared[k]);
+  undeclared.length === 0
+    ? pass("every emitted key is declared in CRITERIA")
+    : fail(`emitted but not declared: ${undeclared.join(", ")}`);
+
+  const missing: string[] = [];
+  for (let i = 0; i < CRITERIA.length; i++) if (!counts[CRITERIA[i].key]) missing.push(CRITERIA[i].key);
+  missing.length === 0
+    ? pass(`all ${CRITERIA.length} declared criteria are emitted`)
+    : fail(`declared but never emitted: ${missing.join(", ")}`,
+           "A criterion in the register that no pillar function pushes is dead weight the UI will never show.");
+
+  // The stronger form, and the one that pins the ACTUAL defect: a criterion
+  // must come out of the pillar the rubric assigns it to. A single copy in the
+  // wrong pillar would satisfy every assertion above and still misreport two
+  // pillars at once.
+  const pillarIdByName: { [k: string]: number } = {};
+  for (let i = 0; i < PILLARS.length; i++) pillarIdByName[PILLARS[i].name] = PILLARS[i].id;
+  const declaredPillar: { [k: string]: number } = {};
+  for (let i = 0; i < CRITERIA.length; i++) declaredPillar[CRITERIA[i].key] = CRITERIA[i].pillar;
+  const misplaced: string[] = [];
+  for (let i = 0; i < scored.pillars.length; i++) {
+    const pid = pillarIdByName[scored.pillars[i].name];
+    for (let j = 0; j < scored.pillars[i].criteria.length; j++) {
+      const k = scored.pillars[i].criteria[j].key;
+      if (declaredPillar[k] !== undefined && declaredPillar[k] !== pid) misplaced.push(`${k} (declared p${declaredPillar[k]}, emitted from p${pid})`);
+    }
+  }
+  misplaced.length === 0
+    ? pass("every criterion is emitted from the pillar the rubric assigns it")
+    : fail(`emitted from the wrong pillar: ${misplaced.join("; ")}`,
+           "Both the pillar that gained it and the pillar that lost it are renormalising over the wrong denominator.");
+}
+
+console.log(`\n2. The clean draft scores well across every pillar`);
+{
+  let weak = 0;
+  for (let i = 0; i < cleanScores.pillars.length; i++) {
+    const p = cleanScores.pillars[i];
+    if (p.score < 85) { weak++; fail(`${p.name} scores ${p.score} on the clean draft`, p.criteria.filter((c) => !c.skipped && !c.passed).map((c) => c.key).join(", ") || "(all criteria passed)"); }
+  }
+  if (!weak) pass(`all six pillars >= 85 (overall ${cleanScores.overall}, ${cleanScores.grade})`);
+  pass(`retrievability ${cleanScores.retrievability} · citability ${cleanScores.citability}`);
+}
+
+// ── 3. Every criterion fires on a real defect ────────────────────────────
+
+interface Defect { key: string; label: string; input: DraftInput }
+
+const D: Defect[] = [];
+
+// Pillar 1
+D.push({ key: "title-query-alignment", label: "title shares nothing with the query", input: withBody(CLEAN_BODY, { title: "Some thoughts on modern finance" }) });
+D.push({ key: "query-terms-in-headings", label: "query terms stripped from every heading", input: withBody(
+  CLEAN_BODY
+    .replace("## What is a payment orchestration platform?", "## What is it?")
+    .replace("## How much does orchestration improve authorisation rates?", "## How much does it help?")
+    .replace("## Which merchants should not buy orchestration?", "## Who should not buy?")
+    .replace("## How do the two arrangements compare?", "## How do they differ?")
+    .replace("## What does a migration involve?", "## What is involved?")) });
+D.push({ key: "query-terms-in-body", label: "query vocabulary absent from the body", input: withBody(CLEAN_BODY, { targetQueries: ["chargeback dispute automation software"] }) });
+
+// Pillar 2
+D.push({ key: "statistic-density", label: "every statistic removed", input: withBody(
+  CLEAN_BODY
+    .replace(/\b4%/g, "a little").replace(/6%/g, "more").replace(/1\.5%/g, "less")
+    .replace(/EUR 5 million/g, "a modest amount").replace(/8 basis points/g, "a small fee")
+    .replace(/4 million EUR/g, "that volume").replace(/3200 EUR/g, "real money")
+    .replace(/900 European merchants/g, "many European merchants")
+    .replace(/140 migrations/g, "many migrations")) });
+// mutate() throws when its anchor is missing. These three used a plain
+// .replace() first time round and silently no-op'd after the clean draft was
+// edited — the fixtures went green while testing nothing at all.
+D.push({ key: "stat-source-adjacency", label: "attributions moved out of the statistic's sentence", input: withBody(
+  mutate(mutate(mutate(CLEAN_BODY,
+    "Authorisation rates improve by roughly 4% once a fallback route is live, according to the [2026 Nordvale Treasury Benchmark](https://nordvale.example/benchmark) of 900 European merchants.",
+    "Authorisation rates improve by roughly 4% once a fallback route is live. That number comes from a benchmark of 900 European merchants."),
+    "Authorisation rates rise around 4% with a fallback route configured, according to the Nordvale Treasury Benchmark.",
+    "Authorisation rates rise around 4% with a fallback route configured."),
+    "Merchants below EUR 5 million in annual card volume rarely recover the cost, according to [Kessler Institute](https://kessler.example/thresholds) modelling of platform fees against authorisation gains.",
+    "Merchants below EUR 5 million in annual card volume rarely recover the cost.")) });
+D.push({ key: "attributed-quotes", label: "the attributed quotation removed", input: withBody(
+  mutate(CLEAN_BODY,
+    `"The uplift is real but it is not uniform," says Marta Lindqvist, CFO at Ferrovia Retail. "We measured six points on cross-border and almost nothing domestically."`,
+    "The uplift is real but it is not uniform, and cross-border volume is where it concentrates.")) });
+D.push({ key: "external-reference-links", label: "every external citation link removed", input: withBody(
+  CLEAN_BODY.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")) });
+
+D.push({
+  key: "unverifiable-superlatives",
+  label: "puffery inserted with nothing behind it",
+  input: withBody(CLEAN_BODY.replace(
+    "Vaultline is a payment orchestration platform that routes",
+    "Vaultline is a world-class, industry-leading payment orchestration platform with unparalleled reach that routes"
+  )),
+});
+// The brand carries the facts in CLEAN_BODY; rewriting them to "we/our" with
+// no brand in the sentence is exactly the Amrize failure this guard exists
+// for. Sentences keep their statistics so the stat→sentence join still fires.
+D.push({
+  key: "anonymous-first-person-facts",
+  label: "fact sentences rewritten to anonymous we/our",
+  input: withBody(CLEAN_BODY
+    .replace(
+      "Smaller merchants see less.",
+      "We processed 2 billion transactions across our network last year. Smaller merchants see less."
+    )
+    .replace(
+      "Migration runs in three stages,",
+      "We migrated 400 clients to the platform in 2025, and migration runs in three stages,"
+    )),
+});
+
+// Pillar 3
+D.push({
+  key: "tldr-block",
+  label: "takeaway bullets reduced to fragments nothing could quote",
+  input: withBody(CLEAN_BODY
+    .replace("- Orchestration routes each payment to the acquirer most likely to authorise it.", "- Faster routing")
+    .replace("- Authorisation rates rise around 4% with a fallback route configured, according to the Nordvale Treasury Benchmark.", "- Better authorisation")
+    .replace("- Any useful comparison starts with volume: below EUR 5 million a year, Kessler Institute modelling shows the fees outweigh the gains.", "- Lower total fees")),
+});
+
+D.push({ key: "answer-first-position", label: "the answer buried past the 30% mark", input: withBody(
+  mutate(CLEAN_BODY,
+    "Vaultline is a payment orchestration platform that routes card transactions across multiple acquirers from a single integration.\n\n",
+    "There is a lot of noise in this category, and most of it comes from vendors with something to sell. Before getting to the substance it is worth setting out how this piece is organised and who it is for. Readers who have been through a migration will recognise the pattern and may prefer to skip ahead to the later sections, which go into more operational detail than the opening does.\n\n")) });
+// THROUGH mutate(), NOT raw .replace(). This used two bare .replace() calls,
+// and the second needle had drifted from the fixture — "Below EUR 5 million in
+// annual volume..." against the fixture's "Any useful comparison starts with
+// volume: below EUR 5 million a year...". A non-matching needle is a SILENT
+// no-op, so the mutation removed only the heading and never touched the bullets
+// for as long as it has existed. It passed anyway, because the detector keyed
+// on the heading; the day the detector started reading structure, the fixture's
+// own bug surfaced. mutate() throws on a missing anchor, which is the whole
+// reason it exists.
+D.push({ key: "tldr-block", label: "key-takeaways block removed", input: withBody(
+  mutate(
+    mutate(CLEAN_BODY, "**Key takeaways**\n\n", ""),
+    "- Orchestration routes each payment to the acquirer most likely to authorise it.\n- Authorisation rates rise around 4% with a fallback route configured, according to the Nordvale Treasury Benchmark.\n- Any useful comparison starts with volume: below EUR 5 million a year, Kessler Institute modelling shows the fees outweigh the gains.\n\n",
+    "")) });
+D.push({ key: "question-headings", label: "question headings turned into statements", input: withBody(
+  CLEAN_BODY
+    .replace("## What is a payment orchestration platform?", "## Payment orchestration platform basics")
+    .replace("## How much does orchestration improve authorisation rates?", "## Orchestration authorisation rate uplift")
+    .replace("## Which merchants should not buy orchestration?", "## Merchants who should avoid orchestration")
+    .replace("## How do the two arrangements compare?", "## Arrangement comparison")
+    .replace("## What does a migration involve?", "## Migration stages")) });
+D.push({ key: "heading-answer-adjacency", label: "question headings followed by throat-clearing", input: withBody(
+  CLEAN_BODY
+    .replace("A payment orchestration platform sits between", "Finance teams ask this in most vendor conversations, and the honest answer starts with a caveat. Much depends on where a merchant is starting from. A system of this kind sits between")
+    .replace("Authorisation rates improve by roughly 4%", "Vendors quote a wide range here and most of the numbers are marketing. Setting those aside for a moment, rates improve by roughly 4%")
+    .replace("Merchants below EUR 5 million in annual card volume rarely recover", "That depends on more than one variable, and anyone claiming otherwise is selling something. Businesses below EUR 5 million in annual card volume rarely recover")) });
+D.push({ key: "extractable-definition", label: "the definition sentence made non-copular", input: withBody(
+  mutate(CLEAN_BODY,
+    "Vaultline is a payment orchestration platform that routes card transactions across multiple acquirers from a single integration.",
+    "When merchants outgrow a single acquirer, the thing they usually reach for is the sort of routing layer that Vaultline and a handful of competitors now sell.")
+    .replace("A payment orchestration platform sits between a merchant checkout and several acquiring banks, choosing a route for every transaction.",
+             "Such a routing layer sits between a merchant checkout and several acquiring banks, choosing a route for every transaction.")) });
+
+// Pillar 4
+D.push({ key: "pronoun-opening-chunks", label: "sections opening on bare pronouns", input: withBody(
+  CLEAN_BODY
+    .replace("A payment orchestration platform sits between", "It sits between")
+    .replace("Authorisation rates improve by roughly 4%", "They improve by roughly 4%")
+    .replace("Merchants below EUR 5 million in annual card volume rarely recover", "These rarely recover")
+    .replace("Migration runs in three stages", "This is done in three stages")) });
+D.push({ key: "canonical-name-consistency", label: "four surface forms of one brand", input: withBody(
+  CLEAN_BODY.replace("Vaultline and its competitors all work this way.", "VaultLine, Vault Line and VL all work this way."),
+  { brandAliases: ["Vaultline", "VaultLine", "Vault Line", "VL"] }) });
+D.push({ key: "chunk-entity-naming", label: "sections stop naming their subject", input: withBody(
+  CLEAN_BODY
+    .replace("A payment orchestration platform sits between a merchant checkout", "The arrangement sits between a merchant checkout")
+    .replace("Vaultline and its competitors all work this way.", "Most vendors work this way.")
+    .replace("Authorisation rates improve by roughly 4%", "Rates improve by roughly 4%")
+    .replace("Merchants below EUR 5 million", "Businesses below EUR 5 million")
+    .replace("Migration runs in three stages", "Rollout runs in three stages")
+    .replace("The table understates the reconciliation difference.", "The table understates one difference.")
+    .replace("Payment orchestration is a control layer rather than a payment provider", "The category is a control layer rather than a provider")) });
+D.push({ key: "entity-defined-once", label: "three competing definitions of the same entity", input: withBody(
+  CLEAN_BODY.replace("Vaultline and its competitors all work this way.",
+    "Vaultline is a fraud-scoring service used by mid-market retailers everywhere. Vaultline is a treasury reporting tool that finance teams rely on daily.")) });
+
+// Pillar 5
+D.push({ key: "byline-present", label: "byline removed", input: withBody(
+  CLEAN_BODY.replace("By Dr. Ilse Brandt\n\n", ""), { authorName: undefined }) });
+D.push({ key: "credential-line", label: "credential line removed", input: withBody(
+  CLEAN_BODY.replace("Dr. Brandt is a certified payments architect and the author of two books on transaction routing.\n\n", "")) });
+D.push({ key: "experience-markers", label: "first-hand markers removed", input: withBody(
+  mutate(mutate(mutate(CLEAN_BODY,
+    "In our experience that single point causes", "That single point causes"),
+    "Our own analysis of three mid-market retailers found", "Published figures for three mid-market retailers show"),
+    "We worked with one of those retailers for a full year, and the case study is instructive: for example,",
+    "One of those retailers ran for a full year, and the case study is instructive: for example,")) });
+// Promotional load. The clean draft says what it DID; the defect says what it
+// OFFERS, to a generic audience, with nothing behind it — which is the whole
+// distinction the criterion measures. The mutation deliberately keeps the
+// first person, because "we" is not the defect and a detector that thought so
+// would flag every honest sentence in a brand's own article.
+// Placeholders: the clean draft has none; the defect leaves one production
+// note in the copy, the way five reached the founder's real draft.
+D.push({ key: "placeholder-guard", label: "a production note left in the copy", input: withBody(
+  mutate(CLEAN_BODY,
+    "In our experience that single point causes",
+    "[Professional headshot image] In our experience that single point causes")) });
+
+// One person, two spellings, one keystroke apart — the Kitchin/Kitchn shape.
+D.push({ key: "person-name-consistency", label: "a surname loses a letter in one mention", input: withBody(
+  mutate(CLEAN_BODY,
+    "By Dr. Ilse Brandt",
+    "By Dr. Ilse Brandt\n\nIlse Brandt led the routing work, and colleagues credit Ilse Brant with the acquirer scoring model.")) });
+
+D.push({ key: "promotional-claims", label: "an evidence-free benefit claim replaces a sourced one", input: withBody(
+  mutate(CLEAN_BODY,
+    "We worked with one of those retailers for a full year, and the case study is instructive: for example, its cross-border share never rose above a tenth of total volume.",
+    "We help businesses transform their payment performance and unleash growth.")) });
+
+D.push({ key: "worked-example", label: "worked example removed", input: withBody(
+  mutate(CLEAN_BODY,
+    "We worked with one of those retailers for a full year, and the case study is instructive: for example, its cross-border share never rose above a tenth of total volume.",
+    "None of them saw cross-border rise above a tenth of total volume.")) });
+
+// Pillar 6
+D.push({ key: "dateline-recency", label: "dateline removed", input: withBody(
+  CLEAN_BODY.replace("Published 21 August 2026.\n\n", "")) });
+D.push({ key: "stale-year-guard", label: "stale 'as of' claims added", input: withBody(
+  CLEAN_BODY
+    .replace("The gain concentrates in cross-border volume", "As of 2023, the gain concentrates in cross-border volume")
+    .replace("The table understates the reconciliation difference.", "The latest 2022 data shows the table understates the reconciliation difference.")) });
+D.push({ key: "current-year-stats", label: "every statistic re-dated to 2020", input: withBody(
+  CLEAN_BODY
+    .replace("2026 Nordvale Treasury Benchmark", "2020 Nordvale Treasury Benchmark")
+    .replace("Published 21 August 2026.", "Published 21 August 2026. Figures below are from 2020.")
+    .replace("In every migration recorded since 2024", "In every migration recorded since 2018")) });
+D.push({ key: "sentence-length-norm", label: "sentences fused into 30+ word runs", input: withBody(
+  CLEAN_BODY.replace(/\. ([A-Z])/g, (_m, c) => "; " + String(c).toLowerCase())) });
+D.push({ key: "comparative-format-match", label: "comparison table replaced with prose", input: withBody(
+  CLEAN_BODY.replace(
+    `| Dimension | Single provider | Orchestration layer |
+| --- | --- | --- |
+| Integrations to maintain | One | One plus an adapter per route |
+| Behaviour on provider outage | Volume stops | Volume reroutes |
+| Retry across acquirers | Not available | Available |
+| Reconciliation | One provider report | One normalised feed |
+| Commercial leverage | One rate card | Competing rate cards |`,
+    "A single provider means one set of integrations to maintain, and an orchestration layer means the same integration plus an adapter for each additional route. On a provider outage the single-provider merchant stops taking volume, while the orchestrated merchant reroutes it.")
+    .replace("1. Shadow routing, where the platform observes live traffic and scores decisions without taking any.\n2. Partial cutover, moving a single low-risk corridor onto real routing.\n3. Full cutover, once the corridor has run clean for a full settlement cycle.",
+             "Shadow routing comes first, where the platform observes live traffic and scores decisions without taking any. Partial cutover follows, moving a single low-risk corridor onto real routing. Full cutover comes last, once the corridor has run clean for a full settlement cycle."),
+  { targetQueries: ["best payment orchestration platform comparison"] }) });
+D.push({ key: "heading-hierarchy", label: "a level skip and a competing H1", input: withBody(
+  CLEAN_BODY
+    .replace("## What does a migration involve?", "#### What does a migration involve?")
+    .replace("## The bottom line", "# Payment orchestration in summary\n\n## The bottom line")) });
+D.push({ key: "heading-density", label: "every subheading removed", input: withBody(
+  CLEAN_BODY.replace(/^## .*$/gm, "").replace(/\n{3,}/g, "\n\n")) });
+D.push({ key: "keyword-stuffing-guard", label: "one term stuffed to ~5% of all words", input: withBody(
+  CLEAN_BODY + "\n\n" + new Array(46).join("Orchestration orchestration orchestration decisions matter. ")) });
+D.push({ key: "ai-tell-guard", label: "AI-tell vocabulary added", input: withBody(
+  CLEAN_BODY
+    .replace("Orchestration is not an acquirer.", "It is worth taking a moment to delve into this. Orchestration is not just an acquirer, it is a control plane. Merchants can leverage that seamlessly.")) });
+
+console.log(`\n3. Every criterion goes red on a draft that violates it   [${D.length} defect fixtures]`);
+{
+  const covered: { [k: string]: boolean } = {};
+  for (let i = 0; i < D.length; i++) {
+    const d = D[i];
+    covered[d.key] = true;
+    let after;
+    try { after = computeDraftScores(d.input); }
+    catch (e) { fail(`${d.key}: fixture threw`, String(e)); continue; }
+    const before = criterionOf(cleanScores, d.key);
+    const now = criterionOf(after, d.key);
+    if (!before || !now) { fail(`${d.key}: criterion missing from results`); continue; }
+    if (before.skipped) { fail(`${d.key}: skipped on the CLEAN draft — the fixture never exercises it`, before.skipReason || ""); continue; }
+    if (now.skipped) { pass(`${d.key.padEnd(28)} ${before.earned} → skipped  (${d.label})`); continue; }
+    if (now.earned < before.earned) {
+      pass(`${d.key.padEnd(28)} ${before.earned} → ${now.earned}  (${d.label})`);
+    } else {
+      fail(`${d.key.padEnd(28)} ${before.earned} → ${now.earned} — the defect did not move it`,
+           `fixture: ${d.label}. Either the detector is not reading what the mutation changed, or the mutation missed.`);
+    }
+  }
+  let uncovered: string[] = [];
+  for (let i = 0; i < CRITERIA.length; i++) if (!covered[CRITERIA[i].key]) uncovered.push(CRITERIA[i].key);
+  uncovered.length === 0
+    ? pass(`all ${CRITERIA.length} criteria have a defect fixture`)
+    : fail(`${uncovered.length} criteria have NO defect fixture: ${uncovered.join(", ")}`,
+           "An unfixtured criterion is untested — the house rule exists because one of those was reported closed while wide open.");
+}
+
+// ── 3b. The Updated date wins ────────────────────────────────────────────
+console.log(`\n3b. Dateline prefers the Updated date`);
+{
+  const both = withBody(CLEAN_BODY.replace(
+    "Published 21 August 2026.",
+    "Published 3 January 2025.\n\nUpdated 20 August 2026."
+  ));
+  const r = computeDraftScores(both);
+  let dPts = -1;
+  for (let i = 0; i < r.pillars.length; i++)
+    for (let c = 0; c < r.pillars[i].criteria.length; c++)
+      if (r.pillars[i].criteria[c].key === "dateline-recency") dPts = r.pillars[i].criteria[c].earned;
+  // Precondition: the fixture must genuinely carry two dates where the choice
+  // changes the outcome — January 2025 is >365 days from NOW, August 2026 is
+  // <90. If both dates fell in the same band this would prove nothing.
+  dPts === 10
+    ? pass("a page with Published Jan-2025 and Updated Aug-2026 scores on the Updated date")
+    : fail(`dateline-recency earned ${dPts} — the first date won, so refreshing a page is invisible to the one grade-A signal in the rubric`);
+}
+
+// ── 4. Renormalisation ───────────────────────────────────────────────────
+
+console.log(`\n4. Pillars renormalise (fix (c)) — a perfect pillar reaches 100, not its point total`);
+{
+  // Pillar point totals are deliberately unequal (40/50/60/40/40/75). Under
+  // AuthorityOn's Math.min(100, sum) that made a perfect pillar cap below 100.
+  let bad = 0;
+  for (let i = 0; i < cleanScores.pillars.length; i++) {
+    const p = cleanScores.pillars[i];
+    let earned = 0, max = 0;
+    for (let c = 0; c < p.criteria.length; c++) {
+      if (p.criteria[c].skipped) continue;
+      earned += p.criteria[c].earned; max += p.criteria[c].maxPoints;
+    }
+    const expected = max > 0 ? Math.round((earned / max) * 10000) / 100 : 0;
+    if (Math.abs(p.score - expected) > 0.011) { bad++; fail(`${p.name}: score ${p.score} != earned/max*100 (${expected})`); }
+    if (p.score > 100.01) { bad++; fail(`${p.name}: score ${p.score} exceeds 100`); }
+  }
+  if (!bad) pass("every pillar score equals earned/applicableMax*100");
+
+  const recomputed = (() => {
+    let tot = 0, wbp = 0;
+    for (let i = 0; i < cleanScores.pillars.length; i++) {
+      let max = 0;
+      for (let c = 0; c < cleanScores.pillars[i].criteria.length; c++) if (!cleanScores.pillars[i].criteria[c].skipped) max += cleanScores.pillars[i].criteria[c].maxPoints;
+      if (max === 0) continue;
+      tot += cleanScores.pillars[i].score * PILLARS[i].weightBp; wbp += PILLARS[i].weightBp;
+    }
+    return wbp > 0 ? Math.round((tot / wbp) * 100) / 100 : 0;
+  })();
+  Math.abs(recomputed - cleanScores.overall) < 0.02
+    ? pass(`overall (${cleanScores.overall}) is the weighted sum of pillar scores`)
+    : fail(`overall ${cleanScores.overall} != independently recomputed ${recomputed}`);
+}
+
+// ── 5. Length is never rewarded ──────────────────────────────────────────
+
+console.log(`\n5. Length is not a virtue (measured correlation with citation: 0.04)`);
+{
+  const doubled = withBody(CLEAN_BODY + "\n\n" + CLEAN_BODY.replace(/^By Dr\. Ilse Brandt\n\n/, "").replace(/^#/gm, "##"));
+  const dScore = computeDraftScores(doubled);
+  dScore.overall <= cleanScores.overall + 0.5
+    ? pass(`doubling the draft does not raise the score (${cleanScores.overall} → ${dScore.overall})`)
+    : fail(`doubling the draft RAISED the score ${cleanScores.overall} → ${dScore.overall}`,
+           "Some criterion is counting raw volume instead of density.");
+
+  const filler = " Merchants evaluating this category should weigh operational effort against commercial gain, and the right answer depends on the shape of the volume rather than on any vendor claim.";
+  const padded = withBody(CLEAN_BODY + "\n\n" + new Array(40).join(filler));
+  const pScore = computeDraftScores(padded);
+  pScore.overall < cleanScores.overall
+    ? pass(`padding with contentless prose lowers the score (${cleanScores.overall} → ${pScore.overall})`)
+    : fail(`padding did not lower the score (${cleanScores.overall} → ${pScore.overall})`);
+}
+
+// ── 6. Missing context skips, it does not punish ─────────────────────────
+
+console.log(`\n6. Missing context is skipped, not punished`);
+{
+  const noQueries = withBody(CLEAN_BODY, { targetQueries: [] });
+  const nq = computeDraftScores(noQueries);
+  const p1 = nq.pillars[0];
+  let allSkipped = true;
+  for (let i = 0; i < p1.criteria.length; i++) if (!p1.criteria[i].skipped) allSkipped = false;
+  allSkipped ? pass("no target query → every Relevance criterion skips with a reason")
+             : fail("no target query → Relevance criteria did not all skip");
+  // The pillar must leave the WEIGHTING, not score zero. Scoring an
+  // unaskable pillar as 0 would cost this draft 22 points of overall for a
+  // question nobody asked it — the single most likely wrong implementation
+  // of "skip", and the one that makes a score nobody trusts.
+  const p1Max = (() => { let m = 0; for (let i = 0; i < p1.criteria.length; i++) m += p1.criteria[i].maxPoints; return m; })();
+  p1Max === 0 && nq.overall > 70
+    ? pass(`Relevance leaves the weighting entirely (overall ${cleanScores.overall} → ${nq.overall}, not ${(cleanScores.overall * 0.78).toFixed(1)})`)
+    : fail(`overall ${nq.overall} — the skipped pillar is being scored as zero rather than excluded`);
+
+  // Declared-unattributed vs the SAME body undeclared. Identical text, two
+  // correct answers — which proves skipping is driven by the caller's
+  // declaration and not merely by textual absence.
+  const strippedBody = CLEAN_BODY
+    .replace("By Dr. Ilse Brandt\n\n", "")
+    .replace("Dr. Brandt is a certified payments architect and the author of two books on transaction routing.\n\n", "");
+  const declared = computeDraftScores(withBody(strippedBody, { unattributed: true, authorName: undefined }));
+  const undeclared = computeDraftScores(withBody(strippedBody, { authorName: undefined }));
+  // The AUTHORSHIP criteria skip. promotional-claims deliberately does not:
+  // an unattributed piece has no byline, which says nothing whatever about how
+  // promotional it is, and ghost-written brand content is exactly what that
+  // check exists for. Skipping it there would disable it on its main audience,
+  // so it is excluded from this assertion by name rather than by pillar.
+  const AUTHORSHIP = ["byline-present", "credential-line", "experience-markers", "worked-example"];
+  let declaredSkipped = true;
+  for (let i = 0; i < declared.pillars[4].criteria.length; i++) {
+    const c = declared.pillars[4].criteria[i];
+    if (AUTHORSHIP.indexOf(c.key) >= 0 && !c.skipped) declaredSkipped = false;
+  }
+  declaredSkipped ? pass("declared-unattributed → Authorship criteria skip rather than fail")
+                  : fail("declared-unattributed → Authorship criteria still scored");
+  const promoOnUnattributed = declared.pillars[4].criteria.filter((c: any) => c.key === "promotional-claims")[0];
+  promoOnUnattributed && !promoOnUnattributed.skipped
+    ? pass("...while promotional load is still measured — it is not an authorship question")
+    : fail("promotional load skipped on an unattributed piece — that is the content it exists for");
+  undeclared.overall < declared.overall
+    ? pass(`the same body costs points when NOT declared unattributed (${declared.overall} declared vs ${undeclared.overall} undeclared)`)
+    : fail(`identical bodies scored ${declared.overall} / ${undeclared.overall} — skip is driven by absence, not declaration`);
+}
+
+// ── 6b. Pillar coverage is countable, and the count changes ──────────────
+//
+// ScorePanel prints "N of 6 pillars scored" over any draft where a pillar
+// dropped out, because the headline is a percentage of what COULD be scored
+// and a draft with no target query shows a healthy number computed without the
+// heaviest pillar in the rubric. Two ways that banner fails silently: it never
+// fires (the honesty guarantee is gone and nobody notices, because a missing
+// warning looks exactly like nothing being wrong), or it always fires (people
+// learn to ignore it and it stops being information). Assert both directions
+// against the same count the panel derives.
+
+console.log(`\n6b. Pillar coverage`);
+{
+  const countScored = (s: ReturnType<typeof computeDraftScores>) => {
+    let n = 0;
+    for (let i = 0; i < s.pillars.length; i++) {
+      let applicable = 0;
+      const cs = s.pillars[i].criteria;
+      for (let j = 0; j < cs.length; j++) if (!cs[j].skipped) applicable++;
+      if (applicable > 0) n++;
+    }
+    return n;
+  };
+
+  const total = cleanScores.pillars.length;
+  // The fixture must actually exercise the thing under test: a rubric of one
+  // pillar would pass both assertions below while proving nothing.
+  total >= 2
+    ? pass(`${total} pillars in the rubric`)
+    : fail(`only ${total} pillar(s) — this check cannot distinguish full from partial coverage`);
+
+  const cleanCovered = countScored(cleanScores);
+  cleanCovered === total
+    ? pass(`a fully-briefed draft scores all ${total} pillars — the banner stays silent`)
+    : fail(`a fully-briefed draft scored only ${cleanCovered} of ${total} pillars, so the coverage banner would fire on every well-formed piece and be ignored`);
+
+  const imported = computeDraftScores(withBody(CLEAN_BODY, { targetQueries: [] }));
+  const importedCovered = countScored(imported);
+  importedCovered === total - 1
+    ? pass(`imported content with no target query scores ${importedCovered} of ${total} — the banner fires and names the right number`)
+    : fail(`no target query scored ${importedCovered} of ${total} pillars, expected ${total - 1}: the panel would print a coverage figure that does not match the pillar list beneath it`);
+
+  // And the number it is printed OVER must genuinely be a partial view, not a
+  // whole one that happens to have a pillar missing from the list.
+  imported.overall !== cleanScores.overall
+    ? pass(`the headline moves when a pillar drops out (${cleanScores.overall} → ${imported.overall})`)
+    : fail(`overall is ${imported.overall} either way — a dropped pillar is not reaching the headline at all`);
+}
+
+// ── 7. Robustness ────────────────────────────────────────────────────────
+
+console.log(`\n7. Robustness`);
+{
+  const twice = computeDraftScores(CLEAN);
+  JSON.stringify(twice) === JSON.stringify(cleanScores)
+    ? pass("scoring the same draft twice is byte-identical")
+    : fail("scoring is not deterministic");
+
+  const later = computeDraftScores(withBody(CLEAN_BODY, { now: new Date("2027-10-01T09:00:00Z") }));
+  const beforeD = criterionOf(cleanScores, "dateline-recency");
+  const afterD = criterionOf(later, "dateline-recency");
+  beforeD && afterD && afterD.earned < beforeD.earned
+    ? pass(`the clock is injected, not read (dateline ${beforeD.earned} → ${afterD.earned} at +13 months)`)
+    : fail("moving `now` forward 13 months did not age the dateline — the engine is reading the real clock somewhere");
+
+  // Word-boundary guard, tested two ways. The first version of this check
+  // asserted on keyword-stuffing-guard, which tokenises on whitespace and
+  // never calls countTerm — so it passed with the guard deleted. A trap aimed
+  // at the wrong criterion is not a trap.
+  countTerm("the repayment schedule was prepaid", "payment") === 0 && countTerm("payment terms", "payment") === 1
+    ? pass("countTerm: 'repayment'/'prepaid' do not match 'payment'")
+    : fail("countTerm is substring-matching — 'repayment' counts as 'payment'");
+
+  // ...and through a criterion that actually calls it: "deleveraged" contains
+  // the AI tell "leveraged", so an unguarded match flags legitimate finance prose.
+  const trap = withBody(mutate(CLEAN_BODY,
+    "The gain concentrates in cross-border volume",
+    "Merchants who have deleveraged still see the gain concentrate in cross-border volume"));
+  const trapAiTell = criterionOf(computeDraftScores(trap), "ai-tell-guard");
+  const cleanAiTell = criterionOf(cleanScores, "ai-tell-guard");
+  cleanAiTell && trapAiTell && trapAiTell.earned === cleanAiTell.earned
+    ? pass("'deleveraged' is not flagged as the AI tell 'leveraged' (guard holds through the engine)")
+    : fail(`substring matching reaches the rubric — ai-tell went ${cleanAiTell ? cleanAiTell.earned : "?"} → ${trapAiTell ? trapAiTell.earned : "?"} on a legitimate word`);
+
+  const degenerate = ["", "Payment orchestration.", "## Only a heading", "word ".repeat(900)];
+  let broke = 0;
+  for (let i = 0; i < degenerate.length; i++) {
+    try {
+      const s = computeDraftScores(withBody(degenerate[i]));
+      if (isNaN(s.overall) || s.overall < 0 || s.overall > 100) { broke++; fail(`degenerate input ${i} produced overall=${s.overall}`); }
+    } catch (e) { broke++; fail(`degenerate input ${i} threw`, String(e)); }
+  }
+  if (!broke) pass("empty / tiny / heading-only / unpunctuated drafts score without throwing");
+
+  // The live scorer runs on every debounced keystroke.
+  const t0 = Date.now();
+  for (let i = 0; i < 50; i++) computeDraftScores(CLEAN);
+  const ms = (Date.now() - t0) / 50;
+  ms < 40 ? pass(`${ms.toFixed(1)}ms per scoring pass (live-typing budget)`) : fail(`${ms.toFixed(1)}ms per pass is too slow for keystroke scoring`);
+}
+
+// ── 8. HTML / markdown parity ────────────────────────────────────────────
+
+console.log(`\n8. The same draft scores the same as HTML and as markdown`);
+{
+  // Drafts arrive as Tiptap HTML from the editor and as markdown from imports.
+  // If the two disagree, a writer's score changes when nothing about the words did.
+  const html = markdownToHtml(CLEAN_BODY);
+  const hScore = computeDraftScores(withBody(html));
+  const diff = Math.abs(hScore.overall - cleanScores.overall);
+  diff <= 2
+    ? pass(`markdown ${cleanScores.overall} vs HTML ${hScore.overall} (within tolerance)`)
+    : fail(`markdown ${cleanScores.overall} vs HTML ${hScore.overall} — the two parsers disagree`,
+           divergentCriteria(cleanScores, hScore).join(", "));
+}
+
+function divergentCriteria(a: ReturnType<typeof computeDraftScores>, b: ReturnType<typeof computeDraftScores>): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < CRITERIA.length; i++) {
+    const ca = criterionOf(a, CRITERIA[i].key), cb = criterionOf(b, CRITERIA[i].key);
+    if (ca && cb && ca.earned !== cb.earned) out.push(`${CRITERIA[i].key} ${ca.earned}!=${cb.earned}`);
+  }
+  return out;
+}
+
+/** Markdown inline → HTML. Links MUST become real anchors: without them the
+ *  HTML fixture has no citations and the parity check compares two different
+ *  drafts while claiming to compare two notations of one. */
+function inlineToHtml(s: string): string {
+  return s
+    .replace(/\[([^\]]*)\]\(([^)]*)\)/g, '<a href="$2">$1</a>')
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+}
+
+function markdownToHtml(md: string): string {
+  const lines = md.split("\n");
+  const out: string[] = [];
+  let inTable = false, inList = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) { if (inList) { out.push("</ul>"); inList = false; } if (inTable) { out.push("</table>"); inTable = false; } continue; }
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) { out.push(`<h${h[1].length}>${h[2]}</h${h[1].length}>`); continue; }
+    if (/^\s*\|/.test(line)) {
+      if (/^[\s|:-]+$/.test(line)) continue;
+      if (!inTable) { out.push("<table>"); inTable = true; }
+      const cells = line.split("|").filter((c) => c.trim());
+      out.push("<tr>" + cells.map((c) => `<td><p>${c.trim()}</p></td>`).join("") + "</tr>");
+      continue;
+    }
+    // NESTED, because that is what Tiptap actually emits: <li><p>text</p></li>,
+    // never a bare <li>. The first version of this helper emitted bare tags,
+    // which is why this parity check passed while every list item and table
+    // cell written in the real editor was being parsed as plain prose.
+    const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (ol) { if (!inList) { out.push("<ol>"); inList = true; } out.push(`<li><p>${inlineToHtml(ol[1])}</p></li>`); continue; }
+    const ul = line.match(/^\s*[-*+]\s+(.*)$/);
+    if (ul) { if (!inList) { out.push("<ul>"); inList = true; } out.push(`<li><p>${inlineToHtml(ul[1])}</p></li>`); continue; }
+    out.push(`<p>${inlineToHtml(line)}</p>`);
+  }
+  if (inList) out.push("</ul>");
+  if (inTable) out.push("</table>");
+  return out.join("\n");
+}
+
+
+// ── Section headings are read FROM the document, not assumed ──────────────
+//
+// The levels were hard-coded to 2 and 3, which is the WEB PAGE shape — one H1
+// title, H2/H3 sections. Everything from a word processor has the opposite
+// shape: Word's "Heading 1" is a top-level SECTION and the title is carried
+// separately, so an uploaded article has its sections at H1 and nothing at H2.
+// On a real import that discarded all five section headings and left three
+// PULL QUOTES as "the sections" — every heading criterion then described the
+// quotations. Not one fixture in this suite had ever been Word-shaped, which
+// is why the whole suite stayed green while the verdicts were nonsense.
+console.log(`\nSection levels are read from the document`);
+{
+  const at = (levels: number[]) => sectionLevels(levels.map((l) => ({ level: l })));
+  const eq = (got: number[], want: number[]) => got[0] === want[0] && got[1] === want[1];
+
+  eq(at([1, 2, 2, 3]), [2, 3])
+    ? pass("web shape — ONE H1 is a title, so sections start at H2")
+    : fail(`web shape gave ${JSON.stringify(at([1, 2, 2, 3]))}, expected [2,3]`);
+  eq(at([1, 1, 1, 3, 3]), [1, 2])
+    ? pass("Word shape — several H1s are sections, so sections start at H1")
+    : fail(`Word shape gave ${JSON.stringify(at([1, 1, 1, 3, 3]))}, expected [1,2]`);
+  eq(at([2, 2, 3]), [2, 3])
+    ? pass("an H2-rooted document is unchanged")
+    : fail(`H2-rooted gave ${JSON.stringify(at([2, 2, 3]))}`);
+  eq(at([]), [2, 3])
+    ? pass("no headings falls back to the web default")
+    : fail("empty heading list did not fall back");
+
+  // End to end: the same article, Word-shaped, must score its question
+  // headings. Under the hard-coded rule this scored zero.
+  const wordShaped = `<h1>What is orchestration?</h1><p>Orchestration routes a transaction across several acquirers.</p>
+<h1>Why does it lift authorisation?</h1><p>Authorisation improves because a declined transaction is retried elsewhere.</p>
+<h1>How much does orchestration cost?</h1><p>Orchestration costs from eight basis points per transaction.</p>
+<p>${"word ".repeat(400)}</p>`;
+  const s2: any = computeDraftScores({ body: wordShaped, title: "Payment orchestration", targetQueries: [], format: "explainer" });
+  let qh: any = null, adj: any = null;
+  for (const pl of s2.pillars) for (const c of pl.criteria) {
+    if (c.key === "question-headings") qh = c;
+    if (c.key === "heading-answer-adjacency") adj = c;
+  }
+  qh && qh.earned > 0
+    ? pass(`three H1 question headings score (${qh.earned}/${qh.maxPoints}) instead of zero`)
+    : fail(`Word-shaped question headings scored ${qh ? qh.earned : "missing"} — the levels are hard-coded again`);
+  // The chunker has its OWN copy of this rule, and when the two disagreed an
+  // H1 question heading had no chunk and was permanently unanswerable.
+  adj && !adj.skipped && adj.earned > 0
+    ? pass(`...and their answers are found (${adj.earned}/${adj.maxPoints}) — chunker and engine agree on what a section is`)
+    : fail(`heading-answer-adjacency = ${adj ? (adj.skipped ? "skipped" : adj.earned) : "missing"} — the chunker still hard-codes levels`);
+}
+
+
+// ── Promotional load fires on the claim, never on the first person ────────
+//
+// The defect fixture above proves the criterion goes red. It says nothing
+// about the direction that matters more: a brand writing about itself says
+// "we" in almost every paragraph, and a detector that flagged those would be
+// unusable on exactly the content it is for. Two mutations survived the defect
+// fixture alone — removing the figure exemption, and dropping the benefit-verb
+// gate so self-reference fired by itself — because nothing here tested the
+// exemptions. These do.
+console.log(`\nPromotional load — the exemptions, not just the trigger`);
+{
+  const promo = (body: string) => {
+    const sc: any = computeDraftScores({ body, title: "Payment orchestration", targetQueries: [], format: "explainer", brandName: "Vaultline" });
+    for (const pl of sc.pillars) for (const c of pl.criteria) if (c.key === "promotional-claims") return c;
+    return null;
+  };
+  const pad = `<p>${"filler word ".repeat(220)}</p>`;
+  const one = (sentence: string) => promo(`<h1>Orchestration</h1><p>${sentence}</p>${pad}`);
+
+  const fires = one("We help businesses transform their payment performance.");
+  (fires && (fires.spans || []).length === 1)
+    ? pass("an evidence-free benefit claim is flagged")
+    : fail(`the plain promotional claim was not flagged (${fires ? (fires.spans||[]).length : "missing"} spans)`);
+
+  // EACH CASE ISOLATES ONE GUARD. The first version of this did not, and three
+  // mutations survived because every fixture tripped two or three exemptions
+  // at once — remove the figure test and the experience-marker test still
+  // caught it, so the fixture passed for a reason that had nothing to do with
+  // what was broken. Every sentence below is built so exactly one exemption is
+  // load-bearing; the comment names it.
+  const cases: [string, string][] = [
+    // digit ONLY: "help businesses" fires A+B; no experience marker, no
+    // capitalised non-brand token, not sourced. Only the figure saves it.
+    ["We help businesses transform performance by 30 percent.", "a figure in the sentence"],
+    // named third party ONLY: same claim, no digit, no experience marker.
+    // "Nordics" is the single capitalised non-brand token.
+    ["We help businesses transform performance across Nordics.", "a named third party"],
+    // experience marker ONLY: "in our experience" is the marker; no digit, no
+    // capitalised token, not sourced.
+    ["In our experience we help teams transform performance.", "a first-hand experience marker"],
+    // gate B ONLY: beneficiary and transformation nouns are both present, but
+    // there is no benefit VERB, so the claim never qualifies. Nothing else
+    // exempts it — drop gate B and this fires.
+    ["Our customers see growth.", "no benefit verb — a noun phrase is not a claim"],
+    // gate A ONLY: a full benefit claim with no self-reference at all.
+    ["Orchestration helps businesses transform performance.", "no self-reference"],
+  ];
+  for (const [sentence, why] of cases) {
+    const c = one(sentence);
+    const n = c ? (c.spans || []).length : -1;
+    n === 0
+      ? pass(`exempt: ${why}`)
+      : fail(`FALSE POSITIVE (${why}): "${sentence}" was flagged — a brand cannot use its own voice`);
+  }
+}
+
+
+// ── Quote attribution recognises how editors actually attribute ───────────
+//
+// All SIX flagged quotes on the founder's own draft turned out to be
+// attributed, and the panel said "0 attributed quotations" about a piece with
+// ten. Three real shapes the detector did not know, each now a fixture; and
+// the fragment rule, which is about not giving WRONG advice: a seven-word
+// rhetorical fragment mid-sentence must not be told to "name who said it".
+console.log(`\nQuote attribution shapes`);
+{
+  const quoteOf = (body: string) => {
+    const sc: any = computeDraftScores({ body: body + `<p>${"filler word ".repeat(160)}</p>`, title: "T", targetQueries: [], format: "explainer" });
+    for (const pl of sc.pillars) for (const c of pl.criteria) if (c.key === "attributed-quotes") return c;
+    return null;
+  };
+
+  // EACH FIXTURE ISOLATES ONE RULE. The first versions used the draft's own
+  // sentences, which attribute two or three ways at once — "recalls Alexander
+  // Kitchin, Fine Concrete's founding partner and DIRECTOR of design" carries
+  // the verb AND the Name-comma-title shape, so deleting the verb was masked
+  // by the title match and three mutations survived. A fixture that passes for
+  // a reason unrelated to its label is indistinguishable from one that works.
+  const recalls = quoteOf(`<p>“We had looked at a lot of different materials and found no solution for the problem,” recalls Alexander Kitchin of Fine Concrete.</p>`);
+  recalls && recalls.earned > 0 && (recalls.spans || []).length === 0
+    ? pass(`"recalls Name" attributes (${recalls.earned} pts, no flag)`)
+    : fail(`"recalls" still not an attribution verb: earned=${recalls && recalls.earned}, spans=${recalls && (recalls.spans||[]).length}`);
+
+  const emdash = quoteOf(`<p>“When we present this material to architects you can almost see a light switch go on for them.”</p><p>— Chris Bird</p>`);
+  emdash && emdash.earned > 0 && (emdash.spans || []).length === 0
+    ? pass("an em-dash pull-quote byline attributes")
+    : fail(`the em-dash byline is still unrecognised: earned=${emdash && emdash.earned}, spans=${emdash && (emdash.spans||[]).length}`);
+
+  const modTitle = quoteOf(`<p>“The relationship was closer to a field-testing partnership than a traditional supplier arrangement.” The words belonged to Nicole Sherman, a strategic consultant for the firm.</p>`);
+  modTitle && modTitle.earned > 0
+    ? pass("a title with modifiers before the keyword attributes")
+    : fail("Name, <modifiers> consultant still unmatched");
+
+  // The em dash must be a BYLINE, not prose. Lowercase continuation is prose.
+  // The quote here is TWELVE words on purpose: the first version used nine,
+  // which the fragment rule silences before the em-dash question is even
+  // asked, so the fixture passed and failed for reasons unrelated to what it
+  // claimed to test.
+  const prose = quoteOf(`<p>The speech was set as “letters cast in solid concrete high on the face of the building” — a hundred-word excerpt held with no visible connections, mounted over two years.</p>`);
+  prose && prose.earned === 0 && (prose.spans || []).length > 0
+    ? pass("an em dash into lowercase prose does NOT attribute — the quote is still flagged")
+    : fail(`prose after an em dash counted as a byline (earned=${prose && prose.earned}, spans=${prose && (prose.spans||[]).length})`);
+
+  // Fragments: never flagged, and never counted as attributed either.
+  const frag = quoteOf(`<p>With their refusal to stop at “Let us see if we can solve it,” and push instead to “Let us use materials to enhance the design,” the pair won the bid decisively that spring.</p>`);
+  frag && (frag.spans || []).length === 0
+    ? pass("seven-word rhetorical fragments are not told to name a speaker")
+    : fail(`a mid-sentence fragment was flagged (spans=${frag && (frag.spans||[]).length})`);
+  frag && frag.earned === 0
+    ? pass("...and earn nothing either — silence, not credit")
+    : fail(`fragments counted as attributed quotations (earned=${frag && frag.earned})`);
+
+  // The original defect direction must still fire: a real, long, genuinely
+  // unattributed quote is still flagged.
+  const naked = quoteOf(`<p>“The panels were heavier than anything the team had lifted before and the crane plan had to change three times before the first one moved an inch.”</p>`);
+  naked && (naked.spans || []).length === 1
+    ? pass("a long quote with genuinely no speaker is still flagged")
+    : fail(`the true positive stopped firing (spans=${naked && (naked.spans||[]).length}) — the fix over-corrected`);
+}
+
+
+// ── The founder's-draft regressions: measurements, quotes, placeholders ───
+//
+// Every case here is a wrong verdict the tool actually delivered on a real
+// imported .docx (2026-08-25): eight dimensional measurements told to cite a
+// source, "4 feet" told to date itself "as of 2026", interviewees' spoken
+// sentences told to split in two, five production placeholders invisible, and
+// the one material claim that genuinely needed a source not detected at all.
+console.log(`\nMeasurements, quoted figures and placeholders`);
+{
+  const spansOf = (body: string, key: string) => {
+    // Padding is SHORT SENTENCES, not one run-on: 160 repetitions of a
+    // three-word sentence. The first version repeated "filler word " with no
+    // full stops, which is a single 320-word prose sentence — and the
+    // sentence-length fixture then failed on its own padding rather than on
+    // the case it stated.
+    const sc: any = computeDraftScores({ body: body + `<p>${"Padding goes here. ".repeat(160)}</p>`, title: "T", targetQueries: [], format: "explainer" });
+    for (const pl of sc.pillars) for (const c of pl.criteria) if (c.key === key) return c.spans || [];
+    return null;
+  };
+
+  // A dimension of the subject is not a sourcing debt…
+  const dim = spansOf(`<p>Each letter stands over 4 feet tall and weighs 320 pounds on the finished facade.</p>`, "stat-source-adjacency");
+  dim && dim.length === 0
+    ? pass("dimensional measurements are not asked for a citation")
+    : fail(`"4 feet tall" asked for a source again (spans=${dim && dim.length})`);
+  // …but an evidential claim still is.
+  const ev = spansOf(`<p>The new routing lifted authorisation rates 24% across the cohort in the first quarter.</p>`, "stat-source-adjacency");
+  ev && ev.length === 1
+    ? pass("an unsourced evidential percentage is still flagged")
+    : fail(`the evidential direction broke (spans=${ev && ev.length})`);
+  // The spelled multiplier is a statistic now.
+  const times = spansOf(`<p>The material has 10 times the compressive strength and five times the tensile strength of standard mixes.</p>`, "stat-source-adjacency");
+  times && times.length >= 2
+    ? pass('"10 times" and "five times" are detected and asked for a source')
+    : fail(`spelled multipliers still invisible (spans=${times && times.length})`);
+
+  // A figure inside an ATTRIBUTED quote is sourced by its speaker.
+  const qstat = spansOf(`<p>“This is something that is going to last 100 years or more under the weather it faces,” says Michael Finnegan, the company president.</p>`, "stat-source-adjacency");
+  qstat && qstat.length === 0
+    ? pass("a figure inside an attributed quotation is sourced by the speaker")
+    : fail(`a quoted figure was asked for a citation (spans=${qstat && qstat.length})`);
+  // And nothing asks anyone to DATE a quoted or dimensional figure.
+  const qdate = spansOf(`<p>Each letter stands over 4 feet tall on the facade.</p><p>“It will last 100 years,” says Michael Finnegan, the company president.</p>`, "current-year-stats");
+  (qdate === null || qdate.length === 0)
+    ? pass("no one is told to date a dimension or someone's spoken words")
+    : fail(`current-year-stats still spans measurements/quotes (spans=${qdate.length})`);
+
+  // A long sentence inside a quotation is never told to split.
+  const qsplit = spansOf(`<p>“We would send some of our technical team members down to the lab to run extensive trials on color consistency and fiber dispersion, and week after week the results kept improving until the mix was right,” says Michael Finnegan, the company president.</p>`, "sentence-length-norm");
+  qsplit && qsplit.length === 0
+    ? pass("a 40-word quoted sentence is not told to split — that is misquoting")
+    : fail(`split advice on spoken words is back (spans=${qsplit && qsplit.length})`);
+
+  // Placeholders: the three shapes that must NOT fire.
+  const phSafe = spansOf(`<p>The panels [sic] were mounted in sequence [1] as described in [the 2024 report](https://example.com/r).</p>`, "placeholder-guard");
+  phSafe && phSafe.length === 0
+    ? pass("[sic], numeric citations and markdown links do not read as placeholders")
+    : fail(`the placeholder gate over-fires (spans=${phSafe && phSafe.length})`);
+
+  // The parse-level contract: a figure inside an ATTRIBUTED quote is marked
+  // sourced. The scoring path cannot observe this (the inQuote filter removes
+  // quoted stats before the naked check ever looks), so the assertion has to
+  // read the parse output directly — a mutation deleting the sourced=true
+  // line survived every score-level fixture precisely because of that mask.
+  {
+    const pd: any = parseDraft({ body: `<p>“Authorisation improved 24% after the routing change went live,” says Michael Finnegan, the company president.</p>`, title: "T" });
+    const inQ = pd.stats.filter((st: any) => st.inQuote);
+    inQ.length === 1 && inQ[0].sourced === true
+      ? pass("parse marks a figure in an attributed quote as sourced by its speaker")
+      : fail(`parse-level sourcing broken: inQuote=${inQ.length}, sourced=${inQ[0] && inQ[0].sourced}`);
+    // "claimed" is itself a source verb at sentence level, which made the
+    // first version of this fixture fail against correct code — the sentence
+    // was sourced before the quote logic ever ran. The banner wording carries
+    // no attribution signal of any kind.
+    const pd2: any = parseDraft({ body: `<p>One slide read “authorisation improved 24% after the routing change went live in every market” and nothing more.</p>`, title: "T" });
+    const inQ2 = pd2.stats.filter((st: any) => st.inQuote);
+    inQ2.length === 1 && inQ2[0].sourced === false
+      ? pass("...and an UNattributed quote's figure stays unsourced")
+      : fail(`unattributed quote's figure wrongly sourced (inQuote=${inQ2.length}, sourced=${inQ2[0] && inQ2[0].sourced})`);
+  }
+
+  // A record claim is an unverifiable superlative until someone stands behind
+  // it — and with a source it is exactly what the rubric wants more of.
+  const rec = spansOf(`<p>The screens represent the tallest and longest span of UHPC in North America and were installed over two years.</p>`, "unverifiable-superlatives");
+  rec && rec.length === 1
+    ? pass("an unsourced record claim is flagged")
+    : fail(`the record claim went unseen again (spans=${rec && rec.length})`);
+  const recSourced = spansOf(`<p>According to the Council on Tall Buildings, the screens represent the tallest and longest span of UHPC in North America.</p>`, "unverifiable-superlatives");
+  recSourced && recSourced.length === 0
+    ? pass("...and a SOURCED record claim is not — a verified record is the goal, not a defect")
+    : fail(`a sourced record claim was flagged (spans=${recSourced && recSourced.length})`);
+
+  // The unbracketed production note: its own tiny block, no full stop.
+  const note = spansOf(`<p>The facade rose panel by panel through the spring.</p><p>Web photo slideshow</p><p>Each panel locked to the next.</p>`, "placeholder-guard");
+  note && note.length === 1
+    ? pass('"Web photo slideshow" standing as its own paragraph is caught')
+    : fail(`the unbracketed production note slipped through (spans=${note && note.length})`);
+  const kicker = spansOf(`<p>The facade rose panel by panel through the spring.</p><p>A new era.</p><p>Each panel locked to the next.</p>`, "placeholder-guard");
+  kicker && kicker.length === 0
+    ? pass("...while a legitimate short kicker is left alone")
+    : fail(`a kicker was read as a production note (spans=${kicker && kicker.length})`);
+
+  // Person names: Bird and Bond stay two people; short surnames stay out.
+  const twoPeople = spansOf(`<p>Chris Bird runs the structural team while Chris Bond manages the site logistics for the project.</p>`, "person-name-consistency");
+  twoPeople && twoPeople.length === 0
+    ? pass("Bird and Bond remain two different people")
+    : fail(`distance-2/short surnames are being merged (spans=${twoPeople && twoPeople.length})`);
+}
+
+// ── A takeaways block is a SHAPE, not a label ──────────────────────────────
+//
+// Reported live: an article opening with five self-contained bullets under the
+// heading "Bullets:" scored ZERO, "none found", while the block sat at the top
+// of the page carrying two figures and the client name. The owner read that
+// against a judge finding about the same paragraph and called it contradictory
+// advice. It was not contradictory — one layer was right and this one was blind
+// to anything not labelled from a fixed list of thirteen phrases.
+console.log("\nTakeaways blocks are recognised by shape");
+{
+  // MANY paragraphs, not one long one. `earlyBlocks` is 30% of the BLOCK count,
+  // so a fixture whose whole body is a single block leaves a window of two and
+  // the detector never reaches the bullets. That is a fixture that cannot trip
+  // the defect — it failed three of these assertions while the code was right.
+  const BODY_PARAS = Array.from({ length: 14 }, (_, i) =>
+    `Body paragraph ${i} with enough words in it to look like real prose rather than a stub.`).join("\n\n");
+  const body = (opening: string) => withBody(`# Title\n\n${opening}\n\n${BODY_PARAS}`);
+  const tldrOf = (input: any) => {
+    const c = criterionOf(computeDraftScores(input), "tldr-block");
+    return c ? c.earned : -1;
+  };
+
+  const owners = "**Bullets:**\n\n- Amrize supplied the concrete for Meta's Rosemount, Minnesota data center.\n- The mix was designed using an AI model trained on lab data from the University of Illinois.\n- Result: 43% faster early strength gain, 35% lower carbon intensity, at similar cost.\n- The mix used standard, locally available materials with no exotic inputs.\n- Meta has open-sourced the model on GitHub.";
+  ((ok: boolean, msg: string) => (ok ? pass(msg) : fail(msg)))(tldrOf(body(owners)) === 10,
+    'the reported document scores full marks — five self-contained bullets under the heading "Bullets:"');
+
+  const unlabelled = "- Amrize supplied the concrete for the Rosemount data center in Minnesota.\n- The mix reached early strength 43 percent faster than the conventional mix.\n- Carbon intensity fell 35 percent at a similar delivered cost per cubic yard.";
+  ((ok: boolean, msg: string) => (ok ? pass(msg) : fail(msg)))(tldrOf(body(unlabelled)) === 10,
+    "and so does the same block with NO heading at all");
+
+  // The discriminator that keeps this honest. A table of contents is not a weak
+  // summary, it is a different thing, and it must not qualify at any score.
+  const toc = "- Introduction\n- Our approach\n- Results\n- Conclusion";
+  ((ok: boolean, msg: string) => (ok ? pass(msg) : fail(msg)))(tldrOf(body(toc)) === 0,
+    "a table of contents does NOT qualify — fragments are not takeaways");
+
+  const tiny = "- Fast.\n- Cheap.\n- Green.";
+  ((ok: boolean, msg: string) => (ok ? pass(msg) : fail(msg)))(tldrOf(body(tiny)) === 0,
+    "nor do one-word items that merely end in a full stop");
+
+  // Self-containment, not length. "Meta has open-sourced the model on GitHub."
+  // is seven words and a complete sentence; the old eight-word floor called it a
+  // fragment, which is what the note claims about it and is plainly untrue.
+  const shortButWhole = "- Amrize supplied the concrete for the Rosemount data center in Minnesota.\n- The mix reached early strength 43 percent faster than before.\n- Meta open-sourced the model on GitHub.";
+  ((ok: boolean, msg: string) => (ok ? pass(msg) : fail(msg)))(tldrOf(body(shortButWhole)) === 10,
+    "a seven-word complete sentence counts — the test is self-containment, not word count");
+
+  // ── TYPED BULLETS, NOT LIST MARKUP ─────────────────────────────────────
+  //
+  // The reported document had NO <li> on the page at all: five
+  // `<p><strong>• …</strong></p>` blocks, which is what Word, Google Docs and
+  // email produce when list markup does not survive a paste. A detector keyed
+  // to list items saw no bullets whatsoever. A retrieval system reads the text,
+  // not the markup.
+  //
+  // Note the <br>: it parses to a SPACE, so the label and the first bullet
+  // arrive as ONE line — "Bullets: • Amrize supplied…" — and a line-start match
+  // loses the first item, which here was the one naming the client.
+  const typed = withBody(
+    `# Title\n\n**Bullets:**\n• Amrize supplied the concrete for Meta's Rosemount, Minnesota data center.\n\n` +
+    `• The mix was designed using an AI model trained on lab data from the University of Illinois.\n\n` +
+    `• Result: 43% faster early strength gain, 35% lower carbon intensity, at similar cost.\n\n` +
+    `• The mix used standard, locally available materials — no exotic inputs.\n\n` +
+    `• Meta has open-sourced the model on GitHub.\n\n${BODY_PARAS}`);
+  ((ok: boolean, msg: string) => (ok ? pass(msg) : fail(msg)))(tldrOf(typed) === 10,
+    "typed bullet characters count — the reported document carried no list markup at all");
+
+  const typedToc = withBody(`# Title\n\n• Introduction\n\n• Our approach\n\n• Results\n\n• Conclusion\n\n${BODY_PARAS}`);
+  ((ok: boolean, msg: string) => (ok ? pass(msg) : fail(msg)))(tldrOf(typedToc) === 0,
+    "and a typed table of contents still does not");
+
+  // An em dash inside a bullet must not split it in half, which is why the
+  // anywhere-match is restricted to true bullet glyphs.
+  const emDashProse = withBody(`# Title\n\nProse with an em dash — like this one — is not a bullet list.\n\n${BODY_PARAS}`);
+  ((ok: boolean, msg: string) => (ok ? pass(msg) : fail(msg)))(tldrOf(emDashProse) === 0,
+    "an em dash in ordinary prose is never read as a bullet");
+
+  // And the label is no longer load-bearing: removing ONLY the heading from the
+  // clean fixture must not move the score, because the block is still there.
+  const labelOnly = withBody(mutate(CLEAN_BODY, "**Key takeaways**\n\n", ""));
+  ((ok: boolean, msg: string) => (ok ? pass(msg) : fail(msg)))(tldrOf(labelOnly) === 10,
+    "removing only the LABEL does not move the score — the bullets are the block");
+}
+
+// ── A numbered question heading is a question heading ──────────────────────
+//
+// Found by auditing a real published article whose ten headings are all
+// numbered questions — "1. Who is Amrize? The partner of choice for
+// professional builders." It scored ZERO of ten. Two independent reasons, and
+// it needed both to fail: the anchored [a-z'] class cannot start on "1", so the
+// interrogative lookup got an empty first word; and the question-mark test was
+// anchored to the END, which a question carrying its own answer never reaches.
+//
+// The source method holds that article up as the one whose headings are ALREADY
+// correct. It was right, and the tool disagreed with it ten times.
+console.log("\nQuestion headings survive numbering and trailing answers");
+{
+  const shaped = (h: string) => {
+    const d = parseDraft({ body: `# T\n\n### ${h}\n\nBody words here to make a block.`, title: "T" } as any);
+    const head: any = d.headings.filter((x: any) => x.level > 1)[0];
+    return !!head && head.isInterrogativeShaped;
+  };
+  const say = (ok: boolean, m: string) => (ok ? pass(m) : fail(m));
+
+  say(shaped("1. Who is Amrize? The partner of choice for professional builders."),
+    "a NUMBERED question that answers itself in the same heading is question-shaped");
+  say(shaped("What does Amrize make?"), "a bare question still is");
+  say(shaped("2. How Amrize builds"), "and numbering no longer hides an interrogative first word");
+  say(shaped("How AI mixes concrete"), "an interrogative first word with no question mark still counts");
+
+  // The two the source method names as BAD headings must stay bad, or the
+  // loosening has simply made the criterion say yes to everything.
+  say(!shaped("Empowering the digital economy from the ground up"),
+    "a slogan is NOT question-shaped — the loosening did not turn this into a pass-everything check");
+  say(!shaped("Meet the Experts"), "nor is a label");
+
+  // isQuestion stays STRICT: answer-adjacency keys on it, and a heading that
+  // carries its own answer is a different shape from a bare question.
+  const d: any = parseDraft({ body: `# T\n\n### 1. Who is Amrize? The partner of choice.\n\nBody words.`, title: "T" } as any);
+  const h: any = d.headings.filter((x: any) => x.level > 1)[0];
+  say(h.isInterrogativeShaped && !h.isQuestion,
+    "question-SHAPED and IS-a-question stay different tests — only the looser one moved");
+}
+
+// ── False positives found by auditing a real client page ───────────────────
+//
+// Every one of these was on screen, on a published Amrize article, and every
+// one told the writer something untrue about their own text. They are grouped
+// because they share a cause: a pattern broad enough to match the shape, with
+// nothing checking it had matched the THING.
+console.log("\nFalse positives from the live audit");
+{
+  const say = (ok: boolean, m: string) => (ok ? pass(m) : fail(m));
+  const B = "\n\n" + Array.from({ length: 12 }, (_, i) => `Body paragraph ${i} with plenty of words in it here.`).join("\n\n");
+  const crit = (body: string, key: string) => {
+    const c = criterionOf(computeDraftScores(withBody(body) as any), key);
+    return c as any;
+  };
+
+  // 1. A place is not a person spelled two ways.
+  // The client page's own phrasing, verbatim. "partner of choice" sixty
+  // characters away was enough to qualify under the first fix — the signal has
+  // to BIND to the name, not share a paragraph with it.
+  const places = crit(
+    `As the partner of choice for professional builders, we have been helping build North America for over 100 years. "Rize" reflects our aspiration to lead North American construction forward.${B}`,
+    "person-name-consistency");
+  say(places.earned === places.maxPoints,
+    '"North American" and "North America" are not somebody\'s name misspelled — and a marketing "partner of choice" nearby does not make them one');
+
+  say(crit(`CEO Jan Jenisch set the plan out. Afterwards, Jan Jenish confirmed it publicly.${B}`, "person-name-consistency").earned === 0,
+    "a title directly before the name still identifies a person");
+  say(crit(`Jan Jenisch, the chief executive, set the plan. Afterwards, Jan Jenish confirmed it.${B}`, "person-name-consistency").earned === 0,
+    "so does a spelled-out role after it — commoner in prose than the initialism");
+  say(crit(`Jan Jenisch said the plan is set. Afterwards, Jan Jenish added a comment on it.${B}`, "person-name-consistency").earned === 0,
+    "and an attribution verb touching the name");
+  say(crit(`New Yorkers gathered while New Yorker readers grew across the region last year.${B}`, "person-name-consistency").earned > 0,
+    "while two place-shaped capitalised pairs stay clean");
+
+  // KNOWN LIMIT, recorded rather than hidden: the name scanner is greedy, so
+  // "Principal Research Scientist Julius Kusuma" pairs "Principal Research" and
+  // "Scientist Julius" and never pairs the actual name. Pre-existing, not
+  // introduced by the person-signal work, and not fixed here — but a reader of
+  // this file should know the coverage has a hole rather than infer it does not.
+  say(crit(`Principal Research Scientist Julius Kusuma explained it. Afterwards, Julius Kusama spoke.${B}`, "person-name-consistency").earned > 0,
+    "(known limit) a title-prefixed name is not paired at all by the greedy scanner, so its misspelling is missed");
+
+  // 2. A figure dated two years back is dated.
+  const recent = crit(`In 2024, Amrize generated $11.7 billion in revenue, a 13% leap from 2021.${B}`, "current-year-stats");
+  say(recent.earned === recent.maxPoints,
+    "an annual figure reported for the prior year is CURRENT — flagging it is flagging the calendar");
+  const undated = crit(`Adoption of the mix reached 38% across the region.${B}`, "current-year-stats");
+  say((undated.spans || []).some((x: any) => /no date/.test(x.note)),
+    'a figure with no date says "no date on this figure"');
+  const stale = crit(`In 2015 the sector grew 22% year on year across every market.${B}`, "current-year-stats");
+  say((stale.spans || []).some((x: any) => /dated 2015/.test(x.note)),
+    'and a figure dated 2015 says "dated 2015" — never "no year anywhere near it", which the sentence itself disproves');
+}
+
+console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
+process.exit(failures ? 1 : 0);

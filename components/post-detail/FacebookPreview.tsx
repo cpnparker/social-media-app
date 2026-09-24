@@ -76,7 +76,7 @@ export default function FacebookPreview({
 
       {/* Content */}
       <div className="px-4 py-3">
-        <p className="text-[15px] leading-[1.4] text-gray-900 dark:text-gray-100 whitespace-pre-wrap">
+        <p className="text-[15px] leading-[1.4] text-gray-900 dark:text-gray-100 whitespace-pre-wrap break-anywhere">
           {content}
         </p>
       </div>
