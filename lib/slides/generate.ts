@@ -279,6 +279,17 @@ export interface SlideInput {
   /** This slide is the tail of one the splitter cut in two. It takes the
    *  picture from the slide it came from rather than asking for its own. */
   continuation?: boolean;
+  /** THIS BODY IS A DECLINED COMPOSITION'S LABELLED POINTS: the columns
+   *  joined into one list with each standalone heading joined to the point it
+   *  heads (joinedFor), or a piece the splitter cut from one. Its list is
+   *  measured on words, bold runs in the bold face — a written composition's
+   *  ruler — where every other archetype list keeps the mean-advance ruler its
+   *  stored slides were drawn with. A joined item opens on a bold label of up
+   *  to sixty characters, and that ruler measures bold as light: rendered,
+   *  one declined row in seventeen at `read` and one in ten at `present` had
+   *  an item boxed a line short, its second line drawn on the next item or on
+   *  the footer rule. Stamped by the builder, never written by the model. */
+  joinedOnWords?: boolean;
   /** Thumbnails for the image-grid layout. */
   images?: { url?: string; query?: string; caption?: string }[];
   resolvedImages?: { url: string; caption?: string }[];
@@ -1389,14 +1400,17 @@ const MIN_BOX_H = 1;
  *  paying for. One plan, drawn by one function and measured by the other. */
 function bulletBlockPlan(
   text: string | undefined, width: number, style: TypeStyle,
-  opts: { lead?: number; leadIn?: TypeStyle; ragged?: boolean; words?: boolean } = {}
+  opts: { lead?: number; leadIn?: TypeStyle; ragged?: boolean; words?: boolean; headed?: boolean; bare?: boolean } = {}
 ) {
   const lead = opts.lead;
   const firstPara = String(text || "").split("\n").map((l) => l.trim()).filter(Boolean)[0];
   /** How many characters of paragraph 0 the accent covers. Zero means no
    *  lead-in on this column at all, which is what a first paragraph with no
-   *  sentence break inside the cap gets. */
-  const leadChars = opts.leadIn ? leadInLength(firstPara) : 0;
+   *  sentence break inside the cap gets. A column that opens with a
+   *  standalone heading (`headed`) accents the heading, all of it: it is a
+   *  label, not a sentence, and "**Step 1. Audit**" is one heading. */
+  const leadChars = opts.leadIn
+    ? (opts.headed ? drawnText(String(firstPara ?? "")).trim().length : leadInLength(firstPara)) : 0;
   /** Whether the accent covers the WHOLE first paragraph, in which case the
    *  box is simply drawn in the accent style and no range is needed. */
   const leadWhole = leadChars > 0 && leadChars >= drawnText(String(firstPara ?? "")).trim().length;
@@ -1404,7 +1418,10 @@ function bulletBlockPlan(
    *  paragraph that OPENS with the accent takes no marker either way: the
    *  lead-in is the first words of the column, not the first item of a list. */
   const styleAt = (i: number): TypeStyle => (i === 0 && leadWhole && opts.leadIn ? opts.leadIn : style);
-  const dotAt = (i: number): boolean => !(i === 0 && leadChars > 0);
+  // AND NO DISC AT ALL on a column that is a heading over ONE paragraph
+  // (`bare`): a single paragraph is not a list — the reason bulletBlock sets
+  // one alone without a disc — and a heading over it does not make it one.
+  const dotAt = (i: number): boolean => !opts.bare && !(i === 0 && leadChars > 0);
   /** The accent range a paragraph carries, for the partial case. */
   const rangeAt = (i: number): BoxOptions["leadRange"] =>
     i === 0 && leadChars > 0 && !leadWhole && opts.leadIn
@@ -1475,7 +1492,7 @@ function bulletBlockPlan(
  *  with every paragraph inside its band. */
 function bulletBlockFloorHeight(
   text: string | undefined, width: number, style: TypeStyle,
-  opts: { lead?: number; leadIn?: TypeStyle; ragged?: boolean; words?: boolean } = {}
+  opts: { lead?: number; leadIn?: TypeStyle; ragged?: boolean; words?: boolean; headed?: boolean } = {}
 ): number {
   const plan = bulletBlockPlan(text, width, style, opts);
   if (!plan.paras.length) return 0;
@@ -1514,6 +1531,11 @@ function bulletBlock(
     /** On words at every measure, bold runs in bold: a written composition's
      *  column. See bulletBlockPlan. */
     words?: boolean;
+    /** The column opens with a standalone heading, and the lead-in is all of
+     *  it; and, `bare`, the heading is over one paragraph, which takes no
+     *  disc. See bulletBlockPlan. */
+    headed?: boolean;
+    bare?: boolean;
     /** This block is one of a set of LISTS — a composition some of whose
      *  columns are lists, or the continuation of one — so a column of one
      *  paragraph carries its disc too. See bulletBlock's single-paragraph
@@ -1558,6 +1580,11 @@ function bulletBlock(
     // late and runs off the page. Set only on the block holding the sentinel,
     // so the OTHER fields' blocks on the same probe cannot answer for it.
     if (plan.ragged && paras.join("\n").indexOf(PROBE) >= 0) PROBE_RAGGED = true;
+    // And whether it wraps them on WORDS AT EVERY MEASURE, bold runs in bold
+    // (`words` — a declined composition's labelled points, SlideInput's
+    // `joinedOnWords`): the splitter measured a joined list with its bold
+    // labels in the light face, and cut it where the draw ran over.
+    if (opts.words && paras.join("\n").indexOf(PROBE) >= 0) PROBE_WORDS = true;
     return {
       requests: textBox(id(key), page, paras.join("\n"), style, box,
         { align: opts.align, lineSpacing: lead, spaceBelow: paraGapFloor(style.size, lead) + TEXT_INSET_Y }),
@@ -1803,6 +1830,10 @@ export interface Composition {
   measure: number;
   /** Each column opens with an accent sentence: three-column's lead-in. */
   lead: boolean;
+  /** Each column opens with a standalone heading (isGroup) — parallel groups
+   *  — and the lead-in is that WHOLE heading, whatever stops it holds, where
+   *  three-column's own is the first sentence of its first paragraph. */
+  headed?: boolean;
   /** The model wrote this composition, as against three-column deriving one
    *  from its content. Only a written one is refused over a column that will
    *  not fit (composedColumnsThatCannotFit), handed back to its archetype when
@@ -2028,7 +2059,7 @@ const ARCHETYPE_COLUMNS: { [layout: string]: readonly string[] } = {
 /** The columns a solved span vector draws, over the page's own band. A
  *  written composition always has two columns or more here: one column is
  *  drawn by the layout's archetype (composeDecision). */
-function compositionFrom(spans: number[], fields: string[], layout: string, written: boolean): Composition {
+function compositionFrom(spans: number[], fields: string[], layout: string, written: boolean, headed = false): Composition {
   const band = spanBand(spans);
   const regions: Composition["regions"] = [];
   for (let i = 0; i < spans.length; i++) {
@@ -2043,8 +2074,8 @@ function compositionFrom(spans: number[], fields: string[], layout: string, writ
   // ran through what was under them where the slide's own archetype drew them
   // clear.
   return {
-    spans, regions, measure: GRID.contentWidth, lead: layout === "three-column", written,
-    divided: written && layout === "two-column",
+    spans, regions, measure: GRID.contentWidth, lead: layout === "three-column" || headed, written,
+    divided: written && layout === "two-column", ...(headed ? { headed } : {}),
   };
 }
 
@@ -2156,29 +2187,164 @@ function parasOf(text: unknown): string[] {
   return String(text || "").split("\n").map((l) => l.trim()).filter(Boolean);
 }
 
+/** A PARAGRAPH SET WHOLLY IN BOLD: every character it draws inside a `**…**`
+ *  run, bar the punctuation that may close a label outside one —
+ *  `**Session 1**:`. A paragraph carrying a link is never one: textBox does
+ *  not embolden a linked box. */
+function wholeBold(para: string): boolean {
+  const pre = extractLinks(stripImageMarkdown(String(para || "")));
+  if (pre.links.length) return false;
+  const pb = parseBold(pre.text.trim());
+  if (!pb.ranges.length || !/[A-Za-z0-9\u00C0-\uFFFF]/.test(pb.text)) return false;
+  let outside = "", at = 0;
+  for (let i = 0; i < pb.ranges.length; i++) { outside += pb.text.slice(at, pb.ranges[i].start); at = pb.ranges[i].end; }
+  outside += pb.text.slice(at);
+  return /^[\s:.,;!?\u2013\u2014-]*$/.test(outside);
+}
+
+/** A STANDALONE HEADING: a paragraph that is nothing but a bold label, short
+ *  enough to be a column's lead-in whole (LEAD_IN_MAX) — "**Ask the buyer's
+ *  question**", "**Session 1:**". A bold LEAD-IN on a sentence ("**Focus:**
+ *  entity authority") is not one: the label and what it labels are one
+ *  point. Nor is a long bold paragraph: a checklist of bold questions is a
+ *  list of questions, each a point. */
+function standaloneHeading(para: string): boolean {
+  const drawn = drawnText(String(para || "")).trim();
+  return drawn.length > 0 && drawn.length <= LEAD_IN_MAX && wholeBold(para);
+}
+
+/** A COLUMN THAT IS A GROUP: it opens with a standalone heading and holds
+ *  content under it, and it is ONE group. The paragraph under the heading not
+ *  being bold is what tells a heading from the first of a run of bold points
+ *  (a checklist of bold questions). And no wholly bold paragraph further down
+ *  standing over content of its own is what tells one group from several, or
+ *  from a question-and-answer list cut into columns: a column of "**Q1?** /
+ *  answer / **Q2?** / answer" was taken for one group headed by Q1, exempted
+ *  from the list rules, and drawn with Q1 as the accent lead-in and Q2, its
+ *  peer, as a bold bullet among the answers — a hierarchy the words do not
+ *  have. Such a column is left to the list rules, where a declined row's join
+ *  labels every pair alike (joinedItems). Long or short, the second bold
+ *  paragraph over its answer is the second question; a bold paragraph that
+ *  heads nothing — the column's last, or one of a run of bold points — is a
+ *  point under the heading, as the stored "**Brand mention frequency … is a
+ *  3x stronger predictor …**" is under its column's. A row whose every
+ *  column is a group is PARALLEL GROUPS — three recommendations, each a label
+ *  over its sentence; two sessions, each a label over its modules — and that
+ *  is the one thing columns are for (composeDecision). */
+function isGroup(text: unknown): boolean {
+  const ps = parasOf(text);
+  if (ps.length < 2 || !standaloneHeading(ps[0]) || wholeBold(ps[1])) return false;
+  for (let k = 2; k + 1 < ps.length; k++) if (wholeBold(ps[k]) && !wholeBold(ps[k + 1])) return false;
+  return true;
+}
+
+/** A COLUMN'S PARAGRAPHS AS ONE LIST DRAWS THEM when a composition's columns
+ *  are joined into it (`join`): each standalone heading joined to the
+ *  paragraph it heads as one labelled item — "**Heading** — sentence", or,
+ *  where the heading already closes on a colon or a stop, the house lead-in
+ *  "**Heading:** sentence". Joined as they were written, a declined row of
+ *  three recommendations was drawn as six bullets, each label a bullet of its
+ *  own above its sentence — worse than the columns asked for, and worse than
+ *  a list. `from` is the paragraph each item opens with, which names its box.
+ *  Not joined (`join` false) it is the column's paragraphs as written: one
+ *  column drawn as the archetype draws `body` is that archetype's slide. */
+function joinedItems(text: unknown, join: boolean, wide = false): { text: string; from: number }[] {
+  const ps = parasOf(text);
+  const out: { text: string; from: number }[] = [];
+  // `wide`: a LONGER wholly bold paragraph over a point with no bold in it is
+  // joined too, where the row's join labels its headings (joinsBoldLeads).
+  const heads = (i: number): boolean => !wholeBold(ps[i + 1])
+    && (standaloneHeading(ps[i]) || (wide && wholeBold(ps[i]) && !boldRangesOf(ps[i + 1]).length));
+  for (let i = 0; i < ps.length; i++) {
+    if (join && i + 1 < ps.length && heads(i)) {
+      const closed = /[:.?!]$/.test(drawnText(ps[i]).trim());
+      out.push({ text: `${ps[i]}${closed ? " " : " — "}${ps[i + 1]}`, from: i });
+      i++;
+      continue;
+    }
+    out.push({ text: ps[i], from: i });
+  }
+  return out;
+}
+
+/** Whether a join of these columns joins headings to what they head: where
+ *  there are columns to join — two or more. One column handed to its
+ *  archetype is drawn as that archetype draws `body`. */
+function joinsHeadings(order: readonly string[]): boolean {
+  return order.length > 1;
+}
+
+/** ONE TREATMENT DOWN THE JOINED LIST. Where any column of the row holds a
+ *  standalone heading over a point, the join labels it; and a question or a
+ *  label too long to be a heading (LEAD_IN_MAX), standing wholly bold over a
+ *  plain point, is then labelled the same way. Left as written, a declined
+ *  FAQ whose questions ran 30 and 75 characters drew "**Which cement is
+ *  lowest carbon?** Answers cite …" as one item and the longer question as a
+ *  bullet of its own above its answer — two treatments of one kind of pair
+ *  in one list, where the row as written had one. A long bold paragraph over
+ *  a point that carries bold of its own is left alone: that is the next
+ *  finding in a list of bold-led findings, not an answer. And a row with no
+ *  heading in it keeps its long bold paragraphs as the points they are. */
+function joinsBoldLeads(slide: SlideInput): boolean {
+  for (let f = 0; f < COMPOSE_FIELDS.length; f++) {
+    const ps = parasOf((slide as any)[COMPOSE_FIELDS[f]]);
+    for (let i = 0; i + 1 < ps.length; i++) if (standaloneHeading(ps[i]) && !wholeBold(ps[i + 1])) return true;
+  }
+  return false;
+}
+
+/** A row's join, one column at a time: what joinedFor draws, what the
+ *  builder names its boxes by and what the splitter cuts between — one
+ *  function, so the three cannot count a column's items differently. */
+function rowJoin(slide: SlideInput, order: readonly string[]): (text: unknown) => { text: string; from: number }[] {
+  const join = joinsHeadings(order);
+  const wide = join && joinsBoldLeads(slide);
+  return (text) => joinedItems(text, join, wide);
+}
+
 /** THE SLIDE THE ARCHETYPE DRAWS IN A COMPOSITION'S PLACE: the words of the
  *  composition's columns, in its order, in the fields the archetype draws. On
  *  a prose layout that is one list in `body`; on two-column, the fields stay
  *  where they are and a third is added under `bodyRight` (or into `body`,
- *  alone); three-column draws every field itself, and has no join. */
+ *  alone); three-column draws every field itself, and has no join. Where two
+ *  columns or more are joined, a heading is joined to what it heads
+ *  (joinedItems) — in every column of the page, so a two-column slide does
+ *  not label its points one way on the left and another on the right. */
 function joinedFor(slide: SlideInput, layout: string, fields: string[]): SlideInput | null {
   if (layout === "three-column") return null;
   const any: any = { ...slide, compose: undefined };
+  const join = joinsHeadings(fields);
+  const joiner = rowJoin(slide, fields);
+  // Whether any heading was joined to its point: then the list is labelled
+  // points, and is measured on words (SlideInput's `joinedOnWords`). A join
+  // with no heading in it is the archetype's own list, on its own ruler.
+  let labelled = false;
+  const items = (f: string): string[] => {
+    const xs = joiner((slide as any)[f]);
+    if (xs.length < parasOf((slide as any)[f]).length) labelled = true;
+    return xs.map((x) => x.text);
+  };
   if (PROSE_COMPOSE.indexOf(layout) >= 0) {
     const all: string[] = [];
-    for (let i = 0; i < fields.length; i++) all.push(...parasOf((slide as any)[fields[i]]));
+    for (let i = 0; i < fields.length; i++) all.push(...items(fields[i]));
     for (let i = 0; i < COMPOSE_FIELDS.length; i++) {
-      if (fields.indexOf(COMPOSE_FIELDS[i]) < 0) all.push(...parasOf((slide as any)[COMPOSE_FIELDS[i]]));
+      if (fields.indexOf(COMPOSE_FIELDS[i]) < 0) all.push(...items(COMPOSE_FIELDS[i]));
     }
     any.body = all.join("\n");
     any.bodyRight = undefined;
     any.bodyThird = undefined;
+    if (labelled) any.joinedOnWords = true;
     return any as SlideInput;
   }
-  const third = parasOf((slide as any).bodyThird);
+  const third = items("bodyThird");
   if (!third.length) return null;
   const slot = parasOf(slide.body).length ? "bodyRight" : "body";
-  any[slot] = parasOf((slide as any)[slot]).concat(third).join("\n");
+  // THE OTHER COLUMN IS JOINED TOO: the third goes under `bodyRight`, or,
+  // where `body` is empty, into `body` — and in that case `bodyRight` kept its
+  // headings as items of their own beside a left column that had its joined.
+  const other = slot === "bodyRight" ? "body" : "bodyRight";
+  if (join && parasOf((slide as any)[other]).length) any[other] = items(other).join("\n");
+  any[slot] = items(slot).concat(third).join("\n");
   any.bodyThird = undefined;
   return any as SlideInput;
 }
@@ -2241,9 +2407,18 @@ export function composeDecision(slide: SlideInput, layout: string, index = 0): C
   const prose = PROSE_COMPOSE.indexOf(layout) >= 0;
   const onDark = slideStyle(slide, index).onDark;
   const body = onDark ? TYPE.bodyDark : TYPE.body;
-  const leadIn = layout === "three-column" ? leadInStyle(body, onDark) : undefined;
+  // PARALLEL GROUPS: every column opens with a standalone heading over its
+  // own content (isGroup). The heading is drawn as the column's lead-in, in
+  // the accent, and not as a bullet; and the row is not held to the rules
+  // below for a list cut into columns — its groups are the structure one list
+  // does not have. Asked for explicitly ("three recommendations, side by
+  // side") and written exactly so, a label over a sentence in each column,
+  // it was declined as one-line points cut up and drawn as six bullets, each
+  // label a bullet of its own: the one case columns exist for, refused.
+  const groups = fields.every((f) => isGroup((slide as any)[f]));
+  const leadIn = layout === "three-column" || groups ? leadInStyle(body, onDark) : undefined;
   const depth = (field: string, width: number): number =>
-    bulletBlockFloorHeight((slide as any)[field], width, body, { leadIn, ragged: true, words: true });
+    bulletBlockFloorHeight((slide as any)[field], width, body, { leadIn, headed: groups, ragged: true, words: true });
   let measured = false;
   // SPANS THAT BUY NOTHING. Two columns, one wider: if its words stand no
   // lower at its width than at an even split, the extra units are empty page.
@@ -2261,7 +2436,7 @@ export function composeDecision(slide: SlideInput, layout: string, index = 0): C
       }
     }
   }
-  const comp = compositionFrom(spans, fields, layout, true);
+  const comp = compositionFrom(spans, fields, layout, true, groups);
   const plan = composedPlan(slide, index, comp);
   const brand = plan.body.size;
   const asList = prose ? ", as one list in the order its columns gave them" : "";
@@ -2278,7 +2453,9 @@ export function composeDecision(slide: SlideInput, layout: string, index = 0): C
   }
   let cutList = false;
   for (let r = 0; r < comp.regions.length; r++) if (parasOf((slide as any)[comp.regions[r].field]).length > 1) cutList = true;
-  if (prose && cutList) {
+  // A ROW OF UNITS (one paragraph a column) and PARALLEL GROUPS are not a
+  // list cut up, and neither is held to what follows. The fit above still is.
+  if (prose && cutList && !groups) {
     const joined = joinedFor(slide, layout, fields) as SlideInput;
     const arch = archetypeHolds(joined, index);
     if (arch.fits && plan.fit.size < brand) {
@@ -2296,7 +2473,7 @@ export function composeDecision(slide: SlideInput, layout: string, index = 0): C
         }
       }
       if (broken >= 2 && broken * 2 >= total) {
-        return decline(`${broken} of its ${total} paragraphs are one line each as one list and would wrap in their columns, and one list holds them on this slide — columns are for parallel groups, and short points read best as one list`);
+        return decline(`${broken} of its ${total} paragraphs are one line each as one list and would wrap in their columns, and one list holds them on this slide — columns are for parallel groups (one **bold heading** line over each column's own points), and short points read best as one list`);
       }
     }
   }
@@ -2422,7 +2599,7 @@ function composeLowestRung(
 function composeFit(
   shown: { key: string; text: string | undefined; width: number }[],
   room: number, style: TypeStyle,
-  opts: { lead: boolean; onDark: boolean; capped: boolean; words: boolean }
+  opts: { lead: boolean; onDark: boolean; capped: boolean; words: boolean; headed?: boolean }
 ): {
   style: TypeStyle; over: number; size: number; capped: boolean; overflowing: string[];
   tooWide: { key: string; word: string }[];
@@ -2437,7 +2614,7 @@ function composeFit(
     for (let i = 0; i < shown.length; i++) {
       const ps = String(shown[i].text || "").split("\n").map((l) => l.trim()).filter(Boolean);
       for (let k = 0; k < ps.length; k++) {
-        const lead = k === 0 && opts.lead ? leadInLength(ps[k]) : 0;
+        const lead = k === 0 && opts.lead ? (opts.headed ? drawnText(ps[k]).trim().length : leadInLength(ps[k])) : 0;
         const w = widestWordPt(ps[k], size, style.font, { boldRanges: (lead ? [{ start: 0, end: lead }] : []).concat(boldRangesOf(ps[k])) });
         if (w.width > shown[i].width - TEXT_INSET_X + 0.5) { out.push({ key: shown[i].key, word: w.word }); break; }
       }
@@ -2449,7 +2626,7 @@ function composeFit(
     const out: number[] = [];
     for (let i = 0; i < shown.length; i++) {
       out.push(bulletBlockFloorHeight(shown[i].text, shown[i].width, at,
-        { leadIn: opts.lead ? leadInStyle(at, opts.onDark) : undefined, ragged: true, words: opts.words }));
+        { leadIn: opts.lead ? leadInStyle(at, opts.onDark) : undefined, headed: opts.headed, ragged: true, words: opts.words }));
     }
     return out;
   };
@@ -2485,6 +2662,7 @@ function composedPlan(slide: SlideInput, index: number, comp: Composition): {
   cb: ReturnType<typeof composedBand>;
   shown: { key: string; text: string | undefined; width: number; x: number }[];
   body: TypeStyle; fit: ReturnType<typeof composeFit>; lead: boolean; listed: boolean; onDark: boolean;
+  headed: boolean; bare: boolean;
 } {
   const onDark = slideStyle(slide, index).onDark;
   // A composition carries no rail and no panel — either sets it aside — so
@@ -2502,7 +2680,13 @@ function composedPlan(slide: SlideInput, index: number, comp: Composition): {
   // opening of an argument it is halfway through. The eyebrow and the
   // standfirst are dropped from a continuation for exactly this reason, and
   // the lead-in is the same decision one field along.
-  const lead = comp.lead && !slide.continuation;
+  //
+  // EXCEPT A HEADING. A column that opens with a standalone heading (the
+  // composition's `headed`) opens a group, which is the author's markup, not
+  // the splitter's cut: keyed on the flag, a stored slide the model resent
+  // with `continuation` on it and wrote as parallel groups was exempted from
+  // the list rules as groups and then drawn with each heading a bullet.
+  const lead = comp.lead && (!slide.continuation || !!comp.headed);
   // ONE TREATMENT ACROSS THE ROW. See bulletBlock's `listed`: where any column
   // of a written composition is a list, every column is set as one. A lead-in
   // column is left as three-column has always set it — its accent sentence is
@@ -2512,8 +2696,15 @@ function composedPlan(slide: SlideInput, index: number, comp: Composition): {
     if (String(shown[i].text || "").split("\n").filter((l) => l.trim()).length > 1) lists = true;
   }
   const listed = comp.written && !lead && lists;
-  const fit = composeFit(shown, cb.colH, body, { lead, onDark, capped: comp.written, words: comp.written });
-  return { cb, shown, body, fit, lead, listed, onDark };
+  // PARALLEL GROUPS: each column's heading is its lead-in, whole; and where
+  // every heading is over ONE paragraph — a recommendation and its sentence —
+  // no column is a list, and none carries a disc: one treatment across the
+  // row, as `listed` is for lists.
+  const headed = !!comp.headed;
+  let bare = headed;
+  for (let i = 0; i < shown.length; i++) if (parasOf(shown[i].text).length !== 2) bare = false;
+  const fit = composeFit(shown, cb.colH, body, { lead, onDark, capped: comp.written, words: comp.written, headed });
+  return { cb, shown, body, fit, lead, listed, onDark, headed, bare };
 }
 
 /**
@@ -2624,7 +2815,7 @@ function composedColumns(
   if (comp.written && !PROBING) {
     const style = plan.fit.style;
     for (let i = 0; i < plan.shown.length; i++) {
-      const p = bulletBlockPlan(plan.shown[i].text, plan.shown[i].width, style, { leadIn, ragged: true, words: true });
+      const p = bulletBlockPlan(plan.shown[i].text, plan.shown[i].width, style, { leadIn, headed: plan.headed, ragged: true, words: true });
       if (p.paras.length < 2) continue;
       const own = Math.min(paraGapCeiling(style.size), (plan.cb.colH - p.natural) / (p.paras.length - 1));
       shared = shared === undefined ? own : Math.min(shared, own);
@@ -2635,7 +2826,7 @@ function composedColumns(
     const col = plan.shown[i];
     const drawn = bulletBlock(id, col.key, page, col.text, plan.fit.style, {
       x: col.x, y: plan.cb.colTop, width: col.width, height: plan.cb.colH,
-    }, { leadIn, ragged: true, words: comp.written, listed: plan.listed, gap: shared });
+    }, { leadIn, headed: plan.headed, bare: plan.bare, ragged: true, words: comp.written, listed: plan.listed, gap: shared });
     requests.push(...drawn.requests);
     deepest = Math.max(deepest, drawn.bottom);
   }
@@ -10388,12 +10579,16 @@ function buildSlideRequestsAt(
   // the name of the field it came from (bulletBlock's `keys`): drawn under
   // `body`'s, the right-hand column's words could not be edited in the
   // preview at all — no box on the slide named the field that holds them.
+  //
+  // A heading joined to the paragraph it heads is one item (joinedItems),
+  // and its box takes the heading's name.
   let joinedKeys: string[] | undefined;
   if (decided.joined && PROSE_COMPOSE.indexOf(layout) >= 0) {
     joinedKeys = [];
+    const joiner = rowJoin(slide, decided.order);
     for (let f = 0; f < decided.order.length; f++) {
-      const ps = parasOf((slide as any)[decided.order[f]]);
-      for (let k = 0; k < ps.length; k++) joinedKeys.push(k === 0 ? decided.order[f] : `${decided.order[f]}${k}`);
+      const items = joiner((slide as any)[decided.order[f]]);
+      for (let k = 0; k < items.length; k++) joinedKeys.push(items[k].from === 0 ? decided.order[f] : `${decided.order[f]}${items[k].from}`);
     }
   }
   if (decided.joined) slide = decided.joined;
@@ -12264,7 +12459,7 @@ function buildSlideRequestsAt(
       // Down to the foot of the band, not the old fixed height that stopped
       // 39pt short of it and pooled every list under the title.
       height: bodyHeight,
-    }, joinedKeys ? { keys: joinedKeys } : {});
+    }, { ...(joinedKeys ? { keys: joinedKeys } : {}), ...(slide.joinedOnWords ? { words: true } : {}) });
     requests.push(
       ...body.requests,
       ...(rail
@@ -12511,12 +12706,15 @@ let PROBING = false;
  *  the same shape as PROBING above, and for the same reason: it is an answer
  *  the request stream cannot carry. */
 let PROBE_RAGGED = false;
+/** And whether it wraps them on words at EVERY measure with bold runs in the
+ *  bold face (bulletBlockPlan's `words`). Same shape, same reason. */
+let PROBE_WORDS = false;
 
 function bodyBox(
   slide: SlideInput, index: number, field: "body" | "bodyRight"
 ): {
   width: number; height: number; size: number; bullets: boolean; spaceBelow: number;
-  font?: string; ragged?: boolean;
+  font?: string; ragged?: boolean; words?: boolean;
 } | undefined {
   // The probe must measure the box this slide will END UP with, not the box it
   // has right now. On content/case-study a picture becomes a RIGHT-HAND RAIL
@@ -12536,13 +12734,14 @@ function bodyBox(
   // PUT BACK AS FOUND, not cleared: composeDecision asks this function while
   // the builder is drawing a slide, and a probe that ended by setting
   // PROBING false would end the probe of whatever slide asked it.
-  const wasProbing = PROBING, wasRagged = PROBE_RAGGED;
+  const wasProbing = PROBING, wasRagged = PROBE_RAGGED, wasWords = PROBE_WORDS;
   PROBING = true;
   PROBE_RAGGED = false;
+  PROBE_WORDS = false;
   let reqs: any[];
-  let ragged = false;
-  try { reqs = buildSlideRequests(probe, index, "m") as any[]; ragged = PROBE_RAGGED; }
-  finally { PROBING = wasProbing; PROBE_RAGGED = wasRagged; }
+  let ragged = false, words = false;
+  try { reqs = buildSlideRequests(probe, index, "m") as any[]; ragged = PROBE_RAGGED; words = PROBE_WORDS; }
+  finally { PROBING = wasProbing; PROBE_RAGGED = wasRagged; PROBE_WORDS = wasWords; }
   let id: string | undefined;
   for (const r of reqs) {
     if (r.insertText && String(r.insertText.text).indexOf(PROBE) >= 0) { id = r.insertText.objectId; break; }
@@ -12575,7 +12774,7 @@ function bodyBox(
       spaceBelow = r.updateParagraphStyle.style.spaceBelow.magnitude;
     }
   }
-  return { width, height, size, bullets, spaceBelow, font, ragged };
+  return { width, height, size, bullets, spaceBelow, font, ragged, words };
 }
 
 /** How much room a block of paragraphs needs in a given box. */
@@ -12583,7 +12782,7 @@ const SPACE_BELOW = 6;
 
 function blockHeight(
   paras: string[],
-  box: { width: number; size: number; bullets: boolean; spaceBelow?: number; font?: string; ragged?: boolean }
+  box: { width: number; size: number; bullets: boolean; spaceBelow?: number; font?: string; ragged?: boolean; words?: boolean }
 ): number {
   // THE SPLITTER MEASURES WITH THE RULER THE BLOCK WILL BE DRAWN WITH, and the
   // probe is what says which one that is. Left on the count model here, a
@@ -12594,9 +12793,11 @@ function blockHeight(
   const ragged = !!box.ragged;
   let lines = 0;
   for (let i = 0; i < paras.length; i++) {
-    lines += Math.max(1, ragged
-      ? raggedLines(paras[i], box.width, box.size, box.font)
-      : estimateLines(paras[i], box.width, box.size, box.bullets, false, box.font));
+    lines += Math.max(1, box.words
+      ? raggedLines(paras[i], box.width, box.size, box.font, 0, boldRangesOf(paras[i]), true)
+      : ragged
+        ? raggedLines(paras[i], box.width, box.size, box.font)
+        : estimateLines(paras[i], box.width, box.size, box.bullets, false, box.font));
   }
   return drawnTextHeight(lines, box.size, box.spaceBelow ?? SPACE_BELOW, paras.length);
 }
@@ -12640,8 +12841,9 @@ function splitOnce(
       // the one a reader expects.
       const at: number[] = [];
       let sum = 0;
+      const joiner = rowJoin(slide, d.order);
       for (let i = 0; i + 1 < d.order.length; i++) {
-        sum += parasOf((slide as any)[d.order[i]]).length;
+        sum += joiner((slide as any)[d.order[i]]).length;
         if (sum > 0) at.push(sum);
       }
       const oneList = !!d.joined && PROSE_COMPOSE.indexOf(layoutOf(slide.layout, index)) >= 0;

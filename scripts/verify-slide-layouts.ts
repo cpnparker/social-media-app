@@ -16743,6 +16743,12 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     const clone57 = (x: any) => JSON.parse(JSON.stringify(x));
     const probe57 = (p: string) => stripImageMarkdown(p).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(" ").slice(0, 5).join(" ");
     const drawnOf = (reqs: any[]) => reqs.filter((r) => r.insertText && r.insertText.text).map((r) => String(r.insertText.text)).join(" · ").toLowerCase().replace(/[^a-z0-9]+/g, " ");
+    // A box's whole-box style, and its words, by the suffix of its id.
+    const styleOf57 = (reqs: any[], suffix: string) => {
+      const r = reqs.find((q) => q.updateTextStyle && String(q.updateTextStyle.objectId).endsWith(`_${suffix}`) && q.updateTextStyle.textRange && q.updateTextStyle.textRange.type === "ALL");
+      return r ? r.updateTextStyle.style : null;
+    };
+    const textOf57 = (reqs: any[], suffix: string) => { const r = reqs.find((q) => q.insertText && String(q.insertText.objectId).endsWith(`_${suffix}`)); return r ? String(r.insertText.text) : null; };
     // What a fault is ABOUT: its kind and the fields its note names. Two
     // builds of one slide are compared on these, not on box ids, because a
     // composition and its archetype split and number their boxes differently.
@@ -17040,7 +17046,13 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
      * `content`) never draws; judged against the plain one, a standfirst as
      * long as the page read as the composition's fault for pushing a list
      * the plain slide did not have off the foot. */
-    const sweep57 = (at: Density, n: number, seed0: number) => {
+    // `grouped`: most column fields open with a standalone bold heading over
+    // their content — parallel groups, the case columns exist for — and some
+    // do not, so mixed rows are declined and joined too. The heading of each
+    // field is recorded, which is the oracle (r)-(t) and the counters below
+    // judge the draw by. Off, the sweep draws exactly the random sequence it
+    // always has.
+    const sweep57 = (at: Density, n: number, seed0: number, grouped = false) => {
       let seed = seed0;
       const rnd = () => { seed = (seed + 0x6D2B79F5) | 0; let t = seed; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
       const pick = <T,>(a: T[]): T => a[Math.floor(rnd() * a.length)];
@@ -17050,11 +17062,38 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       const label = () => `**${para(1, 4).replace(/\.$/, "")}:** ${para(4, 16)}`;
       // And now and then a link, which is one word as long as a column.
       const link = () => `${para(3, 8)} See https://www.${pick(WORDS)}-${pick(WORDS)}.org/${pick(WORDS)}/2026/${pick(WORDS)}-${pick(WORDS)}`;
-      const fieldText = () => { const k = 1 + Math.floor(rnd() * (rnd() < 0.3 ? 8 : 4)); const ps: string[] = []; for (let i = 0; i < k; i++) { const r = rnd(); ps.push(r < 0.25 ? pick(P57) : r < 0.5 ? label() : r < 0.55 ? link() : para(3, rnd() < 0.2 ? 40 : 18)); } return ps.join("\n"); };
+      const plainText = () => { const k = 1 + Math.floor(rnd() * (rnd() < 0.3 ? 8 : 4)); const ps: string[] = []; for (let i = 0; i < k; i++) { const r = rnd(); ps.push(r < 0.25 ? pick(P57) : r < 0.5 ? label() : r < 0.55 ? link() : para(3, rnd() < 0.2 ? 40 : 18)); } return ps.join("\n"); };
+      let heads: { [field: string]: string } = {};
+      // AND NOW AND THEN A SECOND BOLD PARAGRAPH further down a headed column
+      // — a second group, or the next question of a question-and-answer list —
+      // over its own points: short (a heading, joined when the row is
+      // declined) or long (a bold point, never one). Such a column is not a
+      // group, and its row is not parallel groups.
+      let later: { [field: string]: { text: string; short: boolean }[] } = {};
+      const fieldText = (field: string) => {
+        if (!(grouped && rnd() < 0.85)) return plainText();
+        const head = `${para(1, 4).replace(/\.$/, "")}${rnd() < 0.2 ? ":" : ""}`;
+        heads[field] = head;
+        let out = `**${head}**\n${plainText()}`;
+        if (rnd() < 0.12) {
+          const second = `${para(rnd() < 0.7 ? 1 : 12, rnd() < 0.7 ? 4 : 16).replace(/\.$/, "")}?`;
+          (later[field] = later[field] || []).push({ text: second, short: second.length <= 60 });
+          out += `\n**${second}**\n${plainText()}`;
+        }
+        return out;
+      };
       const SPANS: any[] = [[12], [6, 6], [4, 8], [8, 4], [4, 4, 4], [5, 7], [7, 5], [9, 3], [3, 9], [10, 2], [4, 4, 2, 2], [4, 4, 4, 0], [5, 5], [3, 4, 4], [0, 12], [12, 0], [1, 11], [6, 6, 6, -6], [4.5, 7.5], [-3, 15], [2, 2, 2, 2, 2, 2], [], "six", null];
       const FIELDSETS: any[] = [["body"], ["body", "bodyRight"], ["bodyRight", "body"], ["body", "bodyRight", "bodyThird"], ["bodyThird", "body", "bodyRight"], ["bodyRight"], ["body", "body"], ["title"], [], undefined];
       const t = { cases: 0, refused: 0, built: 0, written: 0, restated: 0, declined: 0, joinedSplit: 0, same: 0, notSame: 0, pieces: 0, split: 0, newFaults: 0, newDrops: 0, colFaults: 0, offPage: 0, offCanvas: 0,
-        nonPositive: 0, clipped: 0, order: 0, carried: 0, threw: 0, unstepped: 0, corrected: 0, stepped: 0, tooSmall: 0, leadIns: 0, listed: 0, divided: 0, longTitles: 0, credits: 0 };
+        nonPositive: 0, clipped: 0, order: 0, carried: 0, threw: 0, unstepped: 0, corrected: 0, stepped: 0, tooSmall: 0, leadIns: 0, listed: 0, divided: 0, longTitles: 0, credits: 0,
+        // grouped: rows of groups drawn as columns, headed; ones declined all
+        // the same; headings drawn other than as the lead-in; declined rows
+        // joined; and a heading drawn as a bullet of its own in one.
+        groupRows: 0, headed: 0, groupsDeclined: 0, headWrong: 0, joinedGroups: 0, bareHeads: 0,
+        // rows with a column holding two headings; composed; drawn headed or
+        // with the first heading set apart; and a labelled join's points
+        // measured, and boxed shorter than their words on words.
+        severalRows: 0, severalComposed: 0, severalHeaded: 0, joinedPoints: 0, shortPoints: 0 };
       const said: string[] = [];
       for (let c = 0; c < n; c++) {
         const slide: any = { layout: pick(["content", "case-study", "dark-index", "two-column", "three-column"]),
@@ -17066,7 +17105,9 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
         if (rnd() < 0.3) { slide.resolvedImage = { ...PHOTO57, credit: "Photo: Somebody Real / Unsplash" }; slide.image = { query: "office" }; }
         const f = pick(FIELDSETS);
         const want = Array.isArray(f) ? f : ["body"];
-        for (const k of ["body", "bodyRight", "bodyThird"]) if (want.indexOf(k) >= 0 || rnd() < 0.15) slide[k] = fieldText();
+        heads = {};
+        later = {};
+        for (const k of ["body", "bodyRight", "bodyThird"]) if (want.indexOf(k) >= 0 || rnd() < 0.15) slide[k] = fieldText(k);
         slide.compose = { columns: pick(SPANS), fields: f };
         // The deck around it: three to nine things, the composed one at a
         // seeded place among them, each with its bar and some with a picture.
@@ -17083,7 +17124,11 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
         const src = at0 + 1;
         t.cases++;
         try {
-          if (composedColumnsThatCannotFit(deckIn, at).length) { t.refused++; continue; }
+          // Grouped, a refused row is built all the same, as the stored deck
+          // a user typed long in the preview is — drawn, not refused — so the
+          // join and the cut between groups are swept too.
+          const refusedHere = composedColumnsThatCannotFit(deckIn, at).length > 0;
+          if (refusedHere) { t.refused++; if (!grouped) continue; }
           const n0 = normaliseSlide({ ...slide, density: at });
           const dec = composeDecision(n0, layoutOf(n0.layout, src), src);
           const build = (withC: boolean, as?: any) => {
@@ -17128,6 +17173,84 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
             // AND NOTHING IT DREW STILL CARRIES THE COMPOSITION IT WAS DRAWN
             // WITHOUT, once cut: the verdict was reached on the whole slide.
             if (B.pieces.length > 1 && (dec.joined || dec.measured)) for (let p = 0; p < B.pieces.length; p++) if (B.pieces[p].piece.compose !== undefined) t.carried++;
+          }
+          // PARALLEL GROUPS, judged by the generator's own record of which
+          // field it headed: a row whose every column carrying words is a
+          // group is drawn as its columns — the guard has already refused the
+          // ones that will not fit — each heading its column's lead-in, whole,
+          // in the accent, with no disc; and a row declined and joined draws
+          // no heading as an item of its own.
+          if (grouped) {
+            const carriedF = ["body", "bodyRight", "bodyThird"].filter((k) => typeof slide[k] === "string" && slide[k].trim());
+            const allGroups = carriedF.length > 1 && carriedF.every((k) => heads[k] !== undefined && !later[k]);
+            // SEVERAL HEADINGS IN A COLUMN: not a group, so never drawn headed;
+            // composed, every heading in the column has the one treatment —
+            // the first carries its disc, as the ones under it do (three-column
+            // aside, whose own lead-in accents any first sentence).
+            const several = carriedF.filter((k) => !!later[k]);
+            if (several.length) {
+              t.severalRows++;
+              if (dec.comp && dec.comp.written) {
+                t.severalComposed++;
+                const layoutHere = layoutOf(n0.layout, src);
+                const firstDisc = layoutHere === "three-column" || several.every((k) => !dec.comp!.regions.some((r) => r.field === k) || !!boxOf(B.pieces[0].reqs, `${k}dot0`));
+                if (dec.comp.headed || !firstDisc) { t.severalHeaded++; if (said.length < 3) said.push(`#${c} ${slide.layout} ${JSON.stringify(slide.compose)}: a column holding two headings drawn with its first as the lead-in`); }
+              }
+            }
+            if (allGroups && !refusedHere && !composeNotUsedBecause(n0, layoutOf(n0.layout, src))) {
+              t.groupRows++;
+              if (dec.joined) { t.groupsDeclined++; if (said.length < 3) said.push(`#${c} ${slide.layout} ${JSON.stringify(slide.compose)}: parallel groups declined — ${dec.notes.join(" / ").slice(0, 160)}`); }
+            }
+            if (dec.comp && dec.comp.written && allGroups) {
+              t.headed++;
+              const reqs = B.pieces[0].reqs;
+              for (let r = 0; r < dec.comp.regions.length; r++) {
+                const fk = dec.comp.regions[r].field;
+                const st = styleOf57(reqs, fk);
+                const ok = textOf57(reqs, fk) === heads[fk] && !!st && !!st.weightedFontFamily && st.weightedFontFamily.weight === 700 && !!st.foregroundColor && !boxOf(reqs, `${fk}dot0`);
+                if (!ok) { t.headWrong++; if (said.length < 3) said.push(`#${c} ${slide.layout}: \`${fk}\`'s heading "${heads[fk]}" is not drawn as its column's lead-in`); }
+              }
+            }
+            // A ROW: columns joined. One column handed to its archetype is
+            // drawn as that archetype draws `body`, heading and all — the page
+            // the same words make with no composition — so it is not a join.
+            if (dec.joined && dec.order.length > 1 && Object.keys(heads).length) {
+              t.joinedGroups++;
+              for (let p = 0; p < B.pieces.length; p++) {
+                const texts = B.pieces[p].reqs.filter((q: any) => q.insertText).map((q: any) => String(q.insertText.text).trim());
+                const shortHeads = Object.keys(heads).map((k) => heads[k]);
+                for (const k of Object.keys(later)) for (const h of later[k]) if (h.short) shortHeads.push(h.text);
+                for (const h of shortHeads) {
+                  if (texts.indexOf(h) < 0) continue;
+                  t.bareHeads++;
+                  if (said.length < 3) said.push(`#${c} ${slide.layout} ${JSON.stringify(slide.compose)}: declined, and "${h}" drawn as an item of its own`);
+                }
+              }
+            }
+            // A LABELLED JOIN IS BOXED ON WORDS, bold in bold (see (v)): every
+            // point, on every piece it was cut into, at least as tall as its
+            // lines wrapped word by word with its label in the bold face. A
+            // piece holding ONE point is boxed to the room its page has left,
+            // which is the page's measure, not the ruler's: under a standfirst
+            // as long as the page, (f2)'s case, one point has 40pt where it
+            // needs 42, on any ruler.
+            if (dec.joined && (dec.joined as any).joinedOnWords) {
+              for (let p = 0; p < B.pieces.length; p++) {
+                const pg = previewSlideFrom(B.pieces[p].piece, B.pieces[p].reqs);
+                const points = pg.elements.filter((e) => e.kind === "text" && !!e.text && !!e.path && COMPOSE_FIELDS.indexOf(String(e.path[0])) >= 0);
+                if (points.length < 2) continue;
+                for (const el of points) {
+                  if (!el.text) continue;
+                  const bold = (el.accents || []).filter((a) => a.bold).map((a) => ({ start: a.start, end: a.end }));
+                  const size = el.size || 10;
+                  t.joinedPoints++;
+                  if (el.h + 0.5 < drawnTextHeight(raggedLines(el.text, el.w, size, el.font, 0, bold, true), size, 0, 1)) {
+                    t.shortPoints++;
+                    if (said.length < 3) said.push(`#${c} ${slide.layout}: the labelled point "${String(el.text).slice(0, 40)}" boxed ${Math.round(el.h)}pt, under its lines on words`);
+                  }
+                }
+              }
+            }
           }
           // A FAULT IS NEW WHEN ITS KIND AND SUBJECT ARE: a title that runs over
           // its box by the same points on both is one fault, whether it crosses
@@ -17226,6 +17349,29 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       A57(t.built > 350 && t.refused > 0 && t.written > 40 && t.restated > 20 && t.declined > 50 && t.same > 200 && t.joinedSplit > 0 && t.split > 0 && t.corrected > 50
         && t.stepped > 0 && t.leadIns > 0 && t.listed > 0 && t.divided > 0 && t.longTitles > 50 && t.credits > 50,
         `${tag}: precondition — ${JSON.stringify(t)}`);
+    }
+    /* (f4) THE SWEEP OVER PARALLEL GROUPS: the same decks, the same
+     * judgements, with most column fields opening on a standalone heading.
+     * Every row of groups the guard lets through is drawn as its columns,
+     * headed; every row declined and joined labels its points inline. */
+    for (let pi = 0; pi < 2; pi++) {
+      const at: Density = pi ? "present" : "read";
+      const { t, said } = sweep57(at, 700, 5757 + pi, true);
+      const tag = `(f4) ${at} groups`;
+      swept57.push(`${at} groups: ${t.built} built, ${t.refused} refused, ${t.headed} rows of groups composed headed, ${t.joinedGroups} declined and joined`);
+      A57(t.threw === 0 && t.newFaults === 0 && t.newDrops === 0, `${tag}: ${t.threw} threw, ${t.newFaults} faults and ${t.newDrops} dropped paragraphs its own archetype does not have — ${said.join(" / ")}`);
+      A57(t.offCanvas === 0 && t.offPage === 0 && t.nonPositive === 0 && t.colFaults === 0 && t.clipped === 0 && t.order === 0 && t.tooSmall === 0,
+        `${tag}: ${JSON.stringify({ offCanvas: t.offCanvas, offPage: t.offPage, nonPositive: t.nonPositive, colFaults: t.colFaults, clipped: t.clipped, order: t.order, tooSmall: t.tooSmall })} — ${said.join(" / ")}`);
+      A57(t.notSame === 0 && t.carried === 0, `${tag}: ${t.notSame} slides drawn as neither their composition nor their archetype over its words, ${t.carried} cut pieces still carrying compose — ${said.join(" / ")}`);
+      A57(t.groupsDeclined === 0, `${tag}: ${t.groupsDeclined} rows of parallel groups the guard let through were declined — ${said.join(" / ")}`);
+      A57(t.headWrong === 0, `${tag}: ${t.headWrong} headings not drawn as their column's lead-in — ${said.join(" / ")}`);
+      A57(t.bareHeads === 0, `${tag}: ${t.bareHeads} headings drawn as a bullet of their own in a declined row — ${said.join(" / ")}`);
+      A57(t.severalHeaded === 0, `${tag}: ${t.severalHeaded} rows with a column holding two headings drawn with the first as the lead-in — ${said.join(" / ")}`);
+      A57(t.shortPoints === 0, `${tag}: ${t.shortPoints} of ${t.joinedPoints} labelled points boxed shorter than their lines on words — ${said.join(" / ")}`);
+      // At `present` a row with a column of two headings is all but always
+      // declined — the list rules hold it — so the composed ones are `read`'s.
+      A57(t.built > 350 && t.groupRows > 40 && t.headed > 12 && t.joinedGroups > 20 && t.joinedSplit > 10 && t.refused > 0
+        && t.severalRows > 40 && (at === "present" || t.severalComposed > 5) && t.joinedPoints > 200, `${tag}: precondition — ${JSON.stringify(t)}`);
     }
 
     /* (f2) A STANDFIRST AS LONG AS THE PAGE keeps every box on the page: its
@@ -17718,6 +17864,429 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
         A57(!g.faults.some((f) => /`subtitle`/.test(f.note)), `(q) ${at}: the validator reads the standfirst on another ruler — ${g.faults.map((f) => f.note.slice(0, 100)).join(" / ")}`);
       }
     }
+
+    /* (r) PARALLEL GROUPS ARE DRAWN AS COLUMNS. The live QA failure
+     * (2026-09-24, Chrome): asked for "one slide on the content layout,
+     * composed as three columns side by side: our three recommendations", a
+     * model wrote exactly that — each column a bold heading over one sentence
+     * — and it was declined as one-line points cut up, and drawn as six
+     * bullets, each heading a bullet of its own above its sentence. LIVE57 is
+     * that slide, word for word. A row whose every column opens with a
+     * standalone heading over its own content is drawn as written, through
+     * the deck's own path, at the deck's size, with no fault and no word lost;
+     * each heading is the column's lead-in — three-column's own accent style,
+     * the whole heading, no disc — and a heading over ONE paragraph leaves
+     * that paragraph without a disc too. */
+    const LIVE57: any = {
+      layout: "content", title: "Three editorial rules for Amrize",
+      subtitle: "What to change on every article so AI answers can quote Amrize by name.",
+      body: "**Ask the buyer’s question**\nRewrite every H2 as a real buyer question and answer it in the first sentence.",
+      bodyRight: "**Name Amrize, not we**\nPut Amrize, not we, in every sentence that carries a fact.",
+      bodyThird: "**Date, byline, FAQ**\nAdd a byline, a published date and an FAQ block to every article.",
+      compose: { columns: [4, 4, 4], fields: ["body", "bodyRight", "bodyThird"] },
+    };
+    const HEADS57 = ["Ask the buyer’s question", "Name Amrize, not we", "Date, byline, FAQ"];
+    const LIVE_FIELDS57 = ["body", "bodyRight", "bodyThird"];
+    // The pieces a slide is drawn as through the deck's own path, with their
+    // notes and every sweep's faults.
+    const through57 = (slide: any, at: Density) => {
+      const d: any[] = [{ layout: "cover", title: "Cover" }, { ...clone57(slide), __src: 1 }, { layout: "closing", title: "Thanks" }];
+      stampDensity(d, at);
+      const deck = splitOverflowingSlides(d);
+      stampDeckChrome(deck, "Groups");
+      const out: { piece: any; j: number; reqs: any[]; notes: string[]; faults: any[] }[] = [];
+      for (let j = 0; j < deck.length; j++) {
+        if ((deck[j] as any).__src !== 1) continue;
+        const notes: string[] = [];
+        const reqs = buildSlideRequests(deck[j], j, "r57", notes) as any[];
+        const page = previewSlideFrom(deck[j], reqs);
+        out.push({ piece: deck[j], j, reqs, notes, faults: offCanvasFaults(reqs, deck[j], j).faults.concat(overlapFaults(page, deck[j], j).faults,
+          overrunFaults(page, deck[j], j).faults, offPageFaults(page, deck[j], j).faults, wideWordFaults(page, deck[j], j).faults) });
+      }
+      return out;
+    };
+    const sizeOf57 = (reqs: any[], suffix: string) => { const st = styleOf57(reqs, suffix); return st && st.fontSize ? st.fontSize.magnitude : NaN; };
+    const hex57 = (st: any) => {
+      const c = st && st.foregroundColor && st.foregroundColor.opaqueColor && st.foregroundColor.opaqueColor.rgbColor;
+      return c ? [c.red || 0, c.green || 0, c.blue || 0].map((v: number) => (`0${Math.round(v * 255).toString(16)}`).slice(-2)).join("").toUpperCase() : "";
+    };
+    for (let pi = 0; pi < 2; pi++) {
+      const at: Density = pi ? "present" : "read";
+      const brand = at === "present" ? 12 : 10;
+      const tag = `(r) ${at} the live three recommendations`;
+      A57(composedColumnsThatCannotFit([{ layout: "cover", title: "C" }, LIVE57], at).length === 0, `${tag}: refused by the guard`);
+      const dec = composeDecision({ ...LIVE57, density: at }, "content", 1);
+      A57(!!dec.comp && dec.comp.written && !!dec.comp.headed && same57(dec.comp.spans, [4, 4, 4]) && !dec.joined && dec.notes.length === 0,
+        `${tag}: not drawn as its three columns — ${JSON.stringify(dec.comp && { spans: dec.comp.spans, headed: dec.comp.headed })} ${dec.notes.join(" / ")}`);
+      const got = through57(LIVE57, at);
+      A57(got.length === 1, `${tag}: drawn on ${got.length} slides`);
+      if (!got.length) continue;
+      const { reqs, faults, notes } = got[0];
+      A57(faults.length === 0 && notes.length === 0, `${tag}: ${faults.map((f) => f.note.slice(0, 90)).join(" / ")} ${notes.join(" / ")}`);
+      // THE LEAD-IN THREE-COLUMN ALREADY DRAWS, asked of three-column itself.
+      const three = buildSlideRequests({ layout: "three-column", title: "Lead-ins", body: "Ask the question.\nThen answer it.", bodyRight: "Name it.\nEvery time.", density: at } as any, 1, "r57") as any[];
+      const lead3 = styleOf57(three, "body");
+      const band = spanBand([4, 4, 4]);
+      for (let i = 0; i < 3; i++) {
+        const f = LIVE_FIELDS57[i];
+        const [x, w] = xw(boxOf(reqs, f));
+        A57(Math.abs(x - band.x[i]) < 1e-9 && Math.abs(w - band.width[i]) < 1e-9, `${tag}: \`${f}\` at ${x}/${w}, not the third column ${band.x[i]}/${band.width[i]}`);
+        A57(textOf57(reqs, f) === HEADS57[i], `${tag}: \`${f}\`'s first box reads "${textOf57(reqs, f)}", not its heading`);
+        A57(same57(styleOf57(reqs, f), lead3), `${tag}: \`${f}\`'s heading is set ${JSON.stringify(styleOf57(reqs, f))}, not as three-column's lead-in ${JSON.stringify(lead3)}`);
+        A57(!boxOf(reqs, `${f}dot0`) && !boxOf(reqs, `${f}dot1`), `${tag}: \`${f}\` carries a disc — a heading over one sentence is not a list`);
+        A57(sizeOf57(reqs, `${f}1`) === brand, `${tag}: \`${f}\`'s sentence is set at ${sizeOf57(reqs, `${f}1`)}pt, not the deck's ${brand}pt`);
+        A57(drawnOf(reqs).indexOf(probe57(String(LIVE57[f]).split("\n")[1])) >= 0, `${tag}: \`${f}\`'s sentence is drawn nowhere`);
+      }
+      // A HEADING OVER TWO POINTS BESIDE ONE OVER ONE: one treatment across
+      // the row — every point has its disc — and the headings still none.
+      const mixed: any = { ...LIVE57, layout: "case-study", body: `${LIVE57.body}\nPut the answer in the first sentence under every H2, not the third paragraph.`,
+        bodyThird: undefined, compose: { columns: [6, 6], fields: ["body", "bodyRight"] } };
+      const mc = composeDecision({ ...mixed, density: at }, "case-study", 1);
+      const mr = buildSlideRequests({ ...mixed, density: at }, 1, "r57") as any[];
+      A57(!!mc.comp && !!mc.comp.headed && !boxOf(mr, "bodydot0") && !boxOf(mr, "bodyRightdot0") && !!boxOf(mr, "bodydot1") && !!boxOf(mr, "bodydot2") && !!boxOf(mr, "bodyRightdot1"),
+        `(r) ${at}: a row of a heading over two points and one over one is not headed with every point dotted`);
+      // THE WHOLE HEADING, whatever stops it holds: three-column's own lead-in
+      // is the first sentence, and "Step 1." is not the heading.
+      const stop: any = { ...LIVE57, body: "**Step 1. Ask the buyer’s question**\nRewrite every H2 as a real buyer question and answer it in the first sentence." };
+      const sr = buildSlideRequests({ ...stop, density: at }, 1, "r57") as any[];
+      A57(same57(styleOf57(sr, "body"), lead3) && !sr.some((q) => q.updateTextStyle && String(q.updateTextStyle.objectId).endsWith("_body") && q.updateTextStyle.style && q.updateTextStyle.style.foregroundColor && q.updateTextStyle.textRange.type === "FIXED_RANGE"),
+        `(r) ${at}: a heading holding a stop is accented only in part`);
+      // AND ON A SLIDE RESENT WITH `continuation` ON IT: a heading is the
+      // author's markup, not the splitter's cut, so it is still the lead-in.
+      const cont = buildSlideRequests({ ...LIVE57, continuation: true, density: at }, 1, "r57") as any[];
+      A57(LIVE_FIELDS57.every((f) => same57(styleOf57(cont, f), lead3) && !boxOf(cont, `${f}dot0`)), `(r) ${at}: groups on a slide flagged \`continuation\` draw their headings as bullets`);
+      // ON A DARK GROUND the accent is the teal, as three-column's rule is.
+      const dark = buildSlideRequests({ ...LIVE57, layout: "dark-index", density: at }, 1, "r57") as any[];
+      const ds = styleOf57(dark, "bodyRight");
+      A57(!!compositionOf({ ...LIVE57, layout: "dark-index", density: at }, "dark-index", 1) && hex57(ds) === COLOR.tealSoft.toUpperCase() && ds.weightedFontFamily.weight === 700,
+        `(r) ${at}: on dark-index the heading is ${hex57(ds)}, not the teal`);
+    }
+    // THE FIT STILL HOLDS IT: typed four points longer a column, the row fits
+    // `read` and is refused at `present`, where it would need two points under
+    // the deck.
+    {
+      const more = (f: string, extra: string[]) => `${LIVE57[f]}\n${extra.join("\n")}`;
+      const long: any = { ...LIVE57,
+        body: more("body", ["Put the answer in the first sentence under every H2, not the third paragraph.", "Use the buyer's own words from the survey, not the product team's.", "Keep each answer under sixty words so a model can lift it whole.", "Link each answer to the page that proves it."]),
+        bodyRight: more("bodyRight", ["Name the product line, not the category, wherever a figure appears.", "Spell the brand the same way on every page and in every schema block.", "Replace every pronoun that opens a paragraph with the name it stands for.", "Give each claim its source in the same sentence."]),
+        bodyThird: more("bodyThird", ["Show the date the article was last reviewed, not only published.", "Give every author a page with credentials and sameAs links.", "Mark the FAQ up as FAQPage schema.", "Keep the byline a named person, never the brand."]) };
+      const lr = composedColumnsThatCannotFit([{ layout: "cover", title: "C" }, long], "read"), lp = composedColumnsThatCannotFit([{ layout: "cover", title: "C" }, long], "present");
+      const lc = composeDecision({ ...long, density: "read" }, "content", 1);
+      A57(lr.length === 0 && !!lc.comp && !!lc.comp.headed && lp.length === 1, `(r) four groups of five: read ${lr.length ? "refused" : "passed"} (${lc.comp && lc.comp.headed ? "headed" : "not headed"}), present ${lp.length ? `refused at ${lp[0].size}pt` : "passed"}`);
+    }
+
+    /* (s) WHAT WAS RIGHTLY DECLINED STAYS DECLINED. The design review's
+     * pairs that read worse composed than as their archetype, each reduced
+     * to its paragraph shape in neutral words (the stored copy is client
+     * work): R10 and R12, labelled one-liners cut 2 + 2 and 3 + 2; R11, plain
+     * one-liners 3 + 2; N02, plain one-liners 3 / 2 / 2 whose first lines are
+     * short enough to be a lead-in; N07, labelled one-liners on dark-index;
+     * N12, a two-column [8, 4] whose wide column buys nothing. And the near
+     * misses of a heading, which are points: a checklist of bold questions,
+     * some short (R05); and long bold questions each over a short answer. None
+     * of them is parallel groups, and each is still drawn as its archetype
+     * over its words, and says why. */
+    {
+      const lab = ["**Everyone:** ask EngineAI to brief you on one client before your next call with them.",
+        "**Account managers:** ask for a contracts summary or pipeline check instead of pulling it by hand.",
+        "**Anyone writing client copy:** run a draft through Content Optimizer before it goes out.",
+        "**Anyone with a recurring report:** ask EngineAI to set it up as a scheduled prompt."];
+      const plain = ["Keywords still matter, but they are the floor of the work and not its ceiling",
+        "Entities and the relationships between them are what a model actually retrieves",
+        "Answer engines cite pages that are specific, attributed and plainly structured",
+        "Authority is built where owned, earned and partner channels overlap one another",
+        "Measure your share of AI answers now, because it is the metric that will count"];
+      const labels5 = ["**Framing:** position the investment as manageable when it is done properly, not a scare story",
+        "**Audiences:** finance leads, disclosure teams, sustainability teams and the operations engineers",
+        "**Sector angle:** water and chemical dependency in manufacturing came up specifically",
+        "**Source material:** a long draft report, sliced by audience rather than republished whole",
+        "**Proof points:** two named partners as the credibility anchors"];
+      const anatomy = ["H1 as a question with the main entity", "A direct answer in the first two sentences, snippet style",
+        "A table of contents whose every section is a citable answer", "H2 and H3 written as the questions buyers ask",
+        "Diagrams with alt text that names the entities they show", "A closing summary a model can lift as the answer",
+        "An author bio with Person schema and sameAs links"];
+      const contract = ["**Contract:** a four-month project from mid-September to the end of December this year",
+        "**Volume:** twelve units in total, none used so far, and nothing yet in the pipeline",
+        "**Client asked:** to start as soon as possible, in a note sent on the fifteenth",
+        "**Gap:** no kick-off is booked in the next two weeks, and today is internal only"];
+      const questions = ["**Does the first sentence answer the question?**", "**Is at least one claim attributed to a named, specific and checkable source?**",
+        "**Are people and products named exactly as the entity map names them, every time?**",
+        "**Is there at least one explicit Q&A subheading?**", "**Would this survive being quoted alone, out of context, by an answer engine?**",
+        "**Has structured data been applied to the page before it was published?**"];
+      const C2 = { columns: [6, 6], fields: ["body", "bodyRight"] }, C3 = { columns: [4, 4, 4], fields: ["body", "bodyRight", "bodyThird"] };
+      const shapes: [string, any, string][] = [
+        ["R10 labelled one-liners 2 + 2", { layout: "content", title: "Try this tomorrow", subtitle: "One thing each.", body: lab.slice(0, 2).join("\n"), bodyRight: lab.slice(2).join("\n"), compose: C2, note: "Why this matters: a habit starts with one win." }, "one line each"],
+        ["R11 plain one-liners 3 + 2", { layout: "content", title: "Five things to remember", body: plain.slice(0, 3).join("\n"), bodyRight: plain.slice(3).join("\n"), compose: C2 }, "one line each"],
+        ["R12 labelled one-liners 3 + 2", { layout: "content", title: "The campaign angle", subtitle: "Already agreed.", body: labels5.slice(0, 3).join("\n"), bodyRight: labels5.slice(3).join("\n"), compose: C2 }, "one line each"],
+        ["N02 short plain first lines 3 / 2 / 2", { layout: "content", eyebrow: "ANATOMY", title: "What a citable article carries", subtitle: "Seven parts, top to bottom.", body: anatomy.slice(0, 3).join("\n"), bodyRight: anatomy.slice(3, 5).join("\n"), bodyThird: anatomy.slice(5).join("\n"), compose: C3 }, "one line each"],
+        ["N07 labelled one-liners on dark-index 2 + 2", { layout: "dark-index", title: "Where the contract stands", subtitle: "Signed, not started.", body: contract.slice(0, 2).join("\n"), bodyRight: contract.slice(2).join("\n"), compose: C2, note: "Why this matters: the clock is running." }, "one line each"],
+        ["R05 a checklist of bold questions, some short, 3 + 3", { layout: "content", title: "Your checklist for every page", body: questions.slice(0, 3).join("\n"), bodyRight: questions.slice(3).join("\n"), compose: C2 }, "one line each"],
+        ["long bold questions each over a short answer", { layout: "content", title: "Two questions", body: "**Does the first sentence answer the question a buyer or a model would actually ask?**\nIf it does not, rewrite it until it does.",
+          bodyRight: "**Would this paragraph survive being quoted alone, out of context, by an answer engine?**\nIf not, name the subject in it.", compose: C2 }, "one line each"],
+      ];
+      for (let pi = 0; pi < 2; pi++) {
+        const at: Density = pi ? "present" : "read";
+        for (let k = 0; k < shapes.length; k++) {
+          const x = { ...shapes[k][1], density: at };
+          const tag = `(s) ${at} ${shapes[k][0]}`;
+          const d = composeDecision(x, layoutOf(x.layout, 1), 1);
+          A57(!(d.comp && d.comp.written) && !!d.joined, `${tag}: drawn as its columns`);
+          const notes: string[] = [];
+          const got = buildSlideRequests(x, 1, "s57", notes);
+          const asList = { ...x, body: [x.body, x.bodyRight, x.bodyThird].filter((v: any) => v && String(v).trim()).join("\n"), bodyRight: undefined, bodyThird: undefined, compose: undefined };
+          A57(sameList57(got, buildSlideRequests(asList, 1, "s57")), `${tag}: not drawn as the archetype over its columns' words`);
+          A57(notes.some((n) => n.indexOf("`compose` was not used") >= 0 && n.indexOf(shapes[k][2]) >= 0), `${tag}: declined without saying "${shapes[k][2]}" — ${notes.join(" / ")}`);
+        }
+        // N12: the two-column slide it restates, and said.
+        const n12: any = { layout: "two-column", title: "Two phases, one campaign", body: "Streamlined discovery\nLightweight strategy note\nObjectives and audience priorities\nKey messages\nSimple content calendar",
+          bodyRight: "Two long-form pieces (up to 1,200 words)\nA LinkedIn campaign\nOne email\nA slide deck", compose: { columns: [8, 4], fields: ["body", "bodyRight"] }, density: at };
+        const notes: string[] = [];
+        const got = buildSlideRequests(n12, 1, "s57", notes);
+        A57(same57(got, buildSlideRequests({ ...n12, compose: undefined }, 1, "s57")) && notes.some((n) => n.indexOf("were drawn as [6,6]") >= 0),
+          `(s) ${at} N12 two-column [8, 4]: not drawn as the two-column slide it restates, with the correction said — ${notes.join(" / ")}`);
+      }
+    }
+
+    /* (t) A DECLINED ROW OF GROUPS READS AS LABELLED POINTS. Where the
+     * archetype draws the columns as one list, each standalone heading is
+     * joined to the paragraph it heads — "**Heading** — sentence", or after a
+     * colon the house lead-in "**Heading:** sentence" — and never drawn as a
+     * bullet of its own; the item keeps its column's field name for the edit
+     * panel; a heading over a bold point is left alone; and a list of groups
+     * typed too long for one slide is cut between groups, each slide opening
+     * on a group's labelled first point. */
+    {
+      const bare = (reqs: any[], heads: string[]) => reqs.filter((q) => q.insertText && heads.indexOf(String(q.insertText.text).trim()) >= 0).map((q) => q.insertText.text);
+      for (let pi = 0; pi < 2; pi++) {
+        const at: Density = pi ? "present" : "read";
+        // The live row with its third column unheaded: not parallel groups.
+        const x: any = { ...LIVE57, bodyThird: "Add a byline, a published date and an FAQ block to every article.", density: at };
+        const tag = `(t) ${at} two groups beside a plain point`;
+        const d = composeDecision(x, "content", 1);
+        A57(!(d.comp && d.comp.written) && !!d.joined, `${tag}: precondition — not declined`);
+        const notes: string[] = [];
+        const got = buildSlideRequests(x, 1, "t57", notes) as any[];
+        const want = ["**Ask the buyer’s question** — Rewrite every H2 as a real buyer question and answer it in the first sentence.",
+          "**Name Amrize, not we** — Put Amrize, not we, in every sentence that carries a fact.", x.bodyThird];
+        // The archetype over those points, measured as a labelled join is — on
+        // words, bold in bold (see (v)).
+        A57(sameList57(got, buildSlideRequests({ ...x, body: want.join("\n"), bodyRight: undefined, bodyThird: undefined, compose: undefined, joinedOnWords: true }, 1, "t57")),
+          `${tag}: not drawn as three labelled points — ${got.filter((q) => q.insertText && /_body(Right|Third)?\d*$/.test(String(q.insertText.objectId))).map((q) => q.insertText.text).join(" | ")}`);
+        A57(bare(got, HEADS57).length === 0, `${tag}: a heading drawn as a bullet of its own — ${bare(got, HEADS57).join(" | ")}`);
+        A57(textOf57(got, "bodyRight") === "Name Amrize, not we — Put Amrize, not we, in every sentence that carries a fact." && textOf57(got, "bodyThird") === x.bodyThird && !boxOf(got, "bodyRight1"),
+          `${tag}: the labelled points are not boxed under their own fields' names`);
+        const page = previewSlideFrom(x, got);
+        const panel = editableFields({ slides: [x], preview: { width: CANVAS.width, height: CANVAS.height, slides: [page] } } as any, 0);
+        A57(panel.some((f) => f.path[0] === "bodyRight") && panel.some((f) => f.path[0] === "bodyThird"), `${tag}: the edit panel lost a column: ${JSON.stringify(panel.map((f) => f.label))}`);
+        // A COLON CLOSES THE LABEL: the house lead-in, no dash.
+        const colon: any = { layout: "content", title: "Before and after", body: "**Before the call:**\nAsk EngineAI to brief you on the client and on your last three meetings with them.",
+          bodyRight: "Ask for a pipeline check instead of pulling it by hand from the contracts sheet.\nRun every client draft through Content Optimizer before it goes out of the door.",
+          compose: { columns: [6, 6], fields: ["body", "bodyRight"] }, density: at };
+        const cr = buildSlideRequests(colon, 1, "t57") as any[];
+        A57(!(compositionOf(colon, "content", 1) || { written: false }).written && textOf57(cr, "body") === "Before the call: Ask EngineAI to brief you on the client and on your last three meetings with them.",
+          `(t) ${at}: a label closing on a colon was joined as "${textOf57(cr, "body")}"`);
+        // ONE COLUMN IS NOT A ROW: handed to its archetype, a lone group is
+        // the page the same words make as `body`, heading and all.
+        const lone: any = { layout: "content", title: "One group", bodyRight: LIVE57.bodyRight, compose: { columns: [12], fields: ["bodyRight"] }, density: at };
+        A57(sameList57(buildSlideRequests(lone, 1, "t57"), buildSlideRequests({ ...lone, body: lone.bodyRight, bodyRight: undefined, compose: undefined }, 1, "t57")),
+          `(t) ${at}: one column of a heading over a sentence is not drawn as the archetype draws the same words`);
+      }
+      // TYPED TOO LONG FOR ONE SLIDE (stored, where no guard runs): cut
+      // between groups — and where the first group is one point, the first
+      // slide holds that point alone rather than reaching into the next group.
+      const groupsOf = (n: number) => Array.from({ length: n }, (_, i) => `${P57[i % 6]}, point ${i + 1} of the group.`).join("\n");
+      const long: any = { layout: "content", title: "Typed long", body: "**A short group**\nIts one point, which fits on any slide at all.",
+        bodyRight: `**A long group**\n${groupsOf(14)}`, compose: { columns: [6, 6], fields: ["body", "bodyRight"] } };
+      for (let pi = 0; pi < 2; pi++) {
+        const at: Density = pi ? "present" : "read";
+        const tag = `(t) ${at} groups typed long`;
+        const { slides: out } = draftPreview([{ layout: "cover", title: "C", density: at }, { ...clone57(long), density: at }, { layout: "closing", title: "Thanks", density: at }] as any[]);
+        const mine = out.filter((s: any) => /^Typed long/.test(String(s.title)));
+        A57(mine.length > 1, `${tag}: precondition — not cut (${mine.length} piece)`);
+        const first = String(mine[0] && mine[0].body || "").split("\n").filter((v: string) => v.trim());
+        A57(same57(first, ["**A short group** — Its one point, which fits on any slide at all."]), `${tag}: the first slide holds ${JSON.stringify(first.map((v) => v.slice(0, 40)))}, not the first group alone`);
+        const second = String(mine[1] && mine[1].body || "").split("\n").filter((v: string) => v.trim());
+        A57(second[0] === `**A long group** — ${P57[0]}, point 1 of the group.`, `${tag}: the second slide opens on "${String(second[0]).slice(0, 50)}", not the long group's labelled first point`);
+        let bares = 0;
+        for (let p = 0; p < mine.length; p++) {
+          A57(mine[p].compose === undefined, `${tag}: piece ${p + 1} still carries the composition it was drawn without`);
+          bares += bare(buildSlideRequests(mine[p], out.indexOf(mine[p]), "t57") as any[], ["A short group", "A long group"]).length;
+        }
+        A57(bares === 0, `${tag}: ${bares} headings drawn as bullets of their own`);
+      }
+    }
+
+    /* (u) SEVERAL HEADINGS IN ONE COLUMN ARE NOT ONE GROUP. The verifier's
+     * FAQ (2026-09-24): each column two bold questions, each over a one-line
+     * answer. Read as a group because its FIRST paragraph was a heading, the
+     * row skipped the list rules and each column drew its first question as
+     * the accent lead-in and its second, the first one's peer, as a bold
+     * bullet among the answers — a hierarchy the words do not have, where
+     * HEAD declined it and drew one consistent list. A column is a group only
+     * when its heading is its ONE wholly bold paragraph. So: the FAQ is
+     * declined as HEAD declined it, and drawn as four labelled points, each
+     * question joined to its answer; and no row below is drawn headed —
+     * a short question and a long one (the second no heading, still a bold
+     * paragraph), a session heading over two modules and then a second
+     * session, a checklist of three columns, and the FAQ on dark-index. Where
+     * such a row is composed, every heading in a column has the one treatment
+     * — its disc, as the points under it — and where it is declined, no bold
+     * line is an item of its own: the long question is joined to its answer
+     * as the short one is (joinsBoldLeads), where it was left a bullet above
+     * it — two treatments of one kind of pair in one list. And a column whose
+     * bold paragraph heads nothing is still one group: the stored shape of a
+     * heading over a bold-led finding and a wholly bold finding at its foot. */
+    const FAQ57: any = { layout: "content", title: "What buyers ask the models", subtitle: "Four questions from the September scan, and what the answers cite.",
+      body: "**Which cement is lowest carbon?**\nAnswers cite trade bodies and name a competitor's product line first.\n**Who supplies ready-mix near Denver?**\nAnswers list three local plants and never name Amrize among them.",
+      bodyRight: "**Is blended cement as strong?**\nAnswers quote an industry association study, not the brand's own data.\n**What does EPD mean for a bid?**\nAnswers explain the term and link a government page, not a supplier.",
+      compose: { columns: [6, 6], fields: ["body", "bodyRight"] } };
+    const labelledOf57 = (x: any, fields: string[]) => {
+      const out: string[] = [];
+      for (const f of fields) { const ps = String(x[f] || "").split("\n").filter((v) => v.trim()); for (let i = 0; i < ps.length; i += 2) out.push(`${ps[i]} ${ps[i + 1]}`); }
+      return out;
+    };
+    const unstarred57 = (p: string) => p.replace(/\*\*/g, "").trim();
+    {
+      const several: [string, any][] = [
+        ["the FAQ, two questions a column [6,6]", FAQ57],
+        ["a short question over its answer, then a long bold one over its answer [6,6]", { ...FAQ57,
+          body: "**Which cement is lowest carbon?**\nAnswers cite trade bodies and name a competitor's product line first.\n**Who supplies ready-mix concrete near Denver for a commercial job this year?**\nAnswers list three local plants and never name Amrize among them.",
+          bodyRight: "**Is blended cement as strong?**\nAnswers quote an industry association study, not the brand's own data.\n**What does an environmental product declaration mean for a public bid?**\nAnswers explain the term and link a government page, not a supplier." }],
+        ["a session over two modules, then a second session [6,6]", { layout: "content", title: "Workshop agenda", subtitle: "Two mornings, four sessions.",
+          body: "**Session 1**\nModule 1 Entities and the knowledge graph (20 min)\nModule 2 Schema that earns citations (25 min)\n**Session 2**\nModule 3 Bylines and author pages (15 min)",
+          bodyRight: "**Session 3**\nModule 4 Wikidata, hands-on (25 min)\nModule 5 FAQ blocks that get quoted (20 min)\n**Session 4**\nModule 6 Measuring share of AI answers (20 min)",
+          compose: { columns: [6, 6], fields: ["body", "bodyRight"] } }],
+        ["a checklist, two questions a column [4,4,4]", { layout: "content", title: "Pre-publish checklist", subtitle: "Ask these before any article goes live.",
+          body: "**Does the first sentence answer the question?**\nIf not, move the answer up to the top.\n**Is a claim attributed to a named source?**\nName the study, not just the statistic.",
+          bodyRight: "**Is the brand named as in the entity map?**\nUse the exact product and plant names.\n**Is there an explicit Q&A subheading?**\nAdd one for the question buyers ask.",
+          bodyThird: "**Would it survive being quoted alone?**\nCut every pronoun that needs context.\n**Has schema been applied?**\nAdd Article and FAQPage markup first.",
+          compose: { columns: [4, 4, 4], fields: ["body", "bodyRight", "bodyThird"] } }],
+        ["the FAQ on dark-index, two questions a column [4,4,4]", { layout: "dark-index", title: "What buyers ask the models", subtitle: "Six questions from the September scan.",
+          body: "**Which cement is lowest carbon?**\nAnswers name a competitor first.\n**Who supplies near Denver?**\nAnswers never name Amrize.",
+          bodyRight: "**Is blended cement as strong?**\nAnswers quote a trade study.\n**What does EPD mean?**\nAnswers link a government page.",
+          bodyThird: "**Is it cheaper?**\nAnswers cite no prices.\n**Who certifies it?**\nAnswers name a standards body.",
+          compose: { columns: [4, 4, 4], fields: ["body", "bodyRight", "bodyThird"] } }],
+      ];
+      for (let pi = 0; pi < 2; pi++) {
+        const at: Density = pi ? "present" : "read";
+        for (let k = 0; k < several.length; k++) {
+          const x: any = { ...several[k][1], density: at };
+          const tag = `(u) ${at} ${several[k][0]}`;
+          const fields: string[] = x.compose.fields;
+          const d = composeDecision(x, x.layout, 1);
+          A57(!(d.comp && d.comp.headed), `${tag}: drawn as parallel groups, its first heading the lead-in and the ones under it bullets`);
+          const got = buildSlideRequests(x, 1, "u57") as any[];
+          // Every bold line here stands over a plain point, and every row
+          // holds a heading, so a declined row joins them all — the long
+          // question as the short one: one treatment down the list.
+          const heads: string[] = [];
+          for (const f of fields) for (const p of String(x[f]).split("\n")) if (/^\*\*[^*]+\*\*$/.test(p.trim())) heads.push(unstarred57(p));
+          if (d.comp && d.comp.written) {
+            for (const f of fields) {
+              A57(!!boxOf(got, `${f}dot0`) && !same57(styleOf57(got, f), styleOf57(buildSlideRequests({ ...LIVE57, density: at }, 1, "u57") as any[], "body")),
+                `${tag}: composed, and \`${f}\`'s first heading is set apart from the headings under it`);
+            }
+          } else {
+            A57(!!d.joined, `${tag}: neither composed nor declined`);
+            const bareHere = got.filter((q) => q.insertText && heads.indexOf(String(q.insertText.text).trim()) >= 0).map((q) => q.insertText.text);
+            A57(bareHere.length === 0, `${tag}: declined, and a heading drawn as a bullet of its own — ${bareHere.join(" | ")}`);
+          }
+        }
+        // A BOLD POINT AT A COLUMN'S FOOT heads nothing: each column is still
+        // one group, and the row is drawn headed.
+        const foot: any = { layout: "content", title: "Where mentions come from", density: at,
+          body: "**Part 1**\n**85% of brand mentions** come from third-party pages, not the brand's own site.\n**Mention frequency across authoritative sources predicts AI citation three times better than backlinks**",
+          bodyRight: "**Part 2**\n**Entity consistency** across credible sources builds the confidence a model needs.\n**One high-authority press citation** can lift citation probability for months.",
+          compose: { columns: [6, 6], fields: ["body", "bodyRight"] } };
+        const fd = composeDecision(foot, "content", 1);
+        A57(!!fd.comp && fd.comp.written && !!fd.comp.headed, `(u) ${at}: a column whose wholly bold point heads nothing is not drawn as a group — ${fd.notes.join(" / ")}`);
+        // A LONG BOLD FINDING OVER A BOLD-LED ONE heads nothing: in a row
+        // whose headings are joined, it is still an item of its own, and the
+        // finding under it is not glued to it as its answer.
+        const findings: any = { layout: "content", title: "What buyers ask the models", density: at,
+          body: "**Which cement is lowest carbon?**\nAnswers cite trade bodies and name a competitor's product line first.\n**Most answers name a competitor's product line before any brand at all**\n**Finding:** buyers ask in plain words, and the models answer in them.",
+          bodyRight: "**Is blended cement as strong?**\nAnswers quote an industry association study, not the brand's own data.\n**Few answers name Amrize anywhere in the first three sentences they give**\n**Finding:** own pages rarely surface in the answers buyers read.",
+          compose: { columns: [6, 6], fields: ["body", "bodyRight"] } };
+        const fnd = composeDecision(findings, "content", 1);
+        A57(!!fnd.joined, `(u) ${at}: precondition — the bold findings row was not declined`);
+        const fr = buildSlideRequests(findings, 1, "u57") as any[];
+        const frTexts = fr.filter((q) => q.insertText).map((q) => String(q.insertText.text).trim());
+        A57(frTexts.indexOf("Most answers name a competitor's product line before any brand at all") >= 0 && frTexts.indexOf("Which cement is lowest carbon? Answers cite trade bodies and name a competitor's product line first.") >= 0,
+          `(u) ${at}: a long bold finding over a bold-led one was joined to it as its answer, or the question beside it was not — ${frTexts.filter((t) => /answers|finding/i.test(t)).join(" | ")}`);
+        // THE FAQ ITSELF: declined, as HEAD declined it, and said why; drawn
+        // as four labelled points — the archetype over those points, measured
+        // as a labelled join is (see (v)).
+        const x: any = { ...FAQ57, density: at };
+        const d = composeDecision(x, "content", 1);
+        const notes: string[] = [];
+        const got = buildSlideRequests(x, 1, "u57", notes) as any[];
+        const want = labelledOf57(FAQ57, ["body", "bodyRight"]);
+        A57(!(d.comp && d.comp.written) && !!d.joined && notes.some((n) => n.indexOf("one line each") >= 0), `(u) ${at} the FAQ: not declined as a list cut up — ${notes.join(" / ")}`);
+        A57(sameList57(got, buildSlideRequests({ ...x, body: want.join("\n"), bodyRight: undefined, compose: undefined, joinedOnWords: true }, 1, "u57")),
+          `(u) ${at} the FAQ: not drawn as its four labelled points — ${got.filter((q) => q.insertText && /_body(Right)?\d*$/.test(String(q.insertText.objectId))).map((q) => q.insertText.text).join(" | ")}`);
+      }
+    }
+
+    /* (v) A LABELLED JOIN IS MEASURED ON WORDS, BOLD IN BOLD. A declined
+     * row's joined items open on a bold label up to sixty characters long,
+     * and the archetype's ruler — the mean advance of the light face, which
+     * every stored list keeps — counts bold as light. Rendered in Chrome, one
+     * declined row in seventeen at `read` and one in ten at `present` had an
+     * item boxed a line short, its second line drawn on the next item or on
+     * the footer rule; the FAQ above at `present` set "not a supplier." on the
+     * rule. So the joined list is boxed on words with its bold runs in the
+     * bold face (SlideInput's `joinedOnWords`): the builder draws it so, the
+     * splitter cuts it so, and the validator reads it so. The FAQ's last item
+     * is the case: one line by the old ruler, two by the renderer's. */
+    {
+      const epd = "**What does EPD mean for a bid?** Answers explain the term and link a government page, not a supplier.";
+      const at: Density = "present";
+      const x: any = { ...FAQ57, density: at };
+      const got = buildSlideRequests(x, 1, "v57") as any[];
+      const page = previewSlideFrom(x, got);
+      const el = page.elements.find((e) => e.kind === "text" && String(e.text).indexOf("What does EPD mean for a bid?") === 0);
+      A57(!!el, `(v) the FAQ's last labelled point is drawn nowhere`);
+      if (el) {
+        const size = el.size || 12;
+        const onWords = raggedLines(epd, el.w, size, el.font, 0, boldRangesOf(epd), true);
+        A57(onWords === 2 && estimateLines(epd, el.w, size, false, false, el.font) === 1, `(v) precondition — the point is ${onWords} lines on words and ${estimateLines(epd, el.w, size, false, false, el.font)} by the mean, not the case the old ruler missed`);
+        A57(el.h + 0.5 >= drawnTextHeight(onWords, size, 0, 1), `(v) the FAQ's last point is boxed ${Math.round(el.h)}pt, for fewer than its ${onWords} lines on words`);
+      }
+      // THE VALIDATOR READS IT SO. The same points typed by hand, which the
+      // archetype boxes on its own ruler — the question that wraps first, so
+      // the next point is under it — pass a validator that reads them as
+      // typed, and are reported by one told they are a labelled join.
+      const typed: any = { layout: "content", title: FAQ57.title, subtitle: FAQ57.subtitle, density: at,
+        body: [epd].concat(labelledOf57(FAQ57, ["body", "bodyRight"]).filter((p) => p !== epd)).join("\n") };
+      const tr = buildSlideRequests(typed, 1, "v57") as any[];
+      const tp = previewSlideFrom(typed, tr);
+      A57(overrunFaults(tp, typed, 1).faults.length === 0, `(v) precondition — the typed points already fault on their own ruler`);
+      A57(overrunFaults(tp, { ...typed, joinedOnWords: true }, 1).faults.length > 0, `(v) the validator reads a labelled join with its bold labels in the light face: a point boxed a line short is passed`);
+      const mr = buildSlideRequests({ ...typed, joinedOnWords: true }, 1, "v57") as any[];
+      A57(overrunFaults(previewSlideFrom({ ...typed, joinedOnWords: true }, mr), { ...typed, joinedOnWords: true }, 1).faults.length === 0,
+        `(v) the labelled join, boxed on words, still faults on words`);
+      // THE SPLITTER CUTS IT SO. Twelve questions whose labelled points are
+      // one line wrapped on words in the light face and two with the label in
+      // bold: cut on the light face, the list went onto two slides where it
+      // needs three, and each drew a point past its band.
+      const item = "**Which suppliers publish a product declaration?** answers cite trade bodies and name a competitor.";
+      A57(raggedLines(item, 540, 12, "Roboto") === 1 && raggedLines(item, 540, 12, "Roboto", 0, boldRangesOf(item), true) === 2,
+        `(v) precondition — the point is not one line in the light face and two with its label in bold at \`present\`'s measure`);
+      const pairs: string[] = [];
+      for (let i = 0; i < 12; i++) pairs.push(item.replace("** ", "**\n"));
+      const longJoin: any = { layout: "content", title: "Twelve questions", body: pairs.slice(0, 6).join("\n"), bodyRight: pairs.slice(6).join("\n"),
+        compose: { columns: [6, 6], fields: ["body", "bodyRight"] }, density: at };
+      A57(!!composeDecision(longJoin, "content", 1).joined, `(v) precondition — twelve questions in two columns were not declined`);
+      const drew = draftPreview([{ layout: "cover", title: "C", density: at }, longJoin, { layout: "closing", title: "Thanks", density: at }] as any[]);
+      const mine = drew.slides.map((s: any, i: number) => ({ s, i })).filter((o: any) => /^Twelve questions/.test(String(o.s.title)));
+      let past = 0;
+      for (const o of mine) {
+        const r = buildSlideRequests(o.s, o.i, "v57") as any[];
+        const pg = previewSlideFrom(o.s, r);
+        past += offPageFaults(pg, o.s, o.i).faults.length + overrunFaults(pg, o.s, o.i).faults.length;
+      }
+      A57(mine.length === 3 && past === 0, `(v) twelve labelled points typed long: ${mine.length} slides (3 on words), ${past} boxes past their band or onto the next`);
+    }
   } catch (e: any) {
     fail(`57 threw before finishing: ${e && e.stack ? e.stack : e}`);
   }
@@ -17725,6 +18294,7 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
     pass(`a composition is solved on the page's own grid, is its layout when it restates it, draws every field it is given in the column it was given`
       + ` with no fault its archetype lacks (${swept57.join("; ")}), is set aside where it would drop something, is refused where it will not fit one slide,`
       + ` is drawn as its archetype over the same words wherever it is worse than it, is never set more than a point under the deck,`
+      + ` draws parallel groups as columns each opened by its heading as the lead-in — never a column of two headings — labels a declined row's points inline and boxes them on words,`
       + ` and is carried by every edit route`);
   }
   // MUTATION LOG, check 57 (2026-09-24; a copy of the worktree, never the
@@ -17834,6 +18404,73 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
   //    restated) — so the nesting the restore guards is unreachable today;
   //    it is kept because the day it is not, a probe ending another probe
   //    early splits slides that fit.
+  //
+  // AND THE ROUND THAT DRAWS PARALLEL GROUPS (2026-09-24, s7; a copy of the
+  // worktree, the same discipline). The live QA failure was the one case the
+  // feature exists for — three recommendations asked for side by side, each a
+  // bold heading over a sentence — declined as one-line points cut up and
+  // drawn as six bullets. Seventeen, each against this whole script and
+  // verify-compose-corpus; the line says what went red:
+  //  - KILLED (r)(f4), and verify-compose-corpus: parallel groups held to the
+  //    list rules — the live slide declined again, and 100 re-cut rows of
+  //    real copy with it.
+  //  - KILLED (t)(f4): a declined row's headings not joined to what they head
+  //    — 159 and 331 headings drawn as bullets of their own in the sweep.
+  //  - KILLED (s)(f3): any short paragraph a heading, bold or not — the N02
+  //    shape composed; a list of forty short points joined in pairs.
+  //  - KILLED (s): a heading over a wholly bold point still a group (R05, a
+  //    checklist of bold questions); a bold paragraph of any length a heading
+  //    (long bold questions each over a short answer).
+  //  - KILLED (r): a heading over one sentence leaving it a disc; the lead-in
+  //    only the heading's first sentence ("Step 1."); a row of a heading over
+  //    two points and one over one set without discs.
+  //  - KILLED (r)(f4), and verify-compose-corpus: groups composed without the
+  //    lead-in, each heading a bullet again — 272 in the sweep at `read`.
+  //  - KILLED (r), and verify-compose-corpus (draft 54 among others): a
+  //    stored slide resent with `continuation` on it drawing its headings as
+  //    bullets. The corpus variant found this one before the check had it.
+  //  - KILLED (t): joined boxes keyed on paragraphs rather than joined items
+  //    (the edit panel lost its columns); the cut between columns counted on
+  //    raw paragraphs (the first slide reached into the second group); one
+  //    group making a whole row parallel groups; a colon-closed label joined
+  //    with a dash; a lone column's heading joined, where one column is the
+  //    archetype's own page.
+  //  - KILLED (f4): two-column's left column left unjoined when a third was
+  //    joined under the right — 11 and 38 headings drawn as bullets.
+  //  - SURVIVED, and equivalent: the fit ladder measuring a heading as a
+  //    first sentence. A written column is measured on words with its bold
+  //    runs in the bold face, and a heading is wholly bold, so where the
+  //    accent starts changes no line count and no box.
+  //
+  // AND THE VERIFIER'S ROUND (2026-09-24, v9; a copy of the worktree, the
+  // same discipline). A column of two bold questions each over its answer was
+  // taken for ONE group, drawn with its first question as the lead-in and its
+  // second as a bold bullet. Fixed in isGroup; and rendering the declined
+  // rows that fix sends to the join found the join's items boxed on the
+  // light-face ruler — one declined row in seventeen at `read`, one in ten at
+  // `present`, drawing a line past its box — hence `joinedOnWords`. Thirteen,
+  // every one killed:
+  //  - KILLED (u)(f4): isGroup back to looking only under the heading (45
+  //    lines); a second bold paragraph ending a group only when short enough
+  //    to be a heading (the long question slips through); only the third
+  //    paragraph looked at. verify-compose-corpus does NOT kill the first:
+  //    no stored column, re-cut, holds a bold line over a point of its own.
+  //  - KILLED (u): any later bold paragraph ending the group, even one that
+  //    heads nothing — the stored shape of a heading over a bold-led finding
+  //    and a wholly bold one at its foot, no longer headed.
+  //  - KILLED (u)(v)(f4): the join left unmarked, or drawn unmarked — the
+  //    FAQ's last point boxed 25pt for two lines, 20 and 35 points short in
+  //    the sweep. (f4)'s precondition also goes red: nothing to measure.
+  //  - KILLED (v)(f4): the probe not reporting the words ruler, or blockHeight
+  //    ignoring it — twelve questions cut onto two slides where they need
+  //    three, each drawing a point past its band.
+  //  - KILLED (v): the validator reading a labelled join in the light face.
+  //  - KILLED (u): no wide join (the long question left a bullet beside
+  //    joined short ones); the wide join gluing a long bold finding to the
+  //    bold-led finding under it. KILLED (s): the wide join in a row with no
+  //    heading in it.
+  //  - KILLED (f4): two-column's right column left unjoined when the third
+  //    goes into an empty `body` — found by the sweep's own new sequence.
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   // 2, not 1, when a self-test detector carried nothing (check 40 b): the
   // check did not fail, it stopped measuring.

@@ -34,12 +34,22 @@
  * columns, which the archetype has no reason to choose, so there it is held
  * to the archetype's fault subjects and paragraphs instead.
  *
+ * AND RE-CUT AS PARALLEL GROUPS (`groupedHalves`, `groupedThirds`): the same
+ * re-cut with a bold heading over each column — what a model writes for
+ * "three recommendations side by side". Such a row is drawn as its columns,
+ * each heading the column's lead-in, and is never held to the rules for a
+ * list cut up; the one row that is, is one where a heading stands over a
+ * wholly bold point, which is not a group.
+ *
  * LAST RESULT (2026-09-24, 107 drafts, 1,404 slides, 408 on a composing
  * layout): every assertion held at both densities. Re-cut into columns, 79-104
  * slides per variant were drawn as compositions and 20-42 declined to the
  * archetype over their words (byte for byte, column boxes by position);
  * 5-13 per variant were refused by the guard at `present` and none at
- * `read`; 0 new fault subjects, 0 paragraphs lost, 0 column faults.
+ * `read`; 0 new fault subjects, 0 paragraphs lost, 0 column faults. Re-cut as
+ * groups, 101-131 per variant were drawn headed over real stored paragraphs,
+ * with 0 new fault subjects, 0 paragraphs lost and 0 column faults; 16-28
+ * were refused at `present`.
  *
  * MUTATION LOG (2026-09-24; a copy of the worktree, never the shared tree):
  *  - KILLED, 1,380 failures: composeNotUsedBecause returning null (the
@@ -51,6 +61,20 @@
  *  - KILLED, 227 failures: the builder drawing the plain archetype for a
  *    declined composition — its columns' join not applied, so `bodyRight`
  *    and `bodyThird` were drawn nowhere on a slide said to hold them.
+ *  - KILLED, 100 rows: parallel groups held to the list rules.
+ *  - KILLED: groups drawn without their lead-in; a stored slide flagged
+ *    `continuation` drawing its headings as bullets — found here first, on
+ *    draft 54, before check 57 carried it.
+ *  - SURVIVED here, killed by check 57: a declined row's headings not
+ *    joined, any short line taken for a heading, one group making a row.
+ *    The re-cut rows of groups rarely decline, and a plain re-cut has no
+ *    headings; those are check 57's (s)-(t) and its grouped sweep.
+ *  - SURVIVED here (2026-09-24, v9), killed by check 57 (u) and (f4): a
+ *    column of two bold questions each over its answer taken for one group.
+ *    No stored column, re-cut with a heading over it, holds a bold line over
+ *    a point of its own — the verdicts of all 1,066 grouped re-cuts are the
+ *    same with the fix and without it — so the assertion that such a row is
+ *    never headed stands here for the day a stored deck carries one.
  */
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { join } from "path";
@@ -118,6 +142,15 @@ function recut(s: any, n: number, cols: number[]): any | null {
   out.compose = { columns: cols, fields };
   return out;
 }
+/** The same re-cut with a standalone heading over each column — parallel
+ *  groups, the shape a model writes for "three recommendations side by
+ *  side" — so the columns are drawn headed over real stored paragraphs. */
+function headed(r: any): any | null {
+  if (!r) return null;
+  const out: any = { ...r };
+  for (let i = 0; i < r.compose.fields.length; i++) out[r.compose.fields[i]] = `**Part ${i + 1}**\n${r[r.compose.fields[i]]}`;
+  return out;
+}
 const VARIANTS: { [k: string]: (s: any) => any | null } = {
   natural: (s) => { const f = carried(s); return { ...s, compose: { columns: f.length === 3 ? [4, 4, 4] : f.length === 2 ? [6, 6] : [12], fields: f.length ? f : ["body"] } }; },
   narrow: (s) => { const f = carried(s); return { ...s, compose: { columns: f.length === 3 ? [4, 4, 4] : f.length === 2 ? [4, 8] : [8, 4], fields: f.length ? f : ["body"] } }; },
@@ -125,9 +158,23 @@ const VARIANTS: { [k: string]: (s: any) => any | null } = {
   halves: (s) => recut(s, 2, [6, 6]),
   lopsided: (s) => recut(s, 2, [8, 4]),
   thirds: (s) => recut(s, 3, [4, 4, 4]),
+  groupedHalves: (s) => headed(recut(s, 2, [6, 6])),
+  groupedThirds: (s) => headed(recut(s, 3, [4, 4, 4])),
   str: (s) => ({ ...s, compose: "three equal columns" }),
 };
-const RECUT = ["halves", "lopsided", "thirds"];
+const RECUT = ["halves", "lopsided", "thirds", "groupedHalves", "groupedThirds"];
+/** A column whose heading stands over a wholly bold paragraph, or holding a
+ *  wholly bold paragraph further down that stands over content of its own —
+ *  a second heading, a second question — which is a run of bold points, or
+ *  several groups, and never one group (generate.ts's isGroup). */
+const wholly = (p: string): boolean => /^\*\*[^*]+\*\*[\s:.,;!?\u2013\u2014-]*$/.test(p.trim());
+const laterBold = (text: unknown): boolean => {
+  const ps = paras(String(text || ""));
+  if (ps.length > 1 && wholly(ps[1])) return true;
+  for (let k = 2; k + 1 < ps.length; k++) if (wholly(ps[k]) && !wholly(ps[k + 1])) return true;
+  return false;
+};
+const GROUPED = ["groupedHalves", "groupedThirds"];
 
 function build(slides: any[], at: Density, title: string): SlideInput[] {
   let s: any[] = slides.map((x: any, i: number) => ({ ...JSON.parse(JSON.stringify(x)), __src: i }));
@@ -140,6 +187,9 @@ function build(slides: any[], at: Density, title: string): SlideInput[] {
 function measure(deck: SlideInput[], src: number) {
   const subjects: string[] = [], columnFaults: string[] = [], dropped: string[] = [], streams: string[] = [];
   let drawn = "";
+  // Columns opening on a heading drawn as their lead-in: the heading's box
+  // in the bold weight, with no disc (the grouped variants' "Part n").
+  let leads = 0;
   for (let j = 0; j < deck.length; j++) {
     const piece: any = deck[j];
     if (piece.__src !== src) continue;
@@ -149,6 +199,14 @@ function measure(deck: SlideInput[], src: number) {
     streams.push(createHash("sha1").update(JSON.stringify(reqs).replace(/c_s\d+/g, "c_s#").replace(/"insertionIndex":\d+/g, "")
       .replace(/_(?:body|bodyRight|bodyThird)\d*(dot\d*)?"/g, (_m: string, d: string) => `_col${d ? "dot" : ""}"`)).digest("hex"));
     drawn += " " + key(reqs.filter((r) => r.insertText && r.insertText.text).map((r) => String(r.insertText.text)).join(" · "));
+    for (let c = 0; c < COLS.length; c++) {
+      const box = (sfx: string) => (r: any) => r && String(r.objectId || "").endsWith(`_${sfx}`);
+      const text = reqs.find((r) => r.insertText && box(COLS[c])(r.insertText));
+      const style = reqs.find((r) => r.updateTextStyle && box(COLS[c])(r.updateTextStyle) && r.updateTextStyle.textRange && r.updateTextStyle.textRange.type === "ALL");
+      const dot = reqs.find((r) => r.createShape && box(`${COLS[c]}dot0`)(r.createShape));
+      if (text && /^Part \d+$/.test(String(text.insertText.text)) && style && style.updateTextStyle.style.weightedFontFamily
+        && style.updateTextStyle.style.weightedFontFamily.weight === 700 && !dot) leads++;
+    }
     const page = previewSlideFrom(piece, reqs);
     const faults = offCanvasFaults(reqs, piece, j).faults.concat(overlapFaults(page, piece, j).faults, overrunFaults(page, piece, j).faults,
       offPageFaults(page, piece, j).faults, wideWordFaults(page, piece, j).faults);
@@ -163,7 +221,7 @@ function measure(deck: SlideInput[], src: number) {
     const d = droppedContent(piece, j);
     for (let i = 0; i < d.length; i++) dropped.push(d[i]);
   }
-  return { subjects, columnFaults, dropped, drawn, streams: streams.join("+") };
+  return { subjects, columnFaults, dropped, drawn, streams: streams.join("+"), leads };
 }
 
 async function main(): Promise<void> {
@@ -186,7 +244,7 @@ async function main(): Promise<void> {
   for (const at of ["read", "present"] as Density[]) {
     for (let v = 0; v < names.length; v++) {
       const name = names[v];
-      const t = { eligible: 0, composed: 0, restated: 0, declined: 0, declinedCut: 0, aside: 0, refused: 0, recovered: 0 };
+      const t = { eligible: 0, composed: 0, restated: 0, declined: 0, declinedCut: 0, aside: 0, refused: 0, recovered: 0, headed: 0, listRule: 0, severalHeaded: 0 };
       const said: string[] = [];
       const bad = (m: string) => { if (said.length < 5) said.push(m); };
       const before = failures;
@@ -211,6 +269,18 @@ async function main(): Promise<void> {
           const dec = composeDecision(nm, lay, i);
           plan[i] = typeof m.compose !== "object" || composeNotUsedBecause(nm, lay) ? "aside" : dec.comp && dec.comp.written ? "composed"
             : dec.joined || dec.measured ? "declined" : "restated";
+          if (plan[i] === "composed" && dec.comp && dec.comp.headed) t.headed++;
+          if (plan[i] === "declined" && dec.notes.some((n) => n.indexOf("one line each") >= 0 || n.indexOf("fit only at") >= 0)) {
+            t.listRule++;
+            // PARALLEL GROUPS ARE NOT A LIST CUT UP. A grouped row is held to
+            // the list rules only where a column holds a second wholly bold
+            // paragraph under its heading — a heading over a heading, or a
+            // second group, which is not one group.
+            const fs: string[] = m.compose.fields;
+            if (GROUPED.indexOf(name) >= 0 && !fs.some((f) => laterBold(m[f]))) {
+              fail(`${at} ${name} draft ${d + 1} slide ${i + 1}: a row of parallel groups was declined as a list cut into columns`);
+            }
+          }
           if (plan[i] === "declined") { const j: any = dec.joined ? { ...dec.joined } : { ...nm }; delete j.compose; delete j.density; joinedAt[i] = j; }
         }
         const archetype = RECUT.indexOf(name) >= 0
@@ -240,6 +310,16 @@ async function main(): Promise<void> {
             continue;
           }
           t.composed++;
+          // A ROW OF GROUPS IS HEADED: each heading its column's lead-in. And
+          // a row with a column holding a second bold paragraph is NOT: its
+          // first heading as the lead-in and the next as a bullet is a
+          // hierarchy the words do not have.
+          if (GROUPED.indexOf(name) >= 0) {
+            const nm: any = normaliseSlide({ ...mutated[i], density: at });
+            const c = composeDecision(nm, layoutOf(nm.layout, i), i).comp;
+            if (c && c.headed && y.leads !== c.regions.length) { fail(`${where}: ${c.regions.length - y.leads} of its headings not drawn as their column's lead-in`); bad(where); }
+            if (c && c.headed && c.regions.some((r) => laterBold(nm[r.field]))) { t.severalHeaded++; fail(`${where}: a column holding a second bold paragraph drawn as one group, its first heading the lead-in`); bad(where); }
+          }
           for (let k = 0; k < y.subjects.length; k++) {
             if (x.subjects.indexOf(y.subjects[k]) < 0) { fail(`${where}: a fault on ${y.subjects[k]} its archetype does not have`); bad(where); }
           }
@@ -271,7 +351,8 @@ async function main(): Promise<void> {
       }
       // NOT VACUOUS: enough of each re-cut is drawn as columns, and enough
       // is handed back, to stand for what a model writing columns gets.
-      if (RECUT.indexOf(name) >= 0 && (t.composed < 50 || t.declined < 15)) fail(`${at} ${name}: precondition — only ${t.composed} slides were drawn as compositions and ${t.declined} declined`);
+      if (RECUT.indexOf(name) >= 0 && GROUPED.indexOf(name) < 0 && (t.composed < 50 || t.declined < 15)) fail(`${at} ${name}: precondition — only ${t.composed} slides were drawn as compositions and ${t.declined} declined`);
+      if (GROUPED.indexOf(name) >= 0 && t.headed < 50) fail(`${at} ${name}: precondition — only ${t.headed} slides were drawn as headed columns`);
       console.log(`  ${failures === before ? "ok  " : "FAIL"}  ${at} ${name}: ${JSON.stringify(t)}${said.length ? ` — ${said.join("; ")}` : ""}`);
     }
   }

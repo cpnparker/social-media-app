@@ -216,7 +216,7 @@
 import { CANVAS, layoutOf, withDensity } from "@/lib/slides/brand";
 import { SLIDES_TEXT_INSET } from "@/lib/slides/preview-style";
 import {
-  buildSlideRequests, faceAdvance, inkBottom, labelWidthPt, TEXT_INSET_X, compositionOf, COMPOSE_FIELDS, widestWordPt, RAGGED_KERN_MARGIN, densityOf, type SlideInput,
+  buildSlideRequests, faceAdvance, inkBottom, labelWidthPt, TEXT_INSET_X, composeDecision, COMPOSE_FIELDS, widestWordPt, RAGGED_KERN_MARGIN, densityOf, type SlideInput,
 } from "@/lib/slides/generate";
 import { previewSlideFrom, type PreviewElement, type PreviewSlide } from "@/lib/slides/preview-model";
 import { normaliseSlide } from "@/lib/slides/edit";
@@ -554,6 +554,8 @@ function measuredOnWords(
   }
   if (!columns || !el.path || el.path.length !== 1 || COMPOSE_FIELDS.indexOf(String(el.path[0])) < 0) return null;
   if (columns === "ragged") return { ragged: true };
+  // "joined" and "words" read the column the same way; only `words` reads the
+  // standfirst on words too, above.
   // A WRITTEN COMPOSITION'S COLUMN, on the ruler bulletBlock fitted it on:
   // words at every measure, and its bold runs — the lead-in, the **label** —
   // in the bold face, read off the box's own styled ranges.
@@ -566,18 +568,25 @@ function measuredOnWords(
 /** How a slide's columns were measured when they were drawn: on words where
  *  the measure is narrow (`ragged` — three-column's derived columns and the
  *  photo rail), on words at every measure with bold runs in bold (`words` —
- *  a written composition), or not as columns at all. Asked of the slide AS
+ *  a written composition), the same for a declined composition's labelled
+ *  points (`joined` — its list only, not its standfirst, which the archetype
+ *  boxes on its own ruler), or not as columns at all. Asked of the slide AS
  *  THE BUILDER DRAWS IT, normalised, because an image-split slide carrying
  *  `bodyRight` is stored as one layout and drawn as another. */
-type ColumnRuler = "ragged" | "words" | null;
+type ColumnRuler = "ragged" | "words" | "joined" | null;
 function columnRuler(slide: SlideInput, index: number): ColumnRuler {
   const drawn = normaliseSlide(slide);
   const as = layoutOf(drawn.layout, index);
   if (as === "photo-rail") return "ragged";
   // AT THE SLIDE'S OWN DENSITY: whether a composition is drawn at all is
   // measured (composeDecision), and `present`'s band is not `read`'s.
-  const comp = withDensity(densityOf(slide), () => compositionOf(drawn, as, index));
-  return comp ? (comp.written ? "words" : "ragged") : null;
+  const d = withDensity(densityOf(slide), () => composeDecision(drawn, as, index));
+  if (d.comp) return d.comp.written ? "words" : "ragged";
+  // A DECLINED COMPOSITION'S LABELLED POINTS, or a piece cut from them
+  // (SlideInput's `joinedOnWords`): boxed on words by bulletBlock, and read
+  // with its bold labels in the light face here, an item a line taller than
+  // its box was passed — the builder's error and the validator's were one.
+  return (d.joined || drawn).joinedOnWords ? "joined" : null;
 }
 
 export function overrunFaults(
