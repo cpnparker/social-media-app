@@ -90,6 +90,13 @@ const FLAT: Record<string, (string | number)[]> = {
   eyebrow: ["eyebrow"],
   left: ["body"],
   right: ["bodyRight"],
+  // THE COLUMN FIELDS BY THEIR OWN NAMES. A column band keys each column's
+  // boxes on the field that feeds it — `bodyRight`, `bodyThird` — and until
+  // these two rows the right and third columns of every three-column and
+  // photo-rail slide had no path: not editable in the preview, and named by
+  // the validator as "the text" rather than as the field to shorten.
+  bodyRight: ["bodyRight"],
+  bodyThird: ["bodyThird"],
   csrc: ["chart", "source"],
   lsrc: ["chart", "source"],
 };
@@ -122,6 +129,8 @@ const INDEXED: [RegExp, (i: number) => (string | number)[]][] = [
   [/^body(\d+)$/, () => ["body"]],
   [/^left(\d+)$/, () => ["body"]],
   [/^right(\d+)$/, () => ["bodyRight"]],
+  [/^bodyRight(\d+)$/, () => ["bodyRight"]],
+  [/^bodyThird(\d+)$/, () => ["bodyThird"]],
 ];
 
 function pathOf(objectId: string): (string | number)[] | undefined {

@@ -18,7 +18,7 @@ import {
   COLOR, GRID, CANVAS, TYPE, NOTE, STAT_MAX, STAT_GRID_MIN, STAT_GRID, TIMELINE, TIMELINE_PARALLEL, TRACK_COLORS, IMAGE, CHART,
   SERIES_LIGHT, SERIES_DARK, CARDS, QUOTE, PROCESS, LOGO_WALL, RULE, LAYOUT_STYLE, LOGO_PLACEMENT, SECTION, VENN,
   SHOT, FEATURE_SHOT_STYLE, FRAME, STEPPER, DENSITY, DEFAULT_DENSITY, density, densityName, withDensity,
-  PHOTO_RAIL, SERPENTINE, columnBand,
+  PHOTO_RAIL, SERPENTINE, columnBand, spanBand, COMPOSE_GRID, COMPOSE_LAYOUTS,
   rgb, logoUrl, textOn, layoutOf, type SlideLayout, type TypeStyle, type LayoutStyle, type Density,
 } from "@/lib/slides/brand";
 import { getUserGoogleToken, authFailureMessage, type SlidesAuthFailure } from "@/lib/slides/token";
@@ -100,6 +100,14 @@ export interface SlideInput {
    *  been a second way to say the same thing on every layout that reads
    *  `body`. */
   bodyThird?: string;
+  /** HOW MANY COLUMNS, AND WHICH FIELD FEEDS EACH — Stage 5's composition, on
+   *  content, case-study, dark-index, two-column and three-column. `columns`
+   *  are spans of a twelve-unit grid, one per column, adding to twelve, and
+   *  `fields` names the field feeding each column in order; a column with no
+   *  field, or none with words, is not drawn. No point value anywhere: the
+   *  solver places every box (composeDecision), and corrects and SAYS what it
+   *  cannot draw as written rather than throwing or falling back. */
+  compose?: { columns?: number[]; fields?: string[] };
   /** Headers for the two-column comparison — "Before"/"After", "Us"/"Them". */
   columns?: { left?: string; right?: string };
   /** SWOT: four quadrants of bullet lines. */
@@ -446,6 +454,10 @@ interface BoxOptions {
    *  synthesising a heavier Light. Sending one without the other is how the
    *  first version of this drew every lead-in at the body's own weight. */
   leadRange?: { chars: number; color: string };
+  /** The box's words were fitted on the wrap ruler at every measure, bold runs
+   *  in the bold face (bulletBlockPlan's `words`), so the ink ledger the frame
+   *  reads measures them the same way. */
+  words?: boolean;
 }
 
 /** A positioned text box: create, fill, style. Returns [] for empty text so a
@@ -782,12 +794,15 @@ function textBox(
   // upper-casing and after the markup this pipeline strips — because that is
   // the text whose lines are counted.
   if (SLIDE_INK) {
+    const lead = options.leadRange && options.leadRange.chars > 0
+      ? [{ start: 0, end: Math.min(options.leadRange.chars, rendered.length) }] : [];
     SLIDE_INK.push({
       top: box.y,
       bottom: inkBottom({
         y: box.y, w: box.width, text: rendered, size: style.size, font: style.font,
         weight: style.weight ?? (style.bold ? 700 : 400),
         bullets: false, caps: !!style.caps,
+        ...(options.words ? { words: true, boldRanges: lead.concat(boldRanges) } : {}),
       }),
     });
   }
@@ -1362,36 +1377,20 @@ export function leadInLength(para: string | undefined): number {
  *  point above its band's foot was drawn as a box ending below it. */
 const MIN_BOX_H = 1;
 
-/** A COLUMN'S LEAD-IN: the first SENTENCE set in the accent, with no dot.
+/** WHAT A LIST WILL BE DRAWN AS, before it is drawn: its paragraphs, each
+ *  one's height, and the stack's natural height with the boxes touching.
  *
- *  The handover deck's three-column pages open every column with one bold blue
- *  sentence and then set the rest of the column under it. It is NOT a heading
- *  — it is the first sentence of the column, and it reads on from the title
- *  rather than labelling what follows — so it takes no marker: a hung disc in
- *  front of it would make it the first item of a list whose remaining items
- *  are its own continuation.
- *
- *  It steps the WEIGHT and the COLOUR and never the size, which is what keeps
- *  this a style swap rather than a second layout engine: every height, every
- *  line count and every gap below is measured exactly as it was, so a column
- *  with a lead-in and a column without lay out identically.
- *
- *  AND IT IS A RANGE INSIDE THE PARAGRAPH, not the paragraph. When the whole
- *  first paragraph IS one sentence — the source's own shape — the range covers
- *  it and nothing has changed; when the column is one paragraph of several
- *  sentences, only the first is accented. See leadInLength. */
-function bulletBlock(
-  id: (s: string) => string, key: string, page: string,
-  text: string | undefined, style: TypeStyle,
-  box: { x: number; y: number; width: number; height: number },
-  opts: {
-    align?: "START" | "CENTER" | "END"; lead?: number; leadIn?: TypeStyle;
-    /** Measure this block's paragraphs by wrapping them on WORDS when the
-     *  column is narrow enough to need it. See bulletBlockHeight for why the
-     *  caller asks rather than the width alone deciding. */
-    ragged?: boolean;
-  } = {}
-): { requests: Req[]; bottom: number } {
+ *  Lifted out of bulletBlock unchanged, because a second caller now has to ask
+ *  it: a composition's fit ladder decides the size a band of columns is set
+ *  at by asking how tall each column will be, and a column that opens with a
+ *  lead-in is measured with the bold face's own glyphs where the accent
+ *  reaches. bulletBlockHeight cannot answer that — it knows nothing of a
+ *  lead-in — so a ladder asking it would be the second ruler this file keeps
+ *  paying for. One plan, drawn by one function and measured by the other. */
+function bulletBlockPlan(
+  text: string | undefined, width: number, style: TypeStyle,
+  opts: { lead?: number; leadIn?: TypeStyle; ragged?: boolean; words?: boolean } = {}
+) {
   const lead = opts.lead;
   const firstPara = String(text || "").split("\n").map((l) => l.trim()).filter(Boolean)[0];
   /** How many characters of paragraph 0 the accent covers. Zero means no
@@ -1432,18 +1431,113 @@ function bulletBlock(
    *  wraps its paragraphs WORD BY WORD instead, with the accent's own glyphs
    *  where the accent reaches — see raggedLines, which answers both errors
    *  with the renderer's own algorithm. */
-  const ragged = !!opts.ragged && measuresRagged(box.width, style.size, style.font);
+  //
+  // AND A WRITTEN COMPOSITION'S COLUMNS WRAP ON WORDS AT EVERY MEASURE, bold
+  // runs in the bold face (`words`). The wide measure's 6% margin was sized
+  // for a mean, and the mean is not the face: Roboto Light draws about 3%
+  // wider than 0.443 before a bold label is on the line, so an item within
+  // a few characters of the measure was boxed for one line and drawn on two.
+  // Rendered, "Module 7 … (20 min)" set its second line on "Module 8" in a
+  // 315pt column, and "On the transition as a whole: … answers" on "The
+  // implication:" in a 374pt one — both beyond the narrow threshold, and both
+  // passed by the validator, which measured them the same way. A composition
+  // is new, so nothing stored moves by giving it the truer ruler; the
+  // archetypes keep theirs (see bulletBlockHeight).
+  const ragged = !!opts.words || (!!opts.ragged && measuresRagged(width, style.size, style.font));
   const linesAt = (i: number, para: string): number => {
     const bolded = i === 0 ? leadChars : 0;
-    if (ragged) return Math.max(1, raggedLines(para, box.width, style.size, style.font, bolded));
+    if (ragged) {
+      return Math.max(1, raggedLines(para, width, style.size, style.font, bolded,
+        opts.words ? boldRangesOf(para) : undefined, !!opts.words));
+    }
     if (i === 0 && leadWhole && opts.leadIn) {
-      const usable = Math.max(opts.leadIn.size, box.width - TEXT_INSET_X);
+      const usable = Math.max(opts.leadIn.size, width - TEXT_INSET_X);
       return Math.max(1, Math.ceil(labelWidthPt(para, opts.leadIn.size, { face: "Roboto" }) / usable));
     }
-    return Math.max(1, estimateLines(para, box.width, style.size, false, !!style.caps, style.font));
+    return Math.max(1, estimateLines(para, width, style.size, false, !!style.caps, style.font));
   };
   const paras = String(text || "").split("\n").map((l) => l.trim()).filter(Boolean);
+  const heights = paras.map((p, i) => drawnTextHeight(linesAt(i, p), styleAt(i).size, 0, 1, lead));
+  // The stack's own height, which is what the elastic gap is solved against.
+  // With a lead-in it has to be the sum of the boxes, because the lead-in's
+  // line count is not the one bulletBlockHeight would compute; without one the
+  // two are the same number and the established call is kept, so no existing
+  // list can move by a float.
+  let natural = paras.length > 1 ? bulletBlockHeight(text, width, style, 0, lead, { ragged: opts.ragged }) : 0;
+  if (paras.length > 1 && (leadChars > 0 || opts.words)) { natural = 0; for (let i = 0; i < heights.length; i++) natural += heights[i]; }
+  return { paras, heights, natural, leadChars, leadWhole, styleAt, dotAt, rangeAt, linesAt, ragged };
+}
+
+/** HOW TALL A LIST IS SET AS TIGHT AS IT MAY BE SET: every box touching the
+ *  next, and the paragraph break at its floor. The question the splitter asks
+ *  of a body, asked of any column — see bulletBlock's probe, which answers the
+ *  splitter at exactly this gap and says why. A list this says fits is drawn
+ *  with every paragraph inside its band. */
+function bulletBlockFloorHeight(
+  text: string | undefined, width: number, style: TypeStyle,
+  opts: { lead?: number; leadIn?: TypeStyle; ragged?: boolean; words?: boolean } = {}
+): number {
+  const plan = bulletBlockPlan(text, width, style, opts);
+  if (!plan.paras.length) return 0;
+  if (plan.paras.length === 1) return plan.heights[0];
+  return plan.natural + (plan.paras.length - 1) * paraGapFloor(style.size, opts.lead);
+}
+
+/** A COLUMN'S LEAD-IN: the first SENTENCE set in the accent, with no dot.
+ *
+ *  The handover deck's three-column pages open every column with one bold blue
+ *  sentence and then set the rest of the column under it. It is NOT a heading
+ *  — it is the first sentence of the column, and it reads on from the title
+ *  rather than labelling what follows — so it takes no marker: a hung disc in
+ *  front of it would make it the first item of a list whose remaining items
+ *  are its own continuation.
+ *
+ *  It steps the WEIGHT and the COLOUR and never the size, which is what keeps
+ *  this a style swap rather than a second layout engine: every height, every
+ *  line count and every gap below is measured exactly as it was, so a column
+ *  with a lead-in and a column without lay out identically.
+ *
+ *  AND IT IS A RANGE INSIDE THE PARAGRAPH, not the paragraph. When the whole
+ *  first paragraph IS one sentence — the source's own shape — the range covers
+ *  it and nothing has changed; when the column is one paragraph of several
+ *  sentences, only the first is accented. See leadInLength. */
+function bulletBlock(
+  id: (s: string) => string, key: string, page: string,
+  text: string | undefined, style: TypeStyle,
+  box: { x: number; y: number; width: number; height: number },
+  opts: {
+    align?: "START" | "CENTER" | "END"; lead?: number; leadIn?: TypeStyle;
+    /** Measure this block's paragraphs by wrapping them on WORDS when the
+     *  column is narrow enough to need it. See bulletBlockHeight for why the
+     *  caller asks rather than the width alone deciding. */
+    ragged?: boolean;
+    /** On words at every measure, bold runs in bold: a written composition's
+     *  column. See bulletBlockPlan. */
+    words?: boolean;
+    /** This block is one of a set of LISTS — a composition some of whose
+     *  columns are lists, or the continuation of one — so a column of one
+     *  paragraph carries its disc too. See bulletBlock's single-paragraph
+     *  case. */
+    listed?: boolean;
+    /** The paragraph break, when the caller has solved it for a row of
+     *  columns rather than for this one alone (composedColumns). Never set
+     *  wider than this block's own slack allows, nor under the floor. */
+    gap?: number;
+    /** Each paragraph's own box key, where the list is the columns of a
+     *  composition drawn as one (composeDecision's `joined`): `bodyRight`,
+     *  `bodyRight1`, … for the paragraphs that came from `bodyRight`, so the
+     *  preview edits the field that holds them and a fault names it. One per
+     *  paragraph, or it is not used. */
+    keys?: string[];
+  } = {}
+): { requests: Req[]; bottom: number } {
+  const lead = opts.lead;
+  const plan = bulletBlockPlan(text, box.width, style, opts);
+  const { styleAt, dotAt, rangeAt, linesAt, paras } = plan;
   if (!paras.length) return { requests: [], bottom: box.y };
+  const keys = opts.keys && opts.keys.length === paras.length ? opts.keys : null;
+  const boxKey = (i: number): string => (keys ? keys[i] : i === 0 ? key : `${key}${i}`);
+  const dotKey = (i: number): string => (keys ? `${keys[i]}dot` : `${key}dot${i}`);
   // THE PROBE GETS THE OLD SHAPE. See the header: the splitter asks this layout
   // how much room the field has, and a stack of boxes drawn to fit two sentinel
   // paragraphs would answer "two paragraphs".
@@ -1463,7 +1557,7 @@ function bulletBlock(
     // words when drawn and divided by a character count when probed splits too
     // late and runs off the page. Set only on the block holding the sentinel,
     // so the OTHER fields' blocks on the same probe cannot answer for it.
-    if (ragged && paras.join("\n").indexOf(PROBE) >= 0) PROBE_RAGGED = true;
+    if (plan.ragged && paras.join("\n").indexOf(PROBE) >= 0) PROBE_RAGGED = true;
     return {
       requests: textBox(id(key), page, paras.join("\n"), style, box,
         { align: opts.align, lineSpacing: lead, spaceBelow: paraGapFloor(style.size, lead) + TEXT_INSET_Y }),
@@ -1472,25 +1566,28 @@ function bulletBlock(
   }
   // A single paragraph is not a list. Drawn with a disc it reads as a stray
   // bullet — the same call textBox already makes for Slides' own preset.
+  //
+  // UNLESS IT STANDS BESIDE LISTS, or continues one (`listed`). Three
+  // competitors a column, the third with a closing sentence of its own, drew
+  // two columns flush and one indented behind discs — a row of three answers
+  // set in two treatments, which reads as a mistake rather than as a choice.
+  // And a list cut by the splitter may leave ONE item for the continuation,
+  // which without its disc was no longer visibly the next item of anything.
   if (paras.length === 1) {
     const h = drawnTextHeight(linesAt(0, paras[0]), styleAt(0).size, 0, 1, lead);
-    return {
-      requests: textBox(id(key), page, paras[0], styleAt(0), box,
-        { align: opts.align, lineSpacing: lead, spaceBelow: 0, leadRange: rangeAt(0) }),
-      bottom: box.y + Math.min(box.height, h),
-    };
+    const requests = textBox(id(boxKey(0)), page, paras[0], styleAt(0), box,
+      { align: opts.align, lineSpacing: lead, spaceBelow: 0, leadRange: rangeAt(0), words: opts.words });
+    if (opts.listed && dotAt(0) && requests.length) {
+      requests.push(...hungDot(id(dotKey(0)), page, { x: box.x, y: box.y }, style.size,
+        accentColorFor(style) || HUNG_DOT.color, hungDotSize(style.size), leadOf(lead)));
+    }
+    return { requests, bottom: box.y + Math.min(box.height, h) };
   }
-  const heights = paras.map((p, i) => drawnTextHeight(linesAt(i, p), styleAt(i).size, 0, 1, lead));
-  // The stack's own height, which is what the elastic gap is solved against.
-  // With a lead-in it has to be the sum of the boxes, because the lead-in's
-  // line count is not the one bulletBlockHeight would compute; without one the
-  // two are the same number and the established call is kept, so no existing
-  // list can move by a float.
-  let natural = bulletBlockHeight(text, box.width, style, 0, lead, { ragged: opts.ragged });
-  if (leadChars > 0) { natural = 0; for (let i = 0; i < heights.length; i++) natural += heights[i]; }
+  const heights = plan.heights.slice();
+  const natural = plan.natural;
   const slack = box.height - natural;
-  const gap = Math.max(paraGapFloor(style.size, lead),
-    Math.min(paraGapCeiling(style.size, lead), slack / (paras.length - 1)));
+  const own = Math.min(paraGapCeiling(style.size, lead), slack / (paras.length - 1));
+  const gap = Math.max(paraGapFloor(style.size, lead), opts.gap === undefined ? own : Math.min(own, opts.gap));
   // Light ink means a dark ground, where brand blue is 2.39:1. Derived from the
   // style rather than passed in, so no call site can get it wrong — the same
   // rule accentColorFor already applies to the accent phrase.
@@ -1570,10 +1667,10 @@ function bulletBlock(
     // glyph; it only stops the BOX making a claim on ground the layout did not
     // give this field.
     const room = Math.max(MIN_BOX_H, foot - y);
-    requests.push(...textBox(id(i === 0 ? key : `${key}${i}`), page, paras[i], styleAt(i),
+    requests.push(...textBox(id(boxKey(i)), page, paras[i], styleAt(i),
       { x: box.x, y, width: box.width, height: Math.min(heights[i], room) },
-      { align: opts.align, lineSpacing: lead, spaceBelow: 0, leadRange: rangeAt(i) }));
-    if (dotAt(i)) requests.push(...hungDot(id(`${key}dot${i}`), page, { x: box.x, y }, style.size, dot,
+      { align: opts.align, lineSpacing: lead, spaceBelow: 0, leadRange: rangeAt(i), words: opts.words }));
+    if (dotAt(i)) requests.push(...hungDot(id(dotKey(i)), page, { x: box.x, y }, style.size, dot,
       hungDotSize(style.size), leadOf(lead)));
     y += heights[i] + (i < paras.length - 1 ? gap : 0);
   }
@@ -1664,6 +1761,932 @@ function columnOverfullNote(
       + ` even set at ${fit.size}pt — shorten a column, or move the longest one onto a second slide`);
   }
   return noteBox(objectId, page, "Column copy clipped for room", CANVAS.height - GRID.margin - 16);
+}
+
+/* ─────────────── The composition: Stage 5, Tier 1 ─────────────── */
+
+/** The layouts a `compose` is drawn on: see COMPOSE_LAYOUTS in brand.ts,
+ *  exported from here too so a caller of the builder finds it beside it. */
+export { COMPOSE_LAYOUTS };
+
+/** The fields a column can be fed by, in the order a band draws them. */
+export const COMPOSE_FIELDS: readonly string[] = ["body", "bodyRight", "bodyThird"];
+
+/** The most characters a line may hold before the fit ladder stops stepping
+ *  a band down. Shrinking type to fit a band VERTICALLY lengthens every line
+ *  horizontally — a 433pt column taken from 12pt to 8pt goes from 79
+ *  characters a line to 118 — and past about a hundred a column stops being
+ *  read as prose and starts being read as a document, which is check 13's
+ *  reason for the content measure. So the ladder stops where the measure
+ *  would break, and a band that still does not fit is refused or cut. */
+const COMPOSE_MEASURE_CAP = 100;
+
+/** The shortest a column band may be once a standfirst has taken its room:
+ *  the floor every column layout has always given its band. */
+const COMPOSE_MIN_BAND = 30;
+
+/** A slide's arrangement, SOLVED: which columns there are, where, and which
+ *  field feeds each. An internal plan that dies at the end of the build —
+ *  what the deck, the preview, the PDF and every check read is the request
+ *  stream this is drawn into, exactly as for every other layout. */
+export interface Composition {
+  /** Twelve-unit spans, one per column, adding to twelve. */
+  spans: number[];
+  /** Each column's box across the band, and the field feeding it. EVERY
+   *  column has a field: a column with nothing to put in it is not drawn (see
+   *  solveComposition), so the columns always reach both edges of the band,
+   *  and the title, the rule and the standfirst above them are set on the
+   *  page's measure. The one exception is a continuation, which keeps the
+   *  columns of the slide it continues even where a column has run dry. */
+  regions: { x: number; width: number; span: number; field: string }[];
+  /** The title's measure, and the rule's and the standfirst's. */
+  measure: number;
+  /** Each column opens with an accent sentence: three-column's lead-in. */
+  lead: boolean;
+  /** The model wrote this composition, as against three-column deriving one
+   *  from its content. Only a written one is refused over a column that will
+   *  not fit (composedColumnsThatCannotFit), handed back to its archetype when
+   *  it is worse than it (composeDecision), and measured on words at every
+   *  width: three-column's own columns keep what Stage 4 gave them. */
+  written: boolean;
+  /** A hairline down every gutter: two-column's device, kept when a
+   *  two-column slide is recomposed, for the reason the rest of the page's
+   *  skeleton is — a composition chooses the columns, and everything else on
+   *  the page is drawn as its layout draws it. */
+  divided: boolean;
+}
+
+/** The column fields on this slide that carry words, in drawing order. */
+function carriedFields(slide: SlideInput): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < COMPOSE_FIELDS.length; i++) {
+    const v = (slide as any)[COMPOSE_FIELDS[i]];
+    if (typeof v === "string" && v.trim()) out.push(COMPOSE_FIELDS[i]);
+  }
+  return out;
+}
+
+/** WHY A WRITTEN `compose` IS NOT USED ON THIS SLIDE, or null when it is.
+ *
+ *  A composition names columns and the fields that feed them, and nothing
+ *  else: no picture, no panel, no column heading, no tint. Those are Tier 2
+ *  and Tier 4 of the plan. So on a slide that carries one of them, drawing
+ *  the composition would take it OFF the slide — measured over the stored
+ *  decks with this function taken out and every prose slide composed, 313
+ *  strings went undrawn at `read` and 307 at `present`, the photo credits,
+ *  the two-column heads and the panels, where the archetypes drew all of
+ *  them. (The same run reads as 157 FEWER geometry faults at `read`, because
+ *  a credit that is not drawn cannot overlap the footer: a drop that looks
+ *  like a repair.) The archetype
+ *  keeps a slide like that, whole, and the slide says why its composition was
+ *  set aside rather than letting the model describe one it did not get.
+ *
+ *  The picture is read as INTENT — a brief that names one, or one already
+ *  resolved — and not as `railBox`, which keys on the resolved file alone.
+ *  The splitter measures before pictures resolve, with a stub rail for any
+ *  slide that asked for one (bodyBox's `willRail`), and a slide measured as
+ *  the archetype and drawn as a composition would have been split on one
+ *  width and drawn on another. */
+export function composeNotUsedBecause(slide: SlideInput, layout: string): string | null {
+  if (COMPOSE_LAYOUTS.indexOf(layout) < 0) {
+    return `\`compose\` is drawn on ${COMPOSE_LAYOUTS.join(", ")}, and this is a ${layout} slide, which draws its own arrangement`;
+  }
+  const c: any = (slide as any).compose;
+  if (!c || typeof c !== "object" || Array.isArray(c)) {
+    return "`compose` has to be an object of `columns` (spans adding to twelve) and `fields`, and this one was not";
+  }
+  const kept = (what: string) =>
+    `a composition has no column for ${what}, so drawing it would have left ${what === "its picture" ? "the picture" : what.replace(/^its /, "the ")} off the slide — the ${layout} layout drew the slide instead`;
+  if (layout === "content" || layout === "case-study") {
+    if (railBox(slide) || namesAPicture(slide.image)) return kept("its picture");
+  }
+  if (layout === "content" || layout === "case-study" || layout === "dark-index") {
+    const panel = slide.panel;
+    if (panel && ((panel.items || []).length || panel.title?.trim())) return kept("its panel");
+  }
+  if (layout === "two-column") {
+    if (slide.columns?.left?.trim() || slide.columns?.right?.trim()) return kept("its column heads");
+    if (toneAt(slide.tones, 0) || toneAt(slide.tones, 1)) return kept("its tinted panels");
+  }
+  return null;
+}
+
+/** A short rendering of what the model wrote, for a correction note. */
+function spansText(v: unknown): string {
+  const s = JSON.stringify(v === undefined ? null : v) || String(v);
+  return s.length > 40 ? s.slice(0, 37) + "..." : s;
+}
+
+/**
+ * THE SOLVER: what a written `compose` is drawn as.
+ *
+ * NEVER THROWS AND NEVER DROPS A FIELD. The likeliest thing a model gets
+ * wrong is arithmetic on twelve — [5, 5], [3, 4, 4] — and the likeliest thing
+ * it leaves out is a field. The archetype is not a safe harbour for either: a
+ * composition exists because it feeds fields the archetype does not draw, and
+ * falling back on a bad span vector would drop them (measured on 2,000
+ * generated compositions at `read`, with a corrected composition handed back
+ * to its archetype: 4,319 paragraphs drawn nowhere). So every correction
+ * below keeps every field that carries words on the page, and each is SAID.
+ *
+ * COLUMN BY COLUMN, as written: `fields[i]` feeds the column `columns[i]`
+ * spans, so a field the solver cannot use takes its column with it rather
+ * than sliding every later field one column along.
+ *
+ *   - A field no column draws, or one named twice, has no column.
+ *   - A COLUMN WITH NOTHING IN IT IS NOT DRAWN — no field named for it, or a
+ *     field with no words. There is nothing Tier 1 can put in one: the
+ *     figure that would take it is Tier 2. Rendered, an [8, 4] over one
+ *     column read as a picture that had not arrived, and it set the title on
+ *     a measure narrower than the layout's own, so a heading that fits
+ *     `content` ran through its rule. There is no exception for a
+ *     continuation: a composition is never continued (composeDecision), and
+ *     the exception there was — a continuation keeping its parent's empty
+ *     column — was keyed on `continuation`, a flag the schema never declares,
+ *     so a deck resent without it drew one list at two widths.
+ *   - A column field that CARRIES WORDS and is not named is appended. The
+ *     composition is the model's; the words are the user's.
+ *   - Spans that are not whole units adding to twelve are put on twelve by
+ *     largest remainder, keeping their proportions: [5, 5] is [6, 6], and
+ *     [4, 4, 4] with its third column empty is [6, 6].
+ *   - A column that carries words is never narrower than COMPOSE_GRID's floor,
+ *     and a vector that cannot be drawn at all — too long, too short for its
+ *     fields, a span of nothing — becomes an equal partition of the fields.
+ */
+export function solveComposition(
+  asked: unknown, carried: readonly string[]
+): { spans: number[]; fields: string[]; corrections: string[] } {
+  const corrections: string[] = [];
+  const c: any = asked && typeof asked === "object" && !Array.isArray(asked) ? asked : {};
+  const units = COMPOSE_GRID.units;
+  const raw: unknown = c.columns;
+  let rawWhy = "";
+  if (!Array.isArray(raw) || !raw.length) rawWhy = "no spans were given";
+  else if (raw.length > COMPOSE_GRID.maxColumns) rawWhy = `${raw.length} columns is more than ${COMPOSE_GRID.maxColumns}`;
+  else if (raw.some((v) => typeof v !== "number" || !isFinite(v) || v <= 0)) rawWhy = "every span has to be a positive number of units";
+  const nums: number[] | null = rawWhy ? null : (raw as number[]);
+
+  const named: unknown[] = Array.isArray(c.fields) ? c.fields : [];
+  const cols: { field: string; span?: number }[] = [];
+  const seen: string[] = [];
+  const unfed: number[] = [];
+  const across = Math.max(named.length, nums ? nums.length : 0);
+  for (let i = 0; i < across; i++) {
+    const f = i < named.length ? named[i] : undefined;
+    const span = nums && i < nums.length ? nums[i] : undefined;
+    if (f === undefined) { unfed.push(i + 1); continue; }
+    if (typeof f !== "string" || COMPOSE_FIELDS.indexOf(f) < 0) {
+      corrections.push(`\`fields\` named ${spansText(f)}, which no column draws — a column is fed by ${COMPOSE_FIELDS.join(", ")}`);
+      continue;
+    }
+    if (seen.indexOf(f) >= 0) {
+      corrections.push(`\`fields\` named \`${f}\` twice, and a field is drawn once`);
+      continue;
+    }
+    seen.push(f);
+    if (carried.indexOf(f) < 0) {
+      corrections.push(`\`${f}\` carries no words, so it was given no column`);
+      continue;
+    }
+    cols.push({ field: f, span });
+  }
+  if (unfed.length) {
+    corrections.push(`column${unfed.length > 1 ? "s" : ""} ${unfed.join(" and ")} of \`columns\` had no field in \`fields\`, and a column with nothing in it is not drawn`);
+  }
+  for (let i = 0; i < carried.length; i++) {
+    if (seen.indexOf(carried[i]) >= 0) continue;
+    seen.push(carried[i]);
+    cols.push({ field: carried[i] });
+    corrections.push(`\`${carried[i]}\` carries words and was not named in \`fields\`, so it was given a column of its own`);
+  }
+  if (!cols.length) cols.push({ field: "body" });
+  const fields = cols.map((x) => x.field);
+
+  let spans: number[] | null = null;
+  let why = rawWhy;
+  if (!why) {
+    const given: number[] = [];
+    for (let i = 0; i < cols.length; i++) {
+      const v = cols[i].span;
+      if (v === undefined) { why = `${fields.length} field${fields.length > 1 ? "s need" : " needs"} ${fields.length} column${fields.length > 1 ? "s" : ""}`; break; }
+      given.push(v);
+    }
+    if (!why) {
+      let sum = 0;
+      let whole = true;
+      for (let i = 0; i < given.length; i++) { sum += given[i]; if (Math.round(given[i]) !== given[i]) whole = false; }
+      if (whole && sum === units) {
+        spans = given.slice();
+      } else {
+        // LARGEST REMAINDER, so the proportions the model meant survive: each
+        // span takes its floor of its share of twelve, and the units left over
+        // go to the largest fractions, the earlier column first on a tie.
+        const share = given.map((v) => (v * units) / sum);
+        const put = share.map((v) => Math.floor(v));
+        let left = units;
+        for (let i = 0; i < put.length; i++) left -= put[i];
+        const order = share.map((v, i) => [v - Math.floor(v), i]).sort((a, b) => b[0] - a[0] || a[1] - b[1]);
+        for (let k = 0; k < left; k++) put[order[k % order.length][1]] += 1;
+        if (put.some((v) => v < 1)) {
+          why = `${spansText(raw)} cannot be put on twelve units without a column of nothing`;
+        } else {
+          spans = put;
+          const dropped = given.length !== (raw as number[]).length;
+          corrections.push(dropped
+            ? `\`columns\` ${spansText(raw)} were drawn as ${spansText(put)} across the columns that carry words`
+            : `\`columns\` ${spansText(raw)} ${whole ? `add up to ${sum}` : "are not whole units"}, not twelve; read as ${spansText(put)}`);
+        }
+      }
+    }
+    if (spans) {
+      for (let i = 0; i < fields.length; i++) {
+        if (spans[i] >= COMPOSE_GRID.spanFloor) continue;
+        why = `\`${fields[i]}\` would take ${spans[i]} of the twelve units, under the ${COMPOSE_GRID.spanFloor} a column of words needs`;
+        spans = null;
+        break;
+      }
+    }
+  }
+  if (!spans) {
+    spans = [];
+    for (let i = 0; i < fields.length; i++) spans.push(units / fields.length);
+    corrections.push(`\`columns\` ${spansText(raw)} could not be drawn — ${why} — so ${fields.length === 1 ? "the column was" : "the columns were"} drawn as ${spansText(spans)}`);
+  }
+  return { spans, fields, corrections };
+}
+
+/** THE COLUMN FIELDS EACH LAYOUT'S OWN ARCHETYPE DRAWS — what a composition
+ *  of ONE column can hand back to it without losing words. A table, and so
+ *  pinned against the builder rather than trusted: check 57(c) builds every
+ *  layout here with every column field and asks droppedContent which it drew.
+ *  `three-column` draws every one, by deriving its columns from its content. */
+const ARCHETYPE_COLUMNS: { [layout: string]: readonly string[] } = {
+  content: ["body"], "case-study": ["body"], "dark-index": ["body"],
+  "two-column": ["body", "bodyRight"], "three-column": COMPOSE_FIELDS,
+};
+
+/** The columns a solved span vector draws, over the page's own band. A
+ *  written composition always has two columns or more here: one column is
+ *  drawn by the layout's archetype (composeDecision). */
+function compositionFrom(spans: number[], fields: string[], layout: string, written: boolean): Composition {
+  const band = spanBand(spans);
+  const regions: Composition["regions"] = [];
+  for (let i = 0; i < spans.length; i++) {
+    regions.push({ x: band.x[i], width: band.width[i], span: spans[i], field: fields[i] });
+  }
+  // THE PAGE'S MEASURE. Every column is fed, so the columns reach the band's
+  // right edge and the title, the rule and the standfirst run the full content
+  // measure above them — what three-column and two-column have always drawn
+  // them on. It was the width of the fed columns once, floored at eight units,
+  // and that set a heading `content` fits on 540pt on 433pt instead: over
+  // 10,000 generated compositions at `present`, 514 titles and 47 standfirsts
+  // ran through what was under them where the slide's own archetype drew them
+  // clear.
+  return {
+    spans, regions, measure: GRID.contentWidth, lead: layout === "three-column", written,
+    divided: written && layout === "two-column",
+  };
+}
+
+/** THE COMPOSITION THIS SLIDE IS DRAWN WITH — or null for its layout's own
+ *  arrangement — and what the slide has to say about the difference.
+ *
+ *  A written `compose` on a layout that takes one, unless the slide carries
+ *  something a composition cannot draw (composeNotUsedBecause). And
+ *  `three-column` ALWAYS: its three constants became columnBand(n) in Stage 4
+ *  so that this could be the one place its columns are drawn, and a
+ *  three-column slide with no `compose` is the composition its content
+ *  implies — one column per field that carries words, on an equal partition,
+ *  each opening with its accent sentence. An equal partition is columnBand(n)
+ *  itself (spanBand), so no stored three-column slide moves.
+ *
+ *  A COMPOSITION THAT IS THE LAYOUT IS THE LAYOUT. One column is what
+ *  `content`, `case-study` and `dark-index` already are, [6, 6] over body and
+ *  bodyRight is what `two-column` already is, and an equal partition of the
+ *  fields that carry words is what `three-column` already is — so each of
+ *  those is drawn by its archetype, request for request. Drawn by the
+ *  composer instead they were near-misses of the page they restated: a
+ *  `content` slide at the full 671pt measure ran its lines to 150 characters
+ *  and fitted its title larger than every other content title in the deck,
+ *  and a restated two-column lost the hairline that makes it a comparison.
+ *  Restating an arrangement must not change it.
+ *
+ *  A THREE-COLUMN COLUMN IS PROSE WITH A LEAD-IN, not a card: `cards` can put
+ *  three blocks across the band, but a card is a panel with a marker chip and
+ *  a heading, and this is a column of body copy whose first sentence is set in
+ *  the accent and reads on into the rest. That is what makes a page of
+ *  argument rather than a page of parts, and why `lead` is the layout's and
+ *  goes with it whether its composition is derived or written.
+ *
+ *  A COMPOSITION IS DRAWN ONLY WHERE IT IS AT LEAST AS GOOD AS THE LAYOUT IT
+ *  REPLACES, and where it is not, the layout's archetype draws the same words
+ *  and the slide says why (`joined`). Measured, not judged — the design
+ *  review's pairs that read worse than their archetype were four failures,
+ *  and each is a number:
+ *
+ *   - IT WILL NOT FIT ON ONE SLIDE at the deck's size or a point under it
+ *     (`unfit`). Columns are read across and never continued: continued
+ *     column by column, an agenda typed long put Module 4 on slide 2 after
+ *     the second session's modules and left slide 3 one column of two.
+ *     The guard refuses this on what the model writes; a stored composition
+ *     typed long in the preview, where no guard runs, is drawn as the
+ *     archetype over its words in reading order, and continued the way the
+ *     archetype continues a list — cut between two of its columns where the
+ *     first slide holds a whole one (splitOnce).
+ *   - A LIST CUT INTO COLUMNS — some column holds two paragraphs or more —
+ *     THAT COSTS SOMETHING AND GAINS NOTHING, where one list of the same
+ *     words holds on this slide at the deck's size. It costs size when it
+ *     fits only under the deck's size: a row set at 9pt under a standfirst
+ *     read as fine print beside a page that did not need it. It costs lines
+ *     when half its paragraphs are single lines as one list and would wrap in
+ *     their columns: "Try this tomorrow" was four one-line points that scan
+ *     at a glance, and composed, eight lines with no grouping gained. A ROW
+ *     OF UNITS — one paragraph a column, what / evidence / first move — is
+ *     not held to this: its columns are the structure one list does not
+ *     have, which is what the design review found better on the three
+ *     recommendation pairs of that shape.
+ *   - ITS UNEQUAL SPANS BUY NOTHING (corrected to an even split, and said):
+ *     the wider column's words take no fewer lines than at an even split, so
+ *     the extra units bought only an emptier middle — a two-column slide at
+ *     [8, 4] stranded its divider at two-thirds across five short items and
+ *     wrapped an item in the narrow column that the even split held on one
+ *     line.
+ *
+ *  ONE COLUMN IS ALWAYS THE ARCHETYPE, the same way: a lone field the layout
+ *  does not draw — `bodyRight` alone on `content` — is drawn as the layout
+ *  draws `body`, on the same measure, rather than by a composer's near-miss
+ *  of it, and continues the way `body` continues.
+ *
+ *  So a written composition that IS drawn fits on one slide by construction
+ *  and is never cut (splitOnce), and a slide drawn as its archetype over the
+ *  words of its columns is cut the way that archetype is, with the
+ *  composition gone from the pieces: the decision was made on the whole
+ *  slide's words, and the pieces have fewer.
+ *
+ *  THE NOTES are said once, on the slide the composition was written on: a
+ *  continuation inherits the field and has nothing new to say. Asked at the
+ *  density the slide is stamped with, or, unstamped, the one in force — the
+ *  guard stamps its copy with the deck's. */
+export interface ComposeVerdict {
+  comp: Composition | null;
+  notes: string[];
+  /** The slide the layout's archetype draws in the composition's place: the
+   *  words of every column in the order the composition gave them, in the
+   *  field the archetype draws (`body` on a prose layout; on two-column, a
+   *  third field after `bodyRight`). Null when the slide is drawn as it is. */
+  joined: SlideInput | null;
+  /** A written composition of two columns or more that no size it may be set
+   *  at holds on one slide — what the guard refuses, by field. */
+  unfit: { fields: string[]; over: number; size: number; wide: string[] } | null;
+  /** The decision was made by measuring the words — a decline, or spans
+   *  corrected for buying nothing — so a piece holding fewer of them could
+   *  decide otherwise. The splitter cuts such a slide without its compose. */
+  measured: boolean;
+  /** The column fields in the order `joined` reads them: where the splitter
+   *  prefers to cut a list that was columns. */
+  order: string[];
+}
+
+/** The prose layouts: one column of `body`, which a composition's columns are
+ *  joined into when the archetype draws them. */
+const PROSE_COMPOSE = ["content", "case-study", "dark-index"];
+
+/** The paragraphs of a field, as every column block reads them. */
+function parasOf(text: unknown): string[] {
+  return String(text || "").split("\n").map((l) => l.trim()).filter(Boolean);
+}
+
+/** THE SLIDE THE ARCHETYPE DRAWS IN A COMPOSITION'S PLACE: the words of the
+ *  composition's columns, in its order, in the fields the archetype draws. On
+ *  a prose layout that is one list in `body`; on two-column, the fields stay
+ *  where they are and a third is added under `bodyRight` (or into `body`,
+ *  alone); three-column draws every field itself, and has no join. */
+function joinedFor(slide: SlideInput, layout: string, fields: string[]): SlideInput | null {
+  if (layout === "three-column") return null;
+  const any: any = { ...slide, compose: undefined };
+  if (PROSE_COMPOSE.indexOf(layout) >= 0) {
+    const all: string[] = [];
+    for (let i = 0; i < fields.length; i++) all.push(...parasOf((slide as any)[fields[i]]));
+    for (let i = 0; i < COMPOSE_FIELDS.length; i++) {
+      if (fields.indexOf(COMPOSE_FIELDS[i]) < 0) all.push(...parasOf((slide as any)[COMPOSE_FIELDS[i]]));
+    }
+    any.body = all.join("\n");
+    any.bodyRight = undefined;
+    any.bodyThird = undefined;
+    return any as SlideInput;
+  }
+  const third = parasOf((slide as any).bodyThird);
+  if (!third.length) return null;
+  const slot = parasOf(slide.body).length ? "bodyRight" : "body";
+  any[slot] = parasOf((slide as any)[slot]).concat(third).join("\n");
+  any.bodyThird = undefined;
+  return any as SlideInput;
+}
+
+/** WHETHER THE ARCHETYPE HOLDS THESE WORDS ON ONE SLIDE, asked the way the
+ *  splitter asks it — the body box the builder draws, probed, and the
+ *  splitter's own block height — at the density in force, and the width that
+ *  box sets `body` on. */
+function archetypeHolds(joined: SlideInput, index: number): { fits: boolean; width: number } {
+  const probe = { ...joined, density: densityName() } as SlideInput;
+  const box = bodyBox(probe, index, "body");
+  if (!box || box.width <= 0) return { fits: false, width: GRID.proseWidth };
+  const paras = String(probe.body || "").split("\n");
+  return { fits: blockHeight(paras, box) <= box.height, width: box.width };
+}
+
+export function composeDecision(slide: SlideInput, layout: string, index = 0): ComposeVerdict {
+  // AT THE SLIDE'S OWN DENSITY when it carries one: whether a composition is
+  // drawn is measured, and a caller that forgot to set the density — a
+  // check, a script — would otherwise be told what `read` would draw.
+  if (slide.density && DENSITY[slide.density] && slide.density !== densityName()) {
+    return withDensity(slide.density, () => composeDecision(slide, layout, index));
+  }
+  const asked = (slide as any).compose;
+  const notes: string[] = [];
+  const say = (n: string) => { if (!slide.continuation) notes.push(n); };
+  const derived = (): Composition | null => {
+    if (layout !== "three-column") return null;
+    const fields = columnFields(slide, COMPOSE_FIELDS).map((f) => f.key);
+    const spans: number[] = [];
+    for (let i = 0; i < fields.length; i++) spans.push(COMPOSE_GRID.units / fields.length);
+    return compositionFrom(spans, fields, layout, false);
+  };
+  const as = (comp: Composition | null, extra: Partial<ComposeVerdict> = {}): ComposeVerdict =>
+    ({ comp, notes, joined: null, unfit: null, measured: false, order: [], ...extra });
+  if (asked === undefined) return as(derived());
+  const aside = composeNotUsedBecause(slide, layout);
+  if (aside) {
+    say(`this slide's \`compose\` was not used: ${aside}`);
+    return as(COMPOSE_LAYOUTS.indexOf(layout) >= 0 ? derived() : null);
+  }
+  const solved = solveComposition(asked, carriedFields(slide));
+  for (let i = 0; i < solved.corrections.length; i++) say(`this slide's composition was corrected: ${solved.corrections[i]}`);
+  const own = derived();
+  const fields = solved.fields;
+  let spans = solved.spans;
+  // One column the archetype draws anyway, or the archetype's own row.
+  const restates = (sp: number[]): boolean =>
+    (fields.length < 2 && (ARCHETYPE_COLUMNS[layout] || []).indexOf(fields[0]) >= 0)
+    || (layout === "two-column" && fields.join(",") === "body,bodyRight" && sp.join(",") === "6,6")
+    || (!!own && own.regions.map((r) => r.field).join(",") === fields.join(",") && own.spans.join(",") === sp.join(","));
+  if (restates(spans)) {
+    if (solved.corrections.length) {
+      say(`so this slide's composition is ${fields.length < 2 ? "one column" : "its layout's own columns"}, and it was drawn as the ${layout} layout it restates`);
+    }
+    return as(own);
+  }
+  // ONE COLUMN THE ARCHETYPE DOES NOT DRAW, drawn as the archetype draws `body`.
+  if (fields.length < 2) return as(own, { joined: joinedFor(slide, layout, fields), order: fields });
+  const prose = PROSE_COMPOSE.indexOf(layout) >= 0;
+  const onDark = slideStyle(slide, index).onDark;
+  const body = onDark ? TYPE.bodyDark : TYPE.body;
+  const leadIn = layout === "three-column" ? leadInStyle(body, onDark) : undefined;
+  const depth = (field: string, width: number): number =>
+    bulletBlockFloorHeight((slide as any)[field], width, body, { leadIn, ragged: true, words: true });
+  let measured = false;
+  // SPANS THAT BUY NOTHING. Two columns, one wider: if its words stand no
+  // lower at its width than at an even split, the extra units are empty page.
+  if (spans.length === 2 && spans[0] !== spans[1]) {
+    const w = spans[0] > spans[1] ? 0 : 1;
+    const band = spanBand(spans), even = spanBand([6, 6]);
+    if (depth(fields[w], band.width[w]) >= depth(fields[w], even.width[w]) - 0.5) {
+      say(`this slide's composition was corrected: \`columns\` ${spansText(spans)} were drawn as [6,6] — \`${fields[w]}\` stands no lower at ${spans[w]} units than at 6,`
+        + ` so the wider column bought only an emptier page, at the cost of \`${fields[1 - w]}\`'s width`);
+      spans = [6, 6];
+      measured = true;
+      if (restates(spans)) {
+        say(`so this slide's composition is its layout's own columns, and it was drawn as the ${layout} layout it restates`);
+        return as(own, { measured });
+      }
+    }
+  }
+  const comp = compositionFrom(spans, fields, layout, true);
+  const plan = composedPlan(slide, index, comp);
+  const brand = plan.body.size;
+  const asList = prose ? ", as one list in the order its columns gave them" : "";
+  const decline = (why: string, extra: Partial<ComposeVerdict> = {}): ComposeVerdict => {
+    say(`this slide's \`compose\` was not used: ${why} — so the ${layout} layout drew it${asList}`);
+    return as(own, { joined: joinedFor(slide, layout, fields), measured: true, order: fields, ...extra });
+  };
+  if (plan.fit.over > 0.5 || plan.fit.tooWide.length) {
+    const wide = plan.fit.tooWide.map((t) => (t.word.length > 40 ? t.word.slice(0, 37) + "..." : t.word));
+    const unfit = { fields: plan.fit.overflowing, over: plan.fit.over, size: plan.fit.size, wide };
+    return decline(`its columns will not fit on one slide even at ${plan.fit.size}pt (${plan.fit.over > 0.5
+      ? `${plan.fit.overflowing.map((f) => `\`${f}\``).join(" and ")} ${Math.ceil(plan.fit.over)}pt over`
+      : `\`${plan.fit.tooWide[0].key}\` holds "${wide[0]}", wider than its column`}), and columns read across are never continued onto a second slide`, { unfit });
+  }
+  let cutList = false;
+  for (let r = 0; r < comp.regions.length; r++) if (parasOf((slide as any)[comp.regions[r].field]).length > 1) cutList = true;
+  if (prose && cutList) {
+    const joined = joinedFor(slide, layout, fields) as SlideInput;
+    const arch = archetypeHolds(joined, index);
+    if (arch.fits && plan.fit.size < brand) {
+      return decline(`its columns fit only at ${plan.fit.size}pt, under the deck's ${brand}pt, and one list of the same words fits at ${brand}pt`);
+    }
+    if (arch.fits) {
+      let total = 0, broken = 0;
+      for (let r = 0; r < comp.regions.length; r++) {
+        const ps = parasOf((slide as any)[comp.regions[r].field]);
+        for (let i = 0; i < ps.length; i++) {
+          total++;
+          const b = boldRangesOf(ps[i]);
+          if (raggedLines(ps[i], arch.width, brand, body.font, 0, b, true) !== 1) continue;
+          if (raggedLines(ps[i], comp.regions[r].width, plan.fit.size, body.font, 0, b, true) > 1) broken++;
+        }
+      }
+      if (broken >= 2 && broken * 2 >= total) {
+        return decline(`${broken} of its ${total} paragraphs are one line each as one list and would wrap in their columns, and one list holds them on this slide — columns are for parallel groups, and short points read best as one list`);
+      }
+    }
+  }
+  if (plan.fit.size < brand) say(`this slide's columns are set at ${plan.fit.size}pt, under the deck's ${brand}pt, to hold them on one slide`);
+  return as(comp, { measured });
+}
+
+export function compositionOf(slide: SlideInput, layout: string, index = 0): Composition | null {
+  return composeDecision(slide, layout, index).comp;
+}
+
+/** Where a composition's columns start and stop on this slide: under the
+ *  standfirst, and above the takeaway bar.
+ *
+ *  THE STANDFIRST IS CLAMPED TO THE PAGE, and that is the height clamp for
+ *  the one box the composition draws directly — the columns are clamped by
+ *  bulletBlock, which never draws a box past its band. A standfirst long
+ *  enough to take the whole band used to push the columns' top past their
+ *  own floor, and `Math.max(30, …)` then drew a band 30pt tall from wherever
+ *  that was, off the foot of the page. So the standfirst's BOX stops where
+ *  the columns still have their floor of room; its words run over its box
+ *  if they must, which the overrun sweep reports and the slide says. */
+function composedBand(
+  slide: SlideInput, measure: number, noteWidth: number, onDark: boolean,
+  /** A written composition: its standfirst is counted on words, like its
+   *  columns. See below. */
+  words = false
+): { colTop: number; colFloor: number; colH: number; standH: number; standNeed: number } {
+  const colFloor = NOTE.bottom - noteHeight(slide.note, noteWidth) - (slide.note?.trim() ? NOTE.gap : 0);
+  let colTop = GRID.bodyY;
+  let standH = 0, standNeed = 0;
+  if (slide.subtitle?.trim()) {
+    const standStyle = onDark ? TYPE.standfirstDark : TYPE.standfirst;
+    // A WRITTEN COMPOSITION'S STANDFIRST IS COUNTED ON WORDS, in its own face,
+    // as its columns are. The count model's mean is sized for a body column
+    // and errs wide on a 671pt line: a two-line standfirst was boxed for
+    // three, and the columns began under a dead band a line and more deep —
+    // the gap the design review saw under the standfirst on the composed
+    // pages and not on their archetypes. Three-column's derived page keeps
+    // the count Stage 4 drew it with, so no stored slide moves.
+    const lines = words
+      ? Math.max(1, raggedLines(slide.subtitle, measure, standStyle.size, standStyle.font, 0, boldRangesOf(slide.subtitle), true))
+      : estimateLines(slide.subtitle, measure, standStyle.size);
+    standNeed = drawnTextHeight(lines, standStyle.size);
+    standH = Math.min(standNeed, Math.max(MIN_BOX_H, colFloor - COMPOSE_MIN_BAND - 12 - GRID.bodyY));
+    colTop = colTop + standH + 12;
+  }
+  return { colTop, colFloor, colH: Math.max(COMPOSE_MIN_BAND, colFloor - colTop), standH, standNeed };
+}
+
+/** A column's accent sentence, in the band's fitted size: the teal on a dark
+ *  ground, for the reason the rule's accent is — brand blue on navy is 2.39:1.
+ *
+ *  WEIGHT, NOT `bold`. TypeStyle carries both and the emitter reads
+ *  `style.weight ?? (style.bold ? 700 : 400)` — so spreading the body style,
+ *  which is Roboto Light at weight 300, kept the 300 and the flag did
+ *  nothing. Rendered, every lead-in came out the same weight as the column
+ *  under it and the device was invisible. */
+function leadInStyle(body: TypeStyle, onDark: boolean): TypeStyle {
+  return { ...body, weight: 700, bold: true, color: onDark ? COLOR.tealSoft : COLOR.blue };
+}
+
+/** HOW FAR UNDER THE DECK'S BODY SIZE A WRITTEN COMPOSITION MAY BE SET: one
+ *  point. The content archetype never shrinks — a list too long for its page
+ *  is continued at the deck's size — so a composition that fitted by going
+ *  four points under it drew columns as fine print beside pages that did
+ *  not: at `present`, 44 of 91 re-cut three-column rows of stored copy were
+ *  set under 12pt, down to 8pt under a 14pt standfirst, and the slide said
+ *  nothing. A point under is a composition a line too long; past that it is
+ *  one the guard refuses by name, or, stored, the archetype draws. */
+const COMPOSE_MAX_SHRINK = 1;
+
+/** THE LOWEST RUNG A BAND'S LADDER MAY REACH: a point at a time down to the
+ *  caption floor, and no further than the size at which the widest column
+ *  carrying words would hold more than COMPOSE_MEASURE_CAP characters a line
+ *  — and, for a written composition, no further than COMPOSE_MAX_SHRINK
+ *  under the deck's own size. One function, because the ladder and the guard
+ *  that refuses what the ladder cannot fit have to stop on the same rung.
+ *
+ *  THE CAP IS A WRITTEN COMPOSITION'S, and three-column's derived one keeps
+ *  the ladder Stage 4 gave it, which has none. Measured, the cap never binds
+ *  there — 3,000 generated three-column slides of stored paragraphs build
+ *  identically with it and without it, at both densities — so this is not a
+ *  repair; it keeps the one change Stage 4's layout sees to the ruler below,
+ *  and leaves the cap where there is a model that chose the spans and a guard
+ *  in front of it. */
+function composeLowestRung(
+  shown: { text: string | undefined; width: number }[], style: TypeStyle, capped = true
+): number {
+  if (!capped) return COLUMN_MIN_SIZE;
+  let widest = 0;
+  for (let i = 0; i < shown.length; i++) {
+    if (String(shown[i].text || "").trim()) widest = Math.max(widest, shown[i].width);
+  }
+  let size = style.size;
+  const floor = Math.max(COLUMN_MIN_SIZE, style.size - COMPOSE_MAX_SHRINK);
+  while (size > floor) {
+    const next = Math.max(COLUMN_MIN_SIZE, size - 1);
+    if ((widest - TEXT_INSET_X) / (next * faceAdvance(style.font)) > COMPOSE_MEASURE_CAP) break;
+    size = next;
+  }
+  return size;
+}
+
+/** THE FIT LADDER FOR A COMPOSED BAND, and the columns still over when it ran
+ *  out.
+ *
+ *  columnFit's ladder, with two differences that are both about measuring
+ *  what will be drawn. It asks each column at the paragraph break's FLOOR,
+ *  which is where bulletBlock will set a list that is short of room and where
+ *  the splitter probes a body; columnFit asks at the gap of boxes that merely
+ *  touch, which over-measures every list by a few points a paragraph. Over
+ *  3,000 generated three-column slides of stored paragraphs, that printed
+ *  "Column copy clipped for room" on 12 pieces at `read` and 151 at
+ *  `present`, 8 and 71 of them over columns every box of which held its
+ *  words; on the floor it is printed on 6 and 104, and 2 and 24 are such. And
+ *  it measures a lead-in with the bold face's glyphs, through the same plan
+ *  the block is drawn from — and a written composition's columns on words,
+ *  bold runs and all (`words`), as bulletBlock will draw them.
+ *
+ *  And it stops at COMPOSE_MEASURE_CAP characters a line, so fitting a band
+ *  never turns a column into a document. */
+function composeFit(
+  shown: { key: string; text: string | undefined; width: number }[],
+  room: number, style: TypeStyle,
+  opts: { lead: boolean; onDark: boolean; capped: boolean; words: boolean }
+): {
+  style: TypeStyle; over: number; size: number; capped: boolean; overflowing: string[];
+  tooWide: { key: string; word: string }[];
+} {
+  // AND A WORD WIDER THAN ITS COLUMN, on a written composition: the band
+  // steps down for it as it does for height, because a smaller size is the
+  // one thing that makes a URL narrower, and one still too wide at the last
+  // rung is refused by the guard or said on the slide. See widestWordPt.
+  const wide = (size: number): { key: string; word: string }[] => {
+    const out: { key: string; word: string }[] = [];
+    if (!opts.words) return out;
+    for (let i = 0; i < shown.length; i++) {
+      const ps = String(shown[i].text || "").split("\n").map((l) => l.trim()).filter(Boolean);
+      for (let k = 0; k < ps.length; k++) {
+        const lead = k === 0 && opts.lead ? leadInLength(ps[k]) : 0;
+        const w = widestWordPt(ps[k], size, style.font, { boldRanges: (lead ? [{ start: 0, end: lead }] : []).concat(boldRangesOf(ps[k])) });
+        if (w.width > shown[i].width - TEXT_INSET_X + 0.5) { out.push({ key: shown[i].key, word: w.word }); break; }
+      }
+    }
+    return out;
+  };
+  const needs = (size: number): number[] => {
+    const at = size === style.size ? style : { ...style, size };
+    const out: number[] = [];
+    for (let i = 0; i < shown.length; i++) {
+      out.push(bulletBlockFloorHeight(shown[i].text, shown[i].width, at,
+        { leadIn: opts.lead ? leadInStyle(at, opts.onDark) : undefined, ragged: true, words: opts.words }));
+    }
+    return out;
+  };
+  const worst = (n: number[]): number => { let w = 0; for (let i = 0; i < n.length; i++) w = Math.max(w, n[i]); return w; };
+  const lowest = composeLowestRung(shown, style, opts.capped);
+  let size = style.size;
+  let need = needs(size);
+  let over = worst(need) - room;
+  let tooWide = wide(size);
+  let capped = false;
+  while ((over > 0.5 || tooWide.length) && size > COLUMN_MIN_SIZE) {
+    if (size <= lowest) { capped = true; break; }
+    size = Math.max(COLUMN_MIN_SIZE, size - 1);
+    need = needs(size);
+    over = worst(need) - room;
+    tooWide = wide(size);
+  }
+  const overflowing: string[] = [];
+  for (let i = 0; i < shown.length; i++) {
+    if (need[i] - room > 0.5 || tooWide.some((w) => w.key === shown[i].key)) overflowing.push(shown[i].key);
+  }
+  return { style: size === style.size ? style : { ...style, size }, over: Math.max(0, over), size, capped, overflowing, tooWide };
+}
+
+/** EVERYTHING A COMPOSED PAGE'S COLUMNS ARE DRAWN FROM: the band, the columns
+ *  and the fitted size. ONE function for the three places that ask — the
+ *  builder, the guard that refuses a composition before it is built, and the
+ *  splitter that cuts a stored one that no longer fits — so the three cannot
+ *  measure a column on different rulers, which is the disagreement this file
+ *  keeps finding the bug in. Asked inside the slide's density; every caller
+ *  already is. */
+function composedPlan(slide: SlideInput, index: number, comp: Composition): {
+  cb: ReturnType<typeof composedBand>;
+  shown: { key: string; text: string | undefined; width: number; x: number }[];
+  body: TypeStyle; fit: ReturnType<typeof composeFit>; lead: boolean; listed: boolean; onDark: boolean;
+} {
+  const onDark = slideStyle(slide, index).onDark;
+  // A composition carries no rail and no panel — either sets it aside — so
+  // its takeaway bar is the page's full measure, as the builder's is.
+  const cb = composedBand(slide, comp.measure, GRID.contentWidth, onDark, comp.written);
+  const shown: { key: string; text: string | undefined; width: number; x: number }[] = [];
+  for (let i = 0; i < comp.regions.length; i++) {
+    const r = comp.regions[i];
+    shown.push({ key: r.field, text: (slide as any)[r.field], width: r.width, x: r.x });
+  }
+  const body = onDark ? TYPE.bodyDark : TYPE.body;
+  // AND NOT ON A CONTINUATION. A continuation by definition does not start a
+  // column — its first paragraph is a bullet from the middle of the list the
+  // splitter cut — so accenting it promotes an ordinary point into the
+  // opening of an argument it is halfway through. The eyebrow and the
+  // standfirst are dropped from a continuation for exactly this reason, and
+  // the lead-in is the same decision one field along.
+  const lead = comp.lead && !slide.continuation;
+  // ONE TREATMENT ACROSS THE ROW. See bulletBlock's `listed`: where any column
+  // of a written composition is a list, every column is set as one. A lead-in
+  // column is left as three-column has always set it — its accent sentence is
+  // what opens the column, and a disc in front of it would make it an item.
+  let lists = false;
+  for (let i = 0; i < shown.length; i++) {
+    if (String(shown[i].text || "").split("\n").filter((l) => l.trim()).length > 1) lists = true;
+  }
+  const listed = comp.written && !lead && lists;
+  const fit = composeFit(shown, cb.colH, body, { lead, onDark, capped: comp.written, words: comp.written });
+  return { cb, shown, body, fit, lead, listed, onDark };
+}
+
+/**
+ * The written compositions that will not fit on one slide, before anything
+ * is built — for the guard to refuse, naming the field.
+ *
+ * COLUMNS SIDE BY SIDE ARE READ ACROSS, and a continuation tears them. An
+ * agenda composed as [6, 6], one session a column, rendered at `present` with
+ * the first session's last two modules on a second slide beside an empty
+ * column — so the reader went session one, session two, and back to session
+ * one; a column of three findings beside two implications left the third
+ * finding alone on the continuation after the implications had been read.
+ * The model chose the spans, so the model can fix it — give the column more
+ * of the twelve units, shorten it, or give some of it a slide of its own —
+ * and a refusal before the build is the table body's rule
+ * (undrawnTableBodies) applied to a column. A stored composition that stops
+ * fitting later — the user typed into a column in the preview, where no
+ * guard runs — is drawn as its archetype over the same words instead
+ * (composeDecision's `unfit`), because a deck that is already the user's is
+ * drawn, not refused. The verdict is composeDecision's, so the guard and the
+ * builder cannot disagree about what fits.
+ *
+ * ASKED OF composedPlan, the builder's own band and ladder, AT THE DECK'S
+ * DENSITY, which the caller passes: the guard runs before the density is
+ * stamped, and `present`'s band is a fifth shorter than `read`'s.
+ *
+ * AND ONLY OF WHAT THIS CALL WROTE. `stored` is the deck as it stood, and a
+ * slide that is the SAME STORED SLIDE — at its own place in the deck, or at
+ * the place an insertion or a removal before it moved it to — with the same
+ * EVERYTHING a composition's verdict is decided on, was not composed by this
+ * call. Refusing it told the model to shorten words the user had typed into
+ * a column in the preview, and refused an edit to slide 3 over slide 2, or a
+ * new title over the columns under it. Such a slide is drawn as its
+ * archetype if it no longer fits, like any stored one.
+ *
+ * "Everything" is the set-aside fields too — the picture, the panel, the
+ * column heads, the tints — because a composition set aside was never
+ * judged: keyed on the columns alone, "remove the picture on slide 4",
+ * resent as the whole deck, brought back a written composition nobody had
+ * measured and built it. And matched BY PLACE, because a set of every stored
+ * slide let a patch copy slide 2's columns onto slide 3 unjudged. The key is
+ * canonical, so a stored `compose` that reads back from jsonb as
+ * {fields, columns} is the one the model sends as {columns, fields}.
+ */
+function canonicalJson(v: unknown): string {
+  if (v === undefined || v === null) return "null";
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(",")}]`;
+  if (typeof v === "object") {
+    const keys = Object.keys(v as object).filter((k) => (v as any)[k] !== undefined).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson((v as any)[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(v);
+}
+
+/** What a composition's verdict is decided on, canonical. The title and the
+ *  eyebrow are not: neither moves the band the columns are measured in. */
+function composedAs(raw: SlideInput): string {
+  const x: any = normaliseSlide(raw);
+  return canonicalJson([x.layout, x.compose, x.body, x.bodyRight, x.bodyThird, x.subtitle, x.note,
+    x.image, x.imageQuery, x.resolvedImage ? x.resolvedImage.url || null : null, x.panel, x.columns, x.tones]);
+}
+
+export function composedColumnsThatCannotFit(
+  slides: SlideInput[], at: Density, stored?: SlideInput[]
+): { slide: number; title: string; layout: string; fields: string[]; over: number; size: number; wide: string[] }[] {
+  const out: { slide: number; title: string; layout: string; fields: string[]; over: number; size: number; wide: string[] }[] = [];
+  const shift = stored ? slides.length - stored.length : 0;
+  const storedAs = (k: number): string | null => (stored && k >= 0 && k < stored.length && stored[k] ? composedAs(stored[k]) : null);
+  for (let i = 0; i < slides.length; i++) {
+    const raw = slides[i];
+    if (!raw || (raw as any).compose === undefined) continue;
+    if (stored && stored.length) {
+      const mine = composedAs(raw);
+      if (storedAs(i) === mine || (shift !== 0 && storedAs(i - shift) === mine)) continue;
+    }
+    withDensity(at, () => {
+      // At the density this deck is being built at, whatever the slide was
+      // stamped with before: a resent deck carries its old stamps.
+      const slide = { ...normaliseSlide(raw), density: at } as SlideInput;
+      const layout = layoutOf(slide.layout, i);
+      const d = composeDecision(slide, layout, i);
+      if (!d.unfit) return;
+      out.push({
+        slide: i + 1, title: String(slide.title || "").replace(/[{}`]/g, "").trim(), layout,
+        fields: d.unfit.fields, over: d.unfit.over, size: d.unfit.size, wide: d.unfit.wide,
+      });
+    });
+  }
+  return out;
+}
+
+/** THE COMPOSED PAGE'S COLUMNS, drawn: one bulletBlock per column on the
+ *  plan's fitted size, and two-column's hairline down every gutter when the
+ *  composition keeps it. */
+function composedColumns(
+  id: (s: string) => string, page: string, comp: Composition,
+  plan: ReturnType<typeof composedPlan>
+): Req[] {
+  const requests: Req[] = [];
+  const leadIn = plan.lead ? leadInStyle(plan.fit.style, plan.onDark) : undefined;
+  // ONE RHYTHM ACROSS THE ROW. Each list solves its own paragraph break
+  // against its own slack, so beside a full column a short one set its items
+  // three times as far apart — two columns of the same kind of point, on two
+  // different beats. A written row takes the tightest break any of its lists
+  // needs, and the short column simply ends higher. Three-column's derived
+  // row keeps the break Stage 4 gave it.
+  let shared: number | undefined;
+  if (comp.written && !PROBING) {
+    const style = plan.fit.style;
+    for (let i = 0; i < plan.shown.length; i++) {
+      const p = bulletBlockPlan(plan.shown[i].text, plan.shown[i].width, style, { leadIn, ragged: true, words: true });
+      if (p.paras.length < 2) continue;
+      const own = Math.min(paraGapCeiling(style.size), (plan.cb.colH - p.natural) / (p.paras.length - 1));
+      shared = shared === undefined ? own : Math.min(shared, own);
+    }
+  }
+  let deepest = plan.cb.colTop;
+  for (let i = 0; i < plan.shown.length; i++) {
+    const col = plan.shown[i];
+    const drawn = bulletBlock(id, col.key, page, col.text, plan.fit.style, {
+      x: col.x, y: plan.cb.colTop, width: col.width, height: plan.cb.colH,
+    }, { leadIn, ragged: true, words: comp.written, listed: plan.listed, gap: shared });
+    requests.push(...drawn.requests);
+    deepest = Math.max(deepest, drawn.bottom);
+  }
+  if (comp.divided) {
+    // SIZED TO THE WORDS, as two-column's own hairline is: to the deeper
+    // column, never shorter than 60pt nor past the band.
+    const h = PROBING ? plan.cb.colH
+      : Math.max(Math.min(60, plan.cb.colH), Math.min(plan.cb.colH, deepest - plan.cb.colTop));
+    for (let i = 0; i + 1 < plan.shown.length; i++) {
+      const a = plan.shown[i], b = plan.shown[i + 1];
+      requests.push(...filledShape(id(i === 0 ? "vrule" : `vrule${i}`), page, "RECTANGLE",
+        plan.onDark ? COLOR.greyLight : COLOR.navy, {
+          x: (a.x + a.width + b.x) / 2, y: plan.cb.colTop, width: RULE.hairlineThickness, height: h,
+        }, RULE.hairlineAlpha));
+    }
+  }
+  return requests;
+}
+
+/** WHAT A LAYOUT PATCH TOOK OFF A COMPOSED SLIDE, for the tool result.
+ *
+ *  A patch onto a layout that draws no columns takes the composition off
+ *  (applyEditSlide), and with it every column only the composition drew. The
+ *  generic dropped-text warning names the words; it cannot say that they were
+ *  drawn a moment ago, or that it was the composition that went — so the
+ *  model, asked to describe the slide, had nothing telling it that sending
+ *  `compose` back would restore them. Asked of the builder, as droppedContent
+ *  always is: a column field the slide drew before the patch and does not
+ *  draw after it. The same shape as payloadsTakenBy, and said beside it. */
+export function composeTakenBy(before: SlideInput[], after: SlideInput[], edit: any): string[] {
+  if (!edit || edit.insertAfter != null || !Number.isInteger(edit.slideNumber) || edit.compose === null) return [];
+  if (Array.isArray(edit.removeSlides) && edit.removeSlides.length) return [];
+  if (!Array.isArray(before) || !Array.isArray(after) || before.length !== after.length) return [];
+  const idx = edit.slideNumber - 1;
+  const was: any = before[idx], now: any = after[idx];
+  if (!was || !now || was.compose === undefined || now.compose !== undefined) return [];
+  const lostBefore = droppedContent(was, idx), lostAfter = droppedContent(now, idx);
+  const gone: string[] = [];
+  for (let i = 1; i < COMPOSE_FIELDS.length; i++) {
+    const f = COMPOSE_FIELDS[i];
+    const v = typeof now[f] === "string" ? now[f].trim() : "";
+    if (v && lostAfter.indexOf(v) >= 0 && lostBefore.indexOf(v) < 0) gone.push(`\`${f}\``);
+  }
+  if (!gone.length) return [];
+  const lay = layoutOf(now.layout, idx);
+  return [
+    `slide ${idx + 1}'s composition was taken off with the change to the ${lay} layout, which draws no columns, so its`
+    + ` ${gone.join(" and ")} ${gone.length > 1 ? "are" : "is"} no longer drawn — not in the deck, so do NOT describe`
+    + ` ${gone.length > 1 ? "them" : "it"} as there. Move the words into a field ${lay} draws, or change the slide back to a`
+    + ` layout that takes \`compose\` and send it again`,
+  ];
 }
 
 /** The CTA pill: a label in a filled capsule — "Book a session", "Read the
@@ -4101,6 +5124,9 @@ const RAGGED_BELOW_CHARS = 46;
  *  bought a whole extra line at every boundary — two columns whose lead-ins
  *  render to the same depth started their next paragraph 14.5pt apart. */
 const RAGGED_KERN = 1.03;
+/** The same margin, for a caller that has to divide it back out to read the
+ *  real ink (validate.ts's wideWordFaults). */
+export const RAGGED_KERN_MARGIN = RAGGED_KERN;
 
 /** Whether a measure is narrow enough that the ragged edge has to be paid for.
  *  ONE PLACE, because the splitter's probe and the block that draws the words
@@ -4126,7 +5152,15 @@ export function measuresRagged(boxWidth: number, size: number, font?: string): b
  *  depth started their next paragraph 14.5pt apart. Wrapping word by word is
  *  the renderer's own algorithm and has no boundary to round at. */
 export function raggedLines(
-  text: string | undefined, boxWidth: number, size: number, font?: string, boldPrefix = 0
+  text: string | undefined, boxWidth: number, size: number, font?: string, boldPrefix = 0,
+  /** Further runs drawn in bold, in the same coordinates as `boldPrefix` —
+   *  the drawn string, trimmed. See boldRangesOf. */
+  boldRanges?: readonly { start: number; end: number }[],
+  /** Break a word where the renderer may break it without a space — after a
+   *  hyphen or a dash (see breakRuns) — rather than only at spaces. A written
+   *  composition's columns are measured this way, and nothing else is: every
+   *  archetype keeps the ruler its stored slides were drawn with. */
+  hyphens = false
 ): number {
   const s = drawnText(text ?? "").trim();
   if (!s) return 0;
@@ -4151,12 +5185,41 @@ export function raggedLines(
   };
   /** A slice's width: the bold table where the lead-in reaches, the body face
    *  where it does not. */
-  const widthOf = (from: number, to: number): number => {
+  const plainWidth = (from: number, to: number): number => {
     const boldTo = Math.max(from, Math.min(to, boldPrefix));
     const bold = boldTo > from
       ? sumOf(s.slice(from, boldTo), ROBOTO_BOLD_ADVANCE, ROBOTO_BOLD_UNKNOWN) : 0;
     const rest = s.slice(Math.max(from, boldTo), Math.max(from, to));
     return bold + (light ? sumOf(rest, ROBOTO_LIGHT_ADVANCE, ROBOTO_LIGHT_UNKNOWN) : rest.length * mean);
+  };
+  /** AND A BOLD RUN INSIDE THE PARAGRAPH, where one is asked about: the
+   *  bullet's own **lead-in label**, which the house style opens almost every
+   *  bullet with. Measured in the light face it is the widest words on the
+   *  line measured as the narrowest, and a label near a wrap boundary was
+   *  boxed for one line and drawn on two — the second line landing on the
+   *  next bullet with no gap, and nothing reporting it, because the validator
+   *  counted it the same way. The slice is cut at every run boundary and each
+   *  piece summed in its own face. */
+  const runs: { start: number; end: number }[] | null = boldRanges && boldRanges.length
+    ? [{ start: 0, end: boldPrefix }].concat(boldRanges.map((r) => ({ start: r.start, end: r.end }))) : null;
+  const widthOf = (from: number, to: number): number => {
+    if (!runs) return plainWidth(from, to);
+    let w = 0;
+    let at = from;
+    while (at < to) {
+      let inBold = false;
+      let next = to;
+      for (let r = 0; r < runs.length; r++) {
+        const a = runs[r].start, b = runs[r].end;
+        if (at >= a && at < b) { inBold = true; next = Math.min(next, b); }
+        else if (a > at) next = Math.min(next, a);
+      }
+      const slice = s.slice(at, next);
+      w += inBold ? sumOf(slice, ROBOTO_BOLD_ADVANCE, ROBOTO_BOLD_UNKNOWN)
+        : light ? sumOf(slice, ROBOTO_LIGHT_ADVANCE, ROBOTO_LIGHT_UNKNOWN) : slice.length * mean;
+      at = next;
+    }
+    return w;
   };
   const paras = s.split("\n");
   let lines = 0;
@@ -4171,6 +5234,12 @@ export function raggedLines(
     // start a new line at the first that does not. A single word wider than
     // the measure takes its own line and overhangs, which is what Slides does
     // with it too.
+    //
+    // AND WHERE ONE IS ASKED TO (`hyphens`), A WORD IS WRAPPED BY ITS RUNS —
+    // the pieces between the places a renderer breaks it with no space, see
+    // breakRuns. Chrome draws a hyphenated report link in a 4-unit column on
+    // three lines, broken after its hyphens; counted as one word it was one
+    // overhanging line, and the box under it was sized two lines short.
     const words = para.split(/\s+/);
     let cursor = base + (para.length - para.replace(/^\s+/, "").length);
     let used = 0;
@@ -4178,15 +5247,135 @@ export function raggedLines(
     for (let w = 0; w < words.length; w++) {
       const word = words[w];
       if (!word) { cursor += 1; continue; }
-      const ww = widthOf(cursor, cursor + word.length);
-      const space = onLine ? widthOf(cursor - 1, cursor) : 0;
-      if (onLine && used + space + ww > usable) { lines += 1; used = ww; onLine = 1; }
-      else { used += space + ww; onLine += 1; }
+      const runs = hyphens ? breakRuns(word) : [word];
+      let from = cursor;
+      for (let r = 0; r < runs.length; r++) {
+        const ww = widthOf(from, from + runs[r].length);
+        const space = onLine && r === 0 ? widthOf(cursor - 1, cursor) : 0;
+        if (onLine && used + space + ww > usable) { lines += 1; used = ww; onLine = 1; }
+        else { used += space + ww; onLine += 1; }
+        from += runs[r].length;
+      }
       cursor += word.length + 1;
     }
     lines += 1;
   }
   return lines;
+}
+
+/** WHERE A WORD MAY BE BROKEN WITH NO SPACE, as the renderers break it: after
+ *  a hyphen that a digit does not follow, and after an en or em dash. The
+ *  pieces, in order, joined, are the word.
+ *
+ *  Measured, not assumed: Chrome draws
+ *  "https://www.example.com/insights/state-of-ai-search-visibility-in-industrial-b2b-markets-2026-edition"
+ *  in a 196pt column as ".../insights/state-", "of-ai-search-visibility-in-industrial-b2b-",
+ *  "markets-2026-edition" — broken after hyphens, never between "markets-" and
+ *  "2026" (UAX #14 keeps a hyphen with the number after it), and not after a
+ *  "/" on any of the three lines. A slash is NOT treated as a break here: an
+ *  unbreakable run measured too long costs a refused composition or a
+ *  smaller size, where one measured too short draws ink across the next
+ *  column. Google Slides' own breaking was not measured. */
+export function breakRuns(word: string): string[] {
+  const out: string[] = [];
+  let from = 0;
+  for (let i = 0; i < word.length - 1; i++) {
+    const c = word[i];
+    const breaks = c === "–" || c === "—" || (c === "-" && !(word[i + 1] >= "0" && word[i + 1] <= "9"));
+    if (breaks && i > from) { out.push(word.slice(from, i + 1)); from = i + 1; }
+  }
+  out.push(word.slice(from));
+  return out;
+}
+
+/** THE WIDEST UNBREAKABLE RUN IN A STRING, and how wide it is drawn, in
+ *  points: the widest piece a renderer cannot break, which is a word, or a
+ *  word's piece between two of its hyphens (breakRuns).
+ *
+ *  A WORD WAS THE WRONG UNIT, and a report link is why: split on spaces
+ *  alone, a hyphenated URL was one 700pt word, so the guard refused a
+ *  composition over a link Chrome wraps inside the column at its hyphens,
+ *  the fit ladder took the whole row down to 8pt for it where the same link
+ *  fits at 12pt, and the right-edge sweep reported overruns on archetype
+ *  slides whose links sit inside their boxes.
+ *
+ *  raggedLines lets a word wider than the measure take a line of its own and
+ *  overhang, "which is what Slides does with it too" — so every line count in
+ *  this file is right about such a word and the box is still wrong: its ink
+ *  runs out of the RIGHT edge, where no height measures it. In one column of
+ *  a row, that is across the neighbouring column's words. A URL or an email
+ *  address is the real case — 14 stored slides carry a token of 30 characters
+ *  or more, and a 4-unit column holds about 33 at 12pt.
+ *
+ *  Summed glyph by glyph on raggedLines' own tables and margin: the light
+ *  face, or the bold one where `boldRanges` reach or `bold` says the whole
+ *  box is bold; Playfair's own for a title; the face's mean for a face with
+ *  no table. */
+export function widestWordPt(
+  text: string | undefined, size: number, font?: string,
+  opts: { boldRanges?: readonly { start: number; end: number }[]; bold?: boolean } = {}
+): { word: string; width: number } {
+  const s = drawnText(text ?? "").trim();
+  let best = { word: "", width: 0 };
+  if (!s) return best;
+  const tabled = !font || font === "Roboto";
+  const playfair = font === "Playfair Display";
+  const runs = opts.boldRanges || [];
+  const re = /\S+/g;
+  const pieces: { text: string; index: number }[] = [];
+  for (;;) {
+    const w = re.exec(s);
+    if (!w) break;
+    let at = w.index;
+    const parts = breakRuns(w[0]);
+    for (let k = 0; k < parts.length; k++) { pieces.push({ text: parts[k], index: at }); at += parts[k].length; }
+  }
+  for (let q = 0; q < pieces.length; q++) {
+    const piece = pieces[q].text;
+    let em = 0;
+    for (let i = 0; i < piece.length;) {
+      const cp = piece.codePointAt(i) as number;
+      const at = pieces[q].index + i;
+      i += cp > 0xffff ? 2 : 1;
+      if (cp === 0x200d || (cp >= 0xfe00 && cp <= 0xfe0f)) continue;
+      let bold = !!opts.bold;
+      for (let r = 0; r < runs.length && !bold; r++) if (at >= runs[r].start && at < runs[r].end) bold = true;
+      if (playfair) { em += cp >= 32 && cp <= 126 ? PLAYFAIR_ADVANCE[cp - 32] : drawsFullWidth(cp) ? 1000 : PLAYFAIR_UNKNOWN; continue; }
+      if (!tabled) { em += faceAdvance(font) * 1000; continue; }
+      const table = bold ? ROBOTO_BOLD_ADVANCE : ROBOTO_LIGHT_ADVANCE;
+      em += cp >= 32 && cp <= 126 ? table[cp - 32] : drawsFullWidth(cp) ? 1000 : bold ? ROBOTO_BOLD_UNKNOWN : ROBOTO_LIGHT_UNKNOWN;
+    }
+    const width = (em / 1000) * size * RAGGED_KERN;
+    if (width > best.width) best = { word: piece, width };
+  }
+  return best;
+}
+
+/** WHERE A PARAGRAPH'S **BOLD** RUNS FALL IN THE STRING raggedLines MEASURES:
+ *  the drawn text, trimmed — the coordinates its `boldPrefix` is already in.
+ *
+ *  Found the way textBox finds them, on the text left once the picture
+ *  markdown and the links are taken out, and not at all on a box that carries
+ *  a link, which textBox does not embolden either. A paragraph whose braces
+ *  drawnText would also strip — an accent phrase, or a literal brace in body
+ *  copy — moves every offset after it, and rather than guess where the runs
+ *  land, the whole paragraph is measured in the bold face: a ruler that errs
+ *  wide costs a line of room, and one that errs narrow draws a line through
+ *  the bullet beneath. */
+export function boldRangesOf(source: string | undefined): { start: number; end: number }[] {
+  const pre = extractLinks(stripImageMarkdown(String(source ?? "")));
+  if (pre.links.length || pre.text.indexOf("**") < 0) return [];
+  const pb = parseBold(pre.text);
+  if (!pb.ranges.length) return [];
+  const drawn = drawnText(String(source ?? ""));
+  const lead = drawn.length - drawn.replace(/^\s+/, "").length;
+  if (drawn !== pb.text) return [{ start: 0, end: drawn.trim().length }];
+  const out: { start: number; end: number }[] = [];
+  for (let i = 0; i < pb.ranges.length; i++) {
+    const start = Math.max(0, pb.ranges[i].start - lead), end = pb.ranges[i].end - lead;
+    if (end > start) out.push({ start, end });
+  }
+  return out;
 }
 
 /** Where the last line's ink lands, measured from the top of the box.
@@ -4241,6 +5430,12 @@ export function inkBottom(el: {
    *  and so has to be measured on it: wrapped word by word wherever the
    *  measure is narrow enough for the ragged edge to cost a line. */
   ragged?: boolean;
+  /** A box whose words were fitted on the wrap ruler at EVERY measure, with
+   *  its bold runs in the bold face — a written composition's column (see
+   *  bulletBlockPlan's `words`) — and the runs that are bold, in the box's own
+   *  text. */
+  words?: boolean;
+  boldRanges?: readonly { start: number; end: number }[];
 }): number {
   const size = el.size || 10;
   const paras = String(el.text || "").split("\n");
@@ -4258,8 +5453,22 @@ export function inkBottom(el: {
   // box that was fitted on words says so, and every other box keeps the
   // ruler it was drawn with.
   const ragged = !!el.ragged && !el.bullets && measuresRagged(el.w, size, el.font);
+  const words = !!el.words && !el.bullets;
+  let offset = 0;
   for (let i = 0; i < paras.length; i++) {
     const para = paras[i];
+    const from = offset;
+    offset += para.length + 1;
+    if (words) {
+      const runs: { start: number; end: number }[] = [];
+      const all = el.boldRanges || [];
+      for (let r = 0; r < all.length; r++) {
+        const a = Math.max(all[r].start, from) - from, b = Math.min(all[r].end, from + para.length) - from;
+        if (b > a) runs.push({ start: a, end: b });
+      }
+      lines += Math.max(1, raggedLines(el.caps ? para.toUpperCase() : para, el.w, size, el.font, bold ? para.length : 0, runs, true));
+      continue;
+    }
     lines += ragged
       ? Math.max(1, raggedLines(el.caps ? para.toUpperCase() : para, el.w, size, el.font, bold ? para.length : 0))
       : bold
@@ -5075,6 +6284,13 @@ const NON_CONTENT_KEYS = new Set([
   // cover told its author that a field THEY never wrote was being dropped.
   "footer",
   "presentationId", "fidelity", "align", "id", "font",
+  // A composition is INSTRUCTIONS, like `layout`, whatever shape it arrives
+  // in: the names of the fields its columns draw, or — sent as a string —
+  // a description of an arrangement, which is not slide text the layout
+  // failed to draw. A compose that could not be used is said by its own note
+  // (composeDecision), and walked as content it was named a second time as
+  // words to "put in a field this layout uses".
+  "compose",
 ]);
 
 const contentKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -5130,6 +6346,11 @@ export function droppedContent(slide: SlideInput, index: number, notes?: string[
       return;
     }
     if (Array.isArray(v)) { for (const x of v) walk(x, key); return; }
+    // A composition's whole subtree, whatever it holds: an object's strings
+    // are walked under their own keys, and `fields: ["the right-hand column"]`
+    // would otherwise be read as words, not as a field name the solver
+    // could not use (which its correction note already says).
+    if (key === "compose") return;
     if (v && typeof v === "object") { for (const k of Object.keys(v)) walk(v[k], k); }
   };
   // THE SLIDE AS IT IS DRAWN, not as it was sent: normaliseSlide moves a
@@ -9156,6 +10377,26 @@ function buildSlideRequestsAt(
   // slide on off-white. Everything below — onDark, the page fill, the ink and
   // the lockup — follows this one decision.
   const style = slideStyle(slide, index);
+  // THE COMPOSITION, when this slide is drawn as one (composeDecision):
+  // decided here, before the title is fitted, because the title is set on the
+  // composition's measure and fitHeading has to be asked at that width.
+  const decided = composeDecision(slide, layout, index);
+  const composed = decided.comp;
+  // A COMPOSITION DRAWN AS ITS ARCHETYPE, over the words of its columns in the
+  // order it gave them (composeDecision's `joined`): from here on the slide
+  // is that archetype's, and the notes below say why. Each paragraph keeps
+  // the name of the field it came from (bulletBlock's `keys`): drawn under
+  // `body`'s, the right-hand column's words could not be edited in the
+  // preview at all — no box on the slide named the field that holds them.
+  let joinedKeys: string[] | undefined;
+  if (decided.joined && PROSE_COMPOSE.indexOf(layout) >= 0) {
+    joinedKeys = [];
+    for (let f = 0; f < decided.order.length; f++) {
+      const ps = parasOf((slide as any)[decided.order[f]]);
+      for (let k = 0; k < ps.length; k++) joinedKeys.push(k === 0 ? decided.order[f] : `${decided.order[f]}${k}`);
+    }
+  }
+  if (decided.joined) slide = decided.joined;
   // THE RAIL THIS PAGE WILL DRAW, or undefined. Read once, here, because two
   // things downstream depend on it and they must not be able to disagree: the
   // frame draws it, and the eyebrow gives up exactly the room it takes. An
@@ -9226,6 +10467,12 @@ function buildSlideRequestsAt(
         ` callout${asked === 1 ? "" : "s"} ${asked === 1 ? "was" : "were"} not drawn; move it to image-split`);
     }
   }
+  // A COMPOSITION THAT WAS NOT USED, OR NOT USED AS WRITTEN, declared the
+  // same way and for the same reason: the model wrote an arrangement and will
+  // describe it unless it is told the slide was drawn otherwise. Once, on the
+  // slide it was written on — a continuation inherits the field and has
+  // nothing new to say (composeDecision leaves its notes empty).
+  for (let i = 0; i < decided.notes.length; i++) shotNote(decided.notes[i]);
   // A PHOTOGRAPH ASKED FOR ON A LAYOUT THAT DRAWS NONE, declared the same way.
   // normaliseSlideForWrite folds `imageQuery` into `image` only where a
   // picture is drawn, because on a stat or a table the fold would buy a
@@ -9330,7 +10577,8 @@ function buildSlideRequestsAt(
   // After the width is known: the band is shortened by the note's height AT
   // that width, so the prose above leaves room for the bar it actually gets.
   const band = bandHeightFor(slide, noteWidth);
-  const titleWidth = layout === "image-split" ? IMAGE.splitTextWidth
+  const titleWidth = composed ? composed.measure
+    : layout === "image-split" ? IMAGE.splitTextWidth
     : layout === "photo-rail" ? PHOTO_RAIL.textWidth : proseColumn;
   // image-split sets its title in a HALF-WIDTH column, so the same words take
   // roughly twice the lines. Measuring it against the full-width title band
@@ -9363,7 +10611,98 @@ function buildSlideRequestsAt(
   const titleStyle = heading.style;
   const titleBox = { y: heading.y, height: heading.height };
 
-  if (layout === "cover") {
+  if (composed) {
+    /* THE COMPOSITION: the skeleton every prose archetype already draws —
+     * eyebrow, fitted title, rule, standfirst — then one prose column per fed
+     * span, through bulletBlock, fitted as a band and said-so when it will
+     * not fit. Then the same tail as every layout: the takeaway bar, the
+     * lockup, the running head, the folio, the frame and the stepper.
+     *
+     * THE SKELETON IS NOT OPTIONAL, and the plan's first grammar learned why:
+     * it named title, subtitle and columns, and the design's challenge found
+     * a composer drawing only what the grammar named dropped the eyebrow and
+     * the takeaway bar off 106 of the 212 prose slides it was tried on —
+     * seven times what the archetypes drop on the same slides. What a
+     * composition chooses is the COLUMNS; everything else on the page is
+     * drawn exactly as the archetypes draw it.
+     *
+     * `three-column` IS DRAWN HERE, as the composition its content implies
+     * (compositionOf). Its old branch was this one with the geometry written
+     * inline, and a second implementation beside the solver is the thing
+     * Stage 4 built columnBand(n) so as not to have.
+     *
+     * EVERY PROSE COLUMN GOES THROUGH bulletBlock, and that is the invariant,
+     * not a convenience. It clamps every box to its band and, when a list runs
+     * out of room, DEGRADES — the paragraphs with no top edge left inside the
+     * band are drawn as the tail of the last one that has — so every word is
+     * on the page. A paragraph walker that clamps and stops instead was how
+     * the prototype reported zero faults: it had dropped the paragraphs that
+     * would have been them. Put back here as a mutation, it loses 261
+     * paragraphs in 2,000 generated compositions at `read` and 328 at
+     * `present`, and droppedContent — which probes a field by its first five
+     * words, and the first paragraph is always drawn — reports none of them.
+     * Under the splitter's probe it answers with ONE box sized to the column,
+     * which is how three-column's body is still cut; a written composition is
+     * never cut — it is drawn only where it fits (composeDecision).
+     */
+    const measure = composed.measure;
+    requests.push(
+      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
+        x: GRID.margin, y: GRID.eyebrowY, width: eyebrowW, height: GRID.eyebrowHeight,
+      }),
+      ...textBox(id("title"), page, slide.title, titleStyle, {
+        x: GRID.margin, y: titleBox.y, width: measure, height: titleBox.height,
+      }),
+      ...ruleRequests(id("rule"), page, GRID.bodyY - RULE.gapAbove,
+        { from: GRID.margin, to: GRID.margin + measure }, onDark),
+    );
+    // A TITLE THE LADDER COULD NOT FIT IS SAID, not left to run through the
+    // rule. fitHeading shrinks a heading to its floor and then boxes it to the
+    // room it has, so past the floor its last line is drawn through the rule
+    // and the standfirst with nothing anywhere saying so — true of every
+    // layout, and the archetypes have always left it silent. A composition is
+    // new, and nothing stored moves by saying it here.
+    //
+    // MEASURED AS INK, with the validator's own ruler (inkBottom), and not
+    // with fitHeading's. fitHeading counts at the unnamed 0.55em so that it
+    // errs towards a smaller title, which is the right way for a fitter to
+    // err and the wrong way for an admission: at that ruler a Playfair title
+    // that sits inside its box reads as two lines over, and the model would be
+    // told to shorten a heading nobody can see anything wrong with.
+    if (slide.title?.trim()) {
+      const inkFoot = inkBottom({ y: titleBox.y, w: measure, h: titleBox.height, text: drawnText(slide.title),
+        size: titleStyle.size, font: titleStyle.font, weight: titleStyle.weight ?? (titleStyle.bold ? 700 : 400) });
+      const over = inkFoot - (titleBox.y + titleBox.height);
+      if (over > 1) {
+        shotNote(`this slide's title runs ${Math.ceil(over)}pt past the room above its rule, even at`
+          + ` ${titleStyle.size}pt — shorten the title`);
+      }
+    }
+    const plan = composedPlan(slide, index, composed);
+    const cb = plan.cb;
+    if (slide.subtitle?.trim()) {
+      // The standfirst runs the page's measure above the columns: it is the
+      // sentence the columns are answers to, so it belongs to the page and
+      // not to a column.
+      const standStyle = onDark ? TYPE.standfirstDark : TYPE.standfirst;
+      requests.push(...textBox(id("sub"), page, slide.subtitle, standStyle, {
+        x: GRID.margin, y: GRID.bodyY, width: measure, height: cb.standH,
+      }, composed.written ? { words: true } : {}));
+      if (cb.standNeed - cb.standH > 0.5) {
+        shotNote(`this slide's standfirst needs ${Math.ceil(cb.standNeed - cb.standH)}pt more than the page leaves above its columns`
+          + ` — shorten the \`subtitle\`, or move some of it into a column`);
+      }
+    }
+    requests.push(...composedColumns(id, page, composed, plan));
+    requests.push(...columnOverfullNote(id("colclip"), page, plan.fit, shotNote,
+      composed.written ? `composed ${layout}` : layout));
+    for (let i = 0; i < plan.fit.tooWide.length; i++) {
+      const w = plan.fit.tooWide[i];
+      shotNote(`this slide's \`${w.key}\` holds a word wider than its column, even at ${plan.fit.size}pt — "${w.word.length > 40 ? w.word.slice(0, 37) + "..." : w.word}"`
+        + ` runs across the column beside it; break it, or give \`${w.key}\` more of the twelve units`);
+    }
+    contentBottom = cb.colFloor;
+  } else if (layout === "cover") {
     if (!slide.resolvedImage) {
       // A COVER WITH NO PHOTOGRAPH used to be a plain navy slide with a title in
       // the corner — the dullest possible opening. Designed instead: an accent
@@ -10809,78 +12148,6 @@ function buildSlideRequestsAt(
     requests.push(...creditRequests(id("credit"), page, slide.resolvedImage?.credit,
       { x: PHOTO_RAIL.textX, width: PHOTO_RAIL.textWidth }, onDark, chrome.to));
     contentBottom = colFloor;
-  } else if (layout === "three-column") {
-    /* D — THE THREE-COLUMN BAND. Two of the handover deck's ten slides.
-     *
-     * The column geometry was three constants and exactly two slots; it is
-     * `columnBand(n)` now, which is what this needs and what Stage 5 needs.
-     * The source's own gutters are 30.24 and 53.28 — hand-set and unequal by
-     * 23pt between columns about 180pt wide — and they are SOLVED EQUAL here
-     * rather than copied: reproducing the deck exactly would reproduce a slip.
-     *
-     * A COLUMN IS PROSE WITH A LEAD-IN, not a card. `cards` can put three
-     * blocks across the band, but a card is a panel with a marker chip and a
-     * heading; this is a column of body copy whose first sentence is set in
-     * the accent and reads on into the rest. The difference is what the source
-     * uses to make a page of argument rather than a page of parts.
-     */
-    // THE COUNT COMES FROM THE CONTENT, never from the layout's name. A model
-    // that writes two columns gets two full-width ones rather than three with
-    // an empty slot, which is the shape `cards` already takes from its array.
-    const shown = columnFields(slide, ["body", "bodyRight", "bodyThird"]);
-    const cols = columnBand(shown.length);
-    requests.push(
-      ...textBox(id("eyebrow"), page, slide.eyebrow, eyebrowStyle, {
-        x: GRID.margin, y: GRID.eyebrowY, width: eyebrowW, height: GRID.eyebrowHeight,
-      }),
-      ...textBox(id("title"), page, slide.title, titleStyle, {
-        x: GRID.margin, y: titleBox.y, width: GRID.contentWidth, height: titleBox.height,
-      }),
-      // FULL WIDTH, unlike the photo rail's. There is no picture to stop at.
-      ...ruleRequests(id("rule"), page, GRID.bodyY - RULE.gapAbove,
-        { from: GRID.margin, to: GRID.margin + GRID.contentWidth }, onDark),
-    );
-
-    let colTop = GRID.bodyY;
-    if (slide.subtitle?.trim()) {
-      // The standfirst runs the FULL measure above the columns, which is the
-      // source's own arrangement: it is the sentence the three columns are
-      // three answers to, so it belongs to the page and not to a column.
-      const standStyle = onDark ? TYPE.standfirstDark : TYPE.standfirst;
-      const standH = drawnTextHeight(
-        estimateLines(slide.subtitle, GRID.contentWidth, standStyle.size), standStyle.size);
-      requests.push(...textBox(id("sub"), page, slide.subtitle, standStyle, {
-        x: GRID.margin, y: colTop, width: GRID.contentWidth, height: standH,
-      }));
-      colTop = colTop + standH + 12;
-    }
-    const colFloor = NOTE.bottom - noteHeight(slide.note, noteWidth) - (slide.note?.trim() ? NOTE.gap : 0);
-    const colH = Math.max(30, colFloor - colTop);
-    // The lead-in: the accent on a dark ground is the teal, for the same
-    // reason the rule's accent is — brand blue on navy is 2.39:1.
-    // WEIGHT, NOT `bold`. TypeStyle carries both and the emitter reads
-    // `style.weight ?? (style.bold ? 700 : 400)` — so spreading the body
-    // style, which is Roboto Light at weight 300, kept the 300 and the flag
-    // did nothing. Rendered, every lead-in came out the same weight as the
-    // column under it and the device was invisible.
-    //
-    // AND NOT ON A CONTINUATION. A continuation by definition does not start a
-    // column — its first paragraph is a bullet from the middle of the list the
-    // splitter cut — so accenting it promotes an ordinary point into the
-    // opening of an argument it is halfway through. The eyebrow and the
-    // standfirst are dropped from a continuation for exactly this reason, and
-    // the lead-in is the same decision one field along.
-    const colFit = columnFit(shown, cols.width, colH, bodyStyle);
-    const leadIn = slide.continuation
-      ? undefined
-      : { ...colFit.style, weight: 700, bold: true, color: onDark ? COLOR.tealSoft : COLOR.blue };
-    for (let i = 0; i < shown.length; i++) {
-      requests.push(...bulletBlock(id, shown[i].key, page, shown[i].text, colFit.style, {
-        x: cols.x[i], y: colTop, width: cols.width, height: colH,
-      }, { leadIn, ragged: true }).requests);
-    }
-    requests.push(...columnOverfullNote(id("colclip"), page, colFit, shotNote, "three-column"));
-    contentBottom = colFloor;
   } else if (layout === "serpentine") {
     /* E — THE SERPENTINE. The handover deck's slide 8: seven steps, against
      * `process`'s cap of five. See SERPENTINE and serpentineRequests — this is
@@ -10997,7 +12264,7 @@ function buildSlideRequestsAt(
       // Down to the foot of the band, not the old fixed height that stopped
       // 39pt short of it and pooled every list under the title.
       height: bodyHeight,
-    });
+    }, joinedKeys ? { keys: joinedKeys } : {});
     requests.push(
       ...body.requests,
       ...(rail
@@ -11266,11 +12533,16 @@ function bodyBox(
     resolvedImage: willRail ? { url: "probe", scrim: 0 } : undefined,
   };
   probe[field] = `${PROBE}\n${PROBE}`;
+  // PUT BACK AS FOUND, not cleared: composeDecision asks this function while
+  // the builder is drawing a slide, and a probe that ended by setting
+  // PROBING false would end the probe of whatever slide asked it.
+  const wasProbing = PROBING, wasRagged = PROBE_RAGGED;
   PROBING = true;
   PROBE_RAGGED = false;
   let reqs: any[];
-  try { reqs = buildSlideRequests(probe, index, "m") as any[]; } finally { PROBING = false; }
-  const ragged = PROBE_RAGGED;
+  let ragged = false;
+  try { reqs = buildSlideRequests(probe, index, "m") as any[]; ragged = PROBE_RAGGED; }
+  finally { PROBING = wasProbing; PROBE_RAGGED = wasRagged; }
   let id: string | undefined;
   for (const r of reqs) {
     if (r.insertText && String(r.insertText.text).indexOf(PROBE) >= 0) { id = r.insertText.objectId; break; }
@@ -11330,7 +12602,12 @@ function blockHeight(
 }
 
 /** One split, or none. */
-function splitOnce(slide: SlideInput, index: number): SlideInput[] {
+function splitOnce(
+  slide: SlideInput, index: number,
+  /** Paragraph counts at which a cut is preferred: the boundaries between the
+   *  columns of a composition drawn as one list (see below). */
+  boundaries: number[] = []
+): SlideInput[] {
   const body = slide.body;
   // Only prose layouts overflow this way; a chart's geometry is bounded.
   // Structured layouts are excluded wholesale: a slide is split by dividing
@@ -11342,6 +12619,36 @@ function splitOnce(slide: SlideInput, index: number): SlideInput[] {
     !slide.cards && !slide.quote && !slide.stages && !slide.logos &&
     !slide.table && !slide.comparison && !slide.swot && !slide.matrix &&
     !slide.venn && !slide.scatter && !slide.layers && !slide.hub && !slide.images && !slide.panel;
+  // A WRITTEN COMPOSITION IS NEVER CUT. Its columns are read across, and one
+  // continued column by column tore them — an agenda's first session put its
+  // last module on slide 2 after the second session's. So a composition is
+  // drawn only where it fits one slide (composeDecision), and one that does
+  // not is drawn as its archetype over the same words, in reading order, and
+  // cut here the way that archetype is cut — WITHOUT its compose, because the
+  // verdict was reached on the whole slide's words and a piece holds fewer: a
+  // first piece still carrying it could be judged to fit, and be drawn as
+  // columns where the splitter measured one list. Three-column's derived
+  // columns keep the body cut Stage 4 gave them.
+  if (splittable && slide.layout !== "closing" && slide.layout !== "cover" && (slide as any).compose !== undefined) {
+    const d = withDensity(densityOf(slide), () => composeDecision(slide, layoutOf(slide.layout, index), index));
+    if (d.comp && d.comp.written) return [slide];
+    if (d.joined || d.measured) {
+      // AND CUT BETWEEN ITS COLUMNS where one can be: an agenda written as a
+      // session a column, drawn as one list, went on to its next slide with
+      // the second session's heading left alone at the foot of the first.
+      // The columns were the author's groups; a cut between two of them is
+      // the one a reader expects.
+      const at: number[] = [];
+      let sum = 0;
+      for (let i = 0; i + 1 < d.order.length; i++) {
+        sum += parasOf((slide as any)[d.order[i]]).length;
+        if (sum > 0) at.push(sum);
+      }
+      const oneList = !!d.joined && PROSE_COMPOSE.indexOf(layoutOf(slide.layout, index)) >= 0;
+      const pieces = splitOnce(d.joined || ({ ...slide, compose: undefined } as SlideInput), index, oneList ? at : []);
+      return pieces.length > 1 ? pieces : [slide];
+    }
+  }
   if (!body || !splittable) return [slide];
 
   // The cover and the closing size their body box TO THE CONTENT, so the
@@ -11370,7 +12677,10 @@ function splitOnce(slide: SlideInput, index: number): SlideInput[] {
   // "Fee: CHF 6,000". If the remainder would be nearly empty, split down the
   // middle instead — as long as the first half still fits.
   const rest = () => paras.slice(take);
-  if (blockHeight(rest(), box) < box.height * 0.4 && take > 1) {
+  let boundary = 0;
+  for (let i = 0; i < boundaries.length; i++) if (boundaries[i] <= take && boundaries[i] > boundary) boundary = boundaries[i];
+  if (boundary) take = boundary;
+  else if (blockHeight(rest(), box) < box.height * 0.4 && take > 1) {
     const middle = Math.ceil(paras.length / 2);
     if (middle < take && blockHeight(paras.slice(0, middle), box) <= box.height) take = middle;
   }
@@ -11423,6 +12733,17 @@ function splitOnce(slide: SlideInput, index: number): SlideInput[] {
       imageQuery: undefined,
       ...cleared,
       subtitle: undefined, note: undefined, strip: undefined, tones: undefined,
+      // A CONTINUATION IS DRAWN THE WAY THE SLIDE IT CONTINUES WAS DRAWN. A
+      // written composition is never cut, so a slide reaching this line with
+      // a `compose` on it was drawn as its archetype — set aside or
+      // restated — and the field must
+      // not come back on the tail. Set aside for a picture that never
+      // resolved, the first half was the archetype beside a rail and the
+      // second half three columns; restated on a three-column slide, the
+      // tail kept its empty columns and drew a link across them where the
+      // archetype's tail is one column wide. The composition goes with the
+      // decision, not with the field.
+      ...((slide as any).compose !== undefined ? { compose: undefined } : {}),
       continuation: true,
     },
   ];

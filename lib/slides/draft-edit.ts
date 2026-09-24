@@ -144,7 +144,7 @@ export function moveSlide(draft: SlideDraft, from: number, delta: number): Slide
 
 const LABELS: Record<string, string> = {
   eyebrow: "Eyebrow", title: "Title", subtitle: "Subtitle",
-  body: "Body", bodyRight: "Right column",
+  body: "Body", bodyRight: "Right column", bodyThird: "Third column",
   value: "Value", label: "Label", detail: "Detail", name: "Name",
   source: "Source", caption: "Caption", date: "Date",
 };
@@ -190,7 +190,9 @@ export function editableFields(
       path: el.path,
       label: describe(el.path),
       value: String(value),
-      multiline: leaf === "body" || leaf === "bodyRight" || leaf === "detail",
+      // Every column field is a list of paragraphs, one a line: a third column
+      // in a one-row field showed its first paragraph and hid the rest.
+      multiline: leaf === "body" || leaf === "bodyRight" || leaf === "bodyThird" || leaf === "detail",
     });
   }
   return out;

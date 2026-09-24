@@ -8,14 +8,14 @@
  * SDKs and server-only config), so logic that lived there could not be tested
  * at all. Guarded by scripts/verify-slide-edit.ts.
  *
- * brand.ts is one of two things it imports: the stepper's bounds, and
- * layoutOf, which the picture fold needs in order to know what a layout name
- * will be drawn as. marks.ts is the other: the scorecard's mark vocabulary, so
+ * brand.ts is one of two things it imports: the stepper's bounds, layoutOf,
+ * which the picture fold needs in order to know what a layout name will be
+ * drawn as, and the layouts a composition is drawn on. marks.ts is the other: the scorecard's mark vocabulary, so
  * a key the model wrote can be retired once the comparison draws its own. Both
  * are true leaves — no imports of their own, no server config — so the
  * property this file's seam was cut for is intact.
  */
-import { STEPPER, layoutOf, LAYOUTS, LAYOUT_ALIASES } from "@/lib/slides/brand";
+import { STEPPER, layoutOf, LAYOUTS, LAYOUT_ALIASES, COMPOSE_LAYOUTS } from "@/lib/slides/brand";
 import { comparisonMarkPlan, withoutMarkKey } from "@/lib/slides/marks";
 
 /** What each layout is DRAWN FROM. A layout in this table with its field
@@ -1375,6 +1375,11 @@ function applyEditSlideTo(
     for (const f of PAYLOAD_FIELDS) {
       if (f !== "cards" && !isEmptyPayload(edit[f])) fresh[f] = edit[f];
     }
+    // THE COMPOSITION TRAVELS WITH THE SLIDE. `fresh` is a whitelist, and a
+    // field left off it is dropped in silence: an inserted slide written as
+    // three columns came back as the archetype with nothing said, while the
+    // same slide sent in a batch kept it — the batch copies the whole entry.
+    if (isObj(edit.compose)) fresh.compose = edit.compose;
     // The brief as it was sent; normaliseSlideForWrite folds it, or leaves it
     // for the builder to declare on a layout that draws no picture.
     if (isObj(edit.image)) fresh.image = edit.image;
@@ -1437,6 +1442,11 @@ function applyEditSlideTo(
   // towards converting a `content` slide to a photo rail, and the one-call way
   // to say it did not work.
   const changesLayout = typeof edit.layout === "string" && !!edit.layout.trim();
+  // A COMPOSITION ON ITS OWN IS A CHANGE, for the reason a layout on its own
+  // is one: "put slide 4 in three columns" is a re-arrangement of words the
+  // slide already carries, and refusing it as an empty request made the one
+  // thing a composition is for impossible to ask for. `null` takes it off.
+  const changesCompose = isObj(edit.compose) || edit.compose === null;
   if (
     !edit.imageQuery?.trim() &&
     !isObj(edit.image) &&
@@ -1445,6 +1455,7 @@ function applyEditSlideTo(
     typeof edit.body !== "string" &&
     !changesExtra &&
     !changesLayout &&
+    !changesCompose &&
     !changesPayload
   ) {
     throw new SlideCallRefusal(
@@ -1531,6 +1542,18 @@ function applyEditSlideTo(
         delete next.imageUnavailable;
         delete next.imageError;
       }
+      // A COMPOSITION GOES WHERE COLUMNS ARE DRAWN, AND NOWHERE ELSE. Between
+      // two layouts that take one — `content` to `case-study`, `two-column` to
+      // `content` — it stays, and is solved again against the layout it lands
+      // on (composeDecision): taken off, it silently took every column the
+      // archetype does not draw with it, and a `content` slide moved to
+      // `case-study` lost its right-hand column with nothing said but the
+      // generic dropped-text warning. Onto any other layout it is taken off,
+      // unless the patch sends one: a table or a chart draws its own
+      // arrangement, and a composition left on it is a field the new layout
+      // never reads, replayed every turn. What that takes off the slide is
+      // named in the tool result (composeTakenBy in generate.ts).
+      if (COMPOSE_LAYOUTS.indexOf(layoutOf(drawnWanted, idx)) < 0 && edit.compose === undefined) delete next.compose;
       next.layout = wanted;
       // A PAYLOAD THE LAYOUT DOES NOT DRAW GOES WITH A PATCH THAT LANDS A
       // LAYOUT DRAWN FROM A PAYLOAD OF ITS OWN, unless the patch sends it
@@ -1579,6 +1602,8 @@ function applyEditSlideTo(
     for (const f of PAYLOAD_FIELDS) {
       if (!isEmptyPayload(edit[f])) next[f] = edit[f];
     }
+    if (isObj(edit.compose)) next.compose = edit.compose;
+    else if (edit.compose === null) delete next.compose;
     // On the FINISHED slide, so a patch that changes the layout and the
     // picture together is folded against the layout it lands on.
     return normaliseSlideForWrite(next);

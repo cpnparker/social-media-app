@@ -17,6 +17,7 @@ a layout, the preview model, or the tool wiring:
 npx tsx scripts/verify-slide-layouts.ts      # geometry, collisions, logo contrast, preview parity
 npx tsx scripts/verify-post-taint-policy.ts  # every registered tool is classified
 npx tsx scripts/verify-safe-fetch.ts         # the SSRF guard blocks internal hosts in every notation
+npx tsx scripts/verify-compose-corpus.ts --pull  # every stored slide unchanged; a written composition never drops what its archetype drew
 ```
 
 ## AuthorityOn checks

@@ -23,6 +23,7 @@ import {
   photoRailBox, pictureShape, hungDotSize, stampDeckChrome, stampDensity, refreshDeckImageUrls, rebakeShape,
   TABLE_MAX_ROWS, COMPARISON_MAX_ROWS, COMPARISON_MAX_COLS,
   scoreMark, isScoreLabel, TICK_CELLS, CROSS_CELLS, scorecardTotalMismatches,
+  solveComposition, compositionOf, composeDecision, composeNotUsedBecause, composedColumnsThatCannotFit, composeTakenBy, boldRangesOf, widestWordPt, breakRuns, COMPOSE_LAYOUTS, COMPOSE_FIELDS,
   type SlideInput,
 } from "../lib/slides/generate";
 import { MARK_GLYPH, comparisonMarkPlan, withoutMarkKey } from "../lib/slides/marks";
@@ -40,11 +41,12 @@ import { deckToHtml, safeSrc } from "../lib/slides/pdf-html";
 import { SLIDES_TEXT_INSET, NATURAL_LINE, runsOf, runNeedsStyle } from "../lib/slides/preview-style";
 import {
   validateDeck, offCanvasFaults, overlapFaults, overrunFaults, geometryNotes, geometryRefusal,
-  faultCounts, relayableFaults, logDeckGeometry, inkBottom, GEOMETRY_SEVERITY, type DeckGeometry,
+  faultCounts, relayableFaults, logDeckGeometry, inkBottom, GEOMETRY_SEVERITY, offPageFaults, wideWordFaults, type DeckGeometry,
 } from "../lib/slides/validate";
 import { previewSlideFrom } from "../lib/slides/preview-model";
 import { prepareSlidesForBuild, sourceSlideCount, fidelityAudit, SLIDES_GEN_OPENAI_TOOL, unresolvedSlidesNotice, createStreamingResponse, __setStoredDraftReader } from "../lib/ai/providers";
 import { draftPreview } from "../lib/slides/preview-model";
+import { editableFields } from "../lib/slides/draft-edit";
 import { readFileSync } from "fs";
 import { createServer } from "http";
 import { join } from "path";
@@ -52,7 +54,7 @@ import { gradientProfileFor, CONTRAST } from "../lib/slides/images";
 import { signedMediaUrl } from "../lib/media/signed";
 import { CANVAS, LAYOUT_STYLE, COLOR, GRID, LAYOUTS, NOTE, SECTION, TYPE, PROCESS, SHOT, IMAGE, FEATURE_SHOT_STYLE, LOGO_PLACEMENT,
   DENSITY, DEFAULT_DENSITY, FRAME, STEPPER, BAND_BOTTOM, TIMELINE, TIMELINE_PARALLEL, LOGO_WALL, withDensity, textOn,
-  columnBand, PHOTO_RAIL, SERPENTINE, RULE, LAYOUT_ALIASES, layoutOf,
+  columnBand, PHOTO_RAIL, SERPENTINE, RULE, LAYOUT_ALIASES, layoutOf, spanBand, COMPOSE_GRID,
   type Density, type SlideLayout } from "../lib/slides/brand";
 
 const TYPE_STAT_CAP = 54;   // the multi-stat value cap; a hero must exceed it
@@ -16698,6 +16700,1140 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
       + ` and a before score, a tie, another scale, a stack of parts or a slide too far away is left alone`);
   }
 
+  /* 57. A composition: columns, and the field that feeds each one. */
+  //
+  // Stage 5, Tier 1. The model writes `compose: { columns, fields }` — spans
+  // of twelve units and the field in each column — on the four prose layouts
+  // and three-column, and the solver draws it. Nothing here asserts a layout's
+  // geometry by restating it: every property below is asked of the builder,
+  // the splitter, the guard and the validator the deck itself goes through,
+  // and the sweep's bar is the slide's OWN ARCHETYPE — a composition may not
+  // draw a fault, or drop a word, that the same slide drawn without one does
+  // not.
+  //
+  // MUTATION LOG — see the block at the end of this check.
+  const before57 = failures;
+  console.log(`\n57. A composition draws every word it is given, in the columns it was given, or says why not`);
+  const swept57: string[] = [];
+  const A57 = (ok: boolean, m: string) => { if (!ok) fail(`57${m}`); };
+  try {
+    const P57 = ["Growth happens when you see a story through the audience's eyes",
+      "We'll be your partners in balancing the demands of your organisation and the interests of your audience",
+      "It takes experimentation to know what works for your audience",
+      "We will use data to see what is working and adapt our approach accordingly",
+      "Every article is measured against the questions buyers actually ask",
+      "What is not cited is rewritten, and what is cited is protected"];
+    // A paragraph of two sentences: two lines or more on any measure here, so
+    // no rule about one-line points applies to a column of them, and a column
+    // given eight units of it stands lower than at six — its width is used.
+    const L57 = (i: number) => `${P57[i % 6]}, and ${P57[(i + 3) % 6].toLowerCase()}.`;
+    const B57 = { x: GRID.columnLeftX, width: GRID.columnRightX + GRID.columnWidth - GRID.columnLeftX };
+    const GUT57 = columnBand(2).gutter;
+    const eqArr = (a: any[], b: any[]) => a.length === b.length && a.every((v, i) => v === b[i]);
+    const boxOf = (reqs: any[], suffix: string) => reqs.find((r) => r.createShape && String(r.createShape.objectId).endsWith(`_${suffix}`));
+    const xw = (r: any) => r ? [r.createShape.elementProperties.transform.translateX, r.createShape.elementProperties.size.width.magnitude] : [NaN, NaN];
+    const yh = (r: any) => r ? [r.createShape.elementProperties.transform.translateY, r.createShape.elementProperties.size.height.magnitude] : [NaN, NaN];
+    const same57 = (a: any, b: any) => JSON.stringify(a) === JSON.stringify(b);
+    // THE SAME SLIDE, whichever column field each paragraph box is named for:
+    // a composition drawn as its archetype keeps each paragraph's own field
+    // name on its box (bulletBlock's `keys`), which is the one way it differs
+    // from the archetype over the same words, by design.
+    const asOne57 = (reqs: any) => JSON.stringify(reqs).replace(/_(?:body|bodyRight|bodyThird)\d*(dot\d*)?"/g, (_m, d) => `_col${d ? "dot" : ""}"`);
+    const sameList57 = (a: any, b: any) => asOne57(a) === asOne57(b);
+    const clone57 = (x: any) => JSON.parse(JSON.stringify(x));
+    const probe57 = (p: string) => stripImageMarkdown(p).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(" ").slice(0, 5).join(" ");
+    const drawnOf = (reqs: any[]) => reqs.filter((r) => r.insertText && r.insertText.text).map((r) => String(r.insertText.text)).join(" · ").toLowerCase().replace(/[^a-z0-9]+/g, " ");
+    // What a fault is ABOUT: its kind and the fields its note names. Two
+    // builds of one slide are compared on these, not on box ids, because a
+    // composition and its archetype split and number their boxes differently.
+    // Keyed on the SUBJECT alone — the box that runs over, or the first of an
+    // overlapping pair — because what it is drawn through differs by design:
+    // a title that runs over its box on `content` runs into `body`, and on the
+    // same slide composed, into whichever column sits under it; a standfirst
+    // as long as the page overlaps the takeaway bar where its box is not
+    // clamped and overruns into the columns where it is.
+    const faultKey = (f: any) => (String(f.note).match(/`[^`]+`/) || [`?${f.kind}`])[0];
+    // A fault whose SUBJECT is a column: the first field its note names.
+    const COLS57 = /^[^`]*`(body|bodyRight|bodyThird)`/;
+
+    /* (a) THE SOLVER NEVER THROWS, NEVER DROPS A FIELD THAT CARRIES WORDS,
+     * DRAWS NO EMPTY COLUMN, AND SAYS WHAT IT CHANGED. Each row: the columns,
+     * the fields named, the fields that carry words, and what is drawn. */
+    const ROWS57: [unknown, unknown, string[], number[], string[]][] = [
+      [[6, 6], ["body", "bodyRight"], ["body", "bodyRight"], [6, 6], ["body", "bodyRight"]],
+      [[4, 8], ["body", "bodyRight"], ["body", "bodyRight"], [4, 8], ["body", "bodyRight"]],
+      [[4, 4, 4], ["body", "bodyRight", "bodyThird"], ["body", "bodyRight", "bodyThird"], [4, 4, 4], ["body", "bodyRight", "bodyThird"]],
+      // A COLUMN WITH NOTHING IN IT IS NOT DRAWN, and what is left is put on
+      // twelve with its proportions.
+      [[8, 4], ["body"], ["body"], [12], ["body"]],
+      [[4, 4, 2, 2], ["body", "bodyRight"], ["body", "bodyRight"], [6, 6], ["body", "bodyRight"]],
+      [[4, 4, 4], ["body", "bodyRight"], ["body", "bodyRight"], [6, 6], ["body", "bodyRight"]],
+      [[6, 6], ["body", "bodyRight"], ["body"], [12], ["body"]],
+      [[3, 5, 4], ["body", "bodyRight", "bodyThird"], ["body", "bodyThird"], [5, 7], ["body", "bodyThird"]],
+      // The likeliest arithmetic: proportions kept where the floor allows.
+      [[5, 5], ["body", "bodyRight"], ["body", "bodyRight"], [6, 6], ["body", "bodyRight"]],
+      [[4.5, 7.5], ["body", "bodyRight"], ["body", "bodyRight"], [5, 7], ["body", "bodyRight"]],
+      [[7, 7], ["body", "bodyRight"], ["body", "bodyRight"], [6, 6], ["body", "bodyRight"]],
+      // COLUMN BY COLUMN: a field the solver cannot use takes its column with
+      // it, rather than every later field sliding one column along.
+      [[4, 8], ["title", "body"], ["body"], [12], ["body"]],
+      [[4, 8], ["title", "bodyRight"], ["body", "bodyRight"], [6, 6], ["bodyRight", "body"]],
+      [[6, 6], ["body", "body"], ["body", "bodyRight"], [6, 6], ["body", "bodyRight"]],
+      [[4, 8], ["title", "body", "bodyRight"], ["body", "bodyRight"], [6, 6], ["body", "bodyRight"]],
+      // Under the floor, or not drawable at all: an equal partition of the fields.
+      [[3, 4, 4], ["body", "bodyRight", "bodyThird"], ["body", "bodyRight", "bodyThird"], [4, 4, 4], ["body", "bodyRight", "bodyThird"]],
+      [[3, 9], ["body", "bodyRight"], ["body", "bodyRight"], [6, 6], ["body", "bodyRight"]],
+      [[0, 12], ["body", "bodyRight"], ["body", "bodyRight"], [6, 6], ["body", "bodyRight"]],
+      [[6, 6, 6, -6], ["body", "bodyRight"], ["body", "bodyRight"], [6, 6], ["body", "bodyRight"]],
+      [[-3, 15], ["body"], ["body"], [12], ["body"]],
+      [[2, 2, 2, 2, 2, 2], ["body"], ["body"], [12], ["body"]],
+      [[12], ["body", "bodyRight"], ["body", "bodyRight"], [6, 6], ["body", "bodyRight"]],
+      ["six", ["body"], ["body"], [12], ["body"]], [null, ["body"], ["body"], [12], ["body"]],
+      [undefined, ["body"], ["body"], [12], ["body"]], [[6, "6"], ["body"], ["body"], [12], ["body"]],
+      [[NaN, 12], ["body"], ["body"], [12], ["body"]], [[6, 6], undefined, ["bodyRight"], [12], ["bodyRight"]],
+      [[6, 6], [], [], [12], ["body"]],
+    ];
+    for (let r = 0; r < ROWS57.length; r++) {
+      const [cols, named, carried, want, wantFields] = ROWS57[r];
+      const tag = `(a) ${JSON.stringify(cols) || String(cols)} naming ${JSON.stringify(named)} over ${carried.join(",") || "nothing"}`;
+      let got: { spans: number[]; fields: string[]; corrections: string[] } | null = null;
+      try { got = solveComposition({ columns: cols, fields: named }, carried); } catch (e: any) { A57(false, `${tag}: the solver threw — ${e && e.message}`); continue; }
+      A57(eqArr(got.spans, want) && eqArr(got.fields, wantFields), `${tag}: drawn as ${JSON.stringify(got.spans)} over ${JSON.stringify(got.fields)}, expected ${JSON.stringify(want)} over ${JSON.stringify(wantFields)}`);
+      let sum = 0;
+      for (let i = 0; i < got.spans.length; i++) sum += got.spans[i];
+      A57(sum === COMPOSE_GRID.units && got.spans.length === got.fields.length && got.spans.every((s) => s >= COMPOSE_GRID.spanFloor && Math.round(s) === s),
+        `${tag}: ${JSON.stringify(got.spans)} is not one whole span of at least ${COMPOSE_GRID.spanFloor} per field, adding to twelve`);
+      A57(carried.every((f) => got!.fields.filter((g) => g === f).length === 1), `${tag}: fields ${JSON.stringify(got.fields)} do not carry each field with words exactly once`);
+      if (carried.length) A57(got.fields.every((f) => carried.indexOf(f) >= 0), `${tag}: a column is drawn with nothing in it — ${JSON.stringify(got.fields)}`);
+      const changed = !(Array.isArray(cols) && eqArr(cols as any[], got.spans) && Array.isArray(named) && eqArr(named as any[], got.fields));
+      A57(changed === got.corrections.length > 0, `${tag}: ${changed ? "redrawn and not said" : "said to be corrected when it was drawn as written"} — ${got.corrections.join(" / ")}`);
+    }
+    {
+      const s = solveComposition({ columns: [6, 6], fields: ["body", "body", "title"] }, ["body", "bodyRight"]);
+      A57(eqArr(s.spans, [6, 6]) && s.fields.join(",") === "body,bodyRight", `(a) a doubled and an unknown field: drawn as ${JSON.stringify(s)}`);
+      const said = s.corrections.join(" ");
+      A57(said.indexOf("twice") >= 0 && said.indexOf("\"title\"") >= 0 && said.indexOf("`bodyRight` carries words") >= 0,
+        `(a) the three corrections are not all said: ${said}`);
+    }
+    // THE PARTITION, over every vector of one to four whole spans adding to
+    // twelve: the last column ends on the band's right edge, every gutter is
+    // the page's own, and an equal partition IS columnBand(n) to the float —
+    // which is what keeps every stored three-column slide where it was.
+    let vectors57 = 0;
+    const walk57 = (prefix: number[], left: number) => {
+      if (left === 0) {
+        vectors57++;
+        const b = spanBand(prefix);
+        const right = b.x[b.x.length - 1] + b.width[b.width.length - 1];
+        A57(Math.abs(right - (B57.x + B57.width)) < 1e-9, `(a) ${JSON.stringify(prefix)} ends at ${right}, not the band's edge`);
+        for (let i = 1; i < prefix.length; i++) A57(Math.abs(b.x[i] - (b.x[i - 1] + b.width[i - 1]) - GUT57) < 1e-9, `(a) ${JSON.stringify(prefix)}: gutter ${i} is not ${GUT57}`);
+        if (prefix.every((v) => v === prefix[0])) {
+          const cb = columnBand(prefix.length);
+          A57(eqArr(b.x, cb.x) && b.width.every((w) => w === cb.width), `(a) ${JSON.stringify(prefix)} is not columnBand(${prefix.length}) to the float`);
+        }
+        return;
+      }
+      if (prefix.length === COMPOSE_GRID.maxColumns) return;
+      for (let s = 1; s <= left; s++) walk57(prefix.concat([s]), left - s);
+    };
+    walk57([], COMPOSE_GRID.units);
+    A57(vectors57 === 1 + 11 + 55 + 165, `(a) precondition: ${vectors57} span vectors enumerated, not 232`);
+
+    /* (b) EACH FIELD IN ITS OWN COLUMN, IN THE ORDER GIVEN, UNDER THE PAGE'S
+     * MEASURE — and one column the archetype would not draw, drawn as the
+     * archetype draws `body`, request for request. */
+    {
+      const reqs = buildSlideRequests({ layout: "content", title: "Order", body: `${L57(1)} ${L57(4)}`, bodyRight: P57[2],
+        compose: { columns: [4, 8], fields: ["bodyRight", "body"] } } as any, 1, "o57") as any[];
+      const band = spanBand([4, 8]);
+      const [rx, rw] = xw(boxOf(reqs, "bodyRight")), [bx, bw] = xw(boxOf(reqs, "body"));
+      A57(rx === band.x[0] && rw === band.width[0] && bx === band.x[1] && bw === band.width[1],
+        `(b) [4, 8] fed bodyRight then body drew bodyRight at ${rx}/${rw} and body at ${bx}/${bw}`);
+      const [, tw] = xw(boxOf(reqs, "title"));
+      A57(tw === GRID.contentWidth, `(b) the title over a [4, 8] composition is ${tw} wide, not the page's ${GRID.contentWidth}`);
+      // One column of `bodyRight` on a content slide: the archetype draws no
+      // bodyRight, so its words are drawn as the archetype draws `body` — the
+      // same slide, not a composer's near-miss of it.
+      const lone = buildSlideRequests({ layout: "content", title: "A heading over one column", bodyRight: `${P57[0]}\n${P57[1]}`,
+        compose: { columns: [12], fields: ["bodyRight"] } } as any, 1, "o57") as any[];
+      const arch = buildSlideRequests({ layout: "content", title: "A heading over one column", body: `${P57[0]}\n${P57[1]}` } as any, 1, "o57") as any[];
+      A57(sameList57(lone, arch) && !!boxOf(lone, "bodyRight") && !!boxOf(lone, "bodyRight1") && !boxOf(lone, "body"),
+        `(b) one column of bodyRight on content is not drawn as content draws the same words, each box named for bodyRight`);
+    }
+
+    /* (c) A COMPOSITION THAT IS THE LAYOUT IS THE LAYOUT, request for request —
+     * restating an arrangement cannot change it — and three-column is a
+     * composition whose columns are columnBand(n). */
+    for (const lay of ["content", "case-study", "dark-index"]) {
+      const s: any = { layout: lay, title: "Restated", subtitle: "One column.", eyebrow: "EYEBROW", body: `${P57[0]}\n${P57[1]}`, note: "Why this matters: it is the layout." };
+      const plain = JSON.stringify(buildSlideRequests(s, 1, "c57"));
+      for (const c of [{ columns: [12], fields: ["body"] }, { columns: [8, 4], fields: ["body"] }, { columns: [6, 6], fields: ["body", "bodyRight"] }]) {
+        const notes: string[] = [];
+        A57(JSON.stringify(buildSlideRequests({ ...s, compose: c }, 1, "c57", notes)) === plain, `(c) ${lay} with ${JSON.stringify(c)} is not drawn as ${lay}`);
+        A57((c.columns.length === 1) === (notes.length === 0), `(c) ${lay} with ${JSON.stringify(c)}: ${notes.length ? `said ${notes.join(" / ")}` : "corrected in silence"}`);
+      }
+    }
+    {
+      const s: any = { layout: "two-column", title: "Two sides", body: `${P57[0]}\n${P57[1]}`, bodyRight: `${L57(1)}\n${L57(4)}` };
+      const plain = JSON.stringify(buildSlideRequests(s, 1, "c57"));
+      A57(JSON.stringify(buildSlideRequests({ ...s, compose: { columns: [6, 6], fields: ["body", "bodyRight"] } }, 1, "c57")) === plain,
+        `(c) two-column restated as [6, 6] is not the two-column slide`);
+      const notes: string[] = [];
+      A57(JSON.stringify(buildSlideRequests({ ...s, compose: { columns: [5, 5], fields: ["body", "bodyRight"] } }, 1, "c57", notes)) === plain
+        && notes.some((n) => n.indexOf("read as [6,6]") >= 0) && notes.some((n) => n.indexOf("drawn as the two-column layout") >= 0),
+        `(c) two-column as [5, 5] is not drawn as the two-column slide with the correction said — ${notes.join(" / ")}`);
+      // AND RECOMPOSED, IT KEEPS ITS HAIRLINE: a [4, 8] two-column is still a
+      // comparison, in the gutter between its columns.
+      const r48 = buildSlideRequests({ ...s, compose: { columns: [4, 8], fields: ["body", "bodyRight"] } }, 1, "c57") as any[];
+      const band = spanBand([4, 8]);
+      const [vx] = xw(boxOf(r48, "vrule"));
+      A57(Math.abs(vx - (band.x[0] + band.width[0] + band.x[1]) / 2) < 1e-9, `(c) a [4, 8] two-column draws its hairline at ${vx}, not in its gutter`);
+      A57(!boxOf(buildSlideRequests({ ...s, layout: "content", compose: { columns: [4, 8], fields: ["body", "bodyRight"] } }, 1, "c57") as any[], "vrule"),
+        `(c) a content composition drew two-column's hairline`);
+    }
+    for (let n = 1; n <= 3; n++) {
+      const keys = ["body", "bodyRight", "bodyThird"].slice(0, n);
+      const s: any = { layout: "three-column", title: "Three answers", subtitle: "One question.", eyebrow: "APPROACH" };
+      for (let i = 0; i < n; i++) s[keys[i]] = `${P57[i * 2]}\n${P57[i * 2 + 1]}`;
+      const reqs = buildSlideRequests(s, 1, "t57") as any[];
+      const cb = columnBand(n);
+      for (let i = 0; i < n; i++) {
+        const [x, w] = xw(boxOf(reqs, keys[i]));
+        A57(x === cb.x[i] && w === cb.width, `(c) three-column with ${n} fields: \`${keys[i]}\` at ${x}/${w}, not columnBand(${n})'s ${cb.x[i]}/${cb.width}`);
+      }
+      const spans: number[] = [];
+      for (let i = 0; i < n; i++) spans.push(12 / n);
+      const written = JSON.stringify(buildSlideRequests({ ...s, compose: { columns: spans, fields: keys } }, 1, "t57"));
+      A57(written === JSON.stringify(reqs), `(c) three-column with ${n} fields: a written ${JSON.stringify(spans)} draws a different slide from the derived one`);
+    }
+    // WHICH COLUMNS EACH ARCHETYPE DRAWS is a table in the builder, and a
+    // table is the thing that drifts — so it is asked of the builder here. A
+    // one-column composition is its archetype exactly when the archetype
+    // draws that column, and a composition drawing the column otherwise.
+    for (const lay of COMPOSE_LAYOUTS) {
+      for (const f of COMPOSE_FIELDS) {
+        const s: any = { layout: lay, title: "Which column", [f]: P57[1] };
+        const drawsIt = droppedContent(s, 1).length === 0;
+        const plain = JSON.stringify(buildSlideRequests(s, 1, "w57"));
+        const comp = buildSlideRequests({ ...s, compose: { columns: [12], fields: [f] } }, 1, "w57") as any[];
+        A57(drawsIt === (JSON.stringify(comp) === plain), `(c) ${lay} ${drawsIt ? "draws" : "does not draw"} \`${f}\`, and one column of it composed ${drawsIt ? "is not" : "is"} the archetype`);
+        A57(drawnOf(comp).indexOf(probe57(P57[1])) >= 0, `(c) one column of \`${f}\` on ${lay} is drawn nowhere`);
+      }
+    }
+
+    /* (d) A COMPOSITION THAT WOULD DROP SOMETHING IS SET ASIDE, AND SAID. */
+    const PHOTO57 = { url: "p.jpg", scrim: 0, logo: "navy" as const };
+    const aside57: [string, any][] = [
+      ["a resolved picture", { layout: "content", title: "Aside", body: P57[0], bodyRight: P57[2], resolvedImage: PHOTO57 }],
+      ["a picture asked for", { layout: "case-study", title: "Aside", body: P57[0], bodyRight: P57[2], image: { query: "office" } }],
+      ["a panel", { layout: "content", title: "Aside", body: P57[0], bodyRight: P57[2], panel: { title: "What we bring", items: [{ title: "Craft" }, { title: "Data" }] } }],
+      ["column heads", { layout: "two-column", title: "Aside", body: P57[0], bodyRight: P57[2], columns: { left: "Before", right: "After" } }],
+      ["tinted panels", { layout: "two-column", title: "Aside", body: P57[0], bodyRight: P57[2], tones: ["coral", "teal"] }],
+      ["a layout with its own arrangement", { layout: "table", title: "Aside", table: { columns: ["A", "B"], rows: [["1", "2"]] } }],
+      ["a compose that is not an object", { layout: "content", title: "Aside", body: P57[0], compose: "three columns" }],
+    ];
+    for (let k = 0; k < aside57.length; k++) {
+      const plain = aside57[k][1];
+      const withC = plain.compose !== undefined ? plain : { ...plain, compose: { columns: [4, 8], fields: ["body", "bodyRight"] } };
+      const notes: string[] = [];
+      const a = JSON.stringify(buildSlideRequests({ ...plain, compose: undefined }, 1, "d57"));
+      const b = JSON.stringify(buildSlideRequests(withC, 1, "d57", notes));
+      A57(a === b, `(d) ${aside57[k][0]}: the slide drawn with its composition set aside is not the archetype's slide`);
+      A57(notes.some((n) => n.indexOf("`compose` was not used") >= 0), `(d) ${aside57[k][0]}: set aside without a word — ${notes.join(" / ") || "(no note)"}`);
+      // AND AN ARRANGEMENT IS INSTRUCTIONS, NOT WORDS: droppedContent reads
+      // neither a compose sent as a string nor a field name it cannot use.
+      A57(droppedContent(withC, 1).every((d) => d.indexOf("three columns") < 0), `(d) ${aside57[k][0]}: droppedContent reported the composition as slide text`);
+    }
+    A57(droppedContent({ layout: "content", title: "Names", body: P57[0], compose: { columns: [6, 6], fields: ["body", "the right-hand column of findings"] } } as any, 1).length === 0,
+      `(d) droppedContent reported a field name the solver could not use as slide text`);
+    // AND ON THE TAIL OF A SPLIT. A picture asked for and never resolved
+    // leaves nothing on the continuation to set the composition aside for.
+    for (let pi = 0; pi < 2; pi++) {
+      const at: Density = pi ? "present" : "read";
+      const long = [P57[0], P57[1], P57[2], P57[3], P57[4], P57[5], P57[0], P57[1], P57[2], P57[3], P57[4], P57[5], P57[0], P57[1]].join("\n");
+      const base: any = { layout: "content", title: "A long list beside a picture", body: long, bodyRight: P57[3], image: { query: "office" }, imageUnavailable: true, density: at };
+      const plainDeck = splitOverflowingSlides([{ layout: "cover", title: "C", density: at }, base]);
+      const compDeck = splitOverflowingSlides([{ layout: "cover", title: "C", density: at }, { ...base, compose: { columns: [6, 6], fields: ["body", "bodyRight"] } }]);
+      A57(plainDeck.length > 2 && plainDeck.length === compDeck.length, `(d) ${at}: precondition — the long list split into ${plainDeck.length} and ${compDeck.length} pieces`);
+      for (let j = 2; j < Math.min(plainDeck.length, compDeck.length); j++) {
+        A57(JSON.stringify(buildSlideRequests(plainDeck[j], j, "d57")) === JSON.stringify(buildSlideRequests(compDeck[j], j, "d57")),
+          `(d) ${at}: continuation ${j} of a slide whose composition was set aside is drawn as a composition`);
+      }
+    }
+
+    /* (e) ON REAL COPY, AT BOTH DENSITIES: every paragraph the archetype drew
+     * is drawn, and nothing the archetype drew is dropped — including from a
+     * slide carrying EVERY field a prose archetype draws, so a field some
+     * archetype learns to draw and composeNotUsedBecause does not know about
+     * goes red here rather than off a client's slide. */
+    const pieceText = (deck: SlideInput[], src: number) => {
+      const parts: string[] = [];
+      const lost: string[] = [];
+      for (let j = 0; j < deck.length; j++) {
+        if ((deck[j] as any).__src !== src) continue;
+        const reqs = buildSlideRequests(deck[j], j, "e57") as any[];
+        parts.push(drawnOf(reqs));
+        const d = droppedContent(deck[j], j);
+        for (let i = 0; i < d.length; i++) lost.push(d[i]);
+      }
+      return { drawn: parts.join(" "), lost };
+    };
+    const fx57 = JSON.parse(readFileSync(join(__dirname, "fixtures", "deck-3ec51a09.json"), "utf8"));
+    const EVERY57: any = {
+      eyebrow: "EVERY FIELD", title: "A slide carrying every field a prose layout draws", subtitle: "The standfirst above the columns, as long as a real one.",
+      body: `${P57[0]}\n${P57[1]}`, bodyRight: `${P57[2]}\n${P57[3]}`, bodyThird: `${P57[4]}\n${P57[5]}`,
+      note: "Why this matters: a composition draws the whole page, not only its columns.",
+      panel: { title: "What we bring", items: [{ title: "Editorial craft", text: "Every piece is written by a person" }] },
+      resolvedImage: { ...PHOTO57, credit: "Photo: Somebody Real / Unsplash" }, image: { query: "harbour cranes" },
+      columns: { left: "Before the audit", right: "After the audit" }, tones: ["coral", "teal"],
+    };
+    const real57: any[] = (fx57.slides as any[]).filter((s) => COMPOSE_LAYOUTS.indexOf(String(s.layout)) >= 0)
+      .concat([{ layout: "content", title: "Three answers to one question", subtitle: "What the audit found.", body: `${P57[0]}\n${P57[1]}`, bodyRight: `${P57[2]}\n${P57[3]}`, bodyThird: `${P57[4]}\n${P57[5]}` },
+        { layout: "dark-index", title: "Where to look", body: P57.join("\n"), bodyRight: P57[3], note: "Why this matters: the list is the plan." }])
+      .concat(COMPOSE_LAYOUTS.map((l) => ({ ...clone57(EVERY57), layout: l })));
+    let composed57 = 0, every57 = 0;
+    for (let pi = 0; pi < 2; pi++) {
+      const at: Density = pi ? "present" : "read";
+      const VARIANTS57 = [(n: number) => (n === 3 ? [4, 4, 4] : n === 2 ? [6, 6] : [12]), (n: number) => (n === 3 ? [4, 4, 4] : n === 2 ? [8, 4] : [8, 4]), (n: number) => (n >= 2 ? [5, 5] : [3, 9])];
+      for (let v = 0; v < VARIANTS57.length; v++) {
+        for (let k = 0; k < real57.length; k++) {
+          const s = clone57(real57[k]);
+          const carried = ["body", "bodyRight", "bodyThird"].filter((f) => typeof s[f] === "string" && s[f].trim());
+          const build = (withC: boolean) => {
+            const one = withC ? { ...s, compose: { columns: VARIANTS57[v](carried.length), fields: carried.slice(0, v === 2 ? 1 : carried.length) } } : s;
+            const deck = stampDensity(splitOverflowingSlides(stampDensity([{ layout: "cover", title: "C", __src: 0 } as any, { ...one, __src: 1 }], at)), at);
+            stampDeckChrome(deck, "Composition check");
+            return deck;
+          };
+          if (s.panel) every57++;
+          composed57++;
+          const arch = pieceText(build(false), 1), comp = pieceText(build(true), 1);
+          const extra = comp.lost.filter((x) => arch.lost.indexOf(x) < 0);
+          A57(extra.length === 0, `(e) ${at}: "${s.title}" (${s.layout}) composed drops what its archetype drew — ${extra.join(" / ").slice(0, 160)}`);
+          for (const f of Object.keys(s)) {
+            if (typeof s[f] !== "string" || ["layout", "compose"].indexOf(f) >= 0) continue;
+            const paras = String(s[f]).split("\n");
+            for (let i = 0; i < paras.length; i++) {
+              const pr = probe57(paras[i]);
+              if (pr.length <= 10 || arch.drawn.indexOf(pr) < 0) continue;
+              A57(comp.drawn.indexOf(pr) >= 0, `(e) ${at}: "${s.title}" (${s.layout}) composed draws no \`${f}\` paragraph "${paras[i].slice(0, 40)}" that its archetype drew`);
+            }
+          }
+        }
+      }
+    }
+    A57(composed57 >= 30 && every57 === 2 * 3 * COMPOSE_LAYOUTS.length, `(e) precondition: ${composed57} real slides were composed, ${every57} of them carrying every field`);
+
+    /* (f) THE PROPERTY SWEEP: generated compositions in generated decks —
+     * cover, three to nine things and a closing, so every piece carries the
+     * stepper; a takeaway bar on every page; pictures and their credits on
+     * three slides in ten — through the guard, the splitter, the chrome and
+     * all five sweeps, at both densities. Each case is built twice, composed
+     * and as its own archetype, and the composed slide may not draw a fault
+     * or drop a paragraph the archetype does not.
+     *
+     * A slide the composition is NOT drawn on — set aside, restated, or
+     * declined — is its archetype over its words: request for request, piece
+     * for piece, where the two cut the same way, and against that archetype
+     * its faults are judged. A declined composition's words are its columns
+     * in one list, which the plain archetype (dropping `bodyRight` on
+     * `content`) never draws; judged against the plain one, a standfirst as
+     * long as the page read as the composition's fault for pushing a list
+     * the plain slide did not have off the foot. */
+    const sweep57 = (at: Density, n: number, seed0: number) => {
+      let seed = seed0;
+      const rnd = () => { seed = (seed + 0x6D2B79F5) | 0; let t = seed; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+      const pick = <T,>(a: T[]): T => a[Math.floor(rnd() * a.length)];
+      const WORDS = "the audience growth story data partners content engine brand search answers model measure article cited reach editorial strategy approach demand organisation interests experiment adapt working signal quarter platform visibility citation retrieval coverage publisher programme research report question insight".split(" ");
+      const para = (min: number, max: number) => { const k = min + Math.floor(rnd() * (max - min + 1)); const w: string[] = []; for (let i = 0; i < k; i++) w.push(pick(WORDS)); const s = w.join(" "); return s[0].toUpperCase() + s.slice(1) + "."; };
+      // A bullet with a bold label, which is how the house style opens most.
+      const label = () => `**${para(1, 4).replace(/\.$/, "")}:** ${para(4, 16)}`;
+      // And now and then a link, which is one word as long as a column.
+      const link = () => `${para(3, 8)} See https://www.${pick(WORDS)}-${pick(WORDS)}.org/${pick(WORDS)}/2026/${pick(WORDS)}-${pick(WORDS)}`;
+      const fieldText = () => { const k = 1 + Math.floor(rnd() * (rnd() < 0.3 ? 8 : 4)); const ps: string[] = []; for (let i = 0; i < k; i++) { const r = rnd(); ps.push(r < 0.25 ? pick(P57) : r < 0.5 ? label() : r < 0.55 ? link() : para(3, rnd() < 0.2 ? 40 : 18)); } return ps.join("\n"); };
+      const SPANS: any[] = [[12], [6, 6], [4, 8], [8, 4], [4, 4, 4], [5, 7], [7, 5], [9, 3], [3, 9], [10, 2], [4, 4, 2, 2], [4, 4, 4, 0], [5, 5], [3, 4, 4], [0, 12], [12, 0], [1, 11], [6, 6, 6, -6], [4.5, 7.5], [-3, 15], [2, 2, 2, 2, 2, 2], [], "six", null];
+      const FIELDSETS: any[] = [["body"], ["body", "bodyRight"], ["bodyRight", "body"], ["body", "bodyRight", "bodyThird"], ["bodyThird", "body", "bodyRight"], ["bodyRight"], ["body", "body"], ["title"], [], undefined];
+      const t = { cases: 0, refused: 0, built: 0, written: 0, restated: 0, declined: 0, joinedSplit: 0, same: 0, notSame: 0, pieces: 0, split: 0, newFaults: 0, newDrops: 0, colFaults: 0, offPage: 0, offCanvas: 0,
+        nonPositive: 0, clipped: 0, order: 0, carried: 0, threw: 0, unstepped: 0, corrected: 0, stepped: 0, tooSmall: 0, leadIns: 0, listed: 0, divided: 0, longTitles: 0, credits: 0 };
+      const said: string[] = [];
+      for (let c = 0; c < n; c++) {
+        const slide: any = { layout: pick(["content", "case-study", "dark-index", "two-column", "three-column"]),
+          title: rnd() < 0.15 ? para(18, 26) : rnd() < 0.5 ? para(3, 8) : para(6, 14) };
+        if (String(slide.title).length >= 109) t.longTitles++;
+        if (rnd() < 0.5) slide.eyebrow = pick(["CASE STUDY", "STRATEGY", "02", "WHY IT MATTERS"]);
+        if (rnd() < 0.6) slide.subtitle = para(6, rnd() < 0.1 ? 90 : rnd() < 0.2 ? 40 : 18);
+        slide.note = "Why this matters: " + para(6, 24);
+        if (rnd() < 0.3) { slide.resolvedImage = { ...PHOTO57, credit: "Photo: Somebody Real / Unsplash" }; slide.image = { query: "office" }; }
+        const f = pick(FIELDSETS);
+        const want = Array.isArray(f) ? f : ["body"];
+        for (const k of ["body", "bodyRight", "bodyThird"]) if (want.indexOf(k) >= 0 || rnd() < 0.15) slide[k] = fieldText();
+        slide.compose = { columns: pick(SPANS), fields: f };
+        // The deck around it: three to nine things, the composed one at a
+        // seeded place among them, each with its bar and some with a picture.
+        const things = 3 + Math.floor(rnd() * 7);
+        const at0 = Math.floor(rnd() * things);
+        const deckIn: any[] = [{ layout: "cover", title: "Cover" }];
+        for (let i = 0; i < things; i++) {
+          if (i === at0) { deckIn.push(slide); continue; }
+          const filler: any = { layout: "content", title: para(3, 8), body: `${para(4, 12)}\n${para(4, 12)}`, note: "Why this matters: " + para(4, 12) };
+          if (rnd() < 0.3) filler.resolvedImage = { ...PHOTO57, credit: "Photo: Somebody Real / Unsplash" };
+          deckIn.push(filler);
+        }
+        deckIn.push({ layout: "closing", title: "Thank you" });
+        const src = at0 + 1;
+        t.cases++;
+        try {
+          if (composedColumnsThatCannotFit(deckIn, at).length) { t.refused++; continue; }
+          const n0 = normaliseSlide({ ...slide, density: at });
+          const dec = composeDecision(n0, layoutOf(n0.layout, src), src);
+          const build = (withC: boolean, as?: any) => {
+            const d = deckIn.map((s, i) => ({ ...clone57(i === src ? (as ? as : !withC ? { ...s, compose: undefined } : s) : s), __src: i }));
+            stampDensity(d, at);
+            const deck = splitOverflowingSlides(d);
+            stampDeckChrome(deck, "Composition sweep");
+            const keys: string[] = [];
+            const drawn: string[] = [];
+            const pieces: { piece: any; j: number; reqs: any[]; notes: string[]; faults: any[] }[] = [];
+            for (let j = 0; j < deck.length; j++) {
+              const piece: any = deck[j];
+              if (piece.__src !== src) continue;
+              const notes: string[] = [];
+              const reqs = buildSlideRequests(piece, j, "p57", notes) as any[];
+              const page = previewSlideFrom(piece, reqs);
+              const faults = offCanvasFaults(reqs, piece, j).faults.concat(overlapFaults(page, piece, j).faults,
+                overrunFaults(page, piece, j).faults, offPageFaults(page, piece, j).faults, wideWordFaults(page, piece, j).faults);
+              // A continuation's TITLE is the splitter's — the slide's own with
+              // " (continued)" after it — and the archetype, which may not
+              // draw the words that made the continuation, has none to compare.
+              for (let x = 0; x < faults.length; x++) if (!(piece.continuation && faultKey(faults[x]) === "`title`")) keys.push(faultKey(faults[x]));
+              drawn.push(drawnOf(reqs));
+              pieces.push({ piece, j, reqs, notes, faults });
+            }
+            return { keys, drawn: drawn.join(" "), pieces };
+          };
+          const A = build(false), B = build(true);
+          // The archetype over the composition's words, where it declined.
+          const Aw = dec.joined ? build(false, { ...dec.joined, compose: undefined, density: undefined }) : A;
+          t.built++;
+          if (!(dec.comp && dec.comp.written)) {
+            if (dec.joined || dec.measured) t.declined++;
+            // A declined list that is cut is cut between its columns, which
+            // the archetype's own cut has no reason to choose; alone, the two
+            // are the same slide.
+            if (B.pieces.length === Aw.pieces.length && (B.pieces.length === 1 || !dec.joined)) {
+              let same = true;
+              for (let p = 0; p < B.pieces.length; p++) if (!sameList57(B.pieces[p].reqs, Aw.pieces[p].reqs)) same = false;
+              if (same) t.same++; else { t.notSame++; if (said.length < 3) said.push(`#${c} ${slide.layout} ${JSON.stringify(slide.compose)}: drawn as neither a composition nor its archetype`); }
+            } else if (dec.joined) t.joinedSplit++;
+            // AND NOTHING IT DREW STILL CARRIES THE COMPOSITION IT WAS DRAWN
+            // WITHOUT, once cut: the verdict was reached on the whole slide.
+            if (B.pieces.length > 1 && (dec.joined || dec.measured)) for (let p = 0; p < B.pieces.length; p++) if (B.pieces[p].piece.compose !== undefined) t.carried++;
+          }
+          // A FAULT IS NEW WHEN ITS KIND AND SUBJECT ARE: a title that runs over
+          // its box by the same points on both is one fault, whether it crosses
+          // one column under it or three.
+          // A joined list's boxes keep their own fields' names; the archetype
+          // it is compared with calls every one of them `body`.
+          const subj = (k: string) => (dec.joined ? k.replace(/^`(bodyRight|bodyThird)`$/, "`body`") : k);
+          const Bk = B.keys.map(subj), Ak = Aw.keys.map(subj);
+          for (let k = 0; k < Bk.length; k++) {
+            if (Ak.indexOf(Bk[k]) >= 0 || Bk.indexOf(Bk[k]) < k) continue;
+            t.newFaults++;
+            if (said.length < 3) said.push(`#${c} ${slide.layout} ${JSON.stringify(slide.compose)}: ${Bk[k]}`);
+          }
+          // AND EVERY WORD THE COMPOSITION WAS GIVEN, whatever its archetype
+          // does: a composition not set aside draws every paragraph of every
+          // column field. Against the archetype alone, a composer that fell
+          // back to it would pass — the archetype cannot lose what it never
+          // drew.
+          const kept = !composeNotUsedBecause(normaliseSlide(slide), layoutOf(normaliseSlide(slide).layout, src));
+          for (const k of ["body", "bodyRight", "bodyThird", "subtitle", "eyebrow", "note", "title"]) {
+            if (typeof slide[k] !== "string") continue;
+            const ps = slide[k].split("\n");
+            for (let i = 0; i < ps.length; i++) {
+              const pr = probe57(ps[i]);
+              if (pr.length > 10 && B.drawn.indexOf(pr) < 0 && (A.drawn.indexOf(pr) >= 0 || (kept && COMPOSE_FIELDS.indexOf(k) >= 0))) {
+                t.newDrops++; if (said.length < 3) said.push(`#${c} dropped ${k}: ${ps[i].slice(0, 40)}`);
+              }
+            }
+          }
+          const first = normaliseSlide(B.pieces[0].piece);
+          const comp0 = compositionOf(first, layoutOf(first.layout, B.pieces[0].j), B.pieces[0].j);
+          if (comp0 && comp0.written) t.written++; else if (normaliseSlide(slide).compose !== undefined && !(dec.joined || dec.measured)) t.restated++;
+          if (B.pieces.length > 1) t.split++;
+          for (let p = 0; p < B.pieces.length; p++) {
+            const { piece, j, reqs, notes, faults } = B.pieces[p];
+            t.pieces++;
+            if (!piece.step) t.unstepped++;
+            if (notes.some((x) => x.indexOf("composition was corrected") >= 0)) t.corrected++;
+            for (let r = 0; r < reqs.length; r++) {
+              const b: any = Object.values(reqs[r] || {})[0];
+              const ep = b && b.elementProperties;
+              if (ep && ep.size && !(ep.size.width.magnitude > 0 && ep.size.height.magnitude > 0)) t.nonPositive++;
+              const st = reqs[r].updateTextStyle && reqs[r].updateTextStyle.style;
+              const oid = String(reqs[r].updateTextStyle && reqs[r].updateTextStyle.objectId);
+              if (st && st.fontSize && /_(body|bodyRight|bodyThird)\d*$/.test(oid) && st.fontSize.magnitude < (at === "present" ? 12 : 10)) {
+                t.stepped++;
+                // A WRITTEN ROW IS NEVER SET MORE THAN A POINT UNDER THE DECK.
+                if (comp0 && comp0.written && st.fontSize.magnitude < (at === "present" ? 11 : 9)) t.tooSmall++;
+              }
+              if (st && (st.bold || (st.weightedFontFamily && st.weightedFontFamily.weight >= 700)) && st.foregroundColor && /_(body|bodyRight|bodyThird)$/.test(oid)) t.leadIns++;
+              if (reqs[r].createShape && /_(body|bodyRight|bodyThird)dot0$/.test(String(reqs[r].createShape.objectId))
+                && !reqs.some((q: any) => q.createShape && q.createShape.objectId === String(reqs[r].createShape.objectId).replace(/dot0$/, "1"))) t.listed++;
+              if (reqs[r].createShape && /_vrule$/.test(String(reqs[r].createShape.objectId)) && comp0 && comp0.divided) t.divided++;
+              if (reqs[r].insertText && /^Photo: /.test(String(reqs[r].insertText.text))) t.credits++;
+            }
+            const comp = compositionOf(normaliseSlide(piece), layoutOf(normaliseSlide(piece).layout, j), j);
+            if (!comp || !comp.written) continue;
+            // A COMPOSITION THE GUARD LET THROUGH HOLDS ITS COLUMNS, on every
+            // piece, whatever its archetype does.
+            for (let x = 0; x < faults.length; x++) {
+              if (faults[x].kind === "off-page") t.offPage++;
+              if (faults[x].kind === "off-canvas") t.offCanvas++;
+              if (COLS57.test(faults[x].note)) { t.colFaults++; if (said.length < 3) said.push(`#${c} ${faults[x].note.slice(0, 140)}`); }
+            }
+            // Said, and not a fault of the columns, only where a standfirst as
+            // long as the page left them their 30pt floor — and said too.
+            if (reqs.some((r) => r.insertText && r.insertText.text === "Column copy clipped for room")
+              && !notes.some((x) => x.indexOf("standfirst needs") >= 0)) t.clipped++;
+            for (let r = 0; r < comp.regions.length; r++) {
+              const fk = comp.regions[r].field;
+              if (!String(piece[fk] || "").trim()) continue;
+              const [x, w] = xw(boxOf(reqs, fk));
+              if (x !== comp.regions[r].x || w !== comp.regions[r].width) t.order++;
+            }
+          }
+          // A WRITTEN COMPOSITION IS NEVER CUT: drawn, it fits one slide.
+          if (comp0 && comp0.written && B.pieces.length > 1) t.order++;
+        } catch (e: any) { t.threw++; if (said.length < 3) said.push(`#${c} threw: ${e && e.message}`); }
+      }
+      return { t, said };
+    };
+    for (let pi = 0; pi < 2; pi++) {
+      const at: Density = pi ? "present" : "read";
+      const { t, said } = sweep57(at, 700, 57 + pi);
+      const tag = `(f) ${at}`;
+      swept57.push(`${at} ${t.built} built, ${t.refused} refused, ${t.written} composed, ${t.declined} declined to their archetype (${t.joinedSplit} of them cut between columns)`);
+      A57(t.threw === 0, `${tag}: ${t.threw} decks threw — ${said.join(" / ")}`);
+      A57(t.newFaults === 0 && t.newDrops === 0, `${tag}: ${t.newFaults} faults and ${t.newDrops} dropped paragraphs its own archetype does not have — ${said.join(" / ")}`);
+      A57(t.offCanvas === 0 && t.offPage === 0 && t.nonPositive === 0, `${tag}: ${t.offCanvas} boxes off the canvas, ${t.offPage} lines of ink off the page, ${t.nonPositive} boxes of no size`);
+      A57(t.colFaults === 0 && t.clipped === 0, `${tag}: ${t.colFaults} faults on a column, and ${t.clipped} "Column copy clipped" notes, on compositions the guard let through — ${said.join(" / ")}`);
+      A57(t.order === 0, `${tag}: ${t.order} fields outside the column the composition gave them, or written compositions cut onto a second slide`);
+      A57(t.notSame === 0 && t.carried === 0, `${tag}: ${t.notSame} slides drawn as neither their composition nor their archetype over its words, ${t.carried} cut pieces still carrying a composition that was declined — ${said.join(" / ")}`);
+      A57(t.tooSmall === 0, `${tag}: ${t.tooSmall} written columns set more than a point under the deck's body size`);
+      // THE SWEEP HAS TO HAVE SWEPT SOMETHING, and on the page it claims to.
+      A57(t.unstepped === 0 && t.pieces > t.built, `${tag}: precondition — ${t.unstepped} of ${t.pieces} pieces carry no stepper`);
+      A57(t.built > 350 && t.refused > 0 && t.written > 40 && t.restated > 20 && t.declined > 50 && t.same > 200 && t.joinedSplit > 0 && t.split > 0 && t.corrected > 50
+        && t.stepped > 0 && t.leadIns > 0 && t.listed > 0 && t.divided > 0 && t.longTitles > 50 && t.credits > 50,
+        `${tag}: precondition — ${JSON.stringify(t)}`);
+    }
+
+    /* (f2) A STANDFIRST AS LONG AS THE PAGE keeps every box on the page: its
+     * own box stops where the columns still have their floor of room, and the
+     * slide says the standfirst ran over. Columns of a word each, which the
+     * floor holds — anything longer is a composition that will not fit, and
+     * is drawn as its archetype (f3). Built directly, as a stored draft is
+     * previewed. */
+    for (let pi = 0; pi < 2; pi++) {
+      const at: Density = pi ? "present" : "read";
+      const words: string[] = [];
+      for (let i = 0; i < 170; i++) words.push(i % 9 ? "standfirst" : "and");
+      const s: any = { layout: "content", title: "A standfirst as long as the page", subtitle: words.join(" "), body: "Yes", bodyRight: "No",
+        compose: { columns: [6, 6], fields: ["body", "bodyRight"] }, density: at };
+      A57(!!compositionOf(s, "content", 1), `(f2) ${at}: precondition — the one-word columns were not drawn as a composition`);
+      const notes: string[] = [];
+      const reqs = buildSlideRequests(s, 1, "f57", notes) as any[];
+      const off = offCanvasFaults(reqs, s, 1).faults;
+      A57(off.length === 0, `(f2) ${at}: ${off.length} boxes off the canvas under a page-long standfirst — ${off.map((f) => f.where).join(", ")}`);
+      A57(notes.some((n) => n.indexOf("standfirst needs") >= 0), `(f2) ${at}: the standfirst ran over its box and the slide did not say so`);
+    }
+
+    /* (f3) A STORED COMPOSITION TYPED LONG IN THE PREVIEW, where no guard
+     * runs, is drawn as its archetype over its words: one list, in the order
+     * its columns gave it, continued the way that archetype continues a list,
+     * CUT BETWEEN TWO COLUMNS where the first slide holds a whole column, at
+     * the deck's size, with no piece still carrying the composition, and
+     * nothing drawn past its band or dropped. Continued column by column
+     * instead, an agenda's first session put its last module on slide 2 after
+     * the second session's modules. */
+    for (let pi = 0; pi < 2; pi++) {
+      const at: Density = pi ? "present" : "read";
+      const findings: string[] = [], shorts: string[] = [];
+      for (let i = 0; i < 12; i++) findings.push(`${P57[i % 6]} (${i + 1})`);
+      for (let i = 0; i < 40; i++) shorts.push(`Point ${i + 1} of forty`);
+      const cases: [string, any][] = [
+        ["twelve findings in a 4-unit bodyRight", { layout: "content", title: "Typed long", body: `${P57[0]}\n${P57[1]}`, bodyRight: findings.join("\n"), compose: { columns: [8, 4], fields: ["body", "bodyRight"] } }],
+        ["forty points in bodyRight at [6, 6]", { layout: "content", title: "Typed long", body: P57[0], bodyRight: shorts.join("\n"), compose: { columns: [6, 6], fields: ["body", "bodyRight"] } }],
+        ["forty points in bodyThird at [4, 4, 4]", { layout: "content", title: "Typed long", body: P57[0], bodyRight: P57[1], bodyThird: shorts.join("\n"), compose: { columns: [4, 4, 4], fields: ["body", "bodyRight", "bodyThird"] } }],
+        ["a long body beside a column", { layout: "case-study", title: "Typed long", body: findings.concat(findings).join("\n"), bodyRight: `${P57[2]}\n${P57[3]}`, compose: { columns: [7, 5], fields: ["body", "bodyRight"] } }],
+        ["the columns written right to left", { layout: "content", title: "Typed long", body: findings.concat(findings).join("\n"), bodyRight: `${P57[2]}\n${P57[3]}`, compose: { columns: [6, 6], fields: ["bodyRight", "body"] } }],
+      ];
+      for (let k = 0; k < cases.length; k++) {
+        const s: any = { ...cases[k][1], density: at, note: "Why this matters: the user typed it." };
+        const deckIn: any[] = [{ layout: "cover", title: "C", density: at }, s, { layout: "closing", title: "Thanks", density: at }];
+        const { slides: out } = draftPreview(deckIn);
+        const mine = out.filter((x: any) => /^Typed long/.test(String(x.title)));
+        const tag = `(f3) ${at} ${cases[k][0]}`;
+        A57(mine.length > 1, `${tag}: precondition — not cut (${mine.length} piece)`);
+        const order: string[] = [];
+        for (const f of s.compose.fields) for (const x of String(s[f] || "").split("\n")) if (x.trim()) order.push(x.trim());
+        let drawn = "";
+        const perPiece: string[][] = [];
+        for (let p = 0; p < mine.length; p++) {
+          const j = out.indexOf(mine[p]);
+          A57(mine[p].compose === undefined, `${tag}: piece ${p + 1} still carries the composition it was drawn without`);
+          const reqs = buildSlideRequests(mine[p], j, "g57") as any[];
+          drawn += " " + drawnOf(reqs);
+          perPiece.push(String(mine[p].body || "").split("\n").filter((x: string) => x.trim()));
+          const page = previewSlideFrom(mine[p], reqs);
+          const faults = offCanvasFaults(reqs, mine[p], j).faults.concat(overlapFaults(page, mine[p], j).faults, overrunFaults(page, mine[p], j).faults,
+            offPageFaults(page, mine[p], j).faults, wideWordFaults(page, mine[p], j).faults);
+          A57(faults.length === 0, `${tag}: piece ${p + 1} draws ${faults.map((f) => f.note.slice(0, 90)).join(" / ")}`);
+          const sizeReq = reqs.find((r) => r.updateTextStyle && /_body$/.test(String(r.updateTextStyle.objectId)) && r.updateTextStyle.style.fontSize);
+          const size = sizeReq ? sizeReq.updateTextStyle.style.fontSize.magnitude : NaN;
+          A57(size === (at === "present" ? 12 : 10), `${tag}: piece ${p + 1} is set at ${size}pt, not the deck's size`);
+        }
+        // ONE LIST, IN THE COLUMNS' ORDER, and every paragraph in it.
+        const flat = ([] as string[]).concat(...perPiece);
+        A57(same57(flat, order), `${tag}: the pieces do not hold the columns' paragraphs as one list in their order`);
+        for (let i = 0; i < order.length; i++) {
+          const pr = probe57(order[i]);
+          if (pr.length > 10) A57(drawn.indexOf(pr) >= 0, `${tag}: paragraph "${order[i].slice(0, 30)}" is drawn nowhere`);
+        }
+        // CUT BETWEEN COLUMNS: where the first column fits the first slide,
+        // the first cut is at the end of a column.
+        const firstCol = String(s[s.compose.fields[0]] || "").split("\n").filter((x: string) => x.trim()).length;
+        const bounds: number[] = [];
+        let acc = 0;
+        for (const f of s.compose.fields) { acc += String(s[f] || "").split("\n").filter((x: string) => x.trim()).length; bounds.push(acc); }
+        if (firstCol <= perPiece[0].length) A57(bounds.indexOf(perPiece[0].length) >= 0, `${tag}: the first slide holds ${perPiece[0].length} paragraphs, cut inside a column where one fitted whole (${JSON.stringify(bounds)})`);
+      }
+    }
+
+    /* (g) THE FOURTH SWEEP: ink off the foot of the page, where nothing lies
+     * beneath it to be drawn through. A cover's kicker is the real case. */
+    {
+      const kicker = "Prepared for the board of a client whose name runs long, with a kicker that goes on to say who it is for, when it was written, what it covers and why the reader should care about any of it at all before the meeting";
+      const g = validateDeck([{ layout: "cover", title: "A deck", subtitle: kicker, resolvedImage: PHOTO_DARK } as any], "g57");
+      const c = faultCounts(g);
+      A57(c["off-page"] === 1 && c.overrun === 0 && c["off-canvas"] === 0, `(g) a kicker run off the page is reported as ${JSON.stringify(c)}`);
+      A57(geometryNotes(g).some((n) => n.indexOf("off the foot of the slide") >= 0), `(g) and the deck is not told: ${geometryNotes(g).join(" / ")}`);
+      const short = faultCounts(validateDeck([{ layout: "cover", title: "A deck", subtitle: "Short", resolvedImage: PHOTO_DARK } as any], "g57"));
+      A57(short["off-page"] === 0, `(g) a one-line kicker is reported off the page`);
+    }
+
+    /* (h) THE EDIT PATH CARRIES A COMPOSITION, KEEPS IT WHERE COLUMNS ARE
+     * DRAWN, AND SAYS WHAT TAKING IT OFF COST. */
+    {
+      const C = { columns: [8, 4], fields: ["body", "bodyRight"] };
+      const deck = [{ layout: "cover", title: "Cover" }, { layout: "content", title: "Two", body: "x\ny" },
+        { layout: "content", title: "Three", body: P57[0], bodyRight: P57[2], compose: C }];
+      const eq = (a: any, b: any) => JSON.stringify(a) === JSON.stringify(b);
+      A57(eq(applyEditSlide(deck, { insertAfter: 1, layout: "content", title: "New", body: "a", compose: C })[1].compose, C), `(h) a single insert dropped its compose`);
+      A57(eq(applyEditSlide(deck, { insertAfter: 1, insertSlides: [{ layout: "content", title: "New", body: "a", compose: C }] })[1].compose, C), `(h) a batch insert dropped its compose`);
+      let only: any[] = [];
+      try { only = applyEditSlide(deck, { slideNumber: 2, compose: C }); } catch (e: any) { A57(false, `(h) a compose-only patch was refused: ${e && e.message}`); }
+      A57(only.length === 3 && eq(only[1].compose, C) && only[1].body === "x\ny", `(h) a compose-only patch was not applied`);
+      A57(applyEditSlide(deck, { slideNumber: 3, compose: null })[2].compose === undefined, `(h) compose: null left the composition on`);
+      for (const lay of ["case-study", "dark-index", "two-column", "three-column", "content"]) {
+        const moved = applyEditSlide(deck, { slideNumber: 3, layout: lay });
+        A57(eq(moved[2].compose, C), `(h) a patch to ${lay} took the composition off, and the right-hand column with it`);
+        A57(droppedContent(moved[2], 2).length === 0, `(h) a patch to ${lay} drops ${JSON.stringify(droppedContent(moved[2], 2))}`);
+      }
+      const toStat = applyEditSlide(deck, { slideNumber: 3, layout: "stat", stats: [{ value: "26", label: "citations" }] });
+      A57(toStat[2].compose === undefined, `(h) a patch to stat kept a composition stat never reads`);
+      const said = composeTakenBy(deck as any, toStat as any, { slideNumber: 3, layout: "stat" });
+      A57(said.length === 1 && said[0].indexOf("`bodyRight`") >= 0 && said[0].indexOf("do NOT describe") >= 0, `(h) the column a patch to stat took off was not named: ${JSON.stringify(said)}`);
+      A57(composeTakenBy(deck as any, applyEditSlide(deck, { slideNumber: 3, layout: "case-study" }) as any, { slideNumber: 3, layout: "case-study" }).length === 0,
+        `(h) a patch that kept the composition was said to have taken it off`);
+      A57(eq(applyEditSlide(deck, { slideNumber: 3, title: "Renamed" })[2].compose, C), `(h) a title patch took the composition off`);
+      const C2 = { columns: [6, 6], fields: ["body", "bodyRight"] };
+      A57(eq(applyEditSlide(deck, { slideNumber: 3, layout: "stat", stats: [{ value: "1", label: "x" }], compose: C2 })[2].compose, C2), `(h) a layout patch that sends a composition lost it`);
+    }
+
+    /* (i) A COMPOSITION THAT WILL NOT FIT ON ONE SLIDE IS REFUSED BEFORE THE
+     * BUILD, NAMING THE COLUMN — at the deck's density, and only when this
+     * call wrote it. One column is continued like a body, never refused. */
+    {
+      const heavy = [P57[0], P57[1], P57[2], P57[3], P57[4], P57[5], P57[1], P57[3], P57[5], P57[0], P57[2], P57[4], P57[1], P57[3], P57[5], P57[0]].join("\n");
+      const refusedBy = async (slides: any[], asks?: string[]) => {
+        try { await prepareSlidesForBuild({ title: "Refusal check", slides: clone57(slides) }, null, asks); return ""; }
+        catch (e: any) { return e instanceof SlideCallRefusal ? e.message : `not a refusal: ${e && e.message}`; }
+      };
+      const r1 = await refusedBy([{ layout: "cover", title: "Cover" }, { layout: "content", title: "Too much in one column", body: P57[0], bodyRight: heavy, compose: { columns: [8, 4], fields: ["body", "bodyRight"] } }]);
+      A57(r1.indexOf("`bodyRight`") >= 0 && r1.indexOf("slide 2") >= 0 && r1.indexOf("read across") >= 0, `(i) an unfittable bodyRight was not refused by name: ${r1.slice(0, 200) || "(built)"}`);
+      const r2 = await refusedBy([{ layout: "cover", title: "Cover" }, { layout: "content", title: "Too much in the body", body: heavy, bodyRight: P57[0], compose: { columns: [8, 4], fields: ["body", "bodyRight"] } }]);
+      A57(r2.indexOf("`body`") >= 0, `(i) a body too long for one slide beside another column was not refused — a continuation would tear the row: ${r2.slice(0, 160) || "(built)"}`);
+      const forty: string[] = [];
+      for (let i = 0; i < 40; i++) forty.push(`Paragraph ${i + 1}: ${P57[i % 6]}, and the reason it matters to the reader here.`);
+      const r3 = await refusedBy([{ layout: "cover", title: "Cover" }, { layout: "content", title: "Forty", body: forty.join("\n"), bodyRight: P57[0], compose: { columns: [4, 8], fields: ["body", "bodyRight"] } }], ["a deck I will talk through at the pitch"]);
+      A57(r3.indexOf("`body`") >= 0, `(i) forty paragraphs in a 4-unit column at present were not refused: ${r3.slice(0, 160) || "(built)"}`);
+      const r4 = await refusedBy([{ layout: "cover", title: "Cover" }, { layout: "content", title: "One long column", bodyRight: heavy, compose: { columns: [12], fields: ["bodyRight"] } }]);
+      A57(r4 === "", `(i) one long column was refused, when it is continued like a body: ${r4.slice(0, 160)}`);
+      // One paragraph a column, long enough to fit a `read` band and not a
+      // `present` one even a point under the deck's size.
+      const mid = Array.from({ length: 11 }, (_, k) => P57[k % 6]).join("; ") + ".";
+      const s = [{ layout: "cover", title: "Cover" }, { layout: "content", title: "Fits when read", body: mid, bodyRight: mid, compose: { columns: [6, 6], fields: ["body", "bodyRight"] } }] as any[];
+      A57(composedColumnsThatCannotFit(s, "read").length === 0 && composedColumnsThatCannotFit(s, "present").length === 1,
+        `(i) precondition: the column fits at read and not at present — read ${composedColumnsThatCannotFit(s, "read").length}, present ${composedColumnsThatCannotFit(s, "present").length}`);
+      const whenRead = await refusedBy(s, ["make a deck"]), whenPresented = await refusedBy(s, ["a deck I will talk through at the pitch"]);
+      A57(whenRead === "" && whenPresented.indexOf("`bodyRight`") >= 0, `(i) the guard measured at the wrong density: read "${whenRead.slice(0, 80)}"; present "${whenPresented.slice(0, 120)}"`);
+      // ONLY WHAT THIS CALL WROTE. The stored deck carries a composition the
+      // user typed long in the preview; an edit to another slide, a new title
+      // over those columns and a resend of the deck are not refused over it,
+      // and a composition this call writes is.
+      const stored = [{ layout: "cover", title: "Cover" }, { layout: "content", title: "Typed long", body: P57[0], bodyRight: heavy, compose: { columns: [8, 4], fields: ["body", "bodyRight"] } },
+        { layout: "content", title: "Three", body: P57[1] }];
+      const restore = __setStoredDraftReader(async () => ({ draft: { title: "T", slides: clone57(stored) }, couldNotLook: false }));
+      try {
+        const edit = async (input: any) => {
+          try { await prepareSlidesForBuild(input, `c57-${process.pid}`, ["edit the deck"]); return ""; }
+          catch (e: any) { return e instanceof SlideCallRefusal ? e.message : `not a refusal: ${e && e.message}`; }
+        };
+        A57(await edit({ slides: [], editSlide: { slideNumber: 3, title: "Retitled" } }) === "", `(i) an edit to slide 3 was refused over slide 2's stored columns`);
+        A57(await edit({ slides: [], editSlide: { slideNumber: 2, title: "Retitled" } }) === "", `(i) a new title was refused over the stored columns under it`);
+        A57(await edit({ title: "T", slides: clone57(stored) }) === "", `(i) a resend of the stored deck was refused over its stored columns`);
+        A57((await edit({ slides: [], editSlide: { slideNumber: 3, bodyRight: heavy, compose: { columns: [8, 4], fields: ["body", "bodyRight"] } } })).indexOf("`bodyRight`") >= 0,
+          `(i) a composition this call wrote too long for one slide was not refused`);
+      } finally { restore(); }
+    }
+
+    /* (j) THE SCHEMA OFFERS IT ON EVERY ROUTE THAT TAKES A SLIDE, says where
+     * it is drawn in the builder's own list, and says what columns are FOR. */
+    {
+      const params: any = (SLIDES_GEN_OPENAI_TOOL as any).function.parameters.properties;
+      const full = params.slides.items.properties.compose;
+      const routes: [string, any][] = [["slides[]", full], ["insertSlides[]", params.editSlide.properties.insertSlides.items.properties.compose], ["editSlide", params.editSlide.properties.compose]];
+      for (let r = 0; r < routes.length; r++) {
+        const c = routes[r][1];
+        A57(!!c && c.type === "object" && !!c.properties && !!c.properties.columns && !!c.properties.fields, `(j) ${routes[r][0]} does not declare compose`);
+        if (!c) continue;
+        A57(eqArr((c.properties.fields.items.enum || []) as any, COMPOSE_FIELDS as any), `(j) ${routes[r][0]}'s fields are not the builder's ${COMPOSE_FIELDS.join(", ")}`);
+      }
+      const desc = String((full && full.description) || "");
+      A57(COMPOSE_LAYOUTS.every((l) => desc.indexOf(l) >= 0), `(j) the description does not name every layout a composition is drawn on: ${desc}`);
+      A57(desc.indexOf("not one list cut up") >= 0 && desc.indexOf("one slide") >= 0, `(j) the description no longer says columns are for parallel groups that fit one slide: ${desc}`);
+    }
+
+    /* (k) EVERY PARAGRAPH OF EVERY COLUMN IS ADDRESSABLE in the preview, and
+     * the edit panel names the third column and gives it room. */
+    {
+      const deck = toPreviewModel([{ layout: "three-column", title: "Paths", body: `${P57[0]}\n${P57[1]}`, bodyRight: `${P57[2]}\n${P57[3]}`, bodyThird: `${P57[4]}\n${P57[5]}` } as any]);
+      const page = deck.slides[0];
+      for (const f of ["body", "bodyRight", "bodyThird"]) {
+        const n = page.elements.filter((e) => e.kind === "text" && e.path && e.path.length === 1 && e.path[0] === f).length;
+        A57(n === 2, `(k) ${n} of \`${f}\`'s two paragraph boxes carry its path`);
+      }
+      const fields = editableFields({ slides: [{ layout: "three-column", title: "Paths", body: `${P57[0]}\n${P57[1]}`, bodyRight: P57[2], bodyThird: `${P57[4]}\n${P57[5]}` }], preview: deck } as any, 0);
+      const third = fields.find((x) => x.path.length === 1 && x.path[0] === "bodyThird");
+      A57(!!third && third.label === "Third column" && third.multiline, `(k) the edit panel offers the third column as ${JSON.stringify(third && { label: third.label, multiline: third.multiline })}`);
+    }
+
+    /* (l) ONE RULER, AND THE RIGHT ONE: a written composition's columns are
+     * wrapped on words at every measure with their **labels** in the bold
+     * face — by the builder, and by the validator reading what it built. */
+    {
+      A57(same57(boldRangesOf("**On the transition:** the report"), [{ start: 0, end: 18 }]), `(l) boldRangesOf read ${JSON.stringify(boldRangesOf("**On the transition:** the report"))}`);
+      // A label that fits the measure in the light face and not in the bold:
+      // grow the tail until the plain wrap stays on one line and the bold
+      // one does not.
+      const W = spanBand([6, 6]).width[0];
+      let para = "";
+      for (let k = 1; k < 30 && !para; k++) {
+        for (let L = 1; L <= 12 && !para; L++) {
+          const tail = Array.from({ length: k }, (_, i) => ["the", "report", "is", "named", "in", "search", "answers"][i % 7]).join(" ");
+          const p = `**On the transition as a whole of the programme:** ${tail} ${"a".repeat(L)}`;
+          if (raggedLines(p, W, 12, "Roboto") === 1 && raggedLines(p, W, 12, "Roboto", 0, boldRangesOf(p)) === 2) para = p;
+        }
+      }
+      A57(!!para, `(l) precondition: no paragraph wraps only when its label is measured bold at ${W}pt`);
+      if (para) {
+        // Beside paragraphs that are not single lines, so the row is drawn as
+        // written rather than handed back to one list.
+        const s: any = { layout: "content", title: "Labels", body: `${para}\n${L57(1)}`, bodyRight: L57(4), compose: { columns: [6, 6], fields: ["body", "bodyRight"] }, density: "present" };
+        A57(!!compositionOf(s, "content", 1), `(l) precondition: the label row was not drawn as a composition`);
+        const reqs = buildSlideRequests(s, 1, "l57") as any[];
+        const [, h] = yh(boxOf(reqs, "body"));
+        A57(Math.abs(h - drawnTextHeight(2, 12)) < 0.01, `(l) the bold-label paragraph is boxed ${h.toFixed(2)}pt, not two lines (${drawnTextHeight(2, 12).toFixed(2)})`);
+        // Built one line short, as the count model would have built it — the
+        // box a line shorter and everything under it a line higher: the
+        // validator reads the bold label and reports the second line.
+        const up = drawnTextHeight(2, 12) - drawnTextHeight(1, 12);
+        const short = reqs.map((r) => {
+          if (!r.createShape) return r;
+          const oid = String(r.createShape.objectId);
+          const ep = r.createShape.elementProperties;
+          if (oid.endsWith("_body")) return { createShape: { ...r.createShape, elementProperties: { ...ep, size: { ...ep.size, height: { magnitude: drawnTextHeight(1, 12), unit: "PT" } } } } };
+          if (/_body(dot)?[1-9]$/.test(oid)) return { createShape: { ...r.createShape, elementProperties: { ...ep, transform: { ...ep.transform, translateY: ep.transform.translateY - up } } } };
+          return r;
+        });
+        const page = previewSlideFrom(s, short);
+        A57(overrunFaults(page, s, 1).faults.some((f) => /`body`/.test(f.note)), `(l) the validator did not see a bold label's second line run out of a one-line box`);
+        // And off the foot of the page, the same ruler: the label paragraph set
+        // so that one line of ink ends on the page and two do not.
+        const el = page.elements.find((e) => e.kind === "text" && e.path && e.path[0] === "body" && String(e.text).indexOf("On the transition") === 0);
+        if (el) {
+          const foot: any = { ...page, elements: [{ ...el, y: CANVAS.height - 3.6 - 12 * 1.38 * 1.5, h: 10 }] };
+          A57(offPageFaults(foot, s, 1).faults.length === 1, `(l) the off-page sweep read a bold label's second line as on the page`);
+        } else A57(false, `(l) precondition: the label paragraph's box was not found`);
+      }
+    }
+
+    /* (m) ONE RHYTHM ACROSS THE ROW, AND ONE TREATMENT: beside a full column a
+     * short one keeps the full one's paragraph break, and a column of one
+     * paragraph beside lists carries its disc — on a written composition. */
+    {
+      // Two-sentence paragraphs, so the rule about one-line points has
+      // nothing to say, and six of them: a column with no slack at `read`.
+      const full = [L57(0), L57(1), L57(2), L57(3), L57(4), L57(5)].join("\n");
+      const row = (body: string) => buildSlideRequests({ layout: "content", title: "Rhythm", body, bodyRight: `${L57(4)}\n${L57(5)}`,
+        compose: { columns: [6, 6], fields: ["body", "bodyRight"] }, density: "read" } as any, 1, "m57") as any[];
+      const gapOf = (reqs: any[], key: string) => { const [y0, h0] = yh(boxOf(reqs, key)); const [y1] = yh(boxOf(reqs, `${key}1`)); return y1 - (y0 + h0); };
+      const tight = row(full), loose = row(`${L57(0)}\n${L57(1)}`);
+      A57(gapOf(tight, "body") < gapOf(loose, "bodyRight") - 0.5, `(m) precondition: the full column is not tighter than a loose one — ${gapOf(tight, "body").toFixed(2)} against ${gapOf(loose, "bodyRight").toFixed(2)}`);
+      A57(Math.abs(gapOf(tight, "body") - gapOf(tight, "bodyRight")) < 1e-6, `(m) the row is set on two beats: body ${gapOf(tight, "body").toFixed(2)}, bodyRight ${gapOf(tight, "bodyRight").toFixed(2)}`);
+      const lone = buildSlideRequests({ layout: "content", title: "Treatment", body: `${L57(0)}\n${L57(1)}`, bodyRight: L57(2),
+        compose: { columns: [6, 6], fields: ["body", "bodyRight"] } } as any, 1, "m57") as any[];
+      A57(!!boxOf(lone, "bodyRightdot0"), `(m) a one-paragraph column beside a list is set without its disc`);
+      const three = buildSlideRequests({ layout: "three-column", title: "Treatment", body: `${P57[0]}\n${P57[1]}`, bodyRight: P57[2] } as any, 1, "m57") as any[];
+      A57(!boxOf(three, "bodyRightdot0"), `(m) three-column's own one-paragraph column gained a disc its archetype never drew`);
+    }
+
+    /* (n) WHAT A COLUMN HAS TO HOLD IS ITS WIDEST UNBREAKABLE RUN — a word,
+     * or a word's piece between hyphens, where a renderer breaks it. A report
+     * link hyphenated the usual way composes at the deck's size, its lines
+     * counted where they break; a run no size the row may take holds is
+     * refused by name, and, built past the guard, drawn as the archetype over
+     * the same words, which the slide says; a run one point under the deck's
+     * size holds sets the row there, and says so. The right-edge sweep reports
+     * real overhang, and not the ruler's own margin. */
+    {
+      A57(same57(breakRuns("state-of-ai"), ["state-", "of-", "ai"]) && same57(breakRuns("markets-2026-edition"), ["markets-2026-", "edition"])
+        && same57(breakRuns("-5"), ["-5"]) && same57(breakRuns("a\u2014b"), ["a\u2014", "b"]) && same57(breakRuns("plain"), ["plain"]),
+        `(n) breakRuns cut ${JSON.stringify([breakRuns("state-of-ai"), breakRuns("markets-2026-edition"), breakRuns("-5")])}`);
+      const link = "https://www.example.com/insights/state-of-ai-search-visibility-in-industrial-b2b-markets-2026-edition";
+      const unbroken = "https://www.exampleorganisationreports.org/visibilityauditfull2026";
+      for (let pi = 0; pi < 2; pi++) {
+        const at: Density = pi ? "present" : "read";
+        const brand = at === "present" ? 12 : 10;
+        // THE HYPHENATED LINK, in half the band.
+        const h: any = { layout: "content", title: "A report link", body: `Full report: ${link}\n${L57(0)}`, bodyRight: L57(1),
+          compose: { columns: [6, 6], fields: ["body", "bodyRight"] }, density: at };
+        A57(composedColumnsThatCannotFit([{ layout: "cover", title: "C" }, h], at).length === 0, `(n) ${at}: a hyphenated report link was refused`);
+        const hc = compositionOf(h, "content", 1);
+        A57(!!hc && hc.written, `(n) ${at}: a hyphenated report link was not drawn as its composition`);
+        const hr = buildSlideRequests(h, 1, "n57") as any[];
+        const hs = hr.find((r) => r.updateTextStyle && /_body$/.test(String(r.updateTextStyle.objectId)) && r.updateTextStyle.style.fontSize);
+        A57(!!hs && hs.updateTextStyle.style.fontSize.magnitude === brand, `(n) ${at}: a hyphenated report link set the row at ${hs && hs.updateTextStyle.style.fontSize.magnitude}pt, not ${brand}pt`);
+        A57(wideWordFaults(previewSlideFrom(h, hr), h, 1).faults.length === 0, `(n) ${at}: the right-edge sweep reported a hyphenated link that breaks inside its column`);
+        // BOXED FOR THE LINES IT BREAKS ONTO, which is at least its ink over
+        // its measure — summed here from the paragraph's own runs, not asked
+        // of the ruler the builder boxed it with. Counted as one word, the
+        // link was one overhanging line under "Full report:", and the
+        // paragraph beneath it was drawn through its second line.
+        let ink = 0;
+        for (const w of `Full report: ${link}`.split(" ")) for (const piece of breakRuns(w)) ink += widestWordPt(piece, brand, "Roboto").width;
+        const atLeast = Math.ceil(ink / ((hc ? hc.regions[0].width : 0) - TEXT_INSET_X));
+        const [, bh] = yh(boxOf(hr, "body"));
+        A57(bh >= drawnTextHeight(atLeast, brand) - 0.01 && (at === "read" || atLeast >= 3),
+          `(n) ${at}: the link is boxed ${bh.toFixed(1)}pt, under the ${atLeast} lines its ink needs at the least`);
+        // A RUN NO SIZE HOLDS, in a third of it.
+        const u: any = { layout: "content", title: "Links", body: `See ${unbroken}`, bodyRight: L57(1), bodyThird: L57(4),
+          compose: { columns: [4, 4, 4], fields: ["body", "bodyRight", "bodyThird"] }, density: at };
+        const cr = composedColumnsThatCannotFit([{ layout: "cover", title: "C" }, u], at);
+        A57(cr.length === 1 && cr[0].fields.indexOf("body") >= 0 && cr[0].wide.length === 1, `(n) ${at}: a run wider than its column was not refused by name — ${JSON.stringify(cr)}`);
+        const notes: string[] = [];
+        const ur = buildSlideRequests(u, 1, "n57", notes) as any[];
+        const asList = buildSlideRequests({ layout: "content", title: "Links", body: `See ${unbroken}\n${L57(1)}\n${L57(4)}`, density: at } as any, 1, "n57") as any[];
+        A57(sameList57(ur, asList) && notes.some((x) => x.indexOf("`compose` was not used") >= 0 && x.indexOf("wider than its column") >= 0),
+          `(n) ${at}: built past the guard, it was not drawn as the archetype over its words, with the reason — ${notes.join(" / ")}`);
+        // A RUN ONE POINT UNDER THE DECK HOLDS (at present: 12pt no, 11pt yes).
+        if (at === "present") {
+          const mid = "https://www.example.org/reports/vi";
+          const t: any = { ...u, body: mid };
+          A57(composedColumnsThatCannotFit([{ layout: "cover", title: "C" }, t], at).length === 0, `(n) a run 11pt holds was refused`);
+          const tn: string[] = [];
+          const tr = buildSlideRequests(t, 1, "n57", tn) as any[];
+          const sz = tr.find((r) => r.updateTextStyle && /_body$/.test(String(r.updateTextStyle.objectId)) && r.updateTextStyle.style.fontSize);
+          A57(!!sz && sz.updateTextStyle.style.fontSize.magnitude === 11 && wideWordFaults(previewSlideFrom(t, tr), t, 1).faults.length === 0
+            && tn.some((x) => x.indexOf("set at 11pt, under the deck's 12pt") >= 0),
+            `(n) the row did not step to 11pt for a run 11pt holds, or ran it past its column, or did not say so: ${sz && sz.updateTextStyle.style.fontSize.magnitude}pt — ${tn.join(" / ")}`);
+        }
+        // AND THE SWEEP ITSELF, relayed by validateDeck on a real overhang: a
+        // photo rail's narrow column holding a run wider than itself.
+        const rail: any = { layout: "photo-rail", title: "Photo rail with a link", body: `${P57[0]}\n${P57[1]}`,
+          bodyRight: `${P57[2]}\nSee https://www.example.com/insights/infrastructure-transition-monitor-2026/methodology/appendix-b`, density: at };
+        A57(validateDeck([{ layout: "cover", title: "C", density: at } as any, rail], "n57").faults.some((f) => f.note.indexOf("holds a word wider than its box") >= 0),
+          `(n) ${at}: validateDeck does not relay the right-edge sweep`);
+      }
+      // The builder's margin is not ink: a word the glyph tables put within
+      // their 3% of the box's inner width is inside it.
+      const w57 = "https://www.example.org/reports/measured";
+      const drawnW = widestWordPt(w57, 12, "Roboto").width;
+      const lone57: any = { elements: [{ kind: "text", x: 24, y: 160, w: drawnW / 1.015 + TEXT_INSET_X, h: 20, text: w57, size: 12, font: "Roboto", weight: 300, path: ["bodyRight"] }] };
+      A57(wideWordFaults(lone57, { layout: "content" } as any, 1).faults.length === 0, `(n) a word inside its box by the ruler's own margin was reported past it`);
+      lone57.elements[0].w = drawnW / 1.03 - 2 + TEXT_INSET_X;
+      A57(wideWordFaults(lone57, { layout: "content" } as any, 1).faults.length === 1, `(n) precondition: a word 2pt past its box was not reported`);
+      // And a hyphenated link on an archetype is not reported: Chrome breaks
+      // it inside its box.
+      const arch57: any = { layout: "content", title: "Archetype", body: `${P57[0]}\nSource: ${link}\n${P57[1]}` };
+      A57(validateDeck([{ layout: "cover", title: "C" } as any, arch57], "n57").faults.every((f) => f.note.indexOf("wider than its box") < 0),
+        `(n) the right-edge sweep reported a hyphenated link on a content slide, which breaks inside its box`);
+    }
+
+    /* (o) A COMPOSITION IS DRAWN ONLY WHERE IT IS AT LEAST AS GOOD AS THE
+     * LAYOUT IT REPLACES. Where it is not, the archetype draws the same words
+     * — its columns as one list, in their order — request for request, and
+     * the slide says why. Each case is one of the design review's pairs that
+     * read worse than its archetype, reduced to what made it worse. */
+    {
+      const cut = (a: number, b: number, at: Density, sub: boolean) => ({ layout: "content", title: "Cut", density: at,
+        body: Array.from({ length: a }, (_, i) => L57(i)).join("\n"), bodyRight: Array.from({ length: b }, (_, i) => L57(i + 3)).join("\n"),
+        compose: { columns: [6, 6], fields: ["body", "bodyRight"] }, ...(sub ? { subtitle: "A standfirst over the columns that runs to about a line of text on the page." } : {}) } as any);
+      const asList = (x: any) => ({ ...x, body: [x.body, x.bodyRight, x.bodyThird].filter((v: any) => v && String(v).trim()).join("\n"), bodyRight: undefined, bodyThird: undefined, compose: undefined });
+      const drawnAs = (x: any, tag: string, why: string) => {
+        const notes: string[] = [];
+        const got = buildSlideRequests(x, 1, "o57", notes);
+        A57(sameList57(got, buildSlideRequests(asList(x), 1, "o57")), `(o) ${tag}: not drawn as the archetype over its columns' words`);
+        // AND EACH PARAGRAPH IS STILL ITS OWN FIELD'S, to edit in the preview.
+        const page = previewSlideFrom(x, got as any[]);
+        const fromRight = page.elements.filter((e) => e.kind === "text" && e.path && e.path[0] === "bodyRight").map((e) => String(e.text).trim());
+        const rightParas = String(x.bodyRight || "").split("\n").filter((v: string) => v.trim()).map((v: string) => v.replace(/\*\*/g, "").trim());
+        A57(same57(fromRight, rightParas), `(o) ${tag}: the right-hand column's paragraphs are not boxes of \`bodyRight\` — ${JSON.stringify(fromRight)}`);
+        const panel = editableFields({ slides: [x], preview: { width: CANVAS.width, height: CANVAS.height, slides: [page] } } as any, 0);
+        A57(panel.some((f) => f.path.length === 1 && f.path[0] === "bodyRight"), `(o) ${tag}: the edit panel offers no right-hand column: ${JSON.stringify(panel.map((f) => f.label))}`);
+        A57(notes.some((n) => n.indexOf("`compose` was not used") >= 0 && n.indexOf(why) >= 0), `(o) ${tag}: declined without saying "${why}" — ${notes.join(" / ")}`);
+      };
+      // ONE-LINE POINTS CUT INTO COLUMNS ("Try this tomorrow", 2 + 2): each
+      // point wraps in its column and nothing is grouped.
+      const pts = ["**Everyone:** ask EngineAI to brief you on one client before your next call with them.",
+        "**Account managers:** ask for a contracts summary or pipeline check instead of pulling it by hand.",
+        "**Anyone writing client copy:** run a draft through Content Optimizer before it goes out.",
+        "**Anyone with a recurring report:** ask EngineAI to set it up as a scheduled prompt."];
+      for (let pi = 0; pi < 2; pi++) {
+        const at: Density = pi ? "present" : "read";
+        const x: any = { layout: "content", title: "Try this tomorrow", subtitle: "One thing each.", body: pts.slice(0, 2).join("\n"), bodyRight: pts.slice(2).join("\n"),
+          compose: { columns: [6, 6], fields: ["body", "bodyRight"] }, note: "Why this matters: a habit starts with one win.", density: at };
+        drawnAs(x, `${at} four one-line points cut 2 + 2`, "one line each");
+        drawnAs({ ...x, compose: { columns: [4, 4, 4], fields: ["body", "bodyRight", "bodyThird"] }, body: pts.slice(0, 2).join("\n"), bodyRight: pts[2], bodyThird: pts[3] },
+          `${at} the same cut 2 / 1 / 1`, "one line each");
+        // ONE A COLUMN IS A ROW OF UNITS, and is drawn as written.
+        const units = { ...x, body: pts[0], bodyRight: pts[1] };
+        const uc = compositionOf(units, "content", 1);
+        A57(!!uc && uc.written, `(o) ${at}: two one-line points one a column — a row of units — were not drawn as written`);
+      }
+      // A LIST CUT INTO COLUMNS THAT FITS ONLY UNDER THE DECK'S SIZE, where
+      // one list fits at it (the knowledge-graph pair at `read`).
+      drawnAs(cut(1, 6, "read", true), "read a cut list that fits only at 9pt", "under the deck's 10pt");
+      // ...and where one list would need a second slide, it is drawn, a point
+      // under, and says so.
+      {
+        const x = cut(1, 3, "present", true);
+        const notes: string[] = [];
+        const got = buildSlideRequests(x, 1, "o57", notes) as any[];
+        const c = compositionOf(x, "content", 1);
+        const sz = got.find((r) => r.updateTextStyle && /_body$/.test(String(r.updateTextStyle.objectId)) && r.updateTextStyle.style.fontSize);
+        A57(!!c && c.written && !!sz && sz.updateTextStyle.style.fontSize.magnitude === 11 && notes.some((n) => n.indexOf("set at 11pt, under the deck's 12pt") >= 0),
+          `(o) present: a cut list that saves a slide at 11pt was not drawn there with its note — ${notes.join(" / ")}`);
+        A57(splitOverflowingSlides([{ ...asList(x) }]).length > 1, `(o) precondition: one list of the same words fits one slide at present`);
+      }
+      // NEVER MORE THAN A POINT UNDER: one that needs 10pt at `present` is
+      // refused by the guard at 11pt.
+      {
+        const cr = composedColumnsThatCannotFit([{ layout: "cover", title: "C" }, cut(1, 4, "present", true)], "present");
+        A57(cr.length === 1 && cr[0].size === 11, `(o) present: a row that needs two points under the deck was ${cr.length ? `refused at ${cr[0].size}pt` : "passed"}`);
+      }
+      // UNEQUAL SPANS THAT BUY NOTHING: five short items in the wide column of
+      // a two-column slide, whose divider stood at two-thirds across an empty
+      // middle — drawn as the two-column slide, and said.
+      {
+        const items = ["Keyword research", "Content briefs", "Two long-form pieces (up to 1,200 words)", "Four social posts", "Monthly report"];
+        const x: any = { layout: "two-column", title: "Two phases", body: items.join("\n"), bodyRight: `${P57[2]}\n${P57[4]}`, compose: { columns: [8, 4], fields: ["body", "bodyRight"] } };
+        const notes: string[] = [];
+        const got = buildSlideRequests(x, 1, "o57", notes);
+        A57(same57(got, buildSlideRequests({ ...x, compose: undefined }, 1, "o57")) && notes.some((n) => n.indexOf("were drawn as [6,6]") >= 0),
+          `(o) a two-column [8, 4] whose wide column needs no width was not drawn as the two-column slide, with the correction said — ${notes.join(" / ")}`);
+        // Where the wide column uses its width, the spans stand.
+        const wide: any = { layout: "content", title: "Wide", body: `${L57(1)} ${L57(4)}`, bodyRight: P57[2], compose: { columns: [8, 4], fields: ["body", "bodyRight"] } };
+        const wc = compositionOf(wide, "content", 1);
+        A57(!!wc && wc.written && same57(wc.spans, [8, 4]), `(o) an [8, 4] whose wide column stands lower at six units was redrawn as ${JSON.stringify(wc && wc.spans)}`);
+      }
+    }
+
+    /* (p) THE GUARD SKIPS ONLY THE SAME STORED SLIDE, UNCHANGED IN ANYTHING A
+     * VERDICT IS DECIDED ON: at its own place in the deck, or where an
+     * insertion before it moved it; its set-aside fields included; its
+     * composition read the same whatever order jsonb gave its keys. */
+    {
+      const heavy = [P57[0], P57[1], P57[2], P57[3], P57[4], P57[5], P57[1], P57[3], P57[5], P57[0], P57[2], P57[4], P57[1], P57[3], P57[5], P57[0]].join("\n");
+      const live: any = { layout: "content", title: "Two sessions", body: `${L57(0)} ${L57(1)}`, bodyRight: heavy, compose: { columns: [6, 6], fields: ["body", "bodyRight"] } };
+      const cover = { layout: "cover", title: "Cover" };
+      const withStored = async (stored: any[], input: any) => {
+        const restore = __setStoredDraftReader(async () => ({ draft: { title: "T", slides: clone57(stored) }, couldNotLook: false }));
+        try { await prepareSlidesForBuild(clone57(input), `p57-${process.pid}-${Math.random()}`, ["edit the deck"]); return ""; }
+        catch (e: any) { return e instanceof SlideCallRefusal ? e.message : `not a refusal: ${e && e.message}`; }
+        finally { restore(); }
+      };
+      A57(composedColumnsThatCannotFit([cover, live], "read").length === 1, `(p) precondition: the live composition fits`);
+      // A composition set aside for a picture was never judged; the resend
+      // that takes the picture off brings it in, and it is judged.
+      const pictured = { ...live, image: { query: "harbour cranes" }, resolvedImage: { ...PHOTO57, credit: "Photo: A Person / Unsplash" } };
+      const bare = clone57([cover, pictured]); delete bare[1].image; delete bare[1].resolvedImage;
+      A57((await withStored([cover, pictured], { title: "T", slides: bare })).indexOf("`bodyRight`") >= 0, `(p) a resend that takes the picture off a set-aside composition was not judged`);
+      const paneled = { ...live, panel: { title: "At a glance", items: ["One", "Two"] } };
+      const unpaneled = clone57([cover, paneled]); delete unpaneled[1].panel;
+      A57((await withStored([cover, paneled], { title: "T", slides: unpaneled })).indexOf("`bodyRight`") >= 0, `(p) a resend that takes the panel off a set-aside composition was not judged`);
+      // BY PLACE: slide 2's columns copied onto slide 3 are this call's.
+      const storedB = [cover, { ...live, compose: { fields: ["body", "bodyRight"], columns: [6, 6] } }, { layout: "content", title: "Three", body: P57[1] }];
+      A57((await withStored(storedB, { slides: [], editSlide: { slideNumber: 3, body: live.body, bodyRight: heavy, compose: { columns: [6, 6], fields: ["body", "bodyRight"] } } })).indexOf("`bodyRight`") >= 0,
+        `(p) a copy of a stored slide's columns patched onto another slide was not judged`);
+      // KEYS IN EITHER ORDER, and an insertion before the stored slide.
+      const resend = clone57(storedB); resend[2].title = "Three, retitled"; resend[1].compose = { columns: [6, 6], fields: ["body", "bodyRight"] };
+      A57(await withStored(storedB, { title: "T", slides: resend }) === "", `(p) a resend retitling slide 3 was refused over slide 2's stored columns, sent in the schema's key order`);
+      A57(await withStored(storedB, { slides: [], editSlide: { insertAfter: 1, insertSlides: [{ layout: "content", title: "New", body: P57[2] }] } }) === "",
+        `(p) an insertion before a stored composition was refused over it`);
+    }
+
+    /* (q) A WRITTEN COMPOSITION'S STANDFIRST IS BOXED FOR THE LINES IT DRAWS,
+     * on words, as its columns are — the count model boxed a two-line
+     * standfirst on the page's 671pt measure for three and left a dead band
+     * over the columns — and the validator reads it on the same ruler, so it
+     * is not reported running into the columns it sits above. */
+    {
+      const stand = "A model reads an enormous amount of text once, during training, and keeps a statistical impression of what goes with what - not facts you can edit, but patterns that only repetition and consistency can shift.";
+      for (let pi = 0; pi < 2; pi++) {
+        const at: Density = pi ? "present" : "read";
+        const q: any = { layout: "content", title: "Training data", subtitle: stand, body: L57(1), bodyRight: L57(4),
+          compose: { columns: [6, 6], fields: ["body", "bodyRight"] }, note: "Why this matters: it is the page.", density: at };
+        const qc = compositionOf(q, "content", 1);
+        A57(!!qc && qc.written, `(q) ${at}: precondition — the row was not drawn as written`);
+        const size = at === "present" ? 14 : 11.5;
+        const words = raggedLines(stand, GRID.contentWidth, size, "Roboto", 0, [], true);
+        A57(words < estimateLines(stand, GRID.contentWidth, size), `(q) ${at}: precondition — the count model does not overcount this standfirst`);
+        const qr = buildSlideRequests(q, 1, "q57") as any[];
+        const [sy, sh] = yh(boxOf(qr, "sub")), [by] = yh(boxOf(qr, "body"));
+        A57(Math.abs(sh - drawnTextHeight(words, size)) < 0.01 && Math.abs(by - (sy + sh + 12)) < 0.01,
+          `(q) ${at}: the standfirst is boxed ${sh.toFixed(1)}pt for ${words} lines (${drawnTextHeight(words, size).toFixed(1)}pt), the columns at ${by.toFixed(1)}`);
+        const g = validateDeck([{ layout: "cover", title: "C", density: at } as any, q], "q57");
+        A57(!g.faults.some((f) => /`subtitle`/.test(f.note)), `(q) ${at}: the validator reads the standfirst on another ruler — ${g.faults.map((f) => f.note.slice(0, 100)).join(" / ")}`);
+      }
+    }
+  } catch (e: any) {
+    fail(`57 threw before finishing: ${e && e.stack ? e.stack : e}`);
+  }
+  if (failures === before57) {
+    pass(`a composition is solved on the page's own grid, is its layout when it restates it, draws every field it is given in the column it was given`
+      + ` with no fault its archetype lacks (${swept57.join("; ")}), is set aside where it would drop something, is refused where it will not fit one slide,`
+      + ` is drawn as its archetype over the same words wherever it is worse than it, is never set more than a point under the deck,`
+      + ` and is carried by every edit route`);
+  }
+  // MUTATION LOG, check 57 (2026-09-24; a copy of the worktree, never the
+  // shared tree). Fifty, each run against this whole script; the line says
+  // what went red, or that nothing did.
+  //  - KILLED (c): a composition that restates its layout drawn by the
+  //    composer — [12] on content, [6, 6] on two-column no longer the layout.
+  //  - KILLED (a): a named field with no words given a column; a column with
+  //    no field fed by the field before it (drawn twice); spans handed out by
+  //    kept index rather than by column; the span floor lowered to 1; a field
+  //    that carries words and is not named, not appended.
+  //  - KILLED (b): one column the archetype does not draw set across the
+  //    whole band; the title set on 540pt under a row of columns; the spans
+  //    mirrored; ARCHETYPE_COLUMNS saying content draws bodyRight (and (c)).
+  //  - KILLED (i): the guard excusing a body only a continuation can hold;
+  //    refusing compositions this call did not write; refusing one long
+  //    column that a continuation carries; measuring at `read` whatever the
+  //    deck; the measure cap removed; the guard removed. (These fifty ran on
+  //    the round before the one below; splitComposition, the continuation's
+  //    freeze and its no-shrink rule, which three of them killed, are gone.)
+  //  - KILLED (f): written columns on the count model at a wide measure —
+  //    32 faults at `read` its archetype does not have; the ladder blind to a
+  //    word wider than its column, 29; a corrected composition handed back
+  //    to its archetype, 1,012 paragraphs drawn nowhere (the absolute arm —
+  //    against the archetype alone it is invisible, since the archetype
+  //    cannot lose what it never drew); the fit ladder disabled, the listed
+  //    disc and three-column's lead-in dropped (the preconditions, and 18 in
+  //    check 50 for the lead-in).
+  //  - KILLED (l): raggedLines ignoring bold runs; the validator reading a
+  //    written composition on the narrow-only ruler.
+  //  - KILLED (l), SURVIVED ITS FIRST VERSION: the off-page sweep reading
+  //    columns on the count model. Nothing in the sweep reaches the foot of
+  //    the page; (l) now sets a bold label there by hand.
+  //  - KILLED (m), SURVIVED ITS FIRST VERSION: the shared rhythm removed.
+  //    At `read` the full column still had slack, so both lists sat at the
+  //    ceiling on their own; (m) now asserts the full column is tighter.
+  //  - KILLED (n): validateDeck without the right-edge sweep.
+  //  - KILLED (n), SURVIVED ITS FIRST VERSION: the right-edge sweep reading
+  //    the builder's 3% margin as ink. No stored or generated column sits in
+  //    that 3%; (n) now puts a word there.
+  //  - KILLED (c): two-column's hairline not drawn on a recomposed
+  //    two-column; a correction drawn without a word.
+  //  - KILLED (d): droppedContent walking a composition's subtree as words;
+  //    an archetype's continuation keeping the compose it was drawn without;
+  //    the set-aside guard removed (41 here, and 1,380 in
+  //    verify-compose-corpus); a set-aside composition drawn without a word.
+  //  - KILLED (e)(f): the prototype's emitter, a paragraph walker that clamps
+  //    and stops (57 here, 166 in verify-compose-corpus).
+  //  - KILLED (h): a layout patch between two composing layouts taking the
+  //    composition off; composeTakenBy silent; a compose-only patch refused;
+  //    compose left off the single insert's whitelist.
+  //  - KILLED (k): the edit panel's third column unnamed; the column paths
+  //    removed from pathOf (and (f)).
+  //  - KILLED (a)(c): spanBand's equal case by unit arithmetic.
+  //  - KILLED (f2): the standfirst's height clamp removed.
+  //  - KILLED (g): the off-page sweep dropped from validateDeck; measuring the
+  //    box rather than the ink (and 46f).
+  //  - SURVIVED this check, KILLED by 48a2: bulletBlock's height clamp
+  //    removed. A finding, not an omission: the guard, the ladder and the
+  //    column cut keep every composed box inside its band.
+  //  - SURVIVED: the ladder asked at the break of boxes that merely touch.
+  //    The paragraph break's floor is 0.25 of a line less the inset, which is
+  //    zero at 10pt and 12pt — the two densities' body sizes — and -0.34pt and
+  //    -0.7pt at 9pt and 8pt; the rulers differ only on the last two rungs,
+  //    by under a line over a whole list, and in the direction that steps
+  //    down or refuses a list that would have fitted, never the other way. A
+  //    search over 17 x 24 generated lists found none in that window.
+  //
+  // AND THE ROUND THAT HANDS A WORSE COMPOSITION BACK TO ITS ARCHETYPE
+  // (2026-09-24, s6; the same copy discipline). Twenty-seven, each against
+  // this whole script, two also against verify-compose-corpus:
+  //  - KILLED (o)(f): one-line points cut into columns drawn as written;
+  //    a cut list that fits only under the deck's size drawn as written; a
+  //    row set a point under the deck saying nothing (and (n)).
+  //  - KILLED (o)(n): a row of units held to the list rules — two one-line
+  //    points one a column refused their columns.
+  //  - KILLED (f)(f3)(o): the written ladder allowed four points under the
+  //    deck again — 239 columns at `read` and 717 at `present`.
+  //  - KILLED (o)(f): spans that buy nothing kept; unequal spans evened
+  //    without measuring (and (b)(c)).
+  //  - KILLED (f)(f3), 74: a composition that will not fit drawn as written.
+  //  - KILLED (f)(f3): a declined composition's cut pieces keeping compose;
+  //    the cut taken anywhere rather than between columns; the join in field
+  //    order rather than the composition's; a written composition cut by the
+  //    body splitter; a lone field dropped rather than joined (and (b)(c)).
+  //  - KILLED (o)(b): joined paragraphs boxed under `body`'s name — the
+  //    edit panel offered no right-hand column.
+  //  - KILLED (p): the guard's skip position-free, blind to the set-aside
+  //    fields, key-order sensitive, or blind to an insertion's shift.
+  //  - KILLED (n): the widest run the whole word again; breakRuns breaking
+  //    before a number.
+  //  - KILLED (n), SURVIVED ITS FIRST TWO VERSIONS: a written column's lines
+  //    counted on whole words. The first bound came from the ruler under
+  //    test, and the second sat on a paragraph alone in its column, whose box
+  //    is the band whatever its lines; the bound is now summed from the
+  //    link's own runs, under a paragraph that has one below it.
+  //  - KILLED (q) and (f): a written standfirst counted on the count model;
+  //    the validator reading it so.
+  //  - KILLED (f): composeDecision ignoring the slide's density stamp.
+  //  - KILLED (f), and 227 in verify-compose-corpus: the builder drawing the
+  //    plain archetype for a declined composition, its join not applied; the
+  //    join keeping only the first column, 258 across the two.
+  //  - SURVIVED: bodyBox clearing PROBING rather than putting it back. No
+  //    probe is ever running when a composition is measured — the splitter
+  //    probes the joined slide, which carries no compose, and a composition
+  //    it probes is one whose verdict measures nothing (set aside, or
+  //    restated) — so the nesting the restore guards is unreachable today;
+  //    it is kept because the day it is not, a probe ending another probe
+  //    early splits slides that fit.
   console.log(failures ? `\n${failures} FAILURE(S)\n` : `\nAll checks passed.\n`);
   // 2, not 1, when a self-test detector carried nothing (check 40 b): the
   // check did not fail, it stopped measuring.

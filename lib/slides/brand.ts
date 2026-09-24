@@ -525,6 +525,100 @@ export function columnBand(
   return { x, width, gutter };
 }
 
+/* ─────────────── The composition grid ─────────────── */
+
+/** A COMPOSITION IS WRITTEN AGAINST TWELVE UNITS, and this is the whole of
+ *  what the model is allowed to say about where anything goes: how many
+ *  columns, and how many of the twelve each one takes. No point value
+ *  reaches the solver from outside.
+ *
+ *  THE GRID IS THE PAGE'S OWN, NOT A NEW ONE. The design this came from set
+ *  its twelve units over the full content measure with an 18pt gutter, and
+ *  measured, that moved every column the deck already draws: a three-column
+ *  slide composed as [4, 4, 4] came out 15.6pt wider per column than the
+ *  three-column slide beside it, and [6, 6] was not the two-column pair. So
+ *  the units are laid over the band `columnBand` already partitions, with its
+ *  gutter — 41.04, read off the inherited pair — and an equal partition is
+ *  not merely close to columnBand(n), it IS columnBand(n), to the float. That
+ *  is what lets `three-column` be a composition rather than a second
+ *  implementation of one, without moving any stored slide drawn on it.
+ *
+ *  The gutter is a legibility choice, and it is not a collision constraint:
+ *  the hung dot leaves its own box by SLIDES_TEXT_INSET.x − HUNG_DOT.offsetX
+ *  = 4.2pt, so any gutter above that keeps it out of the neighbour's. 41.04
+ *  is simply the one this deck already prints.
+ *
+ *  A SPAN OF FOUR IS THE NARROWEST PROSE COLUMN, 196.08pt — the column
+ *  `three-column` has always drawn. Three units is 136.8pt, 23 characters of
+ *  12pt Roboto a line, and measured at `present` over the stored decks, 124
+ *  of their 1,203 distinct paragraphs were taller than the whole band on
+ *  their own at that width: a column no ladder and no split can hold. At
+ *  four units it is 11. */
+export const COMPOSE_GRID = {
+  units: 12,
+  /** The fewest units a column that carries words may take. */
+  spanFloor: 4,
+  /** A column vector longer than this is not read. Three can carry words
+   *  (body, bodyRight, bodyThird); a fourth has nothing to be fed by, and a
+   *  column with nothing in it is not drawn. */
+  maxColumns: 4,
+} as const;
+
+/** THE LAYOUTS A `compose` IS DRAWN ON: the four whose page is a title, a
+ *  standfirst and prose, and `three-column`, which is the same thing with its
+ *  spans derived from its own content.
+ *
+ *  Nothing else. A chart, a table, a SWOT or a hub is one device across the
+ *  whole band, drawn by a builder that takes a vertical band and no x or
+ *  width, and a column vector cannot say anything about it. Written on any
+ *  other layout, `compose` is not used and the slide says so
+ *  (composeNotUsedBecause in generate.ts).
+ *
+ *  HERE, AND NOT IN generate.ts, because edit.ts has to ask it too — a patch
+ *  that moves a slide between two of these keeps its composition — and edit.ts
+ *  is a leaf that imports this file and nothing heavier. */
+export const COMPOSE_LAYOUTS: readonly string[] = ["content", "case-study", "dark-index", "two-column", "three-column"];
+
+/** THE COLUMNS A SPAN VECTOR DRAWS, over the band columnBand uses.
+ *
+ *  `spans` must already be whole units adding to twelve — solveComposition in
+ *  generate.ts is what decides what to do with one that does not, and says
+ *  so. Every region absorbs its own internal gutters and every boundary
+ *  consumes one more, so any vector summing to twelve ends exactly on the
+ *  band's right edge.
+ *
+ *  EQUAL SPANS ARE columnBand(n) ITSELF, not its arithmetic restated. The unit
+ *  arithmetic and columnBand's quotient agree to the last bit at one and two
+ *  columns and disagree in it at three (196.07999999999998 against
+ *  196.07999999999996), and 196.07999999999996 is the float every stored
+ *  three-column slide is drawn on. */
+export function spanBand(
+  spans: readonly number[],
+  band: { x: number; width: number } = { x: GRID.columnLeftX, width: COLUMN_BAND_WIDTH },
+  gutter: number = COLUMN_GUTTER
+): { x: number[]; width: number[]; gutter: number } {
+  const n = spans.length;
+  let equal = n > 0;
+  for (let i = 1; i < n; i++) if (spans[i] !== spans[0]) equal = false;
+  if (equal && spans[0] * n === COMPOSE_GRID.units) {
+    const cb = columnBand(n, band, gutter);
+    const width: number[] = [];
+    for (let i = 0; i < n; i++) width.push(cb.width);
+    return { x: cb.x, width, gutter };
+  }
+  const unit = (band.width - (COMPOSE_GRID.units - 1) * gutter) / COMPOSE_GRID.units;
+  const x: number[] = [];
+  const width: number[] = [];
+  let at = band.x;
+  for (let i = 0; i < n; i++) {
+    const w = spans[i] * unit + (spans[i] - 1) * gutter;
+    x.push(at);
+    width.push(w);
+    at += w + gutter;
+  }
+  return { x, width, gutter };
+}
+
 /** The rule under a title on a prose slide.
  *
  *  The measured problem it answers: a content slide carried 12.5% ink and NOT

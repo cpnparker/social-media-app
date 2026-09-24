@@ -184,16 +184,44 @@
  *    overruns and 5 of the 13 across every draft. A fixture set written to make
  *    layouts fail cannot pin a number that only real text lands on, which is
  *    the argument for running both.
+ *
+ * AND FOR THE FOURTH SWEEP AND THE COLUMN RULER (Stage 5, 2026-09-23; check
+ * 57 drives both):
+ *  - KILLED (57g): offPageFaults dropped from validateDeck. A cover whose
+ *    kicker runs off the page is reported by nothing else — no box beneath it
+ *    to overrun, and its box is on the canvas.
+ *  - KILLED (57g, 46f): offPageFaults measuring the box instead of the ink.
+ *  - KILLED (57f): the column ruler removed from measuredOnWords — overruns on
+ *    composed columns the builder had fitted on words.
+ *  - KILLED (57l): a written composition read on the narrow-only ruler — a
+ *    bold label's second line, drawn on the next bullet, passed.
+ *  - KILLED (57l), after surviving the first version of 57: offPageFaults
+ *    reading columns on the count model. No composed column reached the foot
+ *    of the page in the sweep; 57(l) sets one there.
+ *  - Over the 1,404 stored slides the fourth sweep reports 4 lines at `read`
+ *    and 14 at `present`, every one on a slide the three sweeps above had
+ *    already faulted; the column ruler moves no fault on any of them.
+ *
+ * AND THE FIFTH, THE RIGHT EDGE (wideWordFaults, 2026-09-24):
+ *  - KILLED (57n): validateDeck without it.
+ *  - KILLED (57n), after surviving its first version: the builder's 3% margin
+ *    read as ink.
+ *  - Over the 1,404 stored slides it reports nothing: no stored column holds
+ *    a word wider than itself. Turned on for every box, it read one
+ *    timeline-parallel phase ("Workshop", on a slide already faulted) and the
+ *    fixture battery's stat grid, "Wikipedia" 3pt past a label — the fitters
+ *    of those layouts', recorded rather than ruled on here.
  */
 
-import { CANVAS } from "@/lib/slides/brand";
+import { CANVAS, layoutOf, withDensity } from "@/lib/slides/brand";
 import { SLIDES_TEXT_INSET } from "@/lib/slides/preview-style";
 import {
-  buildSlideRequests, faceAdvance, inkBottom, labelWidthPt, TEXT_INSET_X, type SlideInput,
+  buildSlideRequests, faceAdvance, inkBottom, labelWidthPt, TEXT_INSET_X, compositionOf, COMPOSE_FIELDS, widestWordPt, RAGGED_KERN_MARGIN, densityOf, type SlideInput,
 } from "@/lib/slides/generate";
 import { previewSlideFrom, type PreviewElement, type PreviewSlide } from "@/lib/slides/preview-model";
+import { normaliseSlide } from "@/lib/slides/edit";
 
-export type GeometryFaultKind = "off-canvas" | "overlap" | "overrun";
+export type GeometryFaultKind = "off-canvas" | "overlap" | "overrun" | "off-page";
 
 export interface GeometryFault {
   kind: GeometryFaultKind;
@@ -495,9 +523,61 @@ function ruleCrossings(
  *  wrapped to four lines is read as three, and a cell the builder never
  *  fitted — the shape this sweep exists to catch — is read as fitting. Every
  *  other box keeps the ruler it was drawn with, which is the builder's own
- *  rule for the same ruler: it is taken where it is asked for. */
-function measuredOnWords(el: PreviewElement, layout: string): boolean {
-  return layout === "comparison" && !!el.vCenter;
+ *  rule for the same ruler: it is taken where it is asked for.
+ *
+ *  AND A COLUMN OF A BAND THAT ASKED FOR IT: every column of a composition
+ *  (three-column is one) and of the photo rail, whose blocks bulletBlock
+ *  wraps on words wherever the measure is narrow (`ragged: true`). Read with
+ *  the count model instead, a 196pt column the builder had fitted to its band
+ *  was reported as running over it — on generated compositions that was
+ *  every fault the builder had not declared, and against the builder's own
+ *  ruler there were none at `read`. inkBottom still only takes the wrap ruler
+ *  where the measure is narrow enough to need it, as the builder does — and a
+ *  WRITTEN composition's column at every measure, with its bold runs in the
+ *  bold face (`words`), because that is how bulletBlock fitted it. Read on the
+ *  narrow-only ruler, a bold label that wrapped in a 374pt column was read as
+ *  one line, and the second line drawn on the next bullet passed. The
+ *  column is known by its path, which pathOf gives every paragraph box of
+ *  `body`, `bodyRight` and `bodyThird`. */
+function measuredOnWords(
+  el: PreviewElement, layout: string, columns: ColumnRuler = null
+): { ragged?: boolean; words?: boolean; boldRanges?: { start: number; end: number }[] } | null {
+  if (layout === "comparison" && !!el.vCenter) return { ragged: true };
+  // AND A WRITTEN COMPOSITION'S STANDFIRST, which the builder boxes on words
+  // too (composedBand): read on the count model, a two-line standfirst boxed
+  // for two would be reported running into the columns it sits above.
+  if (columns === "words" && el.path && el.path.length === 1 && el.path[0] === "subtitle") {
+    const bold: { start: number; end: number }[] = [];
+    const acc = el.accents || [];
+    for (let i = 0; i < acc.length; i++) if (acc[i].bold) bold.push({ start: acc[i].start, end: acc[i].end });
+    return { words: true, boldRanges: bold };
+  }
+  if (!columns || !el.path || el.path.length !== 1 || COMPOSE_FIELDS.indexOf(String(el.path[0])) < 0) return null;
+  if (columns === "ragged") return { ragged: true };
+  // A WRITTEN COMPOSITION'S COLUMN, on the ruler bulletBlock fitted it on:
+  // words at every measure, and its bold runs — the lead-in, the **label** —
+  // in the bold face, read off the box's own styled ranges.
+  const bold: { start: number; end: number }[] = [];
+  const acc = el.accents || [];
+  for (let i = 0; i < acc.length; i++) if (acc[i].bold) bold.push({ start: acc[i].start, end: acc[i].end });
+  return { words: true, boldRanges: bold };
+}
+
+/** How a slide's columns were measured when they were drawn: on words where
+ *  the measure is narrow (`ragged` — three-column's derived columns and the
+ *  photo rail), on words at every measure with bold runs in bold (`words` —
+ *  a written composition), or not as columns at all. Asked of the slide AS
+ *  THE BUILDER DRAWS IT, normalised, because an image-split slide carrying
+ *  `bodyRight` is stored as one layout and drawn as another. */
+type ColumnRuler = "ragged" | "words" | null;
+function columnRuler(slide: SlideInput, index: number): ColumnRuler {
+  const drawn = normaliseSlide(slide);
+  const as = layoutOf(drawn.layout, index);
+  if (as === "photo-rail") return "ragged";
+  // AT THE SLIDE'S OWN DENSITY: whether a composition is drawn at all is
+  // measured (composeDecision), and `present`'s band is not `read`'s.
+  const comp = withDensity(densityOf(slide), () => compositionOf(drawn, as, index));
+  return comp ? (comp.written ? "words" : "ragged") : null;
 }
 
 export function overrunFaults(
@@ -513,6 +593,7 @@ export function overrunFaults(
     else if (e.kind === "rect" && !e.transform) rects.push(e);
   }
   let measured = 0;
+  const onWords = columnRuler(slide, index);
   for (let i = 0; i < texts.length; i++) {
     const el = texts[i];
     // A single glyph is an ornament — the quote mark — and its line box is
@@ -520,7 +601,8 @@ export function overrunFaults(
     // collides with everything under it, which it visibly does not.
     if (String(el.text).trim().length <= 1) continue;
     measured++;
-    const bottom = inkBottom(measuredOnWords(el, layout) ? { ...el, ragged: true } : el);
+    const ruler = measuredOnWords(el, layout, onWords);
+    const bottom = inkBottom(ruler ? { ...el, ...ruler } : el);
     if (bottom <= el.y + el.h + INK_TOLERANCE) continue;   // stays inside its own box
     for (let j = 0; j < texts.length; j++) {
       const other = texts[j];
@@ -561,6 +643,122 @@ export function overrunFaults(
   return { faults, measured };
 }
 
+/* ── ink off the page ───────────────────────────────────────────────────── */
+
+/** WORDS WHOSE INK RUNS PAST THE FOOT OF THE SLIDE, which none of the three
+ *  sweeps above can say.
+ *
+ *  Off-canvas measures BOXES, and a box the builder clamped to its band is on
+ *  the canvas however much text it holds: bulletBlock never draws a box past
+ *  its band, because Slides draws a box's text from its top and lets it run.
+ *  The overrun sweep measures ink, but only onto ANOTHER box or rule beneath
+ *  it, and at the foot of the page there may be none — a cover, a closing
+ *  slide, a page whose frame yielded its bottom rule to the very ink running
+ *  through it. So a column of words could leave the slide with every box on
+ *  it and nothing beneath it, and all three sweeps stay green.
+ *
+ *  ON A PAGE WITH ITS CHROME THIS IS RARELY THE ONLY REPORT, and that was
+ *  measured rather than assumed: over 4,000 generated compositions with the
+ *  running head and the folio on the page, every ink past the canvas was
+ *  also an overrun through them. What this adds is the right sentence — the
+ *  words are not on the slide, not merely drawn through its footer — and a
+ *  report on the pages that carry nothing below the words to be drawn
+ *  through. Measured with the ruler the overrun sweep uses, so the two never
+ *  disagree about where one box's ink ends. */
+export function offPageFaults(
+  page: PreviewSlide, slide: SlideInput, index: number
+): { faults: GeometryFault[]; measured: number } {
+  const layout = String(slide.layout || "content");
+  const faults: GeometryFault[] = [];
+  let measured = 0;
+  const onWords = columnRuler(slide, index);
+  for (let i = 0; i < page.elements.length; i++) {
+    const el = page.elements[i];
+    if (el.kind !== "text" || !el.text || String(el.text).trim().length <= 1) continue;
+    measured++;
+    const ruler = measuredOnWords(el, layout, onWords);
+    const bottom = inkBottom(ruler ? { ...el, ...ruler } : el);
+    const over = bottom - CANVAS.height;
+    if (over <= INK_TOLERANCE) continue;
+    faults.push({
+      kind: "off-page", slide: index + 1, layout, where: clip(el.text, 24),
+      overBy: over,
+      note: `slide ${index + 1}: ${field(el, "the text")} runs ${Math.round(over)}pt off the foot of the slide,` +
+        ` so its last lines are not in the deck or the preview — "${clip(el.text, 28)}"`,
+    });
+  }
+  return { faults, measured };
+}
+
+/* ── ink past the right edge ─────────────────────────────────────────────── */
+
+/** A WORD WIDER THAN ITS BOX, whose ink runs out of the box's RIGHT edge.
+ *
+ *  Every sweep above measures ink DOWNWARD. A word wider than the measure
+ *  takes a line of its own and overhangs — the renderer does not break it —
+ *  so the line count is right, the box is the right height, and the overhang
+ *  is invisible to all four: in a column of a composition it was drawn
+ *  straight across the next column's words, and a 400-character word in
+ *  every column of every composition reported nothing (a verifier's edge
+ *  shape, 2026-09-23).
+ *
+ *  Reported as an OVERRUN, because it is one — ink past its box — in the one
+ *  direction the other sweeps do not look. Measured with the builder's own
+ *  glyph tables (widestWordPt), bold where the box or its styled runs are,
+ *  so the builder's fit and this verdict agree. Over the 1,404 stored slides
+ *  it reports nothing: no stored column holds a word wider than itself. */
+export function wideWordFaults(
+  page: PreviewSlide, slide: SlideInput, index: number
+): { faults: GeometryFault[]; measured: number } {
+  const layout = String(slide.layout || "content");
+  const faults: GeometryFault[] = [];
+  let measured = 0;
+  for (let i = 0; i < page.elements.length; i++) {
+    const el = page.elements[i];
+    if (el.kind !== "text" || !el.text || el.transform || String(el.text).trim().length <= 1) continue;
+    // A COLUMN'S WORDS, by path — the case with a neighbour to be drawn
+    // across. A label or a cell is fitted by its own layout, and turned on
+    // there this reads the fixture battery's stat grid, whose "Wikipedia" sits
+    // 3pt past a label box on the fixture — a finding about the stat grid's
+    // fitter, recorded, and not this sweep's to rule on.
+    if (!el.path || el.path.length !== 1 || COMPOSE_FIELDS.indexOf(String(el.path[0])) < 0) continue;
+    measured++;
+    const size = el.size || 10;
+    const inner = el.w - TEXT_INSET_X;
+    const bold = el.font === "Roboto" && (el.weight || 400) >= 600;
+    const runs: { start: number; end: number }[] = [];
+    const acc = el.accents || [];
+    for (let a = 0; a < acc.length; a++) if (acc[a].bold) runs.push({ start: acc[a].start, end: acc[a].end });
+    const paras = String(el.text).split("\n");
+    let from = 0;
+    let worst = { word: "", width: 0 };
+    for (let p = 0; p < paras.length; p++) {
+      const lead = paras[p].length - paras[p].replace(/^\s+/, "").length;
+      const mine: { start: number; end: number }[] = [];
+      for (let r = 0; r < runs.length; r++) {
+        const a = Math.max(runs[r].start, from + lead) - from - lead, b = Math.min(runs[r].end, from + paras[p].length) - from - lead;
+        if (b > a) mine.push({ start: a, end: b });
+      }
+      const w = widestWordPt(paras[p], size, el.font, { bold, boldRanges: mine });
+      if (w.width > worst.width) worst = w;
+      from += paras[p].length + 1;
+    }
+    // THE INK, with the builder's kerning margin divided back out, as inkBottom
+    // divides out labelWidthPt's: the builder errs wide so that it fits, and
+    // this is asking whether the word did. Left in, the matrix's "IMPACT" —
+    // 8pt bold in a 44pt axis label — was reported 1pt past a box it sits in.
+    const over = worst.width / RAGGED_KERN_MARGIN - inner;
+    if (over <= INK_TOLERANCE) continue;
+    faults.push({
+      kind: "overrun", slide: index + 1, layout, where: clip(el.text, 24),
+      overBy: over,
+      note: `slide ${index + 1}: ${field(el, "the text")} holds a word wider than its box, which runs ${Math.round(over)}pt past the box's right edge`
+        + ` — "${clip(worst.word, 28)}"`,
+    });
+  }
+  return { faults, measured };
+}
+
 /* ── the deck ───────────────────────────────────────────────────────────── */
 
 /** Every geometry fault in a deck, measured on the requests that will be
@@ -591,6 +789,8 @@ export function validateDeck(slides: SlideInput[], runId = "check"): DeckGeometr
       const page = previewSlideFrom(slide, requests);
       const over = overlapFaults(page, slide, i);
       const ink = overrunFaults(page, slide, i);
+      const past = offPageFaults(page, slide, i);
+      const wide = wideWordFaults(page, slide, i);
       out.slidesChecked++;
       out.elementsChecked += off.elements;
       out.textBoxesChecked += over.texts;
@@ -598,6 +798,8 @@ export function validateDeck(slides: SlideInput[], runId = "check"): DeckGeometr
       for (let f = 0; f < off.faults.length; f++) out.faults.push(off.faults[f]);
       for (let f = 0; f < over.faults.length; f++) out.faults.push(over.faults[f]);
       for (let f = 0; f < ink.faults.length; f++) out.faults.push(ink.faults[f]);
+      for (let f = 0; f < past.faults.length; f++) out.faults.push(past.faults[f]);
+      for (let f = 0; f < wide.faults.length; f++) out.faults.push(wide.faults[f]);
     } catch {
       out.unbuildable++;
     }
@@ -607,8 +809,8 @@ export function validateDeck(slides: SlideInput[], runId = "check"): DeckGeometr
 }
 
 /** How many of each kind, in the order they are reported. */
-export function faultCounts(g: DeckGeometry): { "off-canvas": number; overlap: number; overrun: number } {
-  const counts = { "off-canvas": 0, overlap: 0, overrun: 0 };
+export function faultCounts(g: DeckGeometry): { "off-canvas": number; overlap: number; overrun: number; "off-page": number } {
+  const counts = { "off-canvas": 0, overlap: 0, overrun: 0, "off-page": 0 };
   for (let i = 0; i < g.faults.length; i++) counts[g.faults[i].kind]++;
   return counts;
 }
@@ -755,7 +957,7 @@ export function logDeckGeometry(g: DeckGeometry, where: string): void {
   console.log(
     `[SlideGeometry] ${where}: ${g.slidesChecked} slides, ${g.elementsChecked} elements,` +
     ` ${g.textBoxesChecked} text boxes, ${g.faults.length} faults` +
-    ` (off-canvas ${c["off-canvas"]}, overlap ${c.overlap}, overrun ${c.overrun}),` +
+    ` (off-canvas ${c["off-canvas"]}, overlap ${c.overlap}, overrun ${c.overrun}, off-page ${c["off-page"]}),` +
     ` ${relayed} worth reporting` +
     `${g.unbuildable ? `, ${g.unbuildable} unmeasurable` : ""} in ${g.ms}ms — ${GEOMETRY_SEVERITY}`
   );

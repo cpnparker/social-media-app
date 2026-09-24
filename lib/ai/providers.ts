@@ -12,7 +12,7 @@ import { anthropicCallParams, anthropicMaxTokens } from "./anthropic-params";
 import { openAIRequestParams } from "./openai-params";
 import { supabase } from "@/lib/supabase";
 import { searchNotebook } from "@/lib/notebook/search";
-import { generateSlides, updateSlides, resolveDeckImages, splitOverflowingSlides, isVisualSlide, deckWarnings, stampDeckChrome, stampDensity, densityOf, undrawnTableBodies } from "@/lib/slides/generate";
+import { generateSlides, updateSlides, resolveDeckImages, splitOverflowingSlides, isVisualSlide, deckWarnings, stampDeckChrome, stampDensity, densityOf, undrawnTableBodies, composedColumnsThatCannotFit, composeTakenBy } from "@/lib/slides/generate";
 import { densityFromAsks } from "@/lib/slides/density-from-ask";
 import type { Density } from "@/lib/slides/brand";
 import { authorityOnEnabled } from "@/lib/authorityon/mcp";
@@ -1737,6 +1737,14 @@ const SLIDE_ITEM_PROPS: Record<string, any> = {
   },
   bodyRight: { type: "string", description: "Right-hand column text, drawn on two-column, photo-rail, three-column and table. image-split has no second column (see layout)." },
   bodyThird: { type: "string", description: "Third column text. three-column layout only." },
+  compose: {
+    type: "object",
+    description: "COLUMNS read across, on content, case-study, dark-index, two-column or three-column: `columns` = spans adding to 12, \u22654 each - [6,6], [8,4], [4,4,4]; `fields` = the field feeding each, in order. For parallel groups, not one list cut up; must fit one slide. Not with a picture, panel, column heads or tones.",
+    properties: {
+      columns: { type: "array", items: { type: "integer" } },
+      fields: { type: "array", items: { type: "string", enum: ["body", "bodyRight", "bodyThird"] } },
+    },
+  },
   columns: {
     type: "object",
     description: "Headers for a two-column comparison — 'Before'/'After', 'Us'/'Them', 'Today'/'With us'. Each sits over an accent rule above its column. Use them whenever the two columns are being weighed against each other.",
@@ -2178,7 +2186,7 @@ export const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
         editSlide: {
           type: "object",
           description:
-            "Change ONE slide of the deck already in this conversation, ADD new slides, or REMOVE slides, WITHOUT resending the others. USE THIS TO BUILD A LONG DECK: `slides` replaces the deck entirely, and a deck of thirty-plus slides is more than one call can emit before it is cut off, so start it with `slides` and append the rest a few at a time here. The server holds the current deck and touches only the slide you name, keeping every other slide (text, layout, images) exactly as it is. Do NOT also pass `slides` (send an empty array for it). TO CHANGE a slide ('change slide 3's picture', 'reword the title on slide 1') pass `slideNumber` (1-based) and the fields to change. TO ADD a slide ('add a slide after slide 5', 'put a new slide at the start') pass `insertAfter` — the number of the slide it goes AFTER, so 0 places it first — plus the new slide's `title`/`body`/`layout`. Pass one or the other, never both. On a CHANGE to a hub slide, `hub` is merged: send only the hub fields that change (`hub: { caption }` keeps the name and connections; `groups` replaces all the groups). If the edit cannot be applied you will get an error back: report it to the user and do NOT describe the change as done.",
+            "Change ONE slide of the deck already in this conversation, ADD new slides, or REMOVE slides, WITHOUT resending the others. The server holds the current deck and touches only the slide you name, keeping every other slide (text, layout, images) exactly as it is. Do NOT also pass `slides` (send an empty array for it). TO CHANGE a slide ('change slide 3's picture', 'reword the title on slide 1') pass `slideNumber` (1-based) and the fields to change. TO ADD a slide ('add a slide after slide 5', 'put a new slide at the start') pass `insertAfter` — the number of the slide it goes AFTER, so 0 places it first — plus the new slide's `title`/`body`/`layout`. Pass one or the other, never both. On a CHANGE to a hub slide, `hub` is merged: send only the hub fields that change (`hub: { caption }` keeps the name and connections; `groups` replaces all the groups). If the edit cannot be applied you will get an error back: report it to the user and do NOT describe the change as done.",
           properties: {
             slideNumber: { type: "number", description: "CHANGE an existing slide: which one, 1-based. Omit when inserting." },
             insertAfter: { type: "number", description: "ADD slides after this slide number; 0 places them before the first. Omit when changing an existing slide." },
@@ -2200,7 +2208,7 @@ export const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
               type: "string",
               enum: ["content", "cards", "section", "cover", "case-study", "dark-index", "image-split", "feature", "closing", "two-column", "statement", "stat", "bar-chart", "stacked-bar", "line-chart", "table", "comparison", "swot", "matrix", "scatter", "venn", "timeline", "timeline-parallel", "process", "logo-wall", "quote", "image-grid", "layers", "hub", "photo-rail", "three-column", "serpentine"],
               description:
-                "Layout for an INSERTED slide. Every layout is available, but one drawn from a structured payload needs that payload passed alongside — `table` needs `table`, `stat` needs `stats`, the chart layouts need `chart`, and so on — or the slide comes out BLANK and the insert is refused with a message saying which field is missing. Defaults to content, or to cards when you pass `cards`. THIS IS HOW A LONG DECK IS BUILT: `slides` replaces the whole deck and a deck of thirty-plus slides is too much to emit in one call, so build the first few with `slides` and append the rest one or two at a time with insertAfter.",
+                "Layout for an INSERTED slide. Every layout is available, but one drawn from a structured payload needs that payload passed alongside — `table` needs `table`, `stat` needs `stats`, the chart layouts need `chart`, and so on — or the slide comes out BLANK and the insert is refused with a message saying which field is missing. Defaults to content, or to cards when you pass `cards`.",
             },
             // Each payload is the very shape `slides` declares, so "same shape
             // as in `slides`" is true by construction rather than by a promise
@@ -2236,6 +2244,7 @@ export const SLIDES_GEN_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
             },
             bodyRight: { type: "string", description: "Right-hand column text." },
             bodyThird: { type: "string", description: "Third column text, for a three-column slide." },
+            compose: SLIDE_ITEM_LEAN_PROPS.compose,
             eyebrow: { type: "string", description: "Small label above the title — 'CASE STUDY', or a numeral like '02' on a section divider." },
             imageQuery: { type: "string", description: "A photograph for this slide, described. On a change, the old one is replaced." },
             // The whole `image` object, shape only. `imageQuery` can say
@@ -5340,7 +5349,7 @@ export async function prepareSlidesForBuild(
   // Every refusal here is a SlideCallRefusal: the messages tell the MODEL what
   // to send, and the class is what keeps them off the user's screen. `scope`
   // and the structured faults are what the user is told if the turn ends here.
-  const guard = (given: any[], scope: RefusalScope, stored?: any[]) => {
+  const guard = (given: any[], scope: RefusalScope, stored: any[] | undefined, density: Density) => {
     // MISPLACED HUB FIELDS ARE REPAIRED BEFORE ANYTHING IS JUDGED. On
     // 2026-09-15 the first call of a new deck put a hub's `caption` and
     // `groups` beside the slide's title; the intent was unambiguous, the slide
@@ -5406,6 +5415,25 @@ export async function prepareSlidesForBuild(
         + bodies.map((b) => `slide ${b.slide} ("${b.title || "untitled"}")`).join(", ")
         + `. Move that text to \`bodyRight\` — on the table layout it is drawn as a rail beside the rows, which is what it is for — or shorten it, or give the table fewer rows. Nothing has been built or changed, and do NOT tell the user that commentary is in the deck.`,
         { scope, faults: bodies.map((b) => ({ slide: b.slide, title: b.title, layout: "table", reason: "the paragraph beside its figures has no room on the slide" })) }
+      );
+    }
+    // A WRITTEN COMPOSITION THAT WILL NOT FIT ON ONE SLIDE. Columns side by
+    // side are read across, and a continuation tears them — the reader goes
+    // down one column, across to the next, and back to the first a slide
+    // later. The model chose the spans, and it can choose again. Asked of the
+    // builder's own band and fit ladder, at the density this deck is built at,
+    // and only of the slides this call wrote: one a user has since typed long
+    // in the preview is the user's, and the builder draws it as its layout
+    // over the same words rather than refusing an edit to some other slide
+    // over it (composedColumnsThatCannotFit, composeDecision).
+    const cramped = composedColumnsThatCannotFit(slides, density, stored);
+    if (cramped.length) {
+      throw new SlideCallRefusal(
+        `${cramped.length} slide${cramped.length > 1 ? "s have" : " has"} columns that will not fit on one slide at any size their composition allows: `
+        + cramped.map((c) => `slide ${c.slide} ("${c.title || "untitled"}")'s ${c.fields.map((f) => `\`${f}\``).join(" and ")}, `
+          + (c.over > 0.5 ? `${Math.ceil(c.over)}pt over even at ${c.size}pt` : `holding a word wider than its column ("${c.wide[0]}")`)).join("; ")
+        + `. Columns side by side are read across, so a composition is never continued onto a second slide. Give that column more of the twelve units in \`compose.columns\`, shorten it (break a long link), or give some of it a slide of its own. Nothing has been built or changed — do NOT tell the user those slides are done.`,
+        { scope, faults: cramped.map((c) => ({ slide: c.slide, title: c.title, layout: c.layout, reason: "its columns hold more words than one slide has room for" })) }
       );
     }
     return slides;
@@ -5482,11 +5510,11 @@ export async function prepareSlidesForBuild(
     const patched = applyEditSlide(deck.slides, edit);
     const out = {
       title: deck.title,
-      slides: stampDensity(guard(patched, editScope, deck.slides), inherited),
+      slides: stampDensity(guard(patched, editScope, deck.slides, inherited), inherited),
       // What a layout patch took off the slide that the slide was showing
       // (payloadsTakenBy), for the tool result: said once, on the build that
       // did it, and never stored — the next turn's deck simply lacks it.
-      notes: payloadsTakenBy(deck.slides, patched, edit),
+      notes: payloadsTakenBy(deck.slides, patched, edit).concat(composeTakenBy(deck.slides, patched, edit)),
       // NO presentationId, EVER. A published deck is the user's file — they
       // hand-edit it — and the in-place update replaced every slide of one
       // Chris had already edited. Edits continue on the DRAFT; publishing
@@ -5524,7 +5552,7 @@ export async function prepareSlidesForBuild(
     // is how a folder fills with files nobody can tell apart. The cover
     // slide's own title stands in before the generic word does.
     title: input?.title || String((input?.slides || [])[0]?.title || "").trim() || "Presentation",
-    slides: stampDensity(guard(input?.slides || [], "build", existing.deck?.slides), density),
+    slides: stampDensity(guard(input?.slides || [], "build", existing.deck?.slides, density), density),
     presentationId: undefined,
     edited: false,
     density,
