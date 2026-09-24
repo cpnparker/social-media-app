@@ -20,7 +20,7 @@ import {
 import type { Attachment } from "@/lib/types/ai";
 import { workbookToText, delimitedToText } from "@/lib/ai/spreadsheet-text";
 import { rtfToText } from "@/lib/ai/rtf-text";
-import { deckToText } from "@/lib/ai/pptx-text";
+import { pptxBufferToText } from "@/lib/ai/pptx-text";
 import { docxToText } from "@/lib/ai/docx-text";
 import { isSpreadsheet, isPlainTextish } from "@/lib/media/allowed-types";
 import { assertServiceAllowed, ServiceControlError } from "@/lib/admin/service-control";
@@ -36,27 +36,6 @@ export const maxDuration = 300; // 5 min — covers slow attachment extractions 
 
 // Per-model cost + calculateCostTenths now live in lib/ai/model-costs.ts
 // (shared with lib/ai/usage-logger.ts so the two maps can't drift).
-
-// ── Helper: extract text from a .pptx (PowerPoint) file ──
-// .pptx is a zip; slide XML lives at ppt/slides/slide*.xml. Text runs are <a:t> elements.
-async function extractPptxText(buffer: Buffer): Promise<string | undefined> {
-  const JSZipModule = await import("jszip");
-  const JSZip = JSZipModule.default ?? JSZipModule;
-  const zip = await JSZip.loadAsync(buffer);
-
-  const slideFiles = Object.keys(zip.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name));
-  if (slideFiles.length === 0) return undefined;
-
-  const slides: { name: string; xml: string }[] = [];
-  for (const name of slideFiles) {
-    slides.push({ name, xml: await zip.files[name].async("string") });
-  }
-  // deckToText keeps <a:tbl> blocks as rows. Joining every run with a space —
-  // which is what this did — turned a competitor table into
-  // "concrete calculator 238,000 asphalt calculator 11,000", and the model had
-  // to guess which number belonged to which row.
-  return deckToText(slides) || undefined;
-}
 
 // ── Helper: extract text from a document attachment ──
 //
@@ -110,7 +89,9 @@ async function extractDocumentText(att: Attachment): Promise<string | undefined>
       att.type === "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
       att.name.toLowerCase().endsWith(".pptx");
     if (isPptx) {
-      return ((await extractPptxText(buffer)) || "").trim() || undefined;
+      // The one deck reader, shared with the Drive reader in lib/gdrive/docs.ts:
+      // an attached deck and the same deck linked from Drive read identically.
+      return await pptxBufferToText(buffer);
     }
 
     // Spreadsheets. The upload route has always accepted these and nothing

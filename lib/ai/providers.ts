@@ -8320,7 +8320,7 @@ export const QUERY_DRIVE_DOCS_OPENAI_TOOL: OpenAI.Chat.ChatCompletionTool = {
     // only place the model learns either. It once told a user "still not seeing
     // that document by its ID" when nothing in this tool could look up an ID,
     // and sent him off to re-share a document he had already shared.
-    description: `READ-ONLY access to Google Drive documents shared with EngineAI (Docs, Sheets, Slides, PDF, Word, Excel, text). Use when the user references a shared document, brief or plan, or asks what documents are available. Ground answers in the ACTUAL document content — quote/summarize what's there, never invent.
+    description: `READ-ONLY access to Google Drive documents shared with EngineAI (Docs, Sheets, Slides, PDF, Word, Excel, PowerPoint .pptx, text). Use when the user references a shared document, brief or plan, or asks what documents are available. Ground answers in the ACTUAL document content — quote/summarize what's there, never invent.
 
 WHAT IT DOES: action:"list" returns every file shared with EngineAI's service account that this tool may open (folders and the finance workbook are not listed). action:"read" takes EITHER a document name (partial match ok) OR the Google Docs/Drive URL or file id the user pasted — a link is resolved directly by file id against Drive, which reaches files a name search cannot see, and the link may sit anywhere in the text you pass. A read that matches no name re-asks Drive before answering rather than trusting the cached list, and the result says when the list was actually fetched — so a "not shared" is never more than a few seconds stale, and it tells you which.
 
