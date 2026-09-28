@@ -125,6 +125,61 @@ so the slide-claim guard is what catches a turn describing an edit it never
 made. The check asserts the route's calendar block reads the same predicate
 as the override, not just that the predicate exists.
 
+## Turn deadline checks
+
+One script guards `lib/ai/turn-deadline.ts`, `lib/ai/turn-finaliser.ts` and
+`lib/ai/transcript-budget.ts` — how a chat turn stops in time, how its row is
+finalised, and how many meeting transcripts one turn may read. Run it before
+shipping anything that touches a chain's tool loop, a provider fallback, the
+chat route's stream wrapper, the scheduled runner or `meeting_details`:
+
+```
+npx tsx scripts/verify-turn-deadline.ts
+```
+
+2026-09-28, thread 8479ea99: a grok-4.7 turn was WARNED at 184s, opened four
+more transcripts, and was killed by the platform at 300s with its row
+'pending' and empty. The warning was advice. Now three things act, none of
+them advice: past SOFT (170s on the chat route) no tool round starts and the
+next request is the tools-off answer; at HARD (275s) the provider request is
+aborted and the turn is finalised with what was written plus one line; at
+290s the route's BACKSTOP finalises the row itself, for a tool executor that
+hangs (the scheduled runner has the same backstop against its caller's
+ceiling). No tool call STARTS within 20s of hard: nothing could read its
+result, and an executor cannot be aborted once it runs. All of it is measured
+from the REQUEST, not the chain, and shared by every fallback leg — a
+fallback is started only before soft.
+
+ONE SIGNAL ENDS A REQUEST, and the stream guard listens on it. Do not give
+the guard a timer of its own again. The installed SDKs lose an abort in two
+different ways: both name their abort error "Error" (so a test on the name
+never matches), and OpenAI's Stream — xAI, Gemini and OpenAI all use it —
+RETURNS on an abort mid-stream instead of throwing, so a cut-off answer looks
+like a finished one. The first version raced a guard timer against the SDK
+signal; whenever the signal won, the turn was either thrown away as a provider
+failure or saved half-written with no note.
+
+That is why the check drives the REAL openai and @anthropic-ai/sdk clients
+over HTTP to a fake provider on 127.0.0.1, on a WARPED clock (Date.now and
+setTimeout scaled together). Its first version replaced the SDK methods with
+stand-ins that threw an error NAMED "APIUserAbortError", and passed 99
+assertions while every one of those failures was live. A stand-in proves the
+stand-in. The route itself is only checked for calling the finaliser (it
+cannot be run without auth and the database) — that part is labelled as
+presence.
+
+A transcript past the turn's 60,000-character allowance comes back as its
+notes, labelled `withheld_turn_budget` with its size — never "none", which is
+a model's licence to say a meeting was not recorded. The first transcript of
+a turn is always whole, but that alone did NOT make "ask for it and it will be
+read" true: a turn asked for one meeting's transcript often opens a wrong
+candidate first, and the one the user named then came back as notes. So
+`meeting_details` takes `full_transcript: true`, set only when the user asked
+for the transcript itself, which bypasses the allowance — at most three a
+turn, or a model that sets it on everything restores the incident. The
+notices say only what the code does ("a transcript asked for directly is not
+held back"), never that a next turn "will" read it.
+
 ## Model and pricing checks
 
 

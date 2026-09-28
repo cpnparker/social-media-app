@@ -31,6 +31,8 @@ import { needsClaudeForPersonalData, isPersonalMeetingQuestion } from "@/lib/ai/
 import { deckAskIsLive } from "@/lib/slides/claim";
 import { buildDeckContext, DECK_CONTEXT_HEADING } from "@/lib/slides/deck-context";
 import { artlistConfigured } from "@/lib/ai/capability-control";
+import { deadlineForRoute } from "@/lib/ai/turn-deadline";
+import { armBackstop, backstopRow, failedRow, createSseTap, BACKSTOP_NOTE } from "@/lib/ai/turn-finaliser";
 
 export const maxDuration = 300; // 5 min — covers slow attachment extractions + long responses
 
@@ -551,6 +553,10 @@ export async function POST(
   req: NextRequest,
   { params }: { params: { id: string } }
 ) {
+  // THE TURN'S CLOCK STARTS HERE, before auth and context building, because
+  // the platform's does (lib/ai/turn-deadline.ts). Route prep measured p99
+  // 9.2s, max 13.5s — time a chain-started clock never saw.
+  const turnDeadline = deadlineForRoute(Date.now(), maxDuration);
   const session = await auth();
   if (!session?.user?.id) {
     return new Response(JSON.stringify({ error: "Unauthorized" }), {
@@ -1875,7 +1881,10 @@ export async function POST(
     // Named so the completion callback can read flags the tool executors set
     // on it during the turn (notably sawUntrustedContent after query_gmail).
     const aiConfigRef: any = { model, systemPrompt, maxTokens: effectiveMaxTokens, webSearch: queryRoute.searchMode === "on", imageGeneration: generationTools, workspaceClientIds, workspaceId: conversation.id_workspace, userId, userEmail: session.user?.email || undefined, conversationVisibility: isTeamThread ? "team" : "private", selectedClientId: conversation.id_client || undefined, designMode: conversation.type_conversation_mode === "design", conversationId, contentId: conversation.id_content || undefined, incognito: isIncognito, designSessionId, designFocusedShotId, deckEditAsked, deckInConversation: !!deckContext, enableScheduling: conversation.type_conversation_mode !== "design", scheduledTask, financeAccess, gmailAccess, calendarAccess, microsoftAccess, resourcingAccess, // ALLOWLIST: only this interactive chat route may reach a mailbox.
-        allowPersonalData: true };
+        allowPersonalData: true,
+        // The request's own deadline, so every leg of this turn runs against
+        // the clock the platform is running.
+        turnDeadline };
 
     // The last slide draft rendered this turn, persisted with the assistant
     // message so the preview outlives the browser tab that produced it.
@@ -2077,33 +2086,51 @@ export async function POST(
         // message to the DB. Without this, long responses + large attachments
         // could lose the reply on any client navigation.
         const reader = aiStream.getReader();
-        let capturedText = "";
         let clientDisconnected = false;
-        // The provider's own error message, if the turn died. The stream
-        // carries it to the browser as an `error` event and it was going
-        // nowhere else, so the ROW got the generic "Generation failed" and the
-        // user had nothing to act on — not the provider, not the status, not
-        // whether retrying was even worth it.
-        let streamError = "";
+        // WHAT THE USER HAS BEEN SHOWN, and the provider's own error if the
+        // turn died (lib/ai/turn-finaliser.ts). The error used to go to the
+        // browser and nowhere else, so the ROW got a generic "Generation
+        // failed"; the text went nowhere at all, so a turn that failed after
+        // writing half an answer saved none of it.
+        const tap = createSseTap();
+
+        // THE BACKSTOP. The chain stops itself at its hard budget, but a tool
+        // executor that hangs — a Slides build, a Drive download — is not a
+        // stream and nothing can abort it, and on the platform's kill neither
+        // the completion nor the safety net below ever runs. That is how
+        // thread 8479ea99's row was left 'pending' and empty. So shortly
+        // before the kill, if nothing has finalised the row, this does: what
+        // was streamed, plus one line saying the turn was cut off. A
+        // completion that lands after it still overwrites it with the real
+        // reply — its update keys on the id, not on the status.
+        const cancelBackstop = armBackstop(turnDeadline, () => {
+          if (pendingComplete) return;
+          console.warn(`[Messages] Backstop: turn still running ${Math.round((Date.now() - turnDeadline.startedAt) / 1000)}s after the request began — finalising the row from ${tap.text().length} streamed chars`);
+          pendingComplete = true;
+          if (!clientDisconnected) {
+            try {
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: BACKSTOP_NOTE })}\n\n`));
+              controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+              controller.close();
+            } catch { /* client already gone */ }
+            clientDisconnected = true;
+          }
+          if (pendingMessageId) {
+            void Promise.resolve(
+              intelligenceDb
+                .from("ai_messages")
+                .update(backstopRow(tap.text()))
+                .eq("id_message", pendingMessageId)
+                .eq("status_message", "pending")
+            ).catch((err: any) => console.error("[Messages] Backstop could not finalise the row:", err));
+          }
+        });
         try {
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
 
-            // Scan the frames. Tokens are only accumulated when memory
-            // extraction will use them; the error is always worth catching.
-            {
-              const chunk = decoder.decode(value, { stream: true });
-              for (const line of chunk.split("\n")) {
-                if (line.startsWith("data: ") && line.slice(6) !== "[DONE]") {
-                  try {
-                    const parsed = JSON.parse(line.slice(6));
-                    if (memoryEnabled && parsed.token) capturedText += parsed.token;
-                    if (typeof parsed.error === "string" && parsed.error.trim()) streamError = parsed.error;
-                  } catch {}
-                }
-              }
-            }
+            tap.feed(decoder.decode(value, { stream: true }));
 
             // Forward to client — enqueue can throw if the client closed.
             // If it does, keep looping so the upstream AI stream completes
@@ -2120,8 +2147,12 @@ export async function POST(
             }
           }
         } finally {
+          cancelBackstop();
           try { controller.close(); } catch {}
         }
+        // What memory extraction reads: the reply the user was shown, not a
+        // failed leg's text that a fallback cleared from the screen.
+        const capturedText = memoryEnabled ? tap.text() : "";
 
         // Safety net: if onComplete never fired (upstream errored early, stream
         // closed before any tokens, etc.) the pending assistant row would dangle
@@ -2131,14 +2162,11 @@ export async function POST(
           try {
             await intelligenceDb
               .from("ai_messages")
-              .update({
-                // Say WHAT failed. "Generation failed — please retry" told the
-                // user nothing and told the next person debugging it less.
-                document_message: streamError
-                  ? `Generation failed: ${streamError.slice(0, 400)}`
-                  : "Generation failed — please retry.",
-                status_message: "failed",
-              })
+              // Say WHAT failed, and keep what was shown. "Generation failed —
+              // please retry" told the user nothing and told the next person
+              // debugging it less; dropping the streamed text threw away half
+              // an answer the user had already read.
+              .update(failedRow(tap.text(), tap.error()))
               .eq("id_message", pendingMessageId)
               .eq("status_message", "pending");
           } catch (err) {

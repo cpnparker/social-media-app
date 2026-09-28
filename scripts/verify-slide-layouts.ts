@@ -7200,7 +7200,7 @@ console.log(`\n6. The baked gradient carries text on a bright photograph`);
         if (!/stoppedAbnormally\(/.test(prov.slice(Math.max(0, at - 400), at))) fail(`${tag} is not the else of the cut-off test`);
         // `round` as the loop's own counter: a constant here turns the last-round
         // gate off in that chain, and no behavioural scenario runs eight rounds.
-        const need = ["asked: config.deckEditAsked === true", "turn: config.slidesTurn", "alreadyRetried: deckClaimRetried, round, maxRounds: MAX_TOOL_ROUNDS", "elapsedMs: Date.now() - turnStartedAt", "budgetMs: TURN_BUDGET_WARN_MS", "toolsUsed: toolLoopGuard.usage()"];
+        const need = ["asked: config.deckEditAsked === true", "turn: config.slidesTurn", "alreadyRetried: deckClaimRetried, round, maxRounds: MAX_TOOL_ROUNDS", "elapsedMs: Date.now() - turnStartedAt", "budgetMs: deadline.softAt - turnStartedAt", "toolsUsed: toolLoopGuard.usage()"];
         for (let k = 0; k < need.length; k++) if (args.indexOf(need[k]) < 0) fail(`${tag} does not pass ${need[k]}: ${args}`);
         const replayable = i === 0 ? "replayable: finalMessage.content.some((b: any) => b && b.type === \"text\" && typeof b.text === \"string\" && b.text.trim() !== \"\")" : "replayable: fullText.slice(roundTextStart).trim() !== \"\"";
         if (args.indexOf(replayable) < 0) fail(`${tag} does not gate on this round having text to replay: ${args}`);

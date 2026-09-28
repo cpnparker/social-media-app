@@ -4,6 +4,7 @@ import { supabase } from "@/lib/supabase";
 import { createStreamingResponse, type AIMessage, localStamp } from "@/lib/ai/providers";
 import { buildSystemPrompt, normalizeContextConfig } from "@/lib/ai/system-prompts";
 import { logAiUsage } from "@/lib/ai/usage-logger";
+import { deadlineForRoute } from "@/lib/ai/turn-deadline";
 
 /**
  * POST /api/engineai/meeting-prep — MeetingBrain's "Prepare me" button, answered
@@ -44,6 +45,8 @@ interface PrepRequest {
 }
 
 export async function POST(req: NextRequest) {
+  // The turn's clock starts with the request (lib/ai/turn-deadline.ts).
+  const requestStartedAt = Date.now();
   const key = PREP_KEY();
   if (!key) {
     return NextResponse.json({ error: "Meeting prep is not configured on this deployment." }, { status: 503 });
@@ -208,6 +211,7 @@ export async function POST(req: NextRequest) {
         userEmail,
         // Single reader — the requesting user, into their own meeting record.
         conversationVisibility: "private",
+        turnDeadline: deadlineForRoute(requestStartedAt, maxDuration),
         allowPersonalData: true,
         gmailAccess,
         financeAccess,

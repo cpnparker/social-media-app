@@ -682,7 +682,10 @@ console.log("\n7c-bis. The stall budget knows a tool write from a silence");
   // The route allows 300s and a final answer still has to be forced after a
   // stall, so the budget cannot eat the whole request.
   assert(write <= 240_000, `but still leaves room to force a final answer inside maxDuration (${write})`);
-  assert(/withStallGuard\(stream, \(\) => \(currentToolId \? TOOL_WRITE_STALL_MS : STREAM_STALL_MS\)\)/.test(prov),
+  // The third argument is the request's hard-deadline SIGNAL (lib/ai/turn-
+  // deadline.ts), which the guard listens on alongside this budget — see
+  // verify-turn-deadline, which drives it through the real SDKs.
+  assert(/withStallGuard\(stream, \(\) => \(currentToolId \? TOOL_WRITE_STALL_MS : STREAM_STALL_MS\), roundSignal\)/.test(prov),
     "the guard is told which budget applies, per event, from whether a tool call is open");
   // And the model is told up front, because the append instruction it needs
   // only arrives in a tool RESULT — which a first call that dies never sees.

@@ -4,6 +4,7 @@ import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { supabase } from "@/lib/supabase";
 import { mapConversation } from "@/lib/ai/response-mappers";
 import { verifyWorkspaceMembership, hasEngineAiAccess } from "@/lib/permissions";
+import { STALE_PENDING_MS } from "@/lib/ai/turn-finaliser";
 
 // GET /api/ai/conversations — list conversations
 export async function GET(req: NextRequest) {
@@ -253,7 +254,7 @@ export async function GET(req: NextRequest) {
     const listIds = (conversations || []).map((c: any) => c.id_conversation);
     const generating = new Set<string>();
     if (listIds.length) {
-      const since = new Date(Date.now() - 330_000).toISOString();
+      const since = new Date(Date.now() - STALE_PENDING_MS).toISOString();
       const { data: pendingRows } = await intelligenceDb
         .from("ai_messages")
         .select("id_conversation")

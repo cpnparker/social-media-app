@@ -4,6 +4,7 @@ import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { supabase } from "@/lib/supabase";
 import { checkConversationAccess } from "@/lib/ai/access";
 import { mapConversation, mapMessage } from "@/lib/ai/response-mappers";
+import { isDeadPending, reapedRow } from "@/lib/ai/turn-finaliser";
 
 /** Check if a user has workspace admin access for a specific workspace */
 async function isWorkspaceAdmin(userId: number, workspaceId: string): Promise<boolean> {
@@ -104,26 +105,20 @@ export async function GET(
     // failure and a retry button on a turn that then completed underneath
     // them. Any deck or long analysis crosses 150s routinely. Only a row that
     // has outlived the platform's own kill can be called dead.
-    const STALE_PENDING_MS = 330_000; // 5.5 min — above the messages route's maxDuration of 300s
+    // The threshold and the wording are shared (lib/ai/turn-finaliser.ts):
+    // STALE_PENDING_MS is the route's ceiling plus 30s, and the reaped text
+    // says what happened instead of a bare "Generation failed".
     const nowMs = Date.now();
-    const deadPending = (rawMessages || []).filter(
-      (m: any) =>
-        m.role_message === "assistant" &&
-        m.status_message === "pending" &&
-        m.date_created &&
-        nowMs - new Date(m.date_created).getTime() > STALE_PENDING_MS
-    );
+    const deadPending = (rawMessages || []).filter((m: any) => isDeadPending(m, nowMs));
     if (deadPending.length > 0) {
       await Promise.all(
         deadPending.map((m: any) => {
-          const text = m.document_message?.trim()
-            ? m.document_message // keep partial streamed text if any
-            : "Generation failed — please retry.";
-          m.status_message = "failed"; // reflect in the response we return below
-          m.document_message = text;
+          const row = reapedRow(m.document_message);
+          m.status_message = row.status_message; // reflect in the response we return below
+          m.document_message = row.document_message;
           return intelligenceDb
             .from("ai_messages")
-            .update({ status_message: "failed", document_message: text })
+            .update(row)
             .eq("id_message", m.id_message)
             .eq("status_message", "pending"); // don't clobber one that just completed
         })

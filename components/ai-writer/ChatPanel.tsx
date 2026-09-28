@@ -37,6 +37,7 @@ import ContentScoreCard, { type ContentScoreData } from "./ContentScoreCard";
 import PageAuditCard, { type PageAuditData } from "./PageAuditCard";
 import SlideLightbox from "./SlideLightbox";
 import type { AIConversation, AIMessageRow, Attachment } from "@/lib/types/ai";
+import { STALE_PENDING_MS, REAPED_TEXT } from "@/lib/ai/turn-finaliser";
 
 interface CustomerOption {
   id: string;
@@ -294,18 +295,25 @@ export default function ChatPanel({
     // Above the server's own ceiling, for the same reason as STALE_PENDING_MS:
     // at 3 minutes this rewrote a live turn as failed in local state, so a
     // reply that arrived at 4 minutes was never shown to the user who waited.
-    const POLL_TIMEOUT_MS = 5.5 * 60 * 1000; // > the messages route's 300s maxDuration
-    const startedAt = Date.now();
+    //
+    // FROM THE ROW'S AGE, not from when this tab started looking. Counted from
+    // mount, a thread reopened on a row already four minutes dead spun for
+    // another five and a half before it gave up — and a row the server could
+    // not reap (its update failed) span that long on every reopen. The server
+    // reaps at STALE_PENDING_MS; this is the same line plus the poll's slack.
+    const pendingRow = messages.find((m) => m.id === pendingAssistantId);
+    const createdAtMs = pendingRow?.createdAt ? Date.parse(pendingRow.createdAt) : NaN;
+    const giveUpAt = (Number.isFinite(createdAtMs) ? createdAtMs : Date.now()) + STALE_PENDING_MS + 15_000;
     let cancelled = false;
 
     const intervalId = window.setInterval(async () => {
       if (cancelled) return;
-      if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
+      if (Date.now() > giveUpAt) {
         window.clearInterval(intervalId);
         setMessages((prev) =>
           prev.map((m) =>
             m.id === pendingAssistantId
-              ? { ...m, status: "failed", content: "Generation timed out — please retry." }
+              ? { ...m, status: "failed", content: REAPED_TEXT }
               : m
           )
         );
@@ -343,6 +351,10 @@ export default function ChatPanel({
       cancelled = true;
       window.clearInterval(intervalId);
     };
+    // `messages` is read once, for the row's age, and deliberately not a
+    // dependency: every poll replaces the list, and restarting the poll on
+    // each replacement would never let it run.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingAssistantId, isStreaming, conversationId]);
 
   // Auto-send initial message (quick-send from home page)

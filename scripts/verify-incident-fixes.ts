@@ -24,6 +24,7 @@ import { buildSystemPrompt, normalizeContextConfig } from "../lib/ai/system-prom
 import { buildDeckContext, DECK_CONTEXT_HEADING } from "../lib/slides/deck-context";
 import { unmadeDeckChangeNotice } from "../lib/slides/claim";
 import { queryDriveDocs, newDriveCaches } from "../lib/gdrive/docs";
+import { deadlineForRoute, WARN_LEAD_MS } from "../lib/ai/turn-deadline";
 
 let pass = 0;
 let fail = 0;
@@ -741,12 +742,23 @@ console.log("\n16. A turn that runs out of time says so");
   const route = readFileSync(join(__dirname, "../app/api/ai/conversations/[id]/messages/route.ts"), "utf8");
 
   // The warning must fire BEFORE the ceiling, with room to build.
+  //
+  // RE-BASELINED 2026-09-28. This read a fixed TURN_BUDGET_WARN_MS (165s from
+  // the CHAIN's start) out of the source. On 2026-09-28 (thread 8479ea99) the
+  // model was warned at 184s, kept reading, and the platform killed the turn
+  // at 300s with its row 'pending' — a warning is advice. The numbers now come
+  // from the deadline the chat route actually builds (lib/ai/turn-deadline.ts,
+  // driven end to end by scripts/verify-turn-deadline.ts), and the three that
+  // matter are asserted against the route's own ceiling.
   const ceiling = Number((/export const maxDuration = (\d+)/.exec(route) || [, "0"])[1]);
-  const warnAt = Number((/TURN_BUDGET_WARN_MS = ([\d_]+)/.exec(src) || [, "0"])[1].replace(/_/g, ""));
   check("the route's ceiling is known", ceiling >= 60, `${ceiling}s`);
+  const d = deadlineForRoute(0, ceiling);
+  const warnAt = d.softAt - WARN_LEAD_MS;
   check("the model is warned before the ceiling", warnAt > 0 && warnAt < ceiling * 1000, `${warnAt}ms vs ${ceiling * 1000}ms`);
   check("the warning leaves at least a minute to build",
-    ceiling * 1000 - warnAt >= 60_000, `${Math.round((ceiling * 1000 - warnAt) / 1000)}s left`);
+    d.hardAt - warnAt >= 60_000, `${Math.round((d.hardAt - warnAt) / 1000)}s before the hard budget`);
+  check("tools go off, and a stream is cut, before the platform's kill",
+    d.softAt < d.hardAt && d.hardAt < ceiling * 1000, `soft ${d.softAt / 1000}s, hard ${d.hardAt / 1000}s, kill ${ceiling}s`);
   check("the time warning is wired into all four chains",
     (src.match(/content: TIME_BUDGET_NOTICE/g) || []).length === 4,
     `${(src.match(/content: TIME_BUDGET_NOTICE/g) || []).length} of 4`);

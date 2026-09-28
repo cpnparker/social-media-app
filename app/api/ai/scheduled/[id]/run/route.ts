@@ -3,12 +3,16 @@ import { auth } from "@/lib/auth";
 import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { runScheduledPrompt } from "@/lib/scheduled/runner";
 import { hasEngineAiAccess } from "@/lib/permissions";
+import { deadlineForRoute } from "@/lib/ai/turn-deadline";
 
 export const maxDuration = 120;
 
 // POST /api/ai/scheduled/[id]/run — "Run now": manual test/preview run.
 // Does NOT advance the schedule; logs a run row like a scheduled one.
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+  // 120s, not the chat route's 300: a run started here on the default budget
+  // would be killed mid-turn with its run row left 'running'.
+  const deadline = deadlineForRoute(Date.now(), maxDuration);
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const userId = parseInt(session.user.id, 10);
@@ -38,7 +42,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     .select("id_run")
     .single();
 
-  const result = await runScheduledPrompt(task);
+  const result = await runScheduledPrompt(task, { deadline });
 
   if (runRow?.id_run) {
     await intelligenceDb.from("ai_scheduled_runs").update({

@@ -35,6 +35,7 @@ import { buildGroundingBlock } from "@/lib/optimizer/briefs";
 import { loadClientStyle } from "@/lib/optimizer/client-style";
 import { listSources } from "@/lib/optimizer/sources";
 import { parseDraft } from "@/lib/optimizer/parse";
+import { deadlineForRoute } from "@/lib/ai/turn-deadline";
 import {
   readTurns,
   isValidPointSlot,
@@ -191,6 +192,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 }
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  // The turn's clock starts with the request (lib/ai/turn-deadline.ts).
+  const requestStartedAt = Date.now();
   const { id } = await params;
 
   let body: any = {};
@@ -353,6 +356,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         webSearch: false,
         imageGeneration: false,
         preserveLinks: true,
+        // This route's own ceiling (120s), not the chat route's 300s default.
+        turnDeadline: deadlineForRoute(requestStartedAt, maxDuration),
         source: "optimizer",
       } as any,
       // No inline annotation: inference gives the real StreamResult, where

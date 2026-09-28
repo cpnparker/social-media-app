@@ -4,6 +4,7 @@ import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { logAiUsage } from "@/lib/ai/usage-logger";
 import { checkConversationAccess } from "@/lib/ai/access";
 import { createStreamingResponse, type AIMessage } from "@/lib/ai/providers";
+import { deadlineForRoute } from "@/lib/ai/turn-deadline";
 
 export const maxDuration = 120;
 
@@ -53,6 +54,8 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // The turn's clock starts with the request (lib/ai/turn-deadline.ts).
+  const requestStartedAt = Date.now();
   const session = await auth();
   if (!session?.user?.id) {
     return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 });
@@ -120,6 +123,8 @@ export async function POST(
         imageGeneration: false,
         temperature: 0.2,
         preserveLinks: true,
+        // This route's own ceiling (120s), not the chat route's 300s default.
+        turnDeadline: deadlineForRoute(requestStartedAt, maxDuration),
       },
       async ({ fullText, keptText, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, modelUsed }) => {
         // LOG THE SPEND, FIRST AND UNCONDITIONALLY.

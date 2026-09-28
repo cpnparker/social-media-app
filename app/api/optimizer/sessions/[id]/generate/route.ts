@@ -24,10 +24,13 @@ import { requireOptimizer, loadSessionForCaller } from "../../../_lib/access";
 import { buildGenerationPrompt } from "@/lib/optimizer/briefs";
 import { loadClientStyle } from "@/lib/optimizer/client-style";
 import { listSources } from "@/lib/optimizer/sources";
+import { deadlineForRoute } from "@/lib/ai/turn-deadline";
 
 export const maxDuration = 300;
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  // The turn's clock starts with the request (lib/ai/turn-deadline.ts).
+  const requestStartedAt = Date.now();
   const { id } = await params;
 
   let body: any = {};
@@ -132,6 +135,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         imageGeneration: false,
         preserveLinks: true,
         source: "optimizer",
+        turnDeadline: deadlineForRoute(requestStartedAt, maxDuration),
       } as any,
       // NO inline type annotation, deliberately. This callback used to declare
       // its own permissive shape ending `model?: string` — which kept tsc green

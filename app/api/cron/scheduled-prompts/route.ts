@@ -4,6 +4,7 @@ import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { runScheduledPrompt, type ScheduledPromptRow } from "@/lib/scheduled/runner";
 import { computeNextRun, type ScheduleType } from "@/lib/scheduled/schedule";
 import { assertNotKilled } from "@/lib/admin/service-control";
+import { createTurnDeadline, MIN_FINAL_ROUND_MS, FINALISE_RESERVE_MS } from "@/lib/ai/turn-deadline";
 
 export const maxDuration = 300;
 
@@ -15,6 +16,10 @@ export const maxDuration = 300;
 // never retry-storm (RFP pattern). Failures are LOUD: 2 consecutive failures
 // pause the task and email the owner (the gap every incumbent leaves open).
 export async function GET(req: NextRequest) {
+  // Every run in this tick shares ONE ceiling — this function's — so each run's
+  // deadline ends where the function does, not maxDuration after the run began.
+  const tickStartedAt = Date.now();
+  const tickEndsAt = tickStartedAt + maxDuration * 1000;
   const authHeader = req.headers.get("authorization");
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -38,6 +43,14 @@ export async function GET(req: NextRequest) {
 
   const results: { id: string; status: string }[] = [];
   for (const task of due as (ScheduledPromptRow & { type_schedule: string; config_schedule: any; units_consecutive_failures: number; units_consecutive_ignored: number })[]) {
+    // NOT ENOUGH OF THE TICK LEFT FOR A RUN: stop BEFORE advancing, so the
+    // rest stay due and run on the next tick. Started anyway, a run here would
+    // be killed with the function, its row left 'running' and its schedule
+    // already advanced past it — a run silently skipped.
+    if (tickEndsAt - Date.now() < FINALISE_RESERVE_MS + MIN_FINAL_ROUND_MS * 2) {
+      console.warn(`[Scheduled] ${Math.round((Date.now() - tickStartedAt) / 1000)}s into the tick — leaving ${task.id_prompt} and anything after it for the next tick`);
+      break;
+    }
     // Advance the schedule FIRST (even a crash mid-run can't cause a re-run storm)
     const nextRun = computeNextRun(task.type_schedule as ScheduleType, task.config_schedule, now);
     await intelligenceDb
@@ -52,7 +65,7 @@ export async function GET(req: NextRequest) {
       .select("id_run")
       .single();
 
-    const result = await runScheduledPrompt(task);
+    const result = await runScheduledPrompt(task, { deadline: createTurnDeadline({ startedAt: Date.now(), endsAt: tickEndsAt }) });
     results.push({ id: task.id_prompt, status: result.status });
 
     if (runRow?.id_run) {

@@ -18,6 +18,8 @@ import { routeQuery } from "@/lib/ai/query-router";
 import { routeModel, FAST_MODEL, REASONING_MODEL } from "@/lib/ai/auto-router";
 import { logAiUsage } from "@/lib/ai/usage-logger";
 import { markdownToEmailHtml } from "@/lib/scheduled/email-html";
+import { turnDeadlineFor, type TurnDeadline } from "@/lib/ai/turn-deadline";
+import { armBackstop, createSseTap } from "@/lib/ai/turn-finaliser";
 
 export interface ScheduledPromptRow {
   id_prompt: string;
@@ -111,8 +113,17 @@ function extractMonitorState(text: string): { state: { facts?: any; condition_me
   return { state, cleanText: text.replace(/\[MONITOR_STATE\][\s\S]*?\[\/MONITOR_STATE\]/g, "").replace(/\n{3,}/g, "\n\n").trim() };
 }
 
-export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunResult> {
+/**
+ * `deadline` is the run's clock (lib/ai/turn-deadline.ts), from the CALLER's
+ * start: the cron runs several tasks inside one 300s function and "Run now"
+ * has 120s, so only the caller knows how much of its ceiling is left.
+ * Without one, the turn gets the chat route's budget from now.
+ */
+export async function runScheduledPrompt(task: ScheduledPromptRow, opts: { deadline?: TurnDeadline } = {}): Promise<RunResult> {
   const started = Date.now();
+  // Fixed here, not left to the chain, because the backstop below needs the
+  // same clock the chain runs on.
+  const deadline = turnDeadlineFor({ turnDeadline: opts.deadline }, started);
   try {
     const [workspaceConfig, clientsRes, financeRes, resourcingRes] = await Promise.all([
       loadWorkspaceConfig(task.id_workspace),
@@ -220,6 +231,11 @@ export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunR
     // that guarantee, and tsc stayed green while scheduled briefs kept saving
     // — and emailing — the model's plan paragraphs.
     let completion: StreamResult | null = null;
+    // What the run streamed, and the provider's error if it died — the same
+    // tap the chat route reads (lib/ai/turn-finaliser.ts).
+    const tap = createSseTap();
+    let backstopFired = false;
+    let cancelBackstop: () => void = () => {};
     const done = new Promise<void>((resolve) => {
       const stream = createStreamingResponse(
         messages,
@@ -238,19 +254,55 @@ export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunR
           financeAccess: !!financeRes?.data?.flag_access_finance,
           resourcingAccess: !!(resourcingRes?.data as any)?.flag_access_resourcing,
           source: "scheduled-prompt",
+          turnDeadline: deadline,
         } as any,
         async (result) => {
           completion = result;
           resolve();
         }
       );
-      // Consume to completion (belt-and-braces; upstream work runs regardless)
+      // Consume to completion — and RESOLVE when the stream ends, whether or
+      // not the completion fired. A turn that dies in createStreamingResponse
+      // (provider error, fallback too late) closes its stream WITHOUT calling
+      // onComplete, and `done` used to wait for that callback alone: the run
+      // hung until the platform killed the cron, its run row stayed 'running'
+      // for good, and every task queued behind it in the same tick was lost.
+      // Now it resolves, `completion` is null, and the run fails loudly below.
+      const reader = stream.getReader();
+      // THE BACKSTOP, as the chat route has one. The chain stops its own
+      // provider calls at the hard budget, but a tool executor that HANGS — a
+      // MeetingBrain RPC that never answers, a Slides build — is not a stream
+      // and nothing can abort it, so neither the completion nor the stream's
+      // end ever comes. Waiting for them held the cron until the platform
+      // killed it, with this run's row 'running' for good and every task
+      // behind it in the tick lost. Shortly before the caller's ceiling the
+      // run gives up waiting and fails, stating what it streamed; the orphaned
+      // executor is left to finish or die with the function.
+      cancelBackstop = armBackstop(deadline, () => {
+        backstopFired = true;
+        console.warn(`[Scheduled] Task ${task.id_prompt}: backstop — the run was still going ${Math.round((Date.now() - deadline.startedAt) / 1000)}s after its caller began; failing it with ${tap.text().length} streamed chars`);
+        void reader.cancel().catch(() => {});
+        resolve();
+      });
       void (async () => {
-        const reader = stream.getReader();
-        try { while (!(await reader.read()).done) { /* drain */ } } catch { /* stream error surfaces via completion */ }
+        const dec = new TextDecoder();
+        try {
+          while (true) {
+            const { value, done: ended } = await reader.read();
+            if (ended) break;
+            tap.feed(dec.decode(value, { stream: true }));
+          }
+        } catch { /* stream error surfaces as a null completion */ }
+        resolve();
       })();
     });
     await done;
+    cancelBackstop();
+    if (backstopFired && !completion) {
+      const shown = tap.text().trim();
+      // Plain text: this is the run row's error field, not a chat message.
+      throw new Error(`Cut off at this turn's time limit — a step was still running when time ran out, so the run was stopped and nothing was delivered.${shown ? ` Streamed before the cut: ${shown.slice(0, 200)}` : ""}`);
+    }
 
     // THE FILTERED COPY, for the same reason the chat routes save it: a round
     // that ends in tool calls writes the model's plan for that round ("I'll
@@ -289,7 +341,9 @@ export async function runScheduledPrompt(task: ScheduledPromptRow): Promise<RunR
       cacheWriteTokens: result?.cacheWriteTokens || 0,
     });
 
-    if (!fullText) throw new Error("Run produced no output");
+    // With no completion at all the turn DIED, and the stream said why; the
+    // run row should carry that, not a generic line.
+    if (!fullText) throw new Error(!result && tap.error() ? `Generation failed: ${tap.error()}` : "Run produced no output");
 
     // Monitor gate: compare this run's state block against the stored snapshot
     // and stay QUIET when nothing changed (the whole point of a monitor).
