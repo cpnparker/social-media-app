@@ -95,6 +95,7 @@ import { signOut } from "next-auth/react";
 import { SectionRailDesktop, SectionRailMobile, useRailItems } from "@/components/layout/SectionRail";
 import type { AIConversation, Attachment } from "@/lib/types/ai";
 import { useFileUploads, UploadChips, MAX_FILE_SIZE } from "@/components/ai-writer/use-file-uploads";
+import { pasteShortcodesAsEmoji } from "@/lib/emoji/paste";
 
 
 interface OptimizerArticle {
@@ -1830,6 +1831,9 @@ const ORAC_ENABLED = false;
                     ref={textareaRef}
                     value={homeInput}
                     onChange={(e) => setHomeInput(e.target.value)}
+                    // A conversation's first message starts here, so a Slack
+                    // paste lands here first: shortcodes in, emoji out.
+                    onPaste={pasteShortcodesAsEmoji}
                     onKeyDown={handleKeyDown}
                     placeholder="Ask anything..."
                     disabled={sending}

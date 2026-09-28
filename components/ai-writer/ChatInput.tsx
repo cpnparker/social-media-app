@@ -13,6 +13,7 @@ import {
 import { Send, Loader2, Paperclip, X, FileText, Upload, Square } from "lucide-react";
 import { useFileUploads, UploadChips, formatSize, isImage } from "@/components/ai-writer/use-file-uploads";
 import { Button } from "@/components/ui/button";
+import { pasteShortcodesAsEmoji } from "@/lib/emoji/paste";
 import type { Attachment } from "@/lib/types/ai";
 
 
@@ -218,6 +219,9 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
             ref={textareaRef}
             value={value}
             onChange={(e) => setValue(e.target.value)}
+            // Slack puts emoji on the clipboard as ":white_check_mark:";
+            // they arrive here as the emoji. See lib/emoji/paste.ts.
+            onPaste={pasteShortcodesAsEmoji}
             onKeyDown={handleKeyDown}
             placeholder={placeholder}
             disabled={disabled}
