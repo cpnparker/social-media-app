@@ -207,7 +207,20 @@ function TaskTable({
         </button>
       )}
       <div className="overflow-auto max-h-[420px]">
-        <table className="w-full text-xs">
+        {/* table-fixed: columns take these shares of whatever width the card
+            has and long text truncates (full text in the tooltip), so CUs and
+            Deadline are never pushed off-screen on a laptop. */}
+        <table className="w-full text-xs table-fixed">
+          <colgroup>
+            <col className={showDeadline ? "w-[16%]" : "w-[18%]"} />
+            <col className={showDeadline ? "w-[14%]" : "w-[16%]"} />
+            <col className={showDeadline ? "w-[25%]" : "w-[29%]"} />
+            <col className="w-[17%]" />
+            <col className="w-[9%]" />
+            <col className={showDeadline ? "w-[9%]" : "w-[11%]"} />
+            {showDeadline && <col className="w-[10%]" />}
+            <col className="w-8" />
+          </colgroup>
           <thead className="sticky top-0 bg-background z-[1]">
             <tr className="border-b">
               <SortHeader label="Person" sortKey="assigneeName" {...sort} onSort={sort.toggle} />
@@ -234,20 +247,20 @@ function TaskTable({
                 return (
                   <tr key={t.taskId} className="border-b border-border/30 hover:bg-muted/20 transition-colors">
                     <td className="px-3 py-2">
-                      <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                      <span className="flex items-center gap-1.5 min-w-0" title={t.assigneeName}>
                         <span className="h-5 w-5 rounded-full bg-muted text-[9px] font-semibold flex items-center justify-center shrink-0">
                           {initials(t.assigneeName)}
                         </span>
-                        {t.assigneeName}
+                        <span className="truncate">{t.assigneeName}</span>
                       </span>
                     </td>
-                    <td className="px-3 py-2 max-w-[150px] truncate" title={t.customerName}>
+                    <td className="px-3 py-2 truncate" title={t.customerName}>
                       {t.customerName}
                       {t.internal && (
                         <span className="ml-1 text-[9px] uppercase tracking-wide text-muted-foreground">internal</span>
                       )}
                     </td>
-                    <td className="px-3 py-1.5 max-w-[280px]">
+                    <td className="px-3 py-1.5">
                       <p className="truncate" title={t.contentTitle}>{t.contentTitle}</p>
                       <p className="truncate text-[10px] text-muted-foreground capitalize">
                         {t.contentType}
@@ -257,7 +270,7 @@ function TaskTable({
                     <td className="px-3 py-2">
                       <span
                         className={cn(
-                          "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] capitalize whitespace-nowrap",
+                          "inline-flex max-w-full items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] capitalize",
                           t.active ? "bg-emerald-500/10 text-emerald-800 dark:text-emerald-300" : "bg-muted text-muted-foreground"
                         )}
                         title={t.active ? "Active — the step being worked on now" : "Queued — waiting on an earlier step of this content"}
@@ -268,19 +281,19 @@ function TaskTable({
                             t.active ? "bg-emerald-500" : "border border-muted-foreground"
                           )}
                         />
-                        {t.taskTitle}
+                        <span className="truncate">{t.taskTitle}</span>
                       </span>
                     </td>
                     <td className="px-1 py-1 text-right">
-                      <span className={cn("inline-block min-w-[3rem] rounded px-2 py-1 tabular-nums font-medium", heat(t.taskCUs))}>
+                      <span className={cn("inline-block min-w-[2.75rem] rounded px-1.5 py-1 tabular-nums font-medium", heat(t.taskCUs))}>
                         {t.taskCUs.toFixed(2)}
                       </span>
                     </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-muted-foreground">{fmtDate(t.contentCreatedAt)}</td>
+                    <td className="px-2 py-2 truncate text-muted-foreground">{fmtDate(t.contentCreatedAt)}</td>
                     {showDeadline && (
-                      <td className={cn("px-3 py-2 whitespace-nowrap", overdue && "text-red-600 dark:text-red-400 font-medium")}>
+                      <td className={cn("px-2 py-1.5 truncate", overdue && "text-red-600 dark:text-red-400 font-medium")}>
                         {fmtDate(t.deadline)}
-                        {overdue && <span className="ml-1 text-[9px] uppercase tracking-wide">overdue</span>}
+                        {overdue && <span className="block text-[9px] uppercase tracking-wide">overdue</span>}
                       </td>
                     )}
                     <td className="px-3 py-2 text-center">
