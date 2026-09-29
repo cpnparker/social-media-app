@@ -24,7 +24,7 @@ import { cn } from "@/lib/utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
 import { categorizeContentType, CATEGORY_ORDER, CATEGORY_ICONS } from "@/lib/content-type-utils";
-import { TEAMS, getLeafIds, type TeamNode } from "@/lib/teams";
+import { TEAMS, getLeafIds, expandAliases, type TeamNode } from "@/lib/teams";
 import {
   addDays,
   subDays,
@@ -166,7 +166,8 @@ export default function TimelineResourcingPage() {
       }
     };
     TEAMS.forEach(walk);
-    return ids;
+    // Include every account of each person (see ACCOUNT_ALIASES)
+    return new Set(expandAliases(Array.from(ids)));
   }, [selectedTeamBranches]);
 
   // Global customer filter from the TopBar selector

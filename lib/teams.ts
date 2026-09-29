@@ -143,6 +143,48 @@ export const TEAMS: TeamNode[] = [
 ];
 
 /** Get all leaf (user) IDs from a node */
+/**
+ * One person, several Engine accounts.
+ *
+ * When someone changes status (staff -> freelancer) they get a new Engine login
+ * and the old account is NOT retired: both appear in the Engine's assignee
+ * picker under the same display name, so assigners pick either and the work
+ * splits. Nell Prieto is the live case — her freelancer account (749) has
+ * taken assignments since 29 Jul 2026, while the same people (Catherine Allen,
+ * Jessica Foley, Charlie Avery, Arne Dumez) kept assigning to her staff
+ * account (328). With only 328 in TEAMS, Team Production showed 2.80 CU for
+ * her September against a true 18.10.
+ *
+ * Keys are the extra account ids; values are the canonical id. This is an
+ * explicit, reviewed list on purpose — do NOT merge on matching names: twelve
+ * names in app_users are held by two or more accounts, and most are different
+ * people. Everything below is symmetric, so it keeps working whichever of a
+ * person's ids TEAMS happens to hold.
+ */
+export const ACCOUNT_ALIASES: Record<string, string> = {
+  "749": "328", // Nell Prieto — freelancer login (zoynelh@gmail.com) since Jul 2026
+};
+
+/** The id a person is reported under, whichever of their accounts did the work. */
+export function canonicalUserId(id: string): string {
+  return ACCOUNT_ALIASES[id] || id;
+}
+
+/** Every account id belonging to the people behind `ids`. */
+export function expandAliases(ids: string[]): string[] {
+  const out: Record<string, true> = {};
+  const aliasKeys = Object.keys(ACCOUNT_ALIASES);
+  for (let i = 0; i < ids.length; i++) {
+    const canon = canonicalUserId(ids[i]);
+    out[ids[i]] = true;
+    out[canon] = true;
+    for (let j = 0; j < aliasKeys.length; j++) {
+      if (ACCOUNT_ALIASES[aliasKeys[j]] === canon) out[aliasKeys[j]] = true;
+    }
+  }
+  return Object.keys(out);
+}
+
 export function getLeafIds(node: TeamNode): string[] {
   if (!node.children || node.children.length === 0) return [node.value];
   return node.children.flatMap(getLeafIds);

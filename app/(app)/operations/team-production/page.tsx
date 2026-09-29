@@ -27,7 +27,7 @@ import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdown
 
 /* ─────────────── Team structure ─────────────── */
 
-import { TEAMS as SHARED_TEAMS, getLeafIds as sharedGetLeafIds, isLeaf as sharedIsLeaf, type TeamNode } from "@/lib/teams";
+import { TEAMS as SHARED_TEAMS, getLeafIds as sharedGetLeafIds, isLeaf as sharedIsLeaf, type TeamNode, canonicalUserId, expandAliases } from "@/lib/teams";
 
 const TEAMS = SHARED_TEAMS;
 
@@ -307,8 +307,10 @@ export default function TeamProductionPage() {
       else node.children?.forEach(collect);
     };
     TEAMS.forEach(collect);
+    // A person's second account is not a second person: leave it out of
+    // "Other Team Members" when any of their accounts is already in the tree.
     const others = allUsers
-      .filter((u) => !knownIds.has(u.id))
+      .filter((u) => !expandAliases([u.id]).some((id) => knownIds.has(id)))
       .map<TeamNode>((u) => ({ label: u.name, value: u.id }));
     if (others.length === 0) return TEAMS;
     // Insert "Other Team Members" as another child of the top "All Staff" node
@@ -375,7 +377,8 @@ export default function TeamProductionPage() {
       const params = new URLSearchParams({
         from: dateFrom,
         to: dateTo,
-        userIds: Array.from(selectedUserIds).join(","),
+        // Fetch every account of each selected person (see ACCOUNT_ALIASES)
+        userIds: expandAliases(Array.from(selectedUserIds)).join(","),
       });
       if (excludeTestClients) params.set("excludeClients", EXCLUDE_CLIENT_IDS);
       const res = await fetch(`/api/operations/team-production?${params.toString()}`);
@@ -448,12 +451,12 @@ export default function TeamProductionPage() {
   const userSummary = useMemo(() => {
     const map: Record<string, { assigneeName: string; assigneeId: string; assignedCUs: number; deliveredCUs: number }> = {};
     for (const t of assignedTasks) {
-      const id = t.assigneeId || "unknown";
+      const id = canonicalUserId(t.assigneeId || "unknown");
       if (!map[id]) map[id] = { assigneeName: t.assigneeName || "Unknown", assigneeId: id, assignedCUs: 0, deliveredCUs: 0 };
       map[id].assignedCUs += t.taskCUs;
     }
     for (const t of deliveredTasks) {
-      const id = t.assigneeId || "unknown";
+      const id = canonicalUserId(t.assigneeId || "unknown");
       if (!map[id]) map[id] = { assigneeName: t.assigneeName || "Unknown", assigneeId: id, assignedCUs: 0, deliveredCUs: 0 };
       map[id].deliveredCUs += t.taskCUs;
     }
