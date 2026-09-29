@@ -73,7 +73,8 @@ export const TEAMS: TeamNode[] = [
         children: [
           { label: "Jessica Foley", value: "43" },
           { label: "Katie Romvari", value: "164" },
-          { label: "Nell Prieto", value: "328" },
+          { label: "Nell Prieto", value: "749" },
+          { label: "Nell Prieto (archived)", value: "328" },
         ],
       },
       {
@@ -147,23 +148,25 @@ export const TEAMS: TeamNode[] = [
  * One person, several Engine accounts.
  *
  * When someone changes status (staff -> freelancer) they get a new Engine login
- * and the old account is NOT retired: both appear in the Engine's assignee
- * picker under the same display name, so assigners pick either and the work
- * splits. Nell Prieto is the live case — her freelancer account (749) has
- * taken assignments since 29 Jul 2026, while the same people (Catherine Allen,
- * Jessica Foley, Charlie Avery, Arne Dumez) kept assigning to her staff
- * account (328). With only 328 in TEAMS, Team Production showed 2.80 CU for
- * her September against a true 18.10.
+ * and the old account is NOT retired. If both keep the same display name, the
+ * Engine's assignee picker shows two identical entries, assigners use either,
+ * and the person's work splits across accounts that look the same here.
  *
- * Keys are the extra account ids; values are the canonical id. This is an
- * explicit, reviewed list on purpose — do NOT merge on matching names: twelve
- * names in app_users are held by two or more accounts, and most are different
- * people. Everything below is symmetric, so it keeps working whichever of a
- * person's ids TEAMS happens to hold.
+ * Two ways to handle it, in order of preference:
+ *
+ *  1. Rename the old account in the Engine (e.g. "Nell Prieto (archived)") and
+ *     list BOTH ids in TEAMS under their own names. Each shows as its own row,
+ *     both are selected with their team, and nothing needs merging. This is how
+ *     Nell Prieto is handled: 749 is her freelancer login (since 29 Jul 2026),
+ *     328 her archived staff account.
+ *
+ *  2. If the old account can't be renamed, alias it here (alias -> canonical) so
+ *     its work is fetched and reported under one row. Do NOT merge on matching
+ *     names: twelve names in app_users are held by two or more accounts, and most
+ *     are different people. The helpers are symmetric, so an alias keeps working
+ *     whichever of the person's ids TEAMS holds.
  */
-export const ACCOUNT_ALIASES: Record<string, string> = {
-  "749": "328", // Nell Prieto — freelancer login (zoynelh@gmail.com) since Jul 2026
-};
+export const ACCOUNT_ALIASES: Record<string, string> = {};
 
 /** The id a person is reported under, whichever of their accounts did the work. */
 export function canonicalUserId(id: string): string {
