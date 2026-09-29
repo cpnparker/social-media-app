@@ -213,9 +213,7 @@ function TaskTable({
               <SortHeader label="Person" sortKey="assigneeName" {...sort} onSort={sort.toggle} />
               <SortHeader label="Client" sortKey="customerName" {...sort} onSort={sort.toggle} />
               <SortHeader label="Content" sortKey="contentTitle" {...sort} onSort={sort.toggle} />
-              <SortHeader label="Type" sortKey="contentType" {...sort} onSort={sort.toggle} />
               <SortHeader label="Task" sortKey="taskTitle" {...sort} onSort={sort.toggle} />
-              <SortHeader label="Status" sortKey="active" {...sort} onSort={sort.toggle} />
               <SortHeader label="CUs" sortKey="taskCUs" {...sort} onSort={sort.toggle} align="right" />
               <SortHeader label="Created" sortKey="contentCreatedAt" {...sort} onSort={sort.toggle} />
               {showDeadline && <SortHeader label="Deadline" sortKey="deadline" {...sort} onSort={sort.toggle} />}
@@ -225,7 +223,7 @@ function TaskTable({
           <tbody>
             {sorted.length === 0 ? (
               <tr>
-                <td colSpan={showDeadline ? 10 : 9} className="px-3 py-6 text-center text-muted-foreground">
+                <td colSpan={showDeadline ? 8 : 7} className="px-3 py-6 text-center text-muted-foreground">
                   {emptyText}
                 </td>
               </tr>
@@ -243,35 +241,35 @@ function TaskTable({
                         {t.assigneeName}
                       </span>
                     </td>
-                    <td className="px-3 py-2 max-w-[160px] truncate" title={t.customerName}>
+                    <td className="px-3 py-2 max-w-[150px] truncate" title={t.customerName}>
                       {t.customerName}
                       {t.internal && (
                         <span className="ml-1 text-[9px] uppercase tracking-wide text-muted-foreground">internal</span>
                       )}
                     </td>
-                    <td className="px-3 py-2 max-w-[260px] truncate" title={t.contentTitle}>{t.contentTitle}</td>
-                    <td className="px-3 py-2 capitalize whitespace-nowrap">
-                      {t.contentType}
-                      {t.network && <span className="text-muted-foreground"> · {t.network}</span>}
+                    <td className="px-3 py-1.5 max-w-[280px]">
+                      <p className="truncate" title={t.contentTitle}>{t.contentTitle}</p>
+                      <p className="truncate text-[10px] text-muted-foreground capitalize">
+                        {t.contentType}
+                        {t.network && ` · ${t.network}`}
+                      </p>
                     </td>
                     <td className="px-3 py-2">
-                      <span className="inline-block rounded-full bg-muted px-2 py-0.5 text-[10px] capitalize whitespace-nowrap">
+                      <span
+                        className={cn(
+                          "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] capitalize whitespace-nowrap",
+                          t.active ? "bg-emerald-500/10 text-emerald-800 dark:text-emerald-300" : "bg-muted text-muted-foreground"
+                        )}
+                        title={t.active ? "Active — the step being worked on now" : "Queued — waiting on an earlier step of this content"}
+                      >
+                        <span
+                          className={cn(
+                            "h-1.5 w-1.5 rounded-full shrink-0",
+                            t.active ? "bg-emerald-500" : "border border-muted-foreground"
+                          )}
+                        />
                         {t.taskTitle}
                       </span>
-                    </td>
-                    <td className="px-3 py-2 whitespace-nowrap">
-                      {t.active ? (
-                        <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
-                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> Active
-                        </span>
-                      ) : (
-                        <span
-                          className="inline-flex items-center gap-1 text-muted-foreground"
-                          title="Waiting on an earlier step of this content"
-                        >
-                          <span className="h-1.5 w-1.5 rounded-full border border-muted-foreground" /> Queued
-                        </span>
-                      )}
                     </td>
                     <td className="px-1 py-1 text-right">
                       <span className={cn("inline-block min-w-[3rem] rounded px-2 py-1 tabular-nums font-medium", heat(t.taskCUs))}>
@@ -727,7 +725,7 @@ export function TeamWorkload({ selectedUserIds, searchQuery, globalCustomerId, i
               </span>
             ))}
             <span className="inline-flex items-center gap-1 ml-2">
-              <span className="h-3 w-5 rounded-sm bg-muted outline outline-2 outline-offset-1 outline-red-600 dark:outline-red-400" /> Overdue
+              <span className="h-3 w-5 rounded-sm bg-muted ring-2 ring-red-600 ring-offset-1 ring-offset-background dark:ring-red-400" /> Overdue
             </span>
             <span className="inline-flex items-center gap-1">
               <span className="h-3 w-5 rounded-sm bg-muted border border-dashed border-foreground/40" /> Queued behind an earlier step
@@ -807,8 +805,11 @@ export function TeamWorkload({ selectedUserIds, searchQuery, globalCustomerId, i
                                   "block truncate rounded px-1.5 py-0.5 mb-0.5 text-[11px] leading-snug hover:brightness-95",
                                   heat(t.taskCUs),
                                   !t.active && "border border-dashed border-foreground/40",
-                                  // Offset outline, not a red border: the >2 CU chip is itself red.
-                                  overdue && "outline outline-2 outline-offset-1 outline-red-600 dark:outline-red-400"
+                                  // A ring with a background-coloured gap, not a red border: the
+                                  // >2 CU chip is itself red. And not `outline`: this repo's
+                                  // tailwind-merge drops the bare `outline` class inside cn(), which
+                                  // left outline-style "none" and the marker invisible in production.
+                                  overdue && "ring-2 ring-red-600 ring-offset-1 ring-offset-background dark:ring-red-400"
                                 )}
                               >
                                 {multiPerson && <span className="font-bold mr-1">{initials(t.assigneeName)}</span>}

@@ -732,7 +732,7 @@ export default function TeamProductionPage() {
               <CardContent className="p-12 text-center">
                 <Users className="h-8 w-8 mx-auto text-muted-foreground/30 mb-3" />
                 <p className="text-sm text-muted-foreground">
-                  Select a team or team member to view production data.
+                  Select a team or team member to see {view === "workload" ? "what they have on" : "production data"}.
                 </p>
                 <button
                   onClick={() => setShowTeamPanel(true)}
