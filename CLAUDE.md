@@ -270,6 +270,33 @@ from old contract", ~44 CU over ~64 items — several relocate charges for work
 that WAS produced) and the 2022 Engine-V1 migration backfill ("Content units
 from V1", 859.50 CU, the single largest row in `app_content`).
 
+## Team workload checks
+
+One script guards the Team Production "Workload" view — `lib/workload.ts`, the
+week helpers in `lib/date-utils.ts`, `app/api/operations/team-workload` and
+`components/operations/TeamWorkload.tsx`. Run it before shipping anything that
+touches what counts as open work, how deadlines are bucketed, or "today":
+
+```
+npx tsx scripts/verify-team-workload.ts --self-test
+```
+
+The view replaces Retool's Capacity Tracking / Work In Progress page, so people
+compare the two. Open work is: not completed, not spiked, ASSIGNED, content AND
+social-promo tasks. That rule was reverse-engineered against Retool on
+2026-09-29 and matches it exactly for the Account Managers (0 / 0 / 414 / 3)
+and to within same-day churn across every user. Each clause moves the totals
+silently: 1,043 open tasks have no assignee, and leaving out social tasks loses
+the ones that are assigned. Note PostgREST `neq` drops NULLs, so "not spiked"
+is applied in JS — a SQL `neq 1` would also drop every task whose flag is NULL.
+
+It is deliberately NOT bounded by a date range, unlike the Production view: a
+task with no deadline, or one that went overdue months ago, is still someone's
+work today. "Today" comes from `workspaceTodayISO()` (Europe/Zurich); from
+22:00 in summer a UTC date is already tomorrow in Zurich, and the check kills
+that mutant with a 22:30Z fixture. Week buckets are Monday–Sunday and are
+tested on a Sunday, a Monday, the year boundary and both DST changes.
+
 ## Content Optimizer checks
 
 A growing set of scripts guards `lib/optimizer/`, the import/export paths and

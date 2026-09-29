@@ -17,6 +17,8 @@ import {
   CalendarDays,
   Users,
   Download,
+  Gauge,
+  BarChart3,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { isExpiredCUWriteOff } from "@/lib/expired-cus";
@@ -24,12 +26,16 @@ import { formatLocalDate } from "@/lib/date-utils";
 import { downloadCSV } from "@/lib/csv-utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
+import { TeamWorkload } from "@/components/operations/TeamWorkload";
 
 /* ─────────────── Team structure ─────────────── */
 
 import { TEAMS as SHARED_TEAMS, getLeafIds as sharedGetLeafIds, isLeaf as sharedIsLeaf, type TeamNode, canonicalUserId, expandAliases } from "@/lib/teams";
 
 const TEAMS = SHARED_TEAMS;
+
+const SELECTION_KEY = "ops.teamProduction.selection.v1";
+const VIEW_KEY = "ops.teamProduction.view.v1";
 
 
 /* ─────────────── Helpers ─────────────── */
@@ -279,6 +285,54 @@ export default function TeamProductionPage() {
   const [selectedUserIds, setSelectedUserIds] = useState<Set<string>>(new Set());
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set(["all"]));
 
+  // Two lenses on the same team. "workload" is what is on people's plates
+  // right now (Retool's Capacity Tracking / Work In Progress); "production"
+  // is what was assigned and delivered over a date range.
+  const [view, setView] = useState<"workload" | "production">("workload");
+  const [includeInternal, setIncludeInternal] = useState(true);
+
+  // Managers come back to the same team daily: remember the selection and the
+  // view per browser. Read after mount (window is not available on the
+  // server), and never write before the read, or the empty initial state
+  // would overwrite what was saved.
+  // State, not a ref: the write effect must not run until a render in which
+  // the restored selection is already in state (a ref flips inside the same
+  // commit, so the empty initial Set got saved first and, under StrictMode's
+  // double-run, was then read back as the "saved" selection).
+  const [restored, setRestored] = useState(false);
+  useEffect(() => {
+    try {
+      const fromUrl = new URLSearchParams(window.location.search).get("view");
+      const saved = window.localStorage.getItem(VIEW_KEY);
+      const v = fromUrl || saved;
+      if (v === "workload" || v === "production") setView(v);
+      const ids = JSON.parse(window.localStorage.getItem(SELECTION_KEY) || "[]");
+      if (Array.isArray(ids) && ids.every((x) => typeof x === "string")) setSelectedUserIds(new Set(ids));
+    } catch {
+      /* storage blocked or corrupt — start empty */
+    }
+    setRestored(true);
+  }, []);
+  useEffect(() => {
+    if (!restored) return;
+    try {
+      window.localStorage.setItem(SELECTION_KEY, JSON.stringify(Array.from(selectedUserIds)));
+    } catch {
+      /* ignore */
+    }
+  }, [selectedUserIds, restored]);
+  const changeView = (v: "workload" | "production") => {
+    setView(v);
+    try {
+      window.localStorage.setItem(VIEW_KEY, v);
+      const url = new URL(window.location.href);
+      url.searchParams.set("view", v);
+      window.history.replaceState(null, "", url.toString());
+    } catch {
+      /* ignore */
+    }
+  };
+
   // All known user IDs across the engine, fetched once on mount. Users who
   // aren't in the hardcoded TEAMS structure surface in a fallback "Other"
   // group so they remain selectable here.
@@ -368,7 +422,7 @@ export default function TeamProductionPage() {
 
   /* ─── Fetch data ─── */
   const fetchData = useCallback(async () => {
-    if (selectedUserIds.size === 0) {
+    if (view !== "production" || selectedUserIds.size === 0) {
       setTasks([]);
       return;
     }
@@ -389,7 +443,7 @@ export default function TeamProductionPage() {
     } finally {
       setLoading(false);
     }
-  }, [dateFrom, dateTo, selectedUserIds, excludeTestClients]);
+  }, [view, dateFrom, dateTo, selectedUserIds, excludeTestClients]);
 
   useEffect(() => {
     fetchData();
@@ -496,7 +550,7 @@ export default function TeamProductionPage() {
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Team Production</h1>
         <p className="text-sm text-muted-foreground mt-0.5">
-          Track assigned and delivered content units by team member.
+          What your team has on right now, and what it has delivered.
         </p>
       </div>
 
@@ -507,6 +561,28 @@ export default function TeamProductionPage() {
             <CustomerDropdownFilter />
           </div>
           <div className="flex flex-wrap items-center gap-3">
+          {/* View switch */}
+          <div className="flex items-center gap-1 bg-muted rounded-lg p-0.5" aria-label="View">
+            {([
+              { v: "workload", label: "Workload", icon: Gauge },
+              { v: "production", label: "Production", icon: BarChart3 },
+            ] as const).map(({ v, label, icon: Icon }) => (
+              <button
+                key={v}
+                aria-pressed={view === v}
+                onClick={() => changeView(v)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors",
+                  view === v ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <Icon className="h-3.5 w-3.5" />
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {view === "production" && (<>
           {/* Date presets */}
           <div className="flex items-center gap-1 bg-muted/50 rounded-lg p-0.5">
             {presets.map((p) => (
@@ -540,6 +616,11 @@ export default function TeamProductionPage() {
               className="h-7 text-xs rounded-md border border-input bg-background px-2 focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
+          </>)}
+
+          {view === "workload" && (
+            <span className="text-xs text-muted-foreground">Open tasks as of today, by deadline</span>
+          )}
 
           <div className="flex-1" />
 
@@ -549,6 +630,17 @@ export default function TeamProductionPage() {
             <Input type="text" placeholder="Search..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="h-7 text-xs pl-7" />
           </div>
 
+          {view === "workload" && (
+            <label
+              className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer shrink-0 select-none"
+              title="Internal TCE work (portfolio, pitches, templates) uses the same people's time, so it counts toward their workload. The test client is always excluded."
+            >
+              <input type="checkbox" checked={includeInternal} onChange={(e) => setIncludeInternal(e.target.checked)} className="rounded border-muted-foreground/30 h-3.5 w-3.5" />
+              Include internal TCE work
+            </label>
+          )}
+
+          {view === "production" && (<>
           {/* Exclude test */}
           <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer shrink-0 select-none">
             <input type="checkbox" checked={excludeTestClients} onChange={(e) => setExcludeTestClients(e.target.checked)} className="rounded border-muted-foreground/30 h-3.5 w-3.5" />
@@ -561,6 +653,7 @@ export default function TeamProductionPage() {
             <input type="checkbox" checked={hideExpiredCUs} onChange={(e) => setHideExpiredCUs(e.target.checked)} className="rounded border-muted-foreground/30 h-3.5 w-3.5" />
             Hide expired CUs
           </label>
+          </>)}
 
           {/* Mobile team selector toggle */}
           <button
@@ -649,6 +742,13 @@ export default function TeamProductionPage() {
                 </button>
               </CardContent>
             </Card>
+          ) : view === "workload" ? (
+            <TeamWorkload
+              selectedUserIds={Array.from(selectedUserIds)}
+              searchQuery={searchQuery}
+              globalCustomerId={globalCustomerId}
+              includeInternal={includeInternal}
+            />
           ) : loading ? (
             <div className="flex items-center justify-center py-20">
               <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
