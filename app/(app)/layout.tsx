@@ -5,7 +5,7 @@ import { useRouter, usePathname } from "next/navigation";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { TopBar } from "@/components/layout/TopBar";
 import { CustomerProvider } from "@/lib/contexts/CustomerContext";
-import { WorkspaceProvider } from "@/lib/contexts/WorkspaceContext";
+import { WorkspaceProvider, useWorkspaceSafe } from "@/lib/contexts/WorkspaceContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
@@ -27,17 +27,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       .catch(() => {
         router.replace("/login");
       });
-  }, [router, pathname]);
-
-  // Operations subdomain redirect
-  useEffect(() => {
-    if (
-      typeof window !== "undefined" &&
-      window.location.hostname === "operations.thecontentengine.com" &&
-      pathname === "/"
-    ) {
-      router.replace("/operations/commissioned-cus");
-    }
   }, [router, pathname]);
 
   if (!authChecked) {
@@ -78,7 +67,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <TopBar onMenuClick={() => setSidebarOpen(true)} />
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 bg-muted/30">
-          {children}
+          <AreaAccessGuard>{children}</AreaAccessGuard>
         </main>
       </div>
     </div>
@@ -86,4 +75,56 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     </CustomerProvider>
     </WorkspaceProvider>
   );
+}
+
+// ── Area access guard ──
+// Redirects users who don't have access to the current area
+function AreaAccessGuard({ children }: { children: React.ReactNode }) {
+  const wsCtx = useWorkspaceSafe();
+  const pathname = usePathname();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!wsCtx || wsCtx.loading || !wsCtx.selectedWorkspace) return;
+
+    const ws = wsCtx.selectedWorkspace;
+
+    // Determine which area the current path belongs to
+    const isOperations = pathname.startsWith("/operations");
+    const isAdmin =
+      pathname.startsWith("/settings") ||
+      pathname === "/accounts" ||
+      pathname === "/inbox";
+    const isEngineGpt = pathname.startsWith("/ai-writer");
+    const isMeetingBrain = pathname.startsWith("/meetingbrain");
+    const isEngine =
+      !isOperations && !isAdmin && !isEngineGpt && !isMeetingBrain;
+
+    let blocked = false;
+    if (isOperations && !ws.accessOperations) blocked = true;
+    if (isAdmin && !ws.accessAdmin && !ws.accessOperations) blocked = true;
+    if (isEngineGpt && !ws.accessEngineGpt) blocked = true;
+    if (isMeetingBrain && !ws.accessMeetingBrain) blocked = true;
+    if (isEngine && !ws.accessEngine) blocked = true;
+
+    if (blocked) {
+      // Find the first allowed area and redirect there
+      if (ws.accessEngine) {
+        router.replace("/dashboard");
+      } else if (ws.accessEngineGpt) {
+        router.replace("/ai-writer");
+      } else if (ws.accessMeetingBrain) {
+        router.replace("/meetingbrain");
+      } else if (ws.accessOperations) {
+        router.replace("/operations/commissioned-cus");
+      } else if (ws.accessAdmin) {
+        router.replace("/settings/workspace");
+      } else {
+        // No access to any area — redirect to login
+        router.replace("/login");
+      }
+    }
+  }, [wsCtx, pathname, router]);
+
+  return <>{children}</>;
 }

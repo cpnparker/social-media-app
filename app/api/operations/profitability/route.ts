@@ -8,6 +8,8 @@ import {
   buildClientProfitability,
   fuzzyMatchClient,
 } from "@/lib/clockify";
+import { nextDay } from "@/lib/date-utils";
+import { isExpiredCUWriteOff } from "@/lib/expired-cus";
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -52,17 +54,18 @@ export async function GET(req: NextRequest) {
         .select("*")
         .order("name_client", { ascending: true }),
       supabase.from("app_contracts").select("*"),
-      // Tasks completed in the period — sum units_content for CUs
+      // Tasks completed in the period — sum units_content for CUs.
+      // TEXT bare-date column — bare gte / lt(nextDay), see lib/date-utils.ts
       supabase
         .from("app_tasks_content")
-        .select("id_client, id_contract, units_content, date_completed, flag_spiked")
-        .gte("date_completed", fromISO)
-        .lte("date_completed", toISO),
+        .select("id_client, id_contract, units_content, date_completed, flag_spiked, name_content, type_content")
+        .gte("date_completed", fromDate)
+        .lt("date_completed", nextDay(toDate)),
       supabase
         .from("app_tasks_social")
         .select("id_client, id_contract, units_content, date_completed, flag_spiked")
-        .gte("date_completed", fromISO)
-        .lte("date_completed", toISO),
+        .gte("date_completed", fromDate)
+        .lt("date_completed", nextDay(toDate)),
     ]);
 
     // ── 2. Build Clockify per-client hour aggregation ──
@@ -84,8 +87,17 @@ export async function GET(req: NextRequest) {
       { cus: number; taskCount: number }
     >();
 
+    // Expired-CU write-offs are always excluded here, with no toggle: they are
+    // contract-closure accounting entries that consumed ZERO production hours,
+    // so leaving them in the denominator makes hours-per-CU look better than
+    // the team actually performed (5.2% of the trailing-12-month CU total).
+    let writeOffCUs = 0;
     for (const t of contentTasks) {
       if (t.flag_spiked === 1) continue;
+      if (isExpiredCUWriteOff(t.name_content, t.type_content)) {
+        writeOffCUs += Number(t.units_content) || 0;
+        continue;
+      }
       const clientId = t.id_client ? String(t.id_client) : null;
       if (!clientId) continue;
       const cus = Number(t.units_content) || 0;
@@ -127,10 +139,11 @@ export async function GET(req: NextRequest) {
     // Group contracts by Supabase client id, filtered to period overlap
     const contractsByClientId = new Map<string, Record<string, any>[]>();
     for (const c of supabaseContracts) {
+      // Bare-date string compares — app_contracts dates are TEXT "YYYY-MM-DD"
       const cStart = c.date_start || null;
       const cEnd = c.date_end || null;
       const overlaps =
-        (!cStart || cStart <= toISO) && (!cEnd || cEnd >= fromISO);
+        (!cStart || cStart <= toDate) && (!cEnd || cEnd >= fromDate);
       if (!overlaps) continue;
       const cid = String(c.id_client);
       if (!contractsByClientId.has(cid)) contractsByClientId.set(cid, []);
@@ -268,6 +281,7 @@ export async function GET(req: NextRequest) {
       meta: {
         from: fromISO,
         to: toISO,
+        expiredCUsExcluded: r2(writeOffCUs),
         clockifyClientsCount: clockifyClients.length,
         timeEntriesCount: timeEntries.length,
       },

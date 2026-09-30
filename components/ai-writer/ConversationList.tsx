@@ -76,7 +76,7 @@ export default function ConversationList({
             placeholder="Search conversations..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="pl-8 h-8 text-xs"
+            className="pl-8 h-9 text-sm"
           />
         </div>
       </div>
@@ -88,7 +88,7 @@ export default function ConversationList({
             key={t}
             onClick={() => setTab(t)}
             className={cn(
-              "flex-1 py-2 text-xs font-medium text-center transition-colors border-b-2",
+              "flex-1 py-2.5 text-sm md:text-xs font-medium text-center transition-colors border-b-2",
               tab === t
                 ? "border-primary text-foreground"
                 : "border-transparent text-muted-foreground hover:text-foreground"
@@ -121,7 +121,7 @@ export default function ConversationList({
               key={conv.id}
               onClick={() => onSelect(conv.id)}
               className={cn(
-                "w-full text-left px-3 py-2.5 border-b transition-colors hover:bg-muted/50",
+                "w-full text-left px-3 py-3 border-b transition-colors hover:bg-muted/50",
                 selectedId === conv.id && "bg-muted"
               )}
             >
@@ -129,7 +129,7 @@ export default function ConversationList({
                 <MessageSquare className="h-3.5 w-3.5 mt-0.5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
-                    <span className="text-xs font-medium truncate">
+                    <span className="text-sm font-medium truncate">
                       {conv.title}
                     </span>
                     {conv.visibility === "private" ? (
@@ -141,12 +141,12 @@ export default function ConversationList({
                   <div className="flex items-center gap-1.5 mt-0.5">
                     <Badge
                       variant="outline"
-                      className="text-[9px] px-1 py-0 h-4 font-normal"
+                      className="text-[10px] px-1.5 py-0 h-4 font-normal"
                     >
                       {conv.model.includes("grok") ? "Grok" : "Claude"}
                     </Badge>
-                    <span className="text-[10px] text-muted-foreground">
-                      {timeAgo(conv.updated_at)}
+                    <span className="text-xs text-muted-foreground">
+                      {timeAgo(conv.updatedAt)}
                     </span>
                   </div>
                 </div>

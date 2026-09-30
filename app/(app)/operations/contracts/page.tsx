@@ -21,8 +21,13 @@ import {
   X,
   ChevronLeft,
   ChevronRight,
+  Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useSettledDateRange, useLatestRequest } from "@/lib/use-settled-date-range";
+import { UnappliedRangeNote } from "@/components/operations/UnappliedRangeNote";
+import { downloadCSV } from "@/lib/csv-utils";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import {
   getTypeHex,
   typeColors,
@@ -162,12 +167,27 @@ export default function ContractsPage() {
   // Filters — no date filter on initial load to show all contracts
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  // What the list is actually for: the pickers only once they settle into a
+  // usable range (see useSettledDateRange).
+  const applied = useSettledDateRange(dateFrom, dateTo);
+  const beginRequest = useLatestRequest();
   const [statusFilter, setStatusFilter] = useState<"1" | "0" | "all">("1");
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [clientSearch, setClientSearch] = useState("");
   const [clientDropdownOpen, setClientDropdownOpen] = useState(false);
   const clientDropdownRef = useRef<HTMLDivElement>(null);
   const [selectedContractId, setSelectedContractId] = useState<string | null>(null);
+
+  // Global customer filter from the TopBar selector — overrides the page's
+  // own client picker so the two stay in sync.
+  const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
+  useEffect(() => {
+    if (globalCustomerId && globalCustomerId !== selectedClientId) {
+      setSelectedClientId(globalCustomerId);
+    }
+    // When the TopBar resets to All Customers we leave selectedClientId alone
+    // so the user's last in-page choice is preserved.
+  }, [globalCustomerId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Data
   const [clients, setClients] = useState<Client[]>([]);
@@ -189,17 +209,19 @@ export default function ContractsPage() {
 
   // ── Fetch base data ──
   const fetchBase = useCallback(async () => {
+    const req = beginRequest();
     setLoading(true);
     setError(null);
     try {
       const params = new URLSearchParams();
       if (selectedClientId) params.set("clientId", selectedClientId);
-      if (dateFrom) params.set("from", dateFrom);
-      if (dateTo) params.set("to", dateTo);
+      if (applied.from) params.set("from", applied.from);
+      if (applied.to) params.set("to", applied.to);
       params.set("active", statusFilter);
 
-      const res = await fetch(`/api/operations/contracts?${params}`);
+      const res = await fetch(`/api/operations/contracts?${params}`, { signal: req.signal });
       const data = await res.json();
+      if (!req.isCurrent()) return;
       if (!res.ok) {
         setError(data.error || `API error ${res.status}`);
         return;
@@ -207,12 +229,13 @@ export default function ContractsPage() {
       setClients(data.clients || []);
       setContracts(data.contracts || []);
     } catch (err: any) {
+      if (!req.isCurrent()) return;
       console.error("Failed to fetch contracts:", err);
       setError(err.message || "Failed to fetch contracts");
     } finally {
-      setLoading(false);
+      if (req.isCurrent()) setLoading(false);
     }
-  }, [selectedClientId, dateFrom, dateTo, statusFilter]);
+  }, [selectedClientId, applied.from, applied.to, statusFilter, beginRequest]);
 
   // ── Fetch contract detail ──
   const fetchDetail = useCallback(async (cId: string) => {
@@ -435,12 +458,19 @@ export default function ContractsPage() {
             {/* Date range */}
             <div>
               <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">From</label>
-              <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="h-8 text-xs w-[140px]" />
+              <Input type="date" ref={applied.fromRef} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="h-8 text-xs w-[140px]" />
             </div>
             <div>
               <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">To</label>
-              <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="h-8 text-xs w-[140px]" />
+              <Input type="date" ref={applied.toRef} value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="h-8 text-xs w-[140px]" />
             </div>
+            <UnappliedRangeNote
+              invalid={applied.invalid}
+              inputFrom={dateFrom}
+              inputTo={dateTo}
+              appliedFrom={applied.from}
+              appliedTo={applied.to}
+            />
 
             {/* Status toggle */}
             <div>
@@ -511,10 +541,29 @@ export default function ContractsPage() {
       {/* ── Contract Selector Table ── */}
       <Card className="border-0 shadow-sm">
         <CardContent className="p-0">
-          <div className="px-4 pt-4 pb-2">
+          <div className="px-4 pt-4 pb-2 flex items-center justify-between">
             <h3 className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
               Contracts ({contracts.length})
             </h3>
+            {sortedContracts.length > 0 && (
+              <button
+                onClick={() => downloadCSV(
+                  sortedContracts.map((c) => ({
+                    Contract: c.contractName,
+                    Client: c.clientName,
+                    Start: c.dateStart || "",
+                    End: c.dateEnd || "",
+                    Contracted: ((c.cusContract || 0)).toFixed(2),
+                    Delivered: ((c.cusDelivered || 0)).toFixed(2),
+                  })),
+                  "contracts.csv"
+                )}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+                title="Download CSV"
+              >
+                <Download className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
@@ -546,8 +595,8 @@ export default function ContractsPage() {
                       <td className="px-3 py-2 text-muted-foreground">{c.clientName}</td>
                       <td className="px-3 py-2 text-muted-foreground">{fmtDate(c.dateStart)}</td>
                       <td className="px-3 py-2 text-muted-foreground">{fmtDate(c.dateEnd)}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{c.cusContract}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{c.cusDelivered}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{c.cusContract.toFixed(2)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{c.cusDelivered.toFixed(2)}</td>
                     </tr>
                   ))
                 )}
@@ -593,10 +642,10 @@ export default function ContractsPage() {
                   {[
                     { label: "Start", value: fmtDate(selectedContract.dateStart) },
                     { label: "End", value: fmtDate(selectedContract.dateEnd) },
-                    { label: "Contracted CUs", value: String(selectedContract.cusContract) },
-                    { label: "Delivered CUs", value: String(selectedContract.cusDelivered) },
-                    { label: "Commissioned CUs", value: String(contractDetail.commissionedCUs) },
-                    { label: "Spiked CUs", value: String(contractDetail.spikedCUs) },
+                    { label: "Contracted CUs", value: selectedContract.cusContract.toFixed(2) },
+                    { label: "Delivered CUs", value: selectedContract.cusDelivered.toFixed(2) },
+                    { label: "Commissioned CUs", value: contractDetail.commissionedCUs.toFixed(2) },
+                    { label: "Spiked CUs", value: contractDetail.spikedCUs.toFixed(2) },
                   ].map((kpi) => (
                     <Card key={kpi.label} className="border shadow-none">
                       <CardContent className="p-3">
@@ -685,7 +734,7 @@ export default function ContractsPage() {
                                     </span>
                                   </td>
                                   <td className="px-3 py-2 text-right tabular-nums">{t.count}</td>
-                                  <td className="px-3 py-2 text-right tabular-nums">{t.cus}</td>
+                                  <td className="px-3 py-2 text-right tabular-nums">{t.cus.toFixed(2)}</td>
                                 </tr>
                               ))}
                             </tbody>
@@ -740,7 +789,7 @@ export default function ContractsPage() {
                                     </span>
                                   </td>
                                   <td className="px-3 py-2 text-right tabular-nums">{f.count}</td>
-                                  <td className="px-3 py-2 text-right tabular-nums">{f.cus}</td>
+                                  <td className="px-3 py-2 text-right tabular-nums">{f.cus.toFixed(2)}</td>
                                 </tr>
                               ))}
                             </tbody>
@@ -800,14 +849,14 @@ export default function ContractsPage() {
                                     {item.type.replace(/_/g, " ")}
                                   </Badge>
                                 </td>
-                                <td className="px-3 py-2 text-right tabular-nums">{item.cus}</td>
+                                <td className="px-3 py-2 text-right tabular-nums">{item.cus.toFixed(2)}</td>
                                 <td className="px-3 py-2 text-muted-foreground">{fmtDate(item.dateCreated)}</td>
                                 <td className="px-3 py-2 text-muted-foreground">{fmtDate(item.dateCompleted)}</td>
                                 <td className="px-3 py-2 text-muted-foreground truncate max-w-[120px]">{item.assignee || "\u2014"}</td>
                                 <td className="px-3 py-2">
                                   {item.contentId && (
                                     <a
-                                      href={`https://app.thecontentengine.com/content/${item.contentId}`}
+                                      href={`https://app.thecontentengine.com/all/contents/${item.contentId}`}
                                       target="_blank" rel="noopener noreferrer"
                                       className="text-muted-foreground hover:text-foreground transition-colors"
                                     >

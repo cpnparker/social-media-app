@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { intelligenceDb } from "@/lib/supabase-intelligence";
 import { resolveWorkspaceAndUser } from "@/lib/api-utils";
 
 // GET /api/workspace — get current workspace
 export async function GET() {
   try {
     const { workspaceId } = await resolveWorkspaceAndUser();
-    const { data: workspace, error } = await supabase
+    const { data: workspace, error } = await intelligenceDb
       .from("workspaces")
       .select("*")
       .eq("id", workspaceId)
@@ -45,7 +45,7 @@ export async function PUT(req: NextRequest) {
     if (body.lateApiKey !== undefined) updateData.late_api_key = body.lateApiKey;
     if (body.aiModel !== undefined) updateData.ai_model = body.aiModel;
 
-    const { data: updated, error } = await supabase
+    const { data: updated, error } = await intelligenceDb
       .from("workspaces")
       .update(updateData)
       .eq("id", workspaceId)

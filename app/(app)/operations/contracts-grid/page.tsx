@@ -14,8 +14,15 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useSettledDateRange, useLatestRequest } from "@/lib/use-settled-date-range";
+import { UnappliedRangeNote } from "@/components/operations/UnappliedRangeNote";
+import { formatLocalDate } from "@/lib/date-utils";
+import { downloadCSV } from "@/lib/csv-utils";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
+import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
 
 /* ─────────────── Types ─────────────── */
 
@@ -50,10 +57,7 @@ const fmtDate = (d: string | null) => {
 
 const fmtPct = (n: number) => `${Math.round(n * 100)}%`;
 
-const fmtNum = (n: number) => {
-  if (Number.isInteger(n)) return String(n);
-  return n.toFixed(1);
-};
+const fmtNum = (n: number) => n.toFixed(2);
 
 /** 5-tier row color based on gap between pctDuration and pctCommission */
 function getRowColor(pctDuration: number, pctCommission: number): string {
@@ -164,50 +168,64 @@ function sortRows<T extends Record<string, any>>(rows: T[], key: string, asc: bo
 /* ─────────────── Component ─────────────── */
 
 export default function ContractsGridPage() {
-  const today = new Date().toISOString().split("T")[0];
+  const today = formatLocalDate(new Date());
 
   const [contracts, setContracts] = useState<EnrichedContract[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [endAfter, setEndAfter] = useState(today);
+  // One date, so an open range from it: follows the picker only once it holds
+  // a whole date (see useSettledDateRange).
+  const endAfterRange = useSettledDateRange(endAfter, "");
+  const appliedEndAfter = endAfterRange.from;
+  const beginRequest = useLatestRequest();
   const [searchQuery, setSearchQuery] = useState("");
   const [excludeTestClients, setExcludeTestClients] = useState(true);
   const EXCLUDE_CLIENT_IDS = "1,2";
+
+  // Global customer filter from the TopBar selector
+  const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
 
   const gridSort = useSort("gapCommission", false);
 
   /* ─── Fetch ─── */
   const fetchContracts = useCallback(async (endAfterDate: string, excludeClients: boolean) => {
+    const req = beginRequest();
     setLoading(true);
     try {
       const params = new URLSearchParams();
       if (endAfterDate) params.set("endAfter", endAfterDate);
       if (excludeClients) params.set("excludeClients", EXCLUDE_CLIENT_IDS);
-      const res = await fetch(`/api/operations/contracts-grid?${params.toString()}`);
+      const res = await fetch(`/api/operations/contracts-grid?${params.toString()}`, { signal: req.signal });
       const data = await res.json();
+      if (!req.isCurrent()) return;
       const enriched = (data.contracts || []).map(enrichContract);
       setContracts(enriched);
     } catch (err) {
+      if (!req.isCurrent()) return;
       console.error("Failed to fetch contracts:", err);
     } finally {
-      setLoading(false);
+      if (req.isCurrent()) setLoading(false);
     }
-  }, []);
+  }, [beginRequest]);
 
   useEffect(() => {
-    fetchContracts(endAfter, excludeTestClients);
-  }, [endAfter, excludeTestClients, fetchContracts]);
+    fetchContracts(appliedEndAfter, excludeTestClients);
+  }, [appliedEndAfter, excludeTestClients, fetchContracts]);
 
   /* ─── Filtered contracts ─── */
   const filtered = useMemo(() => {
-    if (!searchQuery.trim()) return contracts;
-    const q = searchQuery.toLowerCase();
-    return contracts.filter(
-      (c) =>
+    const q = searchQuery.trim().toLowerCase();
+    return contracts.filter((c) => {
+      // Global customer scope (from the TopBar selector)
+      if (globalCustomerId && c.clientId !== globalCustomerId) return false;
+      if (!q) return true;
+      return (
         c.clientName.toLowerCase().includes(q) ||
         c.contractName.toLowerCase().includes(q)
-    );
-  }, [contracts, searchQuery]);
+      );
+    });
+  }, [contracts, searchQuery, globalCustomerId]);
 
   /* ─── Sorted contracts ─── */
   const sorted = useMemo(
@@ -249,7 +267,8 @@ export default function ContractsGridPage() {
       <Card className="border-0 shadow-sm">
         <CardContent className="p-4">
           <div className="flex flex-col lg:flex-row lg:items-end gap-4">
-            <div className="flex items-end gap-2.5">
+            <div className="flex items-end gap-2.5 flex-wrap">
+              <CustomerDropdownFilter />
               <div className="w-[200px]">
                 <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">
                   Contracts ending after
@@ -258,11 +277,19 @@ export default function ContractsGridPage() {
                   <CalendarDays className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/50 pointer-events-none" />
                   <Input
                     type="date"
+                    ref={endAfterRange.fromRef}
                     value={endAfter}
                     onChange={(e) => setEndAfter(e.target.value)}
                     className="h-8 text-xs pl-7"
                   />
                 </div>
+                <UnappliedRangeNote
+                  invalid={endAfterRange.invalid}
+                  inputFrom={endAfter}
+                  inputTo=""
+                  appliedFrom={endAfterRange.from}
+                  appliedTo=""
+                />
               </div>
             </div>
             <div className="flex items-center gap-3 flex-1 lg:justify-end">
@@ -339,10 +366,33 @@ export default function ContractsGridPage() {
           {/* Main contracts table */}
           <Card className="border-0 shadow-sm">
             <CardContent className="p-0">
-              <div className="px-4 py-2.5 border-b">
+              <div className="px-4 py-2.5 border-b flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                   Contracts ({sorted.length})
                 </h2>
+                {sorted.length > 0 && (
+                  <button
+                    onClick={() => downloadCSV(sorted.map(row => ({
+                      Client: row.clientName,
+                      Contract: row.contractName,
+                      Start: row.dateStart ?? "",
+                      End: row.dateEnd ?? "",
+                      "CUs Contract": (row.cusContract).toFixed(2),
+                      "CUs Commissioned": (row.cusCommissioned).toFixed(2),
+                      "CUs Complete": (row.cusComplete).toFixed(2),
+                      "Remaining (Comm.)": (row.remainingCommission).toFixed(2),
+                      "Remaining (Comp.)": (row.remainingComplete).toFixed(2),
+                      "% Duration": fmtPct(row.pctDuration),
+                      "% Commissioned": fmtPct(row.pctCommission),
+                      "% Complete": fmtPct(row.pctComplete),
+                      Gap: (row.gapCommission).toFixed(2),
+                    })), "contracts-grid.csv")}
+                    className="text-muted-foreground hover:text-foreground transition-colors"
+                    title="Download CSV"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
               {sorted.length === 0 ? (
                 <p className="text-xs text-muted-foreground text-center py-8">No contracts found.</p>

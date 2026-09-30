@@ -16,146 +16,29 @@ import {
   Search,
   CalendarDays,
   Users,
+  Download,
+  Gauge,
+  BarChart3,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { isExpiredCUWriteOff } from "@/lib/expired-cus";
+import { formatLocalDate } from "@/lib/date-utils";
+import { useSettledDateRange, useLatestRequest } from "@/lib/use-settled-date-range";
+import { UnappliedRangeNote } from "@/components/operations/UnappliedRangeNote";
+import { downloadCSV } from "@/lib/csv-utils";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
+import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
+import { TeamWorkload } from "@/components/operations/TeamWorkload";
 
 /* ─────────────── Team structure ─────────────── */
 
-interface TeamNode {
-  label: string;
-  value: string;
-  children?: TeamNode[];
-}
+import { TEAMS as SHARED_TEAMS, getLeafIds as sharedGetLeafIds, isLeaf as sharedIsLeaf, type TeamNode, canonicalUserId, expandAliases } from "@/lib/teams";
 
-const TEAMS: TeamNode[] = [
-  {
-    label: "All Staff",
-    value: "all",
-    children: [
-      {
-        label: "Account Managers",
-        value: "accountmanagers",
-        children: [
-          { label: "Arne Dumez", value: "12" },
-          { label: "Catherine Allen", value: "14" },
-          { label: "Ceri Radford", value: "17" },
-          { label: "Charlie Filmer-Court", value: "172" },
-          { label: "Ed Brereton", value: "42" },
-          { label: "Jack Heslehurst", value: "62" },
-          { label: "Katie Roberts", value: "75" },
-          { label: "John Hills", value: "667" },
-          { label: "Amy White", value: "666" },
-        ],
-      },
-      {
-        label: "Hybrid",
-        value: "hybrid",
-        children: [{ label: "Charlie Avery", value: "191" }],
-      },
-      {
-        label: "Content Managers",
-        value: "content_managers",
-        children: [
-          { label: "Holly Goodall", value: "252" },
-          { label: "Marzia Daudzai", value: "61" },
-          { label: "Manali Bhutwala", value: "691" },
-        ],
-      },
-      {
-        label: "Video Team",
-        value: "video",
-        children: [
-          { label: "Carlota Caldeira da Silva", value: "92" },
-          { label: "Nathan Lomax-Cooke", value: "124" },
-        ],
-      },
-      {
-        label: "Video Freelancers",
-        value: "videofreelancers",
-        children: [
-          { label: "Espranza", value: "383" },
-          { label: "Hustle Media", value: "539" },
-          { label: "The Junxion (Agency User)", value: "648" },
-          { label: "The Junxion (Freelancer User)", value: "653" },
-          { label: "Kennedy Oduor", value: "79" },
-          { label: "Pearse Owens", value: "591" },
-          { label: "Nostro People", value: "697" },
-        ],
-      },
-      {
-        label: "Visuals Team",
-        value: "visuals",
-        children: [
-          { label: "Jessica Foley", value: "43" },
-          { label: "Katie Romvari", value: "164" },
-          { label: "Nell Prieto", value: "328" },
-        ],
-      },
-      {
-        label: "Visual Freelancers",
-        value: "visualfreelancers",
-        children: [
-          { label: "Jenny Amer", value: "46" },
-          { label: "Emily Waterfiled", value: "686" },
-          { label: "Nick Venables", value: "227" },
-          { label: "Harry Tate", value: "326" },
-          { label: "Emma Lansdown", value: "609" },
-          { label: "Fatma Al Mansoury", value: "650" },
-        ],
-      },
-      {
-        label: "Voiceover Artists",
-        value: "voiceover",
-        children: [
-          { label: "Alison Tilley", value: "166" },
-          { label: "David Gilbert", value: "435" },
-          { label: "Harriet Leitch", value: "535" },
-          { label: "Ally Ibach", value: "574" },
-          { label: "Sakshi Sharma", value: "418" },
-          { label: "Wanda Rush", value: "454" },
-        ],
-      },
-      {
-        label: "Writers Team",
-        value: "writers",
-        children: [{ label: "Farahnaz Mohammed", value: "387" }],
-      },
-      {
-        label: "Writers Freelance",
-        value: "writersfreelance",
-        children: [
-          { label: "Andrew Wright", value: "52" },
-          { label: "Si Brandon", value: "26" },
-          { label: "Hilary Lamb", value: "77" },
-          { label: "Andrew Pettie", value: "68" },
-          { label: "Kate Thomas", value: "468" },
-          { label: "Nick Walshe", value: "350" },
-          { label: "Stephanie Thomson", value: "467" },
-          { label: "Angela Wipperman", value: "44" },
-        ],
-      },
-      {
-        label: "Strategy Team",
-        value: "strategy_team",
-        children: [
-          { label: "Prachi Srivastava", value: "150" },
-          { label: "Edward Brydon", value: "253" },
-          { label: "Gabriella Beer", value: "13" },
-        ],
-      },
-      {
-        label: "Strategy Freelancers",
-        value: "strategy_freelance",
-        children: [{ label: "Sophia D'Cruz", value: "611" }],
-      },
-      {
-        label: "Analytics",
-        value: "analytics",
-        children: [{ label: "Edward Rycroft", value: "455" }],
-      },
-    ],
-  },
-];
+const TEAMS = SHARED_TEAMS;
+
+const SELECTION_KEY = "ops.teamProduction.selection.v1";
+const VIEW_KEY = "ops.teamProduction.view.v1";
+
 
 /* ─────────────── Helpers ─────────────── */
 
@@ -173,8 +56,8 @@ function isLeaf(node: TeamNode): boolean {
 const getThisMonthRange = () => {
   const d = new Date();
   return {
-    from: new Date(d.getFullYear(), d.getMonth(), 1).toISOString().split("T")[0],
-    to: new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().split("T")[0],
+    from: formatLocalDate(new Date(d.getFullYear(), d.getMonth(), 1)),
+    to: formatLocalDate(new Date(d.getFullYear(), d.getMonth() + 1, 0)),
   };
 };
 
@@ -185,8 +68,8 @@ const presets = [
     getRange: () => {
       const d = new Date();
       return {
-        from: new Date(d.getFullYear(), d.getMonth() - 1, 1).toISOString().split("T")[0],
-        to: new Date(d.getFullYear(), d.getMonth(), 0).toISOString().split("T")[0],
+        from: formatLocalDate(new Date(d.getFullYear(), d.getMonth() - 1, 1)),
+        to: formatLocalDate(new Date(d.getFullYear(), d.getMonth(), 0)),
       };
     },
   },
@@ -196,8 +79,8 @@ const presets = [
       const d = new Date();
       const q = Math.floor(d.getMonth() / 3);
       return {
-        from: new Date(d.getFullYear(), q * 3, 1).toISOString().split("T")[0],
-        to: new Date(d.getFullYear(), q * 3 + 3, 0).toISOString().split("T")[0],
+        from: formatLocalDate(new Date(d.getFullYear(), q * 3, 1)),
+        to: formatLocalDate(new Date(d.getFullYear(), q * 3 + 3, 0)),
       };
     },
   },
@@ -396,12 +279,119 @@ export default function TeamProductionPage() {
   const [dateFrom, setDateFrom] = useState(initRange.from);
   const [dateTo, setDateTo] = useState(initRange.to);
   const [activePreset, setActivePreset] = useState<string | null>("This Month");
+  // What the data is actually for: the inputs only once they settle into a
+  // usable range (see useSettledDateRange). Everything but the inputs reads this.
+  const applied = useSettledDateRange(dateFrom, dateTo);
+  const beginRequest = useLatestRequest();
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Global customer filter from the TopBar selector
+  const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
 
   const [selectedUserIds, setSelectedUserIds] = useState<Set<string>>(new Set());
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set(["all"]));
 
+  // Two lenses on the same team. "workload" is what is on people's plates
+  // right now (Retool's Capacity Tracking / Work In Progress); "production"
+  // is what was assigned and delivered over a date range.
+  const [view, setView] = useState<"workload" | "production">("workload");
+  const [includeInternal, setIncludeInternal] = useState(true);
+
+  // Managers come back to the same team daily: remember the selection and the
+  // view per browser. Read after mount (window is not available on the
+  // server), and never write before the read, or the empty initial state
+  // would overwrite what was saved.
+  // State, not a ref: the write effect must not run until a render in which
+  // the restored selection is already in state (a ref flips inside the same
+  // commit, so the empty initial Set got saved first and, under StrictMode's
+  // double-run, was then read back as the "saved" selection).
+  const [restored, setRestored] = useState(false);
+  useEffect(() => {
+    try {
+      const fromUrl = new URLSearchParams(window.location.search).get("view");
+      const saved = window.localStorage.getItem(VIEW_KEY);
+      const v = fromUrl || saved;
+      if (v === "workload" || v === "production") setView(v);
+      const ids = JSON.parse(window.localStorage.getItem(SELECTION_KEY) || "[]");
+      if (Array.isArray(ids) && ids.every((x) => typeof x === "string")) setSelectedUserIds(new Set(ids));
+    } catch {
+      /* storage blocked or corrupt — start empty */
+    }
+    setRestored(true);
+  }, []);
+  useEffect(() => {
+    if (!restored) return;
+    try {
+      window.localStorage.setItem(SELECTION_KEY, JSON.stringify(Array.from(selectedUserIds)));
+    } catch {
+      /* ignore */
+    }
+  }, [selectedUserIds, restored]);
+  const changeView = (v: "workload" | "production") => {
+    setView(v);
+    try {
+      window.localStorage.setItem(VIEW_KEY, v);
+      const url = new URL(window.location.href);
+      url.searchParams.set("view", v);
+      window.history.replaceState(null, "", url.toString());
+    } catch {
+      /* ignore */
+    }
+  };
+
+  // All known user IDs across the engine, fetched once on mount. Users who
+  // aren't in the hardcoded TEAMS structure surface in a fallback "Other"
+  // group so they remain selectable here.
+  const [allUsers, setAllUsers] = useState<{ id: string; name: string }[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/operations/team-members")
+      .then((r) => (r.ok ? r.json() : { users: [] }))
+      .then((data) => {
+        if (!cancelled) setAllUsers(data.users || []);
+      })
+      .catch(() => {
+        if (!cancelled) setAllUsers([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Build the tree shown in the picker — TEAMS + any users not already in it.
+  const teamTree: TeamNode[] = useMemo(() => {
+    if (allUsers.length === 0) return TEAMS;
+    const knownIds = new Set<string>();
+    const collect = (node: TeamNode) => {
+      if (isLeaf(node)) knownIds.add(node.value);
+      else node.children?.forEach(collect);
+    };
+    TEAMS.forEach(collect);
+    // A person's second account is not a second person: leave it out of
+    // "Other Team Members" when any of their accounts is already in the tree.
+    const others = allUsers
+      .filter((u) => !expandAliases([u.id]).some((id) => knownIds.has(id)))
+      .map<TeamNode>((u) => ({ label: u.name, value: u.id }));
+    if (others.length === 0) return TEAMS;
+    // Insert "Other Team Members" as another child of the top "All Staff" node
+    return TEAMS.map((root) => {
+      if (root.value !== "all") return root;
+      return {
+        ...root,
+        children: [
+          ...(root.children || []),
+          {
+            label: "Other Team Members",
+            value: "other_team_members",
+            children: others.sort((a, b) => a.label.localeCompare(b.label)),
+          },
+        ],
+      };
+    });
+  }, [allUsers]);
+
   const [excludeTestClients, setExcludeTestClients] = useState(true);
+  const [hideExpiredCUs, setHideExpiredCUs] = useState(true);
   const EXCLUDE_CLIENT_IDS = "1,2";
 
   // Mobile team panel
@@ -438,73 +428,101 @@ export default function TeamProductionPage() {
 
   /* ─── Fetch data ─── */
   const fetchData = useCallback(async () => {
-    if (selectedUserIds.size === 0) {
+    // Taken before the early return too, so leaving the view or clearing the
+    // selection also retires a production request still in flight.
+    const req = beginRequest();
+    if (view !== "production" || selectedUserIds.size === 0) {
       setTasks([]);
+      setLoading(false);
       return;
     }
     setLoading(true);
     try {
       const params = new URLSearchParams({
-        from: dateFrom,
-        to: dateTo,
-        userIds: Array.from(selectedUserIds).join(","),
+        from: applied.from,
+        to: applied.to,
+        // Fetch every account of each selected person (see ACCOUNT_ALIASES)
+        userIds: expandAliases(Array.from(selectedUserIds)).join(","),
       });
       if (excludeTestClients) params.set("excludeClients", EXCLUDE_CLIENT_IDS);
-      const res = await fetch(`/api/operations/team-production?${params.toString()}`);
+      const res = await fetch(`/api/operations/team-production?${params.toString()}`, { signal: req.signal });
       const data = await res.json();
+      if (!req.isCurrent()) return;
       setTasks(data.tasks || []);
     } catch (err) {
+      if (!req.isCurrent()) return;
       console.error("Failed to fetch team production:", err);
     } finally {
-      setLoading(false);
+      if (req.isCurrent()) setLoading(false);
     }
-  }, [dateFrom, dateTo, selectedUserIds, excludeTestClients]);
+  }, [view, applied.from, applied.to, selectedUserIds, excludeTestClients, beginRequest]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
 
   /* ─── Filter by search ─── */
-  const filteredTasks = useMemo(() => {
-    if (!searchQuery.trim()) return tasks;
-    const q = searchQuery.toLowerCase();
-    return tasks.filter(
-      (t) =>
+  // Every filter EXCEPT the expired-CU one, so the toggle can report what it hides.
+  const filteredBeforeExpiry = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return tasks.filter((t) => {
+      // Global customer scope (from the TopBar selector)
+      if (globalCustomerId && t.customerId !== globalCustomerId) return false;
+      if (!q) return true;
+      return (
         t.contentTitle.toLowerCase().includes(q) ||
         t.customerName.toLowerCase().includes(q) ||
         (t.assigneeName || "").toLowerCase().includes(q) ||
         t.taskTitle.toLowerCase().includes(q) ||
         t.contentType.toLowerCase().includes(q)
-    );
-  }, [tasks, searchQuery]);
+      );
+    });
+  }, [tasks, searchQuery, globalCustomerId]);
+
+  const filteredTasks = useMemo(
+    () =>
+      hideExpiredCUs
+        ? filteredBeforeExpiry.filter((t) => !isExpiredCUWriteOff(t.contentTitle, t.contentType))
+        : filteredBeforeExpiry,
+    [filteredBeforeExpiry, hideExpiredCUs]
+  );
+
+  const expiredExcluded = useMemo(() => {
+    const items = filteredBeforeExpiry.filter((t) => isExpiredCUWriteOff(t.contentTitle, t.contentType));
+    return {
+      count: Array.from(new Set(items.map((t) => t.contentId || t.taskId))).length,
+      cus: items.reduce((sum, t) => sum + t.taskCUs, 0),
+      names: Array.from(new Set(items.map((t) => `${t.customerName} \u2014 ${t.contentTitle}`))),
+    };
+  }, [filteredBeforeExpiry]);
 
   /* ─── Split tasks ─── */
   const assignedTasks = useMemo(() => {
     return filteredTasks.filter((t) => {
       if (t.completedAt) return false;
-      const deadlineInPeriod = t.deadline && t.deadline >= dateFrom && t.deadline <= dateTo + "T23:59:59.999Z";
-      const createdInPeriod = t.createdAt && t.createdAt >= dateFrom && t.createdAt <= dateTo + "T23:59:59.999Z";
+      const deadlineInPeriod = t.deadline && t.deadline >= applied.from && t.deadline <= applied.to + "T23:59:59.999Z";
+      const createdInPeriod = t.createdAt && t.createdAt >= applied.from && t.createdAt <= applied.to + "T23:59:59.999Z";
       return deadlineInPeriod || createdInPeriod || !t.deadline;
     });
-  }, [filteredTasks, dateFrom, dateTo]);
+  }, [filteredTasks, applied.from, applied.to]);
 
   const deliveredTasks = useMemo(() => {
     return filteredTasks.filter((t) => {
       if (!t.completedAt) return false;
-      return t.completedAt >= dateFrom && t.completedAt <= dateTo + "T23:59:59.999Z";
+      return t.completedAt >= applied.from && t.completedAt <= applied.to + "T23:59:59.999Z";
     });
-  }, [filteredTasks, dateFrom, dateTo]);
+  }, [filteredTasks, applied.from, applied.to]);
 
   /* ─── Per-user summary ─── */
   const userSummary = useMemo(() => {
     const map: Record<string, { assigneeName: string; assigneeId: string; assignedCUs: number; deliveredCUs: number }> = {};
     for (const t of assignedTasks) {
-      const id = t.assigneeId || "unknown";
+      const id = canonicalUserId(t.assigneeId || "unknown");
       if (!map[id]) map[id] = { assigneeName: t.assigneeName || "Unknown", assigneeId: id, assignedCUs: 0, deliveredCUs: 0 };
       map[id].assignedCUs += t.taskCUs;
     }
     for (const t of deliveredTasks) {
-      const id = t.assigneeId || "unknown";
+      const id = canonicalUserId(t.assigneeId || "unknown");
       if (!map[id]) map[id] = { assigneeName: t.assigneeName || "Unknown", assigneeId: id, assignedCUs: 0, deliveredCUs: 0 };
       map[id].deliveredCUs += t.taskCUs;
     }
@@ -544,13 +562,39 @@ export default function TeamProductionPage() {
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Team Production</h1>
         <p className="text-sm text-muted-foreground mt-0.5">
-          Track assigned and delivered content units by team member.
+          What your team has on right now, and what it has delivered.
         </p>
       </div>
 
       {/* Controls bar — full width, matches other operations pages */}
       <Card className="border-0 shadow-sm">
-        <CardContent className="p-3 flex flex-wrap items-center gap-3">
+        <CardContent className="p-3 space-y-3">
+          <div className="flex flex-wrap items-end gap-3">
+            <CustomerDropdownFilter />
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+          {/* View switch */}
+          <div className="flex items-center gap-1 bg-muted rounded-lg p-0.5" aria-label="View">
+            {([
+              { v: "workload", label: "Workload", icon: Gauge },
+              { v: "production", label: "Production", icon: BarChart3 },
+            ] as const).map(({ v, label, icon: Icon }) => (
+              <button
+                key={v}
+                aria-pressed={view === v}
+                onClick={() => changeView(v)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors",
+                  view === v ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <Icon className="h-3.5 w-3.5" />
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {view === "production" && (<>
           {/* Date presets */}
           <div className="flex items-center gap-1 bg-muted/50 rounded-lg p-0.5">
             {presets.map((p) => (
@@ -572,6 +616,7 @@ export default function TeamProductionPage() {
             <CalendarDays className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
             <input
               type="date"
+              ref={applied.fromRef}
               value={dateFrom}
               onChange={(e) => { setDateFrom(e.target.value); setActivePreset(null); }}
               className="h-7 text-xs rounded-md border border-input bg-background px-2 focus:outline-none focus:ring-1 focus:ring-ring"
@@ -579,11 +624,24 @@ export default function TeamProductionPage() {
             <span className="text-xs text-muted-foreground">to</span>
             <input
               type="date"
+              ref={applied.toRef}
               value={dateTo}
               onChange={(e) => { setDateTo(e.target.value); setActivePreset(null); }}
               className="h-7 text-xs rounded-md border border-input bg-background px-2 focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
+          <UnappliedRangeNote
+            invalid={applied.invalid}
+            inputFrom={dateFrom}
+            inputTo={dateTo}
+            appliedFrom={applied.from}
+            appliedTo={applied.to}
+          />
+          </>)}
+
+          {view === "workload" && (
+            <span className="text-xs text-muted-foreground">Open tasks as of today, by deadline</span>
+          )}
 
           <div className="flex-1" />
 
@@ -593,11 +651,30 @@ export default function TeamProductionPage() {
             <Input type="text" placeholder="Search..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="h-7 text-xs pl-7" />
           </div>
 
+          {view === "workload" && (
+            <label
+              className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer shrink-0 select-none"
+              title="Internal TCE work (portfolio, pitches, templates) uses the same people's time, so it counts toward their workload. The test client is always excluded."
+            >
+              <input type="checkbox" checked={includeInternal} onChange={(e) => setIncludeInternal(e.target.checked)} className="rounded border-muted-foreground/30 h-3.5 w-3.5" />
+              Include internal TCE work
+            </label>
+          )}
+
+          {view === "production" && (<>
           {/* Exclude test */}
           <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer shrink-0 select-none">
             <input type="checkbox" checked={excludeTestClients} onChange={(e) => setExcludeTestClients(e.target.checked)} className="rounded border-muted-foreground/30 h-3.5 w-3.5" />
             Hide TCE &amp; test
           </label>
+          <label
+            className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer shrink-0 select-none"
+            title="Contract-closure write-offs (e.g. 'WBCSD expired CUs (2026)') are accounting adjustments, not produced work — nobody spent production time on them."
+          >
+            <input type="checkbox" checked={hideExpiredCUs} onChange={(e) => setHideExpiredCUs(e.target.checked)} className="rounded border-muted-foreground/30 h-3.5 w-3.5" />
+            Hide expired CUs
+          </label>
+          </>)}
 
           {/* Mobile team selector toggle */}
           <button
@@ -615,6 +692,7 @@ export default function TeamProductionPage() {
               </span>
             )}
           </button>
+          </div>
         </CardContent>
       </Card>
 
@@ -639,7 +717,7 @@ export default function TeamProductionPage() {
               <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider px-2 py-1 mb-1">
                 Select Team / Members
               </div>
-              {TEAMS.map((node) => (
+              {teamTree.map((node) => (
                 <TreeNode
                   key={node.value}
                   node={node}
@@ -675,7 +753,7 @@ export default function TeamProductionPage() {
               <CardContent className="p-12 text-center">
                 <Users className="h-8 w-8 mx-auto text-muted-foreground/30 mb-3" />
                 <p className="text-sm text-muted-foreground">
-                  Select a team or team member to view production data.
+                  Select a team or team member to see {view === "workload" ? "what they have on" : "production data"}.
                 </p>
                 <button
                   onClick={() => setShowTeamPanel(true)}
@@ -685,6 +763,13 @@ export default function TeamProductionPage() {
                 </button>
               </CardContent>
             </Card>
+          ) : view === "workload" ? (
+            <TeamWorkload
+              selectedUserIds={Array.from(selectedUserIds)}
+              searchQuery={searchQuery}
+              globalCustomerId={globalCustomerId}
+              includeInternal={includeInternal}
+            />
           ) : loading ? (
             <div className="flex items-center justify-center py-20">
               <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -699,7 +784,7 @@ export default function TeamProductionPage() {
                       <ClipboardList className="h-5 w-5 text-blue-500" />
                     </div>
                     <div>
-                      <p className="text-2xl font-bold tabular-nums">{totalAssignedCUs.toFixed(1)}</p>
+                      <p className="text-2xl font-bold tabular-nums">{totalAssignedCUs.toFixed(2)}</p>
                       <p className="text-xs text-muted-foreground">Assigned Tasks CUs</p>
                     </div>
                     <span className="ml-auto text-xs text-muted-foreground tabular-nums">{assignedTasks.length} tasks</span>
@@ -711,7 +796,7 @@ export default function TeamProductionPage() {
                       <CheckCircle2 className="h-5 w-5 text-emerald-500" />
                     </div>
                     <div>
-                      <p className="text-2xl font-bold tabular-nums">{totalDeliveredCUs.toFixed(1)}</p>
+                      <p className="text-2xl font-bold tabular-nums">{totalDeliveredCUs.toFixed(2)}</p>
                       <p className="text-xs text-muted-foreground">Delivered Tasks CUs</p>
                     </div>
                     <span className="ml-auto text-xs text-muted-foreground tabular-nums">{deliveredTasks.length} tasks</span>
@@ -719,9 +804,24 @@ export default function TeamProductionPage() {
                 </Card>
               </div>
 
+              {/* Expired-CU write-offs held back by the toggle — shown so the
+                  headline number is never silently different from Retool. */}
+              {hideExpiredCUs && expiredExcluded.count > 0 && (
+                <p className="text-[11px] text-muted-foreground mb-3" title={expiredExcluded.names.join("\n")}>
+                  Excludes {expiredExcluded.count} expired-CU write-off{expiredExcluded.count === 1 ? "" : "s"} ({expiredExcluded.cus.toFixed(2)} CU) &mdash; contract-closure adjustments, not produced work. Untick &ldquo;Hide expired CUs&rdquo; to include them.
+                </p>
+              )}
               {/* Summary table */}
               <Card className="border-0 shadow-sm">
                 <CardContent className="p-0">
+                  <div className="px-4 py-3 border-b flex items-center justify-between">
+                    <h3 className="text-sm font-semibold">Summary</h3>
+                    {sortedSummary.length > 0 && (
+                      <button onClick={() => downloadCSV(sortedSummary.map(row => ({ "Team Member": row.assigneeName, "Assigned CUs": (row.assignedCUs).toFixed(2), "Delivered CUs": (row.deliveredCUs).toFixed(2) })), "team-production-summary.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                        <Download className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
                   <div className="overflow-auto max-h-[240px]">
                     <table className="w-full text-xs">
                       <thead className="sticky top-0 bg-background z-[1]">
@@ -738,16 +838,16 @@ export default function TeamProductionPage() {
                           sortedSummary.map((u) => (
                             <tr key={u.assigneeId} className="border-b border-border/30 hover:bg-muted/20 transition-colors">
                               <td className="px-3 py-2 font-medium">{u.assigneeName}</td>
-                              <td className="px-3 py-2 text-right tabular-nums">{u.assignedCUs.toFixed(1)}</td>
-                              <td className="px-3 py-2 text-right tabular-nums">{u.deliveredCUs.toFixed(1)}</td>
+                              <td className="px-3 py-2 text-right tabular-nums">{u.assignedCUs.toFixed(2)}</td>
+                              <td className="px-3 py-2 text-right tabular-nums">{u.deliveredCUs.toFixed(2)}</td>
                             </tr>
                           ))
                         )}
                         {sortedSummary.length > 0 && (
                           <tr className="border-t-2 border-border bg-muted/20 font-semibold">
                             <td className="px-3 py-2">Total</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{totalAssignedCUs.toFixed(1)}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{totalDeliveredCUs.toFixed(1)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{totalAssignedCUs.toFixed(2)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{totalDeliveredCUs.toFixed(2)}</td>
                           </tr>
                         )}
                       </tbody>
@@ -759,10 +859,17 @@ export default function TeamProductionPage() {
               {/* Assigned Tasks Table */}
               <Card className="border-0 shadow-sm">
                 <CardContent className="p-0">
-                  <div className="px-4 py-3 border-b flex items-center gap-2">
-                    <ClipboardList className="h-4 w-4 text-blue-500" />
-                    <h3 className="text-sm font-semibold">Assigned Tasks</h3>
-                    <span className="text-xs text-muted-foreground">({assignedTasks.length})</span>
+                  <div className="px-4 py-3 border-b flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <ClipboardList className="h-4 w-4 text-blue-500" />
+                      <h3 className="text-sm font-semibold">Assigned Tasks</h3>
+                      <span className="text-xs text-muted-foreground">({assignedTasks.length})</span>
+                    </div>
+                    {assignedTasks.length > 0 && (
+                      <button onClick={() => downloadCSV(assignedTasks.map(row => ({ Assignee: row.assigneeName || "", Customer: row.customerName, Type: row.contentType, Content: row.contentTitle, Task: row.taskTitle, CUs: (row.taskCUs).toFixed(2), Deadline: row.deadline || "", Created: row.createdAt || "" })), "team-assigned-tasks.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                        <Download className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </div>
                   <div className="overflow-auto max-h-[400px]">
                     <table className="w-full text-xs">
@@ -792,7 +899,7 @@ export default function TeamProductionPage() {
                                 <td className="px-3 py-2 capitalize">{t.contentType}</td>
                                 <td className="px-3 py-2 max-w-[200px] truncate" title={t.contentTitle}>{t.contentTitle}</td>
                                 <td className="px-3 py-2 capitalize">{t.taskTitle}</td>
-                                <td className="px-3 py-2 text-right tabular-nums">{t.taskCUs.toFixed(1)}</td>
+                                <td className="px-3 py-2 text-right tabular-nums">{t.taskCUs.toFixed(2)}</td>
                                 <td className={cn("px-3 py-2", overdue && "text-red-500 font-medium")}>{fmtDate(t.deadline)}</td>
                                 <td className="px-3 py-2">{fmtDate(t.createdAt)}</td>
                                 <td className="px-3 py-2 text-center">
@@ -815,10 +922,17 @@ export default function TeamProductionPage() {
               {/* Delivered Tasks Table */}
               <Card className="border-0 shadow-sm">
                 <CardContent className="p-0">
-                  <div className="px-4 py-3 border-b flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                    <h3 className="text-sm font-semibold">Delivered Tasks</h3>
-                    <span className="text-xs text-muted-foreground">({deliveredTasks.length})</span>
+                  <div className="px-4 py-3 border-b flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                      <h3 className="text-sm font-semibold">Delivered Tasks</h3>
+                      <span className="text-xs text-muted-foreground">({deliveredTasks.length})</span>
+                    </div>
+                    {deliveredTasks.length > 0 && (
+                      <button onClick={() => downloadCSV(deliveredTasks.map(row => ({ Assignee: row.assigneeName || "", Customer: row.customerName, Type: row.contentType, Content: row.contentTitle, Task: row.taskTitle, CUs: (row.taskCUs).toFixed(2), Completed: row.completedAt || "", Created: row.createdAt || "" })), "team-delivered-tasks.csv")} className="text-muted-foreground hover:text-foreground transition-colors" title="Download CSV">
+                        <Download className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </div>
                   <div className="overflow-auto max-h-[400px]">
                     <table className="w-full text-xs">
@@ -846,7 +960,7 @@ export default function TeamProductionPage() {
                               <td className="px-3 py-2 capitalize">{t.contentType}</td>
                               <td className="px-3 py-2 max-w-[200px] truncate" title={t.contentTitle}>{t.contentTitle}</td>
                               <td className="px-3 py-2 capitalize">{t.taskTitle}</td>
-                              <td className="px-3 py-2 text-right tabular-nums">{t.taskCUs.toFixed(1)}</td>
+                              <td className="px-3 py-2 text-right tabular-nums">{t.taskCUs.toFixed(2)}</td>
                               <td className="px-3 py-2">{fmtDate(t.completedAt)}</td>
                               <td className="px-3 py-2">{fmtDate(t.createdAt)}</td>
                               <td className="px-3 py-2 text-center">

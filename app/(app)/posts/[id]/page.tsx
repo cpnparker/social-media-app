@@ -525,7 +525,7 @@ export default function PostDetailPage() {
           {/* Post content — compact card */}
           <Card className="border-0 shadow-sm">
             <CardContent className="p-5">
-              <p className="text-sm leading-relaxed whitespace-pre-wrap">
+              <p className="text-sm leading-relaxed whitespace-pre-wrap break-anywhere">
                 {post.content}
               </p>
 

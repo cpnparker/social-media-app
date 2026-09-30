@@ -729,7 +729,7 @@ export default function CustomerDetailPage() {
                   <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">
                     Notes
                   </span>
-                  <p className="text-sm text-foreground/80 whitespace-pre-wrap">
+                  <p className="text-sm text-foreground/80 whitespace-pre-wrap break-anywhere">
                     {customer.notes}
                   </p>
                 </div>

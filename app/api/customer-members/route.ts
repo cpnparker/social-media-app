@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { auth } from "@/lib/auth";
+import { findUserByEmail } from "@/lib/user-lookup";
 
 // GET /api/customer-members?customerId=xxx — list members for a customer
 export async function GET(req: NextRequest) {
@@ -64,14 +65,10 @@ export async function POST(req: NextRequest) {
     const normalizedEmail = email.trim().toLowerCase();
     const clientId = parseInt(customerId, 10);
 
-    // Find or create user
-    let { data: existingUser } = await supabase
-      .from("users")
-      .select("*")
-      .eq("email_user", normalizedEmail)
-      .is("date_deleted", null)
-      .limit(1)
-      .single();
+    // Find or create user. The lookup must be case-insensitive: normalizedEmail
+    // is lowercase, many stored rows are not, and an `eq` miss here does not
+    // fail — it creates a duplicate account for someone who already exists.
+    let existingUser = await findUserByEmail<any>(normalizedEmail, "*");
 
     if (!existingUser) {
       const namePart = normalizedEmail.split("@")[0].replace(/[._-]/g, " ");

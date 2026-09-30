@@ -14,8 +14,15 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { isExpiredCUWriteOff } from "@/lib/expired-cus";
+import { formatLocalDate } from "@/lib/date-utils";
+import { useSettledDateRange, useLatestRequest } from "@/lib/use-settled-date-range";
+import { UnappliedRangeNote } from "@/components/operations/UnappliedRangeNote";
+import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
+import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
 import {
   categorizeContentType,
   CATEGORY_ORDER,
@@ -66,8 +73,8 @@ interface FormatTask {
 const getThisMonthRange = () => {
   const d = new Date();
   return {
-    from: new Date(d.getFullYear(), d.getMonth(), 1).toISOString().split("T")[0],
-    to: new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().split("T")[0],
+    from: formatLocalDate(new Date(d.getFullYear(), d.getMonth(), 1)),
+    to: formatLocalDate(new Date(d.getFullYear(), d.getMonth() + 1, 0)),
   };
 };
 
@@ -78,8 +85,8 @@ const presets = [
     getRange: () => {
       const d = new Date();
       return {
-        from: new Date(d.getFullYear(), d.getMonth() - 1, 1).toISOString().split("T")[0],
-        to: new Date(d.getFullYear(), d.getMonth(), 0).toISOString().split("T")[0],
+        from: formatLocalDate(new Date(d.getFullYear(), d.getMonth() - 1, 1)),
+        to: formatLocalDate(new Date(d.getFullYear(), d.getMonth(), 0)),
       };
     },
   },
@@ -89,8 +96,8 @@ const presets = [
       const d = new Date();
       const q = Math.floor(d.getMonth() / 3);
       return {
-        from: new Date(d.getFullYear(), q * 3, 1).toISOString().split("T")[0],
-        to: new Date(d.getFullYear(), q * 3 + 3, 0).toISOString().split("T")[0],
+        from: formatLocalDate(new Date(d.getFullYear(), q * 3, 1)),
+        to: formatLocalDate(new Date(d.getFullYear(), q * 3 + 3, 0)),
       };
     },
   },
@@ -115,6 +122,8 @@ const CATEGORY_HEX: Record<string, string> = {
   Strategy: "#f59e0b",
   Other: "#6b7280",
 };
+
+import { downloadCSV } from "@/lib/csv-utils";
 
 /* ─── Sortable header helper ─── */
 function SortHeader({ label, sortKey, currentSort, currentAsc, onSort, align = "left" }: {
@@ -184,10 +193,18 @@ export default function FormatsPage() {
   const [dateFrom, setDateFrom] = useState(initRange.from);
   const [dateTo, setDateTo] = useState(initRange.to);
   const [activePreset, setActivePreset] = useState<string | null>("This Month");
+  // What the data is actually for: the inputs only once they settle into a
+  // usable range (see useSettledDateRange). Everything but the inputs reads this.
+  const applied = useSettledDateRange(dateFrom, dateTo);
+  const beginRequest = useLatestRequest();
 
   const [searchQuery, setSearchQuery] = useState("");
   const [excludeTestClients, setExcludeTestClients] = useState(true);
+  const [hideExpiredCUs, setHideExpiredCUs] = useState(true);
   const EXCLUDE_CLIENT_IDS = "1,2";
+
+  // Global customer filter from the TopBar selector
+  const globalCustomerId = useCustomerSafe()?.selectedCustomerId ?? null;
 
   // Tab 1 state
   const [selectedFormat, setSelectedFormat] = useState<string | null>(null);
@@ -204,27 +221,30 @@ export default function FormatsPage() {
 
   /* ─── Fetch ─── */
   const fetchTasks = useCallback(async (from: string, to: string, excludeClients: boolean) => {
+    const req = beginRequest();
     setLoading(true);
     try {
       const params = new URLSearchParams();
       if (from) params.set("from", from);
       if (to) params.set("to", to);
       if (excludeClients) params.set("excludeClients", EXCLUDE_CLIENT_IDS);
-      const res = await fetch(`/api/operations/formats?${params.toString()}`);
+      const res = await fetch(`/api/operations/formats?${params.toString()}`, { signal: req.signal });
       const data = await res.json();
+      if (!req.isCurrent()) return;
       setTasks(data.tasks || []);
       setSelectedFormat(null);
       setSelectedCustomerId(null);
     } catch (err) {
+      if (!req.isCurrent()) return;
       console.error("Failed to fetch:", err);
     } finally {
-      setLoading(false);
+      if (req.isCurrent()) setLoading(false);
     }
-  }, []);
+  }, [beginRequest]);
 
   useEffect(() => {
-    fetchTasks(dateFrom, dateTo, excludeTestClients);
-  }, [dateFrom, dateTo, excludeTestClients, fetchTasks]);
+    fetchTasks(applied.from, applied.to, excludeTestClients);
+  }, [applied.from, applied.to, excludeTestClients, fetchTasks]);
 
   const applyPreset = (preset: (typeof presets)[0]) => {
     const range = preset.getRange();
@@ -240,17 +260,38 @@ export default function FormatsPage() {
   };
 
   /* ─── Filtered tasks ─── */
-  const filtered = useMemo(() => {
-    if (!searchQuery.trim()) return tasks;
-    const q = searchQuery.toLowerCase();
-    return tasks.filter(
-      (t) =>
+  // Every filter EXCEPT the expired-CU one, so the toggle can report what it hides.
+  const filteredBeforeExpiry = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return tasks.filter((t) => {
+      // Global customer scope (from the TopBar selector)
+      if (globalCustomerId && t.clientId !== globalCustomerId) return false;
+      if (!q) return true;
+      return (
         t.contentName.toLowerCase().includes(q) ||
         t.clientName.toLowerCase().includes(q) ||
         t.contentType.toLowerCase().includes(q) ||
         t.taskType.toLowerCase().includes(q)
-    );
-  }, [tasks, searchQuery]);
+      );
+    });
+  }, [tasks, searchQuery, globalCustomerId]);
+
+  const filtered = useMemo(
+    () =>
+      hideExpiredCUs
+        ? filteredBeforeExpiry.filter((t) => !isExpiredCUWriteOff(t.contentName, t.contentType))
+        : filteredBeforeExpiry,
+    [filteredBeforeExpiry, hideExpiredCUs]
+  );
+
+  const expiredExcluded = useMemo(() => {
+    const items = filteredBeforeExpiry.filter((t) => isExpiredCUWriteOff(t.contentName, t.contentType));
+    return {
+      count: Array.from(new Set(items.map((t) => t.contentId || t.taskId))).length,
+      cus: items.reduce((sum, t) => sum + t.cus, 0),
+      names: Array.from(new Set(items.map((t) => `${t.clientName} \u2014 ${t.contentName}`))),
+    };
+  }, [filteredBeforeExpiry]);
 
   /* ─── Category summaries ─── */
   const categorySummary = useMemo(() => {
@@ -305,12 +346,20 @@ export default function FormatsPage() {
     return sortRows(Object.values(map), contentSort.currentSort, contentSort.currentAsc);
   }, [filtered, selectedFormat, contentSort.currentSort, contentSort.currentAsc]);
 
-  /* ─── Pie chart data ─── */
-  const pieData = useMemo(() => {
-    return formatList.map((f) => ({
-      name: f.type,
+  /* ─── Bar chart data (replaces pie chart) ─── */
+  const barData = useMemo(() => {
+    const top = formatList.slice(0, 15);
+    const rest = formatList.slice(15);
+    const rows = top.map((f) => ({
+      name: f.type.replace(/_/g, " "),
       value: Math.round(f.cus * 10) / 10,
+      category: f.category,
     }));
+    if (rest.length > 0) {
+      const otherCUs = rest.reduce((sum, f) => sum + f.cus, 0);
+      rows.push({ name: "Other", value: Math.round(otherCUs * 10) / 10, category: "Other" });
+    }
+    return rows;
   }, [formatList]);
 
   /* ─── Line chart data ─── */
@@ -446,7 +495,7 @@ export default function FormatsPage() {
     return sortRows(Object.values(map), customerDetailSort.currentSort, customerDetailSort.currentAsc);
   }, [filtered, selectedCustomerId, customerDetailSort.currentSort, customerDetailSort.currentAsc]);
 
-  const isFiltered = dateFrom || dateTo;
+  const isFiltered = applied.from || applied.to;
   const selectedCustomerName = customerFormatData.find((c) => c.id === selectedCustomerId)?.name;
 
   /* ─────────────── Render ─────────────── */
@@ -470,7 +519,7 @@ export default function FormatsPage() {
                 <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">From</label>
                 <div className="relative">
                   <CalendarDays className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/50 pointer-events-none" />
-                  <Input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setActivePreset(null); }} className="h-8 text-xs pl-7" />
+                  <Input type="date" ref={applied.fromRef} value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setActivePreset(null); }} className="h-8 text-xs pl-7" />
                 </div>
               </div>
               <span className="text-muted-foreground/30 pb-1.5 text-xs">&ndash;</span>
@@ -478,7 +527,7 @@ export default function FormatsPage() {
                 <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">To</label>
                 <div className="relative">
                   <CalendarDays className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/50 pointer-events-none" />
-                  <Input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setActivePreset(null); }} className="h-8 text-xs pl-7" />
+                  <Input type="date" ref={applied.toRef} value={dateTo} onChange={(e) => { setDateTo(e.target.value); setActivePreset(null); }} className="h-8 text-xs pl-7" />
                 </div>
               </div>
               {isFiltered && (
@@ -510,7 +559,24 @@ export default function FormatsPage() {
                 <input type="checkbox" checked={excludeTestClients} onChange={(e) => setExcludeTestClients(e.target.checked)} className="rounded border-muted-foreground/30 h-3.5 w-3.5" />
                 Hide TCE and test clients
               </label>
+              <label
+                className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer shrink-0 select-none"
+                title="Contract-closure write-offs (e.g. 'WBCSD expired CUs (2026)') are accounting adjustments, not produced work. They are all Service-type, so they otherwise inflate that one format bucket."
+              >
+                <input type="checkbox" checked={hideExpiredCUs} onChange={(e) => setHideExpiredCUs(e.target.checked)} className="rounded border-muted-foreground/30 h-3.5 w-3.5" />
+                Hide expired CUs
+              </label>
             </div>
+          </div>
+          <UnappliedRangeNote
+            invalid={applied.invalid}
+            inputFrom={dateFrom}
+            inputTo={dateTo}
+            appliedFrom={applied.from}
+            appliedTo={applied.to}
+          />
+          <div className="flex flex-wrap items-end gap-3">
+            <CustomerDropdownFilter />
           </div>
         </CardContent>
       </Card>
@@ -542,7 +608,7 @@ export default function FormatsPage() {
                       </span>
                     </div>
                     <p className="text-2xl font-bold tabular-nums">
-                      {(categorySummary[category]?.cus || 0).toFixed(1)}
+                      {(categorySummary[category]?.cus || 0).toFixed(2)}
                     </p>
                     <p className="text-xs text-muted-foreground">
                       {categorySummary[category]?.count || 0} tasks
@@ -552,13 +618,33 @@ export default function FormatsPage() {
               ))}
             </div>
 
+            {/* Expired-CU write-offs held back by the toggle — shown so the
+                headline number is never silently different from Retool. */}
+            {hideExpiredCUs && expiredExcluded.count > 0 && (
+              <p className="text-[11px] text-muted-foreground" title={expiredExcluded.names.join("\n")}>
+                Excludes {expiredExcluded.count} expired-CU write-off{expiredExcluded.count === 1 ? "" : "s"} ({expiredExcluded.cus.toFixed(2)} CU) &mdash; contract-closure adjustments, not produced work. Untick &ldquo;Hide expired CUs&rdquo; to include them.
+              </p>
+            )}
+
             {/* ── Formats list + Pie chart (side by side) ── */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               {/* Formats table */}
               <Card className="border-0 shadow-sm">
                 <CardContent className="p-0">
-                  <div className="px-4 py-2.5 border-b">
+                  <div className="px-4 py-2.5 border-b flex items-center justify-between">
                     <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Formats Commissioned</h2>
+                    {formatList.length > 0 && (
+                      <button
+                        onClick={() => downloadCSV(
+                          formatList.map((f) => ({ Format: f.type.replace(/_/g, " "), Category: f.category, CUs: (f.cus).toFixed(2), Tasks: f.count })),
+                          `formats-commissioned-${applied.from || "all"}-to-${applied.to || "all"}.csv`
+                        )}
+                        className="text-muted-foreground hover:text-foreground transition-colors"
+                        title="Download CSV"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </div>
                   {formatList.length === 0 ? (
                     <p className="text-xs text-muted-foreground text-center py-8">No formats found.</p>
@@ -592,7 +678,7 @@ export default function FormatsPage() {
                               <td className="px-3 py-2">
                                 <Badge variant="secondary" className="text-[9px]">{f.category}</Badge>
                               </td>
-                              <td className="px-3 py-2 text-right font-semibold tabular-nums">{f.cus.toFixed(1)}</td>
+                              <td className="px-3 py-2 text-right font-semibold tabular-nums">{f.cus.toFixed(2)}</td>
                               <td className="px-3 py-2 text-right text-muted-foreground tabular-nums">{f.count}</td>
                             </tr>
                           ))}
@@ -603,38 +689,47 @@ export default function FormatsPage() {
                 </CardContent>
               </Card>
 
-              {/* Pie chart */}
+              {/* Horizontal bar chart */}
               <Card className="border-0 shadow-sm">
                 <CardContent className="p-4">
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">Format Breakdown</h2>
-                  {pieData.length === 0 ? (
+                  <div className="flex items-center gap-3 mb-3">
+                    {CATEGORY_ORDER.map((cat) => (
+                      <span key={cat} className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+                        <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: CATEGORY_HEX[cat] }} />
+                        {cat}
+                      </span>
+                    ))}
+                  </div>
+                  {barData.length === 0 ? (
                     <p className="text-xs text-muted-foreground text-center py-8">No data.</p>
                   ) : (
-                    <ResponsiveContainer width="100%" height={320}>
-                      <PieChart>
-                        <Pie
-                          data={pieData}
-                          cx="50%"
-                          cy="50%"
-                          outerRadius={100}
-                          innerRadius={40}
-                          dataKey="value"
-                          paddingAngle={2}
-                          label={({ name, value }) => `${(name as string).replace(/_/g, " ")}: ${value}`}
-                          labelLine={{ strokeWidth: 1 }}
-                        >
-                          {pieData.map((entry, i) => (
-                            <Cell key={i} fill={typeHexColors[entry.name.toLowerCase()] || typeHexColors.other} />
-                          ))}
-                        </Pie>
+                    <ResponsiveContainer width="100%" height={Math.max(200, barData.length * 28 + 20)}>
+                      <BarChart data={barData} layout="vertical" margin={{ left: 0, right: 40, top: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" horizontal={false} opacity={0.3} />
+                        <XAxis type="number" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+                        <YAxis
+                          type="category"
+                          dataKey="name"
+                          width={150}
+                          tick={{ fontSize: 11 }}
+                          axisLine={false}
+                          tickLine={false}
+                          style={{ textTransform: "capitalize" }}
+                        />
                         <Tooltip
                           contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid hsl(var(--border))" }}
                           formatter={(value) => [`${value} CUs`, "Commissioned"]}
+                          labelFormatter={(label) => String(label).replace(/_/g, " ")}
                         />
-                        <Legend
-                          formatter={(value) => <span className="text-xs capitalize">{(value as string).replace(/_/g, " ")}</span>}
-                        />
-                      </PieChart>
+                        <Bar dataKey="value" radius={[0, 4, 4, 0]} maxBarSize={20}
+                          label={{ position: "right", fontSize: 10, fill: "#6b7280", formatter: (v: any) => Number(v).toFixed(1) }}
+                        >
+                          {barData.map((entry, i) => (
+                            <Cell key={i} fill={CATEGORY_HEX[entry.category] || CATEGORY_HEX.Other} />
+                          ))}
+                        </Bar>
+                      </BarChart>
                     </ResponsiveContainer>
                   )}
                 </CardContent>
@@ -644,10 +739,22 @@ export default function FormatsPage() {
             {/* ── Content commissioned table (linked to selected format) ── */}
             <Card className="border-0 shadow-sm">
               <CardContent className="p-0">
-                <div className="px-4 py-2.5 border-b">
+                <div className="px-4 py-2.5 border-b flex items-center justify-between">
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                     Content Commissioned{selectedFormat ? ` \u2014 ${selectedFormat.replace(/_/g, " ")}` : ""}
                   </h2>
+                  {formatContent.length > 0 && (
+                    <button
+                      onClick={() => downloadCSV(
+                        formatContent.map((c) => ({ Content: c.name, Client: c.clientName, Contract: c.contractName || "", CUs: (c.cus).toFixed(2), Commissioned: fmtDate(c.dateCreated) })),
+                        `content-${(selectedFormat || "all").replace(/_/g, "-")}-${applied.from || "all"}-to-${applied.to || "all"}.csv`
+                      )}
+                      className="text-muted-foreground hover:text-foreground transition-colors"
+                      title="Download CSV"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
                 {!selectedFormat ? (
                   <p className="text-xs text-muted-foreground text-center py-6">Select a format above to view content.</p>
@@ -672,7 +779,7 @@ export default function FormatsPage() {
                             <td className="px-3 py-2 font-medium max-w-[250px] truncate">{c.name}</td>
                             <td className="px-3 py-2 text-muted-foreground truncate max-w-[140px]">{c.clientName}</td>
                             <td className="px-3 py-2 text-muted-foreground truncate max-w-[140px]">{c.contractName || "\u2014"}</td>
-                            <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.cus.toFixed(1)}</td>
+                            <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.cus.toFixed(2)}</td>
                             <td className="px-3 py-2 text-muted-foreground tabular-nums">{fmtDate(c.dateCreated)}</td>
                             <td className="px-3 py-2 text-center">
                               {c.contentId && (
@@ -748,8 +855,20 @@ export default function FormatsPage() {
             {/* ── Customer format matrix table ── */}
             <Card className="border-0 shadow-sm">
               <CardContent className="p-0">
-                <div className="px-4 py-2.5 border-b">
+                <div className="px-4 py-2.5 border-b flex items-center justify-between">
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Customer Format Breakdown</h2>
+                  {customerFormatData.length > 0 && (
+                    <button
+                      onClick={() => downloadCSV(
+                        customerFormatData.map((c) => ({ Customer: c.name, Written: (c.Written).toFixed(2), Video: (c.Video).toFixed(2), Visual: (c.Visual).toFixed(2), Strategy: (c.Strategy).toFixed(2), "Total CUs": (c.total).toFixed(2) })),
+                        `customer-format-breakdown-${applied.from || "all"}-to-${applied.to || "all"}.csv`
+                      )}
+                      className="text-muted-foreground hover:text-foreground transition-colors"
+                      title="Download CSV"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
                 {customerFormatData.length === 0 ? (
                   <p className="text-xs text-muted-foreground text-center py-8">No customers found.</p>
@@ -777,11 +896,11 @@ export default function FormatsPage() {
                             )}
                           >
                             <td className={cn("px-3 py-2 font-medium", selectedCustomerId === c.id && "text-blue-600")}>{c.name}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{c.Written > 0 ? c.Written.toFixed(1) : "\u2014"}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{c.Video > 0 ? c.Video.toFixed(1) : "\u2014"}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{c.Visual > 0 ? c.Visual.toFixed(1) : "\u2014"}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{c.Strategy > 0 ? c.Strategy.toFixed(1) : "\u2014"}</td>
-                            <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.total.toFixed(1)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{c.Written > 0 ? c.Written.toFixed(2) : "\u2014"}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{c.Video > 0 ? c.Video.toFixed(2) : "\u2014"}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{c.Visual > 0 ? c.Visual.toFixed(2) : "\u2014"}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{c.Strategy > 0 ? c.Strategy.toFixed(2) : "\u2014"}</td>
+                            <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.total.toFixed(2)}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -822,10 +941,22 @@ export default function FormatsPage() {
             {/* ── Customer detail table ── */}
             <Card className="border-0 shadow-sm">
               <CardContent className="p-0">
-                <div className="px-4 py-2.5 border-b">
+                <div className="px-4 py-2.5 border-b flex items-center justify-between">
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                     Content{selectedCustomerName ? ` \u2014 ${selectedCustomerName}` : ""}
                   </h2>
+                  {customerDetailContent.length > 0 && (
+                    <button
+                      onClick={() => downloadCSV(
+                        customerDetailContent.map((c) => ({ Content: c.name, Type: c.contentType.replace(/_/g, " "), Category: c.category, CUs: (c.cus).toFixed(2), Commissioned: fmtDate(c.dateCreated) })),
+                        `content-${(selectedCustomerName || "customer").replace(/\s+/g, "-").toLowerCase()}.csv`
+                      )}
+                      className="text-muted-foreground hover:text-foreground transition-colors"
+                      title="Download CSV"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
                 {!selectedCustomerId ? (
                   <p className="text-xs text-muted-foreground text-center py-6">Select a customer above to view their content.</p>
@@ -854,7 +985,7 @@ export default function FormatsPage() {
                               </Badge>
                             </td>
                             <td className="px-3 py-2 text-muted-foreground">{c.category}</td>
-                            <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.cus.toFixed(1)}</td>
+                            <td className="px-3 py-2 text-right font-semibold tabular-nums">{c.cus.toFixed(2)}</td>
                             <td className="px-3 py-2 text-muted-foreground tabular-nums">{fmtDate(c.dateCreated)}</td>
                             <td className="px-3 py-2 text-center">
                               {c.contentId && (

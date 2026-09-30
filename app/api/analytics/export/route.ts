@@ -1,8 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { lateApiFetch } from "@/lib/late";
+import { auth } from "@/lib/auth";
 
 // GET /api/analytics/export — export analytics as CSV
 export async function GET(req: NextRequest) {
+  // This route had NO authentication: anyone who knew the URL could download
+  // a CSV of every client's published post content and performance.
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const { searchParams } = new URL(req.url);
   const period = searchParams.get("period") || "30";
 

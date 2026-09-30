@@ -1,0 +1,333 @@
+/**
+ * Every model id a route can name must resolve — in the registry AND in the
+ * rate table. Run with `npx tsx scripts/verify-model-ids.ts`.
+ *
+ * WHY THIS EXISTS. getModelInfo answers an unknown id with claude-sonnet-5 and
+ * calculateCostTenths prices an unknown id at the claude-sonnet-4-6 fallback.
+ * Neither throws. So a typo, or a slug that was only ever half-added, produces
+ * a system that runs perfectly and quietly does the wrong thing:
+ *
+ *   - A cost-cutting change written against an UNREGISTERED id routes to
+ *     Sonnet 5 instead, at fifteen times the intended input price — and the
+ *     ledger shows nothing wrong, because the Sonnet call it logs is the
+ *     Sonnet call it really made. The saving simply never appears.
+ *   - An id registered but MISSING FROM THE RATE TABLE bills at $3/$15
+ *     whatever it actually costs. That is not hypothetical: grok-4-1-fast was
+ *     logged at $0.20/$0.50 while xAI billed $1.25/$2.50 for 23 days of 30,
+ *     which made the month's headline figure a floor rather than a measurement.
+ *
+ * Both failures are invisible to a typecheck, to a test of behaviour, and to
+ * the person reading the bill. The only thing that catches them is asserting
+ * that the tables agree with each other.
+ *
+ * IT TESTS WHAT IS USED, NOT WHAT IS WRITTEN. The tables are imported and
+ * queried through the same functions the app calls, rather than pattern-matched
+ * out of the source. A check that greps for a line reported a live security
+ * hole in this repo as closed, because the line existed and nothing called it.
+ *
+ * `--self-test` runs each detector against synthetic bad input and asserts it
+ * goes red. A check that silently tests nothing passes just as loudly as one
+ * that works, so this one proves its own preconditions before trusting itself.
+ */
+import { MODEL_REGISTRY, getModelInfo, FALLBACK_MODEL, OPENAI_IMAGE_MODEL, OPENAI_IMAGE_FALLBACK_MODEL } from "../lib/ai/providers";
+import { MODEL_COSTS, calculateCostTenths, RATES_VERIFIED_ON, RATE_EXPIRIES, MODEL_SHUTDOWNS } from "../lib/ai/model-costs";
+import { CHEAP_MODEL } from "../lib/ai/cheap-model";
+import { AI_MODELS, getModelLabel } from "../lib/ai/models";
+import { FAST_MODEL, REASONING_MODEL, GROUNDED_MODEL } from "../lib/ai/auto-router";
+
+let failures = 0;
+function fail(msg: string) { failures++; console.log(`  FAIL ${msg}`); }
+function ok(msg: string) { console.log(`  ok   ${msg}`); }
+
+/** The fallback rate an unpriced model silently lands on. */
+const FALLBACK_RATE = MODEL_COSTS["claude-sonnet-4-6"];
+
+/** Every id in the registry, including hidden and legacy ones. */
+const registryIds: string[] = Object.keys(MODEL_REGISTRY);
+
+// ── Preconditions ────────────────────────────────────────────────────────
+// Assert the check can SEE something before trusting anything it reports. An
+// empty registry would make every loop below pass without executing once.
+console.log(`\nPreconditions (rates verified ${RATES_VERIFIED_ON})`);
+if (registryIds.length < 10) fail(`registry has only ${registryIds.length} entries — import is broken`);
+else ok(`registry visible: ${registryIds.length} entries`);
+if (Object.keys(MODEL_COSTS).length < 10) fail(`rate table has only ${Object.keys(MODEL_COSTS).length} rows`);
+else ok(`rate table visible: ${Object.keys(MODEL_COSTS).length} rows`);
+if (registryIds.indexOf("gpt-5-6-luna") < 0) fail("gpt-5-6-luna is not registered — the id no route could name");
+else ok("gpt-5-6-luna is registered first-class");
+if (!FALLBACK_RATE) fail("claude-sonnet-4-6 fallback row is missing — cost fallback is undefined");
+else ok(`fallback rate is $${FALLBACK_RATE.inputPer1M / 100}/$${FALLBACK_RATE.outputPer1M / 100} per 1M`);
+
+// ── 1. Every registry id prices as itself ───────────────────────────────
+console.log("\nEvery registry id has its own rate row");
+for (let i = 0; i < registryIds.length; i++) {
+  const id = registryIds[i];
+  if (id === "auto") continue; // a router alias, never billed under this name
+  if (!MODEL_COSTS[id]) fail(`${id} — no rate row; bills at the $3/$15 fallback`);
+}
+if (!failures) ok(`all ${registryIds.length} registry ids priced`);
+
+// ── 2. Every wire slug prices too ───────────────────────────────────────
+// Call sites do not agree on which they log: some log the registry id, some
+// the apiModel actually sent. Whichever it is, it must price the same, or the
+// same call costs two different amounts depending on who logged it.
+console.log("\nEvery apiModel wire slug is priced, and priced identically");
+const before2 = failures;
+for (let i = 0; i < registryIds.length; i++) {
+  const id = registryIds[i];
+  const wire = MODEL_REGISTRY[id].apiModel;
+  if (!wire || wire === id) continue;
+  // 'auto' is not a model. routeModel resolves it to a concrete id before any
+  // request, so its apiModel is only a default for callers that bypass the
+  // router — and what those callers LOG is an open question this check does
+  // not answer (tracked in PLAN-cheap-tier-model-update.md, A-3). Named, not
+  // hidden: a skipped case that goes unmentioned reads as a case that passed.
+  if (id === "auto") continue;
+  if (!MODEL_COSTS[wire]) { fail(`${wire} (wire slug of ${id}) — no rate row`); continue; }
+  // A LEGACY entry is expected to price differently from its wire slug, and
+  // must. Its id is a historical label: rows logged under "gpt-4o" are real
+  // GPT-4o calls and have to keep GPT-4o's price, even though the id now
+  // routes new traffic to Terra. Requiring these to agree would have forced
+  // the ledger to restate past spend at a rate that was never charged.
+  if (MODEL_REGISTRY[id].legacy) continue;
+  const a = calculateCostTenths(id, 1_000_000, 1_000_000);
+  const b = calculateCostTenths(wire, 1_000_000, 1_000_000);
+  if (a !== b) fail(`${id} and its wire slug ${wire} price differently (${a} vs ${b} tenths)`);
+}
+if (failures === before2) ok("every wire slug prices the same as its registry id");
+
+// ── 3. The router's legs resolve ────────────────────────────────────────
+// Imported, not retyped. A literal here would drift from the router the same
+// way lib/scheduled/runner.ts drifted from FAST_MODEL.
+console.log("\nThe auto-router's three legs resolve to real models");
+const legs: [string, string][] = [
+  ["FAST_MODEL", FAST_MODEL], ["REASONING_MODEL", REASONING_MODEL], ["GROUNDED_MODEL", GROUNDED_MODEL],
+];
+for (let i = 0; i < legs.length; i++) {
+  const [name, id] = legs[i];
+  if (registryIds.indexOf(id) < 0) { fail(`${name} = "${id}" is not in the registry — routes to Sonnet 5 silently`); continue; }
+  if (!MODEL_COSTS[id]) { fail(`${name} = "${id}" has no rate row`); continue; }
+  ok(`${name} → ${id} (${getModelLabel(id)})`);
+}
+
+// ── 4. Nothing retired is still selectable ──────────────────────────────
+// A picker entry marked legacy in the registry is an option that errors when
+// chosen. deepseek-chat was exactly this after DeepSeek retired the alias.
+console.log("\nNo picker entry is retired, unregistered or unpriced");
+const before4 = failures;
+for (let i = 0; i < AI_MODELS.length; i++) {
+  const m = AI_MODELS[i];
+  if (m.id === "auto") continue;
+  const info = MODEL_REGISTRY[m.id];
+  if (!info) { fail(`picker offers "${m.id}" — not in the registry`); continue; }
+  if (info.legacy) fail(`picker offers "${m.id}" but the registry marks it legacy — selecting it errors`);
+  if (info.hidden) fail(`picker offers "${m.id}" but the registry marks it hidden`);
+  if (!MODEL_COSTS[m.id]) fail(`picker offers "${m.id}" — no rate row`);
+}
+if (failures === before4) ok(`all ${AI_MODELS.length - 1} picker entries live and priced`);
+
+// ── 5. Every id renders as a name ───────────────────────────────────────
+// getModelLabel falls back to the raw id, so a missing label captions a past
+// answer "gpt-5.6-luna" instead of naming the model that wrote it.
+console.log("\nEvery id and wire slug renders as a label, not a raw id");
+const before5 = failures;
+for (let i = 0; i < registryIds.length; i++) {
+  const id = registryIds[i];
+  const wire = MODEL_REGISTRY[id].apiModel;
+  if (getModelLabel(id) === id) fail(`${id} renders as its raw id`);
+  if (wire && wire !== id && getModelLabel(wire) === wire) fail(`wire slug ${wire} renders as its raw id`);
+}
+if (failures === before5) ok("every id and wire slug has a display label");
+
+// ── 6. No rate is past its expiry ───────────────────────────────────────
+// A promotional rate is correct until a date and wrong after it, and nothing
+// in the running system notices the day it turns. So the date is the check.
+type Expiry = (typeof RATE_EXPIRIES)[number];
+type Verdict = { state: "expired" | "applied" | "soon" | "valid"; days: number; message: string };
+
+/**
+ * What to say about one expiring rate on a given day.
+ *
+ * Takes the date as an argument rather than reading the clock, so the
+ * self-test can drive it past its own expiry without waiting a week or
+ * touching a repo file.
+ */
+export function expiryVerdict(todayIso: string, e: Expiry, row: { inputPer1M: number; outputPer1M: number } | undefined): Verdict {
+  const days = Math.ceil((Date.parse(e.until) - Date.parse(todayIso)) / 86_400_000);
+  if (!row) return { state: "expired", days, message: `${e.model} has an expiry recorded but no rate row` };
+  // A null `then` is a rate whose END the provider dated without naming a
+  // successor. It can never read as "already applied" — there is nothing to
+  // compare against — so past its date it always fails, and the message says
+  // to go and read the page rather than printing a number nobody published.
+  if (e.then === null) {
+    if (todayIso > e.until) {
+      return { state: "expired", days, message: `${e.model} rate expired on ${e.until} and the replacement is UNPUBLISHED — read the provider's page and set it. ${e.why}` };
+    }
+    return days <= 14
+      ? { state: "soon", days, message: `${e.model} rate changes in ${days} day(s), on ${e.until}; the new rate is unpublished — check the provider's page` }
+      : { state: "valid", days, message: `${e.model} rate valid until ${e.until} (${days} days)` };
+  }
+  const applied = row.inputPer1M === e.then.inputPer1M && row.outputPer1M === e.then.outputPer1M;
+  if (todayIso > e.until) {
+    return applied
+      ? { state: "applied", days, message: `${e.model} expired ${e.until} and the new rate is already applied — remove this entry` }
+      : { state: "expired", days, message: `${e.model} rate expired on ${e.until}. Set inputPer1M: ${e.then.inputPer1M}, outputPer1M: ${e.then.outputPer1M}. ${e.why}` };
+  }
+  return days <= 14
+    ? { state: "soon", days, message: `${e.model} rate changes in ${days} day(s), on ${e.until}: $${e.then.inputPer1M / 100}/$${e.then.outputPer1M / 100} per 1M` }
+    : { state: "valid", days, message: `${e.model} rate valid until ${e.until} (${days} days)` };
+}
+
+console.log("\nNo rate is past its known expiry date");
+const todayIso = new Date().toISOString().slice(0, 10);
+for (let i = 0; i < RATE_EXPIRIES.length; i++) {
+  const e = RATE_EXPIRIES[i];
+  const v = expiryVerdict(todayIso, e, MODEL_COSTS[e.model]);
+  if (v.state === "expired") fail(v.message);
+  else if (v.state === "soon") console.log(`  NOTE ${v.message}`);
+  else ok(v.message);
+}
+
+// ── 7. Nothing the app sends is past its shutdown ───────────────────────
+// A rate table cannot see a shutdown: the id keeps its correct price up to the
+// day every call 404s. Everything the app SENDS is gathered from the live
+// constants — imported, not retyped — and held against the dated table.
+type Shutdown = (typeof MODEL_SHUTDOWNS)[number];
+type ShutdownVerdict = { state: "dead" | "soon" | "fine"; message: string };
+export function shutdownVerdict(todayIso: string, sd: Shutdown, sentBy: string[]): ShutdownVerdict {
+  if (!sentBy.length) return { state: "fine", message: `${sd.model} shuts down ${sd.from}; nothing sends it` };
+  const days = Math.ceil((Date.parse(sd.from) - Date.parse(todayIso)) / 86_400_000);
+  if (todayIso >= sd.from) {
+    return { state: "dead", message: `${sd.model} was shut down on ${sd.from} and is still sent by ${sentBy.join(", ")} — move to ${sd.replacedBy} (${sd.source})` };
+  }
+  return days <= 30
+    ? { state: "soon", message: `${sd.model} shuts down in ${days} day(s), on ${sd.from}, and is still sent by ${sentBy.join(", ")} — move to ${sd.replacedBy}` }
+    : { state: "fine", message: `${sd.model} shuts down ${sd.from} (${days} days); sent by ${sentBy.join(", ")}` };
+}
+/** Every wire model the app can send, with who sends it. */
+function sentModels(): Record<string, string[]> {
+  const sent: Record<string, string[]> = {};
+  const add = (model: string, by: string) => { (sent[model] = sent[model] || []).push(by); };
+  for (let i = 0; i < registryIds.length; i++) add(MODEL_REGISTRY[registryIds[i]].apiModel, `registry:${registryIds[i]}`);
+  add(CHEAP_MODEL, "CHEAP_MODEL");
+  add(FALLBACK_MODEL, "FALLBACK_MODEL");
+  add(OPENAI_IMAGE_MODEL, "OPENAI_IMAGE_MODEL");
+  add(OPENAI_IMAGE_FALLBACK_MODEL, "OPENAI_IMAGE_FALLBACK_MODEL");
+  return sent;
+}
+console.log("\nNothing the app sends is past a dated shutdown");
+const sent = sentModels();
+const before7 = failures;
+for (let i = 0; i < MODEL_SHUTDOWNS.length; i++) {
+  const sd = MODEL_SHUTDOWNS[i];
+  const v = shutdownVerdict(todayIso, sd, sent[sd.model] || []);
+  if (v.state === "dead") fail(v.message);
+  else if (v.state === "soon") console.log(`  NOTE ${v.message}`);
+}
+if (failures === before7) ok(`${MODEL_SHUTDOWNS.length} dated shutdowns, none reached by anything the app sends`);
+
+// ── 8. A retired id resolves to a slug something LIVE also sends ────────
+// Check 2 skips legacy entries' prices on purpose, and that left their
+// DESTINATIONS unchecked: gemini-2.5-pro pointed at the bare "gemini-3-flash",
+// a slug the API does not know, and a saved preference 404'd on every turn.
+// So a legacy apiModel must be one a live (non-legacy) entry sends — which
+// keeps it exercised by everything that tests live entries — or be named here
+// with the reason it is known to still answer.
+const STILL_SERVED: Record<string, string> = {
+  "claude-opus-4-8": "Anthropic legacy list, retires not sooner than 2027-05-28 (platform.claude.com, 2026-09-23); kept for threads mid-flight on its thinking-off profile",
+  "grok-4.3": "a current xAI model with no deprecation (docs.x.ai, 2026-09-23); kept so saved Grok 4.3 preferences keep what they chose",
+};
+export function strandedLegacy(registry: Record<string, { apiModel: string; legacy?: boolean }>, stillServed: Record<string, string>): string[] {
+  const live: Record<string, boolean> = {};
+  const keys = Object.keys(registry);
+  for (let i = 0; i < keys.length; i++) if (!registry[keys[i]].legacy) live[registry[keys[i]].apiModel] = true;
+  const out: string[] = [];
+  for (let i = 0; i < keys.length; i++) {
+    const e = registry[keys[i]];
+    if (e.legacy && !live[e.apiModel] && !stillServed[e.apiModel]) out.push(`${keys[i]} → ${e.apiModel}`);
+  }
+  return out;
+}
+console.log("\nEvery retired id lands on a slug a live entry also sends");
+const stranded = strandedLegacy(MODEL_REGISTRY as any, STILL_SERVED);
+for (let i = 0; i < stranded.length; i++) fail(`${stranded[i]} — no live entry sends this slug; confirm it answers, then add it to STILL_SERVED with the source`);
+if (!stranded.length) ok("no retired id is stranded on a slug nothing live sends");
+
+// ── Self-test ───────────────────────────────────────────────────────────
+// Prove the detectors go red, without mutating a repo file. Break-test-restore
+// in a shared working tree already shipped one deliberate break to production
+// here; synthetic input cannot.
+if (process.argv.indexOf("--self-test") >= 0) {
+  console.log("\nSelf-test — each detector against synthetic bad input");
+  let selfFails = 0;
+  const st = (name: string, caught: boolean) => {
+    if (caught) console.log(`  ok   detects ${name}`);
+    else { selfFails++; console.log(`  FAIL does NOT detect ${name}`); }
+  };
+
+  st("an unregistered id", MODEL_REGISTRY["gpt-5-6-luna-typo"] === undefined
+    && getModelInfo("gpt-5-6-luna-typo").apiModel === getModelInfo("claude-sonnet-5").apiModel);
+
+  st("an unpriced id billing at the fallback",
+    calculateCostTenths("a-model-that-does-not-exist", 1_000_000, 0)
+      === calculateCostTenths("claude-sonnet-4-6", 1_000_000, 0));
+
+  st("two spellings that price differently",
+    calculateCostTenths("gpt-5-6-luna", 1_000_000, 0) !== calculateCostTenths("claude-sonnet-4-6", 1_000_000, 0));
+
+  st("a missing label falling back to the raw id",
+    getModelLabel("some-unlabelled-model") === "some-unlabelled-model");
+
+  // The expiry check, driven past its own date. This is the one detector that
+  // cannot be proven by waiting, so it is proven by argument instead.
+  // Driven against gemini-3.8-flash: its doubling on 2027-01-01 is confirmed
+  // on Google's own page. It used to be driven against gemini-3-flash, whose
+  // entry turned out to be an alarm for a day nothing happens on — a detector
+  // proven against a fictional entry proves nothing.
+  const gem = RATE_EXPIRIES.filter((e) => e.model === "gemini-3.8-flash")[0];
+  if (!gem || gem.then === null) { selfFails++; console.log("  FAIL no dated gemini-3.8-flash expiry to test against"); }
+  else {
+    const row = MODEL_COSTS["gemini-3.8-flash"];
+    st("a rate still inside its window", expiryVerdict("2026-08-24", gem, row).state === "valid");
+    st("a rate one day past expiry", expiryVerdict("2027-01-01", gem, row).state === "expired");
+    st("an expiry already actioned (asks for removal, not a failure)",
+      expiryVerdict("2027-01-01", gem, { inputPer1M: gem.then.inputPer1M, outputPer1M: gem.then.outputPer1M }).state === "applied");
+    st("the 14-day notice", expiryVerdict("2026-12-20", gem, row).state === "soon");
+
+    // And the null case, which cannot be "already applied" at any rate.
+    const open = RATE_EXPIRIES.filter((e) => e.then === null)[0];
+    if (!open) { selfFails++; console.log("  FAIL no unpublished-successor expiry to test against"); }
+    else {
+      const anyRow = { inputPer1M: 1, outputPer1M: 2 };
+      st("an unpublished successor still inside its window", expiryVerdict("2026-09-23", open, anyRow).state === "valid");
+      st("an unpublished successor past its date fails rather than reading as applied",
+        expiryVerdict("2027-01-01", open, anyRow).state === "expired");
+      st("an unpublished successor says to read the page, and prints no invented rate",
+        /UNPUBLISHED/.test(expiryVerdict("2027-01-01", open, anyRow).message));
+    }
+  }
+
+  // The shutdown check, driven past its own date on a real entry.
+  const img = MODEL_SHUTDOWNS.filter((e) => e.model === "gpt-image-1")[0];
+  if (!img) { selfFails++; console.log("  FAIL no dated gpt-image-1 shutdown to test against"); }
+  else {
+    st("a sent model past its shutdown", shutdownVerdict("2026-10-23", img, ["OPENAI_IMAGE_FALLBACK_MODEL"]).state === "dead");
+    st("the 30-day shutdown notice", shutdownVerdict("2026-10-01", img, ["OPENAI_IMAGE_FALLBACK_MODEL"]).state === "soon");
+    st("a shutdown nothing sends is not a failure", shutdownVerdict("2027-01-01", img, []).state === "fine");
+  }
+  // The stranded-legacy check, against the exact entry that 404'd.
+  st("a retired id pointing at a slug nothing live sends (the gemini-2.5-pro bug)",
+    strandedLegacy({ "gemini-3.8-flash": { apiModel: "gemini-3.8-flash" }, "gemini-2.5-pro": { apiModel: "gemini-3-flash", legacy: true } }, {}).length === 1);
+  st("a retired id on a live slug is fine",
+    strandedLegacy({ "gemini-3.8-flash": { apiModel: "gemini-3.8-flash" }, "gemini-2.5-pro": { apiModel: "gemini-3.8-flash", legacy: true } }, {}).length === 0);
+
+  // The real assertion behind check 1: Luna priced as Luna, not as Sonnet.
+  const lunaPerM = calculateCostTenths("gpt-5-6-luna", 1_000_000, 0) / 1000; // tenths of a cent → dollars
+  st(`Luna priced at $${lunaPerM}/1M in, not the $30 fallback`, Math.abs(lunaPerM - 0.2) < 0.001);
+
+  if (selfFails) { console.log(`\n  ${selfFails} detector(s) do not work. Nothing above can be trusted.\n`); process.exit(2); }
+  console.log("  — all detectors confirmed working");
+}
+
+console.log(failures ? `\n${failures} failure(s)\n` : "\nAll model ids resolve in both tables.\n");
+process.exit(failures ? 1 : 0);

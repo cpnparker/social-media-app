@@ -1,0 +1,418 @@
+{
+ "_source": "intelligence.ai_messages, message 4f4098be, conversation 3ec51a09-fe33-4ec7-872e-bcb121e5a4cd, read 2026-09-23. The slides as stored, verbatim, except that every signed media URL (a live capability) is replaced by an inert address in the documentation range; the check serves nothing from it.",
+ "title": "Amrize Content Workshop: Creating & Optimising Content for AI",
+ "slides": [
+  {
+   "image": {
+    "query": "modern concrete architecture detail, cool daylight, abstract"
+   },
+   "title": "Creating & Optimising Content for AI",
+   "footer": "The Content Engine · Amrize Content Workshop: Creating & Optimising Content for AI",
+   "layout": "cover",
+   "density": "read",
+   "subtitle": "AMRIZE CONTENT WORKSHOP - PART 2 - 23 SEPTEMBER 2026",
+   "resolvedImage": {
+    "url": "https://203.0.113.60/3ec51a09-s1-url.jpg",
+    "logo": "white",
+    "scrim": 0,
+    "credit": "Photo: Tim Rüßmann / Unsplash"
+   }
+  },
+  {
+   "body": "**June 17 and 25:** We built the Authority, Consistency and Relevance (ACR) framework and mapped Amrize as the master entity, with satellite entities (people, products, plants, locations) feeding it.\n**The gap we're closing today:** entity mapping tells you what the network should look like. It doesn't write a single sentence. Today is about the craft of the sentences, headings and structure that make a page legible to an AI system.\n**Four articles are already in motion** using these techniques, so we'll open them up as live examples, not hypotheticals.",
+   "title": "From entity mapping to content on the page",
+   "footer": "The Content Engine · Amrize Content Workshop: Creating & Optimising Content for AI",
+   "layout": "content",
+   "density": "read",
+   "subtitle": "Digital Authority Pt 1 and 2 built the map. This session is about writing to it.",
+   "imageQuery": "engineer reviewing blueprint or schematic, close up, cool tones"
+  },
+  {
+   "stats": [
+    {
+     "label": "of search traffic now via AI answer engines",
+     "value": "~25%",
+     "detail": "vs traditional search growing ~20% YoY"
+    },
+    {
+     "label": "YoY growth in AI assistant usage",
+     "value": "81%",
+     "primary": true
+    },
+    {
+     "label": "conversion rate from LLM driven traffic",
+     "value": "14%",
+     "detail": "vs 2.96% for standard search queries"
+    }
+   ],
+   "title": "Why this matters more than it did a year ago",
+   "footer": "The Content Engine · Amrize Content Workshop: Creating & Optimising Content for AI",
+   "layout": "stat",
+   "density": "read"
+  },
+  {
+   "body": "**AEO (Answer Engine Optimization):** technical, backend, fast. Schema, structured Q&A, clean metadata. Can be implemented in weeks.\n**GEO (Generative Engine Optimization):** slower and harder. Long term entity authority, third party mentions, earned media, building the reputation an LLM trusts.\n**SXO:** the umbrella. Every optimisation still has to earn and convert a real site visit, not just a citation.\n**Where Amrize sits today:** heavily indexed to parent Holcim/Wholesim in training data. The June 2025 launch is an opportunity to build for AI from scratch rather than retrofit.",
+   "title": "AI answer engines read differently to Google",
+   "footer": "The Content Engine · Amrize Content Workshop: Creating & Optimising Content for AI",
+   "layout": "content",
+   "density": "read",
+   "subtitle": "Three disciplines, three different jobs, and Amrize needs all three",
+   "imageQuery": "layered concrete structure, cross section, architectural"
+  },
+  {
+   "note": "Why this matters: your content is now written for a machine reader first, a human reader second, and it has to satisfy both.",
+   "stats": [
+    {
+     "label": "of Google searches now end with no click",
+     "value": "68%",
+     "primary": true
+    },
+    {
+     "label": "of Google traffic is automated bot traffic, not humans",
+     "value": "50%"
+    }
+   ],
+   "title": "The two numbers behind why good writing isn't enough anymore",
+   "footer": "The Content Engine · Amrize Content Workshop: Creating & Optimising Content for AI",
+   "layout": "stat",
+   "density": "read"
+  },
+  {
+   "image": {
+    "query": "close up typography, letterpress or printed text, monochrome"
+   },
+   "title": "How to write for AI answer engines",
+   "footer": "The Content Engine · Amrize Content Workshop: Creating & Optimising Content for AI",
+   "layout": "section",
+   "density": "read",
+   "eyebrow": "02",
+   "resolvedImage": {
+    "url": "https://203.0.113.60/3ec51a09-s6-url.jpg",
+    "logo": "white",
+    "scrim": 0,
+    "credit": "Photo: Taso Katsionis / Unsplash"
+   }
+  },
+  {
+   "cards": [
+    {
+     "body": "State the citable fact or answer in the first sentence. Don't build up to it, LLMs weight early content more heavily.",
+     "icon": "target",
+     "title": "Lead with the claim",
+     "marker": "01",
+     "resolvedIcon": "https://203.0.113.60/3ec51a09-s7-resolvedIcon.jpg"
+    },
+    {
+     "body": "\"According to Amrize's 2026 data...\" reads as more trustworthy to a model than an unattributed claim.",
+     "icon": "file-text",
+     "title": "Name the source explicitly",
+     "marker": "02",
+     "resolvedIcon": "https://203.0.113.60/3ec51a09-s7-resolvedIcon.jpg"
+    },
+    {
+     "body": "Numbered lists and stats near the top reduce the computational cost for an LLM to extract and quote you.",
+     "icon": "list-ordered",
+     "title": "Frontload numbered evidence",
+     "marker": "03",
+     "resolvedIcon": "https://203.0.113.60/3ec51a09-s7-resolvedIcon.jpg"
+    },
+    {
+     "body": "Subheadings phrased as questions, answered directly underneath, mirror how RAG systems retrieve passages.",
+     "icon": "help-circle",
+     "title": "Use explicit Q&A structure",
+     "marker": "04",
+     "resolvedIcon": "https://203.0.113.60/3ec51a09-s7-resolvedIcon.jpg"
+    },
+    {
+     "body": "LLMs actively discount thin, templated, obviously automated prose. Human centric content outperforms it 2 to 3x.",
+     "icon": "user",
+     "title": "Write for humans first",
+     "marker": "05",
+     "resolvedIcon": "https://203.0.113.60/3ec51a09-s7-resolvedIcon.jpg"
+    }
+   ],
+   "title": "Five habits that make prose citable",
+   "footer": "The Content Engine · Amrize Content Workshop: Creating & Optimising Content for AI",
+   "layout": "cards",
+   "density": "read"
+  },
+  {
+   "title": "Old SEO habit vs the AEO/GEO rewrite",
+   "footer": "The Content Engine · Amrize Content Workshop: Creating & Optimising Content for AI",
+   "layout": "comparison",
+   "density": "read",
+   "comparison": {
+    "rows": [
+     {
+      "cells": [
+       "Repeat target keyword",
+       "Build entity relationships and context"
+      ],
+      "label": "Keyword density",
+      "highlight": false
+     },
+     {
+      "cells": [
+       "Narrative build up to conclusion",
+       "Answer first, evidence after"
+      ],
+      "label": "Structure",
+      "highlight": true
+     },
+     {
+      "cells": [
+       "Descriptive labels",
+       "Explicit questions a user would ask"
+      ],
+      "label": "Headings",
+      "highlight": false
+     },
+     {
+      "cells": [
+       "Implicit / unsourced claims",
+       "Named source, dated, specific"
+      ],
+      "label": "Attribution",
+      "highlight": true
+     },
+     {
+      "cells": [
+       "Ranking position, clicks",
+       "Citation frequency, share of voice in AI answers"
+      ],
+      "label": "Success metric",
+      "highlight": false
+     }
+    ],
+    "columns": [
+     "Traditional SEO habit",
+     "AEO/GEO practice"
+    ]
+   }
+  },
+  {
+   "body": "**\"10 Things to Know About Amrize\":** a foundational entity page, the single best place to frontload citable, structured facts about who Amrize is.\n**AI concrete for data centres:** technical authority content, aimed squarely at the data centre business unit priority set at kickoff.",
+   "image": {
+    "query": "concrete dam or large infrastructure project, wide shot"
+   },
+   "title": "Four articles in production right now",
+   "footer": "The Content Engine · Amrize Content Workshop: Creating & Optimising Content for AI",
+   "layout": "image-split",
+   "density": "read",
+   "subtitle": "Live worked examples, not theory",
+   "bodyRight": "**Denver dam** and **Obama Presidential Centre:** proof point case studies, showing Amrize's work through named, verifiable projects rather than generic claims.\n**The pattern across all four:** each is being structured to answer a specific question an AI system, or a customer, would actually ask.",
+   "resolvedImage": {
+    "url": "https://203.0.113.60/3ec51a09-s9-url.jpg",
+    "logo": "white",
+    "scrim": 0,
+    "credit": "Photo: Alex Bagirov / Unsplash"
+   }
+  },
+  {
+   "title": "How we structure an AEO optimised article",
+   "footer": "The Content Engine · Amrize Content Workshop: Creating & Optimising Content for AI",
+   "layout": "process",
+   "stages": [
+    {
+     "name": "Answer first",
+     "owner": "Writer",
+     "caption": "Open with the direct, citable answer to the implied question. No throat clearing."
+    },
+    {
+     "name": "Evidence block",
+     "owner": "Writer",
+     "caption": "Numbered facts, named sources, dates, frontloaded immediately after the claim."
+    },
+    {
+     "name": "Entity reinforcement",
+     "owner": "Writer + Amrize SME",
+     "caption": "Name people, products, locations exactly as they appear in the entity map, every time."
+    },
+    {
+     "name": "Q&A subheadings",
+     "owner": "Editor",
+     "caption": "Break the body into explicit question and answer sections for RAG retrieval."
+    },
+    {
+     "name": "Schema tagging",
+     "owner": "TCE technical",
+     "caption": "Apply Schema.org markup so crawlers and LLMs parse structure correctly."
+    }
+   ],
+   "density": "read"
+  },
+  {
+   "body": "**AIO (AI assisted operations) is useful for:** repetitive technical metadata, schema generation, formatting consistency, tasks that don't require judgement.\n**AIO does not, on its own, increase your AI visibility score.** It removes friction; it doesn't create authority.",
+   "image": {
+    "query": "industrial control room or technical monitoring screens, cool light"
+   },
+   "title": "Where automation helps, and where it hurts",
+   "footer": "The Content Engine · Amrize Content Workshop: Creating & Optimising Content for AI",
+   "layout": "image-split",
+   "density": "read",
+   "subtitle": "AI can do the plumbing. It cannot do the judgement.",
+   "bodyRight": "**The trap to avoid:** LLMs actively discount thin, templated prose that reads as purely machine generated. Volume without distinct expertise or voice is invisible, not just ignored.\n**The Amrize opportunity:** named technical voices such as plant managers, engineers and technical specialists are entity signals a generic corporate voice can never be.",
+   "resolvedImage": {
+    "url": "https://203.0.113.60/3ec51a09-s11-url.jpg",
+    "logo": "white",
+    "scrim": 0
+   }
+  },
+  {
+   "hub": {
+    "title": "Article",
+    "groups": [
+     {
+      "name": "REINFORCES",
+      "tone": "blue",
+      "items": [
+       {
+        "icon": "building-2",
+        "title": "Amrize (master entity)",
+        "resolvedIcon": "https://203.0.113.60/3ec51a09-s12-resolvedIcon.jpg"
+       },
+       {
+        "icon": "user",
+        "title": "Named experts",
+        "resolvedIcon": "https://203.0.113.60/3ec51a09-s12-resolvedIcon.jpg"
+       },
+       {
+        "icon": "map-pin",
+        "title": "Plant locations",
+        "resolvedIcon": "https://203.0.113.60/3ec51a09-s12-resolvedIcon.jpg"
+       },
+       {
+        "icon": "package",
+        "title": "Product lines",
+        "resolvedIcon": "https://203.0.113.60/3ec51a09-s12-resolvedIcon.jpg"
+       }
+      ]
+     },
+     {
+      "name": "SIGNALS TO",
+      "tone": "teal",
+      "items": [
+       {
+        "icon": "search",
+        "title": "AI answer engines",
+        "resolvedIcon": "https://203.0.113.60/3ec51a09-s12-resolvedIcon.jpg"
+       },
+       {
+        "icon": "share-2",
+        "title": "Knowledge graph",
+        "resolvedIcon": "https://203.0.113.60/3ec51a09-s12-resolvedIcon.jpg"
+       },
+       {
+        "icon": "newspaper",
+        "title": "Third party media",
+        "resolvedIcon": "https://203.0.113.60/3ec51a09-s12-resolvedIcon.jpg"
+       }
+      ]
+     }
+    ],
+    "caption": "A single optimised page reinforces every connected entity"
+   },
+   "title": "One article feeds the whole entity network",
+   "footer": "The Content Engine · Amrize Content Workshop: Creating & Optimising Content for AI",
+   "layout": "hub",
+   "density": "read"
+  },
+  {
+   "image": {
+    "query": "hands writing notes on paper at a workshop table, close up"
+   },
+   "title": "Practising it yourselves",
+   "footer": "The Content Engine · Amrize Content Workshop: Creating & Optimising Content for AI",
+   "layout": "section",
+   "density": "read",
+   "eyebrow": "04",
+   "resolvedImage": {
+    "url": "https://203.0.113.60/3ec51a09-s13-url.jpg",
+    "logo": "white",
+    "scrim": 0,
+    "credit": "Photo: Raymond Yeung / Unsplash"
+   }
+  },
+  {
+   "body": "**Pick a page:** a case study, product page or bio you're responsible for.\n**Rewrite the opening:** lead with the citable claim, name the source, add one frontloaded fact.\n**Add one Q&A subheading:** phrase it exactly as a customer or AI system would ask it.\n**Swap and critique:** in pairs, check whether the rewrite would survive being quoted out of context by an AI answer. Does it still make sense and still name Amrize?",
+   "title": "Workshop exercise",
+   "footer": "The Content Engine · Amrize Content Workshop: Creating & Optimising Content for AI",
+   "layout": "content",
+   "density": "read",
+   "subtitle": "Take one page you own and rewrite its opening two paragraphs live",
+   "imageQuery": "workshop whiteboard with sticky notes, collaborative session"
+  },
+  {
+   "body": "\"Amrize is a leading provider of building materials across North America, offering a wide range of products and solutions to meet the needs of the construction industry.\"",
+   "note": "Why this matters: the second version is specific, sourced, names a real entity and project, and answers an implicit question rather than asserting a generic claim.",
+   "title": "What good looks like: a before and after",
+   "tones": [
+    "coral",
+    "teal"
+   ],
+   "footer": "The Content Engine · Amrize Content Workshop: Creating & Optimising Content for AI",
+   "layout": "two-column",
+   "columns": {
+    "left": "Before (SEO habit)",
+    "right": "After (AEO/GEO practice)"
+   },
+   "density": "read",
+   "bodyRight": "\"Amrize supplies ready mix concrete to the Denver dam rehabilitation project, one of several major U.S. infrastructure projects the company has completed since its June 2025 launch. [Named engineer], Amrize's [title], led the technical specification.\""
+  },
+  {
+   "body": "**Does the first sentence answer a real question a customer or AI system would ask?**\n**Is at least one claim attributed to a named, specific source?**\n**Are people, products and locations named exactly as they appear in the entity map?**\n**Is there at least one explicit Q&A subheading?**\n**Would this survive being quoted alone, out of context, by an AI answer?**\n**Has schema/structured data been applied before publishing?**",
+   "title": "Your checklist for every new page",
+   "footer": "The Content Engine · Amrize Content Workshop: Creating & Optimising Content for AI",
+   "layout": "content",
+   "density": "read",
+   "subtitle": "Six questions to run before you hit publish",
+   "imageQuery": "clipboard checklist, minimal desk setup"
+  },
+  {
+   "title": "From workshop to habit",
+   "footer": "The Content Engine · Amrize Content Workshop: Creating & Optimising Content for AI",
+   "layout": "timeline",
+   "density": "read",
+   "milestones": [
+    {
+     "date": "This week",
+     "title": "Apply to live articles",
+     "detail": "Use today's checklist on the four articles already in production."
+    },
+    {
+     "date": "3 week cycles",
+     "title": "Entity by entity rollout",
+     "detail": "Continue the ACR framework's three week entity prioritisation cadence agreed in June."
+    },
+    {
+     "date": "Ongoing",
+     "title": "Weekly Story Lab check-in",
+     "detail": "Content and structure reviewed together each week through the pilot."
+    },
+    {
+     "date": "9 October",
+     "title": "Pilot review",
+     "detail": "Four month SEO/GEO pilot concludes. Before/after metrics assessed.",
+     "highlight": true
+    }
+   ]
+  },
+  {
+   "body": "The Amrize team: thank you for the time today.\nNext Story Lab check-in: Monday 28 September.\nQuestions in the meantime: the Content Engine team",
+   "image": {
+    "query": "sunrise over modern building facade, optimistic, clean"
+   },
+   "title": "Let's put this into practice",
+   "footer": "The Content Engine · Amrize Content Workshop: Creating & Optimising Content for AI",
+   "layout": "closing",
+   "density": "read",
+   "subtitle": "QUESTIONS ON ANY OF THE FOUR ARTICLES IN PRODUCTION? BRING THEM TO THE WEEKLY STORY LAB CHECK-IN.",
+   "resolvedImage": {
+    "url": "https://203.0.113.60/3ec51a09-s18-url.jpg",
+    "logo": "white",
+    "scrim": 0,
+    "credit": "Photo: Jéan Béller / Unsplash"
+   }
+  }
+ ]
+}
