@@ -139,16 +139,60 @@ npx tsx scripts/verify-turn-deadline.ts
 
 2026-09-28, thread 8479ea99: a grok-4.7 turn was WARNED at 184s, opened four
 more transcripts, and was killed by the platform at 300s with its row
-'pending' and empty. The warning was advice. Now three things act, none of
-them advice: past SOFT (170s on the chat route) no tool round starts and the
-next request is the tools-off answer; at HARD (275s) the provider request is
-aborted and the turn is finalised with what was written plus one line; at
-290s the route's BACKSTOP finalises the row itself, for a tool executor that
-hangs (the scheduled runner has the same backstop against its caller's
-ceiling). No tool call STARTS within 20s of hard: nothing could read its
-result, and an executor cannot be aborted once it runs. All of it is measured
-from the REQUEST, not the chain, and shared by every fallback leg — a
-fallback is started only before soft.
+'pending' and empty. The warning was advice. Now things act, none of them
+advice: at HARD (275s) the provider request is aborted and the turn is
+finalised with what was written plus one line; at 290s the route's BACKSTOP
+finalises the row itself, for a tool executor that hangs (the scheduled
+runner has the same backstop against its caller's ceiling). All of it is
+measured from the REQUEST, not the chain, and shared by every fallback leg.
+
+A TURN THAT ENDS IS NOT THE GOAL; ONE THAT ENDS WITH THE ANSWER IS. The QA
+re-run of that prompt on the fix (d949e94b) was finalised with no answer:
+grok-4.7's round 2 started at 141s — inside the old 170s soft budget, tools
+on — and reasoned past 275s without a word. So the end of every turn is an
+ANSWER WINDOW: a round still running when it opens is cut unless it is
+visibly writing the answer (text with no tool call begun, or a generate_*
+call), and the RESCUE WRITERS write it from what was gathered — tools off,
+lowest reasoning (Opus/Fable → Sonnet 5, thinking off). The window is the
+MODEL'S: 50s (from 225s) for a model that needs no thinking time, 100s (from
+175s) for grok-4.5+, which cannot be told not to reason. A tool round starts
+only with the model's measured p90 round left before its window (grok-4.7
+until 87.5s, claude-sonnet-5 until 190s); later, the round is the answer. A
+lookup does not start once the window is open; a generator does not within
+20s of hard. The numbers are measured, not guessed — see the header of
+turn-deadline.ts, and re-measure before moving them.
+
+THE FAST WRITER WROTE THE WRONG ANSWER. grok-4.7's first rescue writer was
+grok-4.3 at "none", because it fits 50s. In 6 real rescues of 6 it credited
+the colleagues' pasted Slack posts to the user as their own week. Replaying
+the captured rescue request pinned it on the writer, not the prompt: grok-4.3
+misattributed at "none", at "low" and with an attribution sentence added;
+grok-4.7 at "low" attributed correctly 8 of 8, but needs 23–56s before its
+first word (reasoning tokens, not the prompt — a warm cache did not help),
+and once in thirteen real rescues more than 60s — hence 70s to start.
+So grok-4.7 is rescued by ITSELF at "low", and grok-4.3 writes only the last
+30s, only if grok-4.7 has not started writing by 245s — and then its line
+says so and says to check names and owners (an attribution note in the
+prompt did not help: 3 of 3 still wrong). A check can assert the answer is
+on the row; it cannot tell a right summary from a wrong one. Re-read the
+answers of the real runs whenever the writer changes.
+
+THE RESCUE NEVER CHANGES PROVIDER. Mailbox/calendar content is Claude-only
+by contract and a hard-tainted turn must not move; every provider has a
+writer of its own, so a move would buy nothing. The check asserts it for
+every registered model and every writer in its ladder. The row's name_model
+stays the turn's model; the rescue's model and effort are named in the line
+and on the Turn log line (`writer="Grok 4.7 at low reasoning effort"`).
+
+The check is not the whole proof. The incident was also run for REAL: the
+route's own POST handler driven locally (auth swapped for user 8's session,
+every Supabase write captured and never sent) on the real providers, tools
+and data. A laptop's rounds are faster than production's, so the window
+path was also exercised on real data by starting the route's deadline 45s
+early, or by holding one meeting read in the harness until a chosen second —
+labelled as such. The harness blocks Xero and Microsoft token refreshes:
+those refresh tokens are single-use, and a refresh whose new token is then
+not saved would break the live integration.
 
 ONE SIGNAL ENDS A REQUEST, and the stream guard listens on it. Do not give
 the guard a timer of its own again. The installed SDKs lose an abort in two

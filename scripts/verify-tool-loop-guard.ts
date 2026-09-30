@@ -67,6 +67,9 @@
  *   KILLED  a duplicate refusal incrementing both counters → 12 red
  *   KILLED  narrationSpans.push deleted from the Anthropic chain → 13 red, and
  *           it names that chain: "streamAnthropic pushes 0 narration spans"
+ *   KILLED  (2026-09-30) closeCutRound(roundTextStart) removed from each chain
+ *           in turn → 1 red each, the chain named — the second push site, for
+ *           a round cut at the answer window (lib/ai/turn-deadline.ts)
  *   KILLED  the cut-short hook deleted from the Gemini chain → 13 red, Gemini
  *           named, where a whole-file count of four would have stayed green
  *   KILLED  the messages route saving fullText again → 13 red at both sites
@@ -552,9 +555,17 @@ console.log("\n13. Every chain is wired to the filter and the notice — per cha
     // PRECONDITION: a body that sliced to nothing would satisfy no assertion
     // below and report nothing either.
     if (body.length < 5000) { fail(`${CHAINS[i]}: sliced body is only ${body.length} chars — the slice is wrong, so nothing below was really tested`); continue; }
-    count(body, "narrationSpans.push(") === 1
+    // TWO SITES since 2026-09-30, each named: the round that ended in tool
+    // calls, and the round CUT AT THE ANSWER WINDOW (closeCutRound, lib/ai/
+    // turn-deadline.ts) — both spoke before any result existed. The second's
+    // behaviour, on screen and off the row, is asserted in
+    // verify-turn-deadline.ts section 14.
+    count(body, "narrationSpans.push(") === 2 && count(body, "narrationSpans.push({ start: roundTextStart, end: fullText.length });") === 1
       ? pass(`${CHAINS[i]} records the rounds that ended in tool calls`)
-      : fail(`${CHAINS[i]} pushes ${count(body, "narrationSpans.push(")} narration spans, expected 1 — its plan paragraphs go straight into the transcript`);
+      : fail(`${CHAINS[i]} pushes ${count(body, "narrationSpans.push(")} narration spans (expected 2), ${count(body, "narrationSpans.push({ start: roundTextStart, end: fullText.length });")} of them at the tool round (expected 1) — its plan paragraphs go straight into the transcript`);
+    count(body, "closeCutRound(roundTextStart);") === 1
+      ? pass(`${CHAINS[i]} records a round cut at the answer window`)
+      : fail(`${CHAINS[i]} calls closeCutRound(roundTextStart) ${count(body, "closeCutRound(roundTextStart);")} times, expected 1 — a cut round's words stay on the saved row`);
     count(body, "keptText: withoutRoundNarration(fullText, narrationSpans, spokenText.length)") === 1
       ? pass(`${CHAINS[i]} returns the filtered copy, bounded by its own text`)
       : fail(`${CHAINS[i]} does not return keptText: withoutRoundNarration(fullText, narrationSpans, spokenText.length) — without the third argument the end-of-turn notices count as surviving answer text`);

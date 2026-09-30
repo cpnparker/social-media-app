@@ -19,7 +19,7 @@ import { authorityOnEnabled } from "@/lib/authorityon/mcp";
 import { toolActivityEvent, dataSubject } from "@/lib/ai/tool-activity";
 import { createToolLoopGuard, repeatedCallNotice, overBudgetNotice, stallOutcome, slidesWritten, cutShortLookupNotice, DO_NOT_BLAME_THE_SOURCE, OUR_LIMIT_CUT_IT_SHORT, type ToolUsage } from "@/lib/ai/tool-loop-guard";
 import { withoutRoundNarration, type RoundSpan } from "@/lib/ai/round-text";
-import { turnDeadlineFor, roundPlan, warnBuildNow, canStartFallback, hardDeadlineSignal, isTurnDeadlineError, deadlineErrorOf, turnDeadlineNotice, toolTooLate, skippedToolCut, type TurnDeadline, type DeadlineCut } from "@/lib/ai/turn-deadline";
+import { turnDeadlineFor, roundPlan, warnBuildNow, canStartFallback, isTurnDeadlineError, deadlineErrorOf, turnDeadlineNotice, toolTooLate, skippedToolCut, guardRound, isWindowCut, answerStep, roundP90Ms, type AnswerWriter, type TurnDeadline, type DeadlineCut } from "@/lib/ai/turn-deadline";
 import { createTranscriptBudget, summarisedTranscriptsNotice, transcriptWithheldHint, type TranscriptBudget } from "@/lib/ai/transcript-budget";
 import { toPreviewModel, type PreviewDeck } from "@/lib/slides/preview-model";
 import { validateDeck, geometryNotes, geometryRefusal, logDeckGeometry, type DeckGeometry } from "@/lib/slides/validate";
@@ -649,13 +649,49 @@ const LAST_ROUND_NOTICE =
   "SYSTEM NOTE (not from the user — never acknowledge or mention it): this is your LAST round of tool calls this turn. If you have promised the user an artefact — a document, a deck, a chart — build it NOW with this round. Do not spend it on another lookup, and do not end the turn saying something is coming: anything you have not built by the end of this round does not exist.";
 
 /** The result of a call toolTooLate (lib/ai/turn-deadline.ts) never started.
- *  No request follows it today — that is why it was not started — but the
- *  conversation must stay valid, and if a later change ever lets one follow,
- *  it says whose limit it was. The cut-short clause only for a LOOKUP: a
- *  generator that never ran reached no source (see tool-loop-guard.ts). */
+ *  A LOOKUP skipped at the answer window is followed by the rescue writer,
+ *  which reads this and must say whose limit it was, never the source's; a
+ *  generator skipped near HARD is followed by nothing, but the conversation
+ *  must stay valid. The cut-short clause only for a LOOKUP: a generator that
+ *  never ran reached no source (see tool-loop-guard.ts). */
 function toolOutOfTimeResult(name: string): string {
   const lookup = dataSubject(name) !== null;
   return `NOT RUN — this turn reached its time limit before this call could start, so nothing was ${lookup ? "fetched" : "created"}. ${lookup ? `${OUR_LIMIT_CUT_IT_SHORT} ` : ""}${DO_NOT_BLAME_THE_SOURCE}`;
+}
+
+/** What the turn READ, in the words the notices already use (tool-activity
+ *  subjects), for the deadline line that has no answer to point at: "this
+ *  turn read your meeting records, Slack and the Engine database, but…".
+ *  Only calls that ran — a refused repeat or an over-budget call read nothing. */
+export function gatheredSubjects(usage: ToolUsage[] | undefined): string[] {
+  const out: string[] = [];
+  const list = usage || [];
+  for (let i = 0; i < list.length; i++) {
+    const u = list[i];
+    if ((u.calls || 0) - (u.blockedBudget || 0) - (u.blockedRepeat || 0) <= 0) continue;
+    const subject = dataSubject(u.name);
+    if (subject && out.indexOf(subject) < 0) out.push(subject);
+  }
+  return out;
+}
+
+/** The picker's name for an API model. The model's OWN id first ("grok-4-3"
+ *  for grok-4.3), because the first registry entry sharing an apiModel can be
+ *  a legacy alias with another model's name ("Grok 4 Fast" is grok-4.3 too). */
+export function modelLabel(apiModel: string): string {
+  const own = MODEL_REGISTRY[apiModel.replace(/\./g, "-")];
+  if (own && own.apiModel === apiModel) return own.label;
+  const entries = Object.entries(MODEL_REGISTRY).filter(([id, m]) => id !== "auto" && m.apiModel === apiModel);
+  const live = entries.find(([, m]) => !m.legacy);
+  return (live || entries[0])?.[1].label ?? apiModel;
+}
+
+/** How the deadline line names the RESCUE WRITER: which model wrote the
+ *  answer, and "without reasoning" / "at low reasoning effort" when that is
+ *  how it was asked to write. */
+export function describeWriter(w: { model: string; reasoningEffort?: string }): string {
+  const how = w.reasoningEffort === "none" ? " without reasoning" : w.reasoningEffort === "low" ? " at low reasoning effort" : "";
+  return `${modelLabel(w.model)}${how}`;
 }
 
 const FORCED_FINAL_NUDGE =
@@ -9152,7 +9188,7 @@ export function createStreamingResponse(
             const status = anthropicErr?.status || 0;
             // A fallback is a whole new turn. Too late for one, the error is
             // the answer — the route states it on the row (see canStartFallback).
-            if (!canStartFallback(deadline)) {
+            if (!canStartFallback(deadline, Date.now(), FALLBACK_MODEL)) {
               console.warn(`[AI] Anthropic failed (status=${status}, ${errMsg.slice(0, 150)}) ${Math.round((Date.now() - deadline.startedAt) / 1000)}s into the turn — too late to fall back`);
               throw anthropicErr;
             }
@@ -9200,7 +9236,7 @@ export function createStreamingResponse(
           // xAI (Grok) — with fallback to Anthropic on failure or empty response
           try {
             result = await streamXAI(messages, config, modelInfo.apiModel, controller, encoder);
-            if (!result.fullText.trim() && canStartFallback(deadline)) {
+            if (!result.fullText.trim() && canStartFallback(deadline, Date.now(), "claude-sonnet-5")) {
               console.warn(`[AI] xAI returned empty response, falling back to Claude`);
               controller.enqueue(encoder.encode(`data: ${JSON.stringify({ fallback: true, reason: "Grok returned empty — using Claude" })}\n\n`));
               // An empty response is a COMPLETED one — the prompt was read and
@@ -9210,7 +9246,7 @@ export function createStreamingResponse(
             }
           } catch (xaiErr: any) {
             const errMsg = xaiErr?.message || String(xaiErr);
-            if (!canStartFallback(deadline)) {
+            if (!canStartFallback(deadline, Date.now(), "claude-sonnet-5")) {
               console.warn(`[AI] xAI failed (${errMsg.slice(0, 150)}) ${Math.round((Date.now() - deadline.startedAt) / 1000)}s into the turn — too late to fall back`);
               throw xaiErr;
             }
@@ -9371,7 +9407,7 @@ async function withGrokFallback(
     return await run();
   } catch (err: any) {
     const errMsg = err?.message || String(err);
-    if (!canStartFallback(turnDeadlineFor(config))) {
+    if (!canStartFallback(turnDeadlineFor(config), Date.now(), FALLBACK_MODEL)) {
       console.warn(`[AI] ${label} failed (status=${err?.status ?? "?"}, ${errMsg.slice(0, 200)}) — too late in the turn to fall back`);
       throw err;
     }
@@ -9933,6 +9969,17 @@ async function streamAnthropic(
   // untouched. See lib/ai/round-text.ts for why spans rather than a second
   // accumulator.
   const narrationSpans: RoundSpan[] = [];
+  // A ROUND CUT AT THE ANSWER WINDOW spoke before any result existed, like a
+  // round that ended in tool calls: its words stay on screen, leave the saved
+  // copy, and the answer follows them rather than jamming into them.
+  const closeCutRound = (start: number) => {
+    if (fullText.length <= start) return;
+    if (!fullText.endsWith("\n")) {
+      fullText += "\n\n";
+      try { controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`)); } catch { /* client gone; the text is still on the row */ }
+    }
+    narrationSpans.push({ start, end: fullText.length });
+  };
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCacheReadTokens = 0;
@@ -9986,22 +10033,25 @@ async function streamAnthropic(
     // Where this round's text starts, so a retry replays this round's words as
     // the assistant turn and not everything the turn has said.
     const roundTextStart = fullText.length;
-    // PAST SOFT, NO FURTHER TOOL ROUND STARTS. The warning below used to be
-    // the only thing standing between a turn and the platform's kill, and on
-    // 2026-09-28 the model read it and opened four more transcripts. Leaving
-    // the loop hands the turn to the forced-final path: the answer, tools off.
-    // Too close to HARD for even that, and the turn finalises as it stands.
+    // A TOOL ROUND STARTS ONLY IF IT CAN FINISH BEFORE THE ANSWER WINDOW —
+    // this model's measured p90 round (lib/ai/turn-deadline.ts). On 2026-09-28
+    // a grok-4.7 round started at 141s, 29s inside the old soft budget, and
+    // was still thinking at 275s: the turn ended with no answer at all.
+    // Later than that, leaving the loop hands the turn to the answer path:
+    // tools off, on this model while the window is shut ("final"), by the
+    // rescue writer once it is open ("rescue"). Too close to HARD for either,
+    // and the turn finalises as it stands.
     {
-      const plan = roundPlan(deadline);
+      const plan = roundPlan(deadline, Date.now(), apiModel);
       if (plan !== "tools") {
-        deadlineCut = plan === "final" ? { kind: "soft" } : { kind: "hard", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted };
-        console.warn(`[Turn] ${Math.round((Date.now() - turnStartedAt) / 1000)}s used at round ${round} — ${plan === "final" ? "past the soft budget: no further tool rounds, answering with tools off" : "past the last useful moment: finalising without another request"}`);
+        deadlineCut = plan === "final" ? { kind: "soft" } : plan === "rescue" ? { kind: "window", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted } : { kind: "hard", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted };
+        console.warn(`[Turn] ${Math.round((Date.now() - turnStartedAt) / 1000)}s used at round ${round} — ${plan === "final" ? `too late for a ${apiModel} tool round (p90 ${Math.round(roundP90Ms(apiModel) / 1000)}s) to finish before the answer window: answering with tools off` : plan === "rescue" ? "the answer window is open: the rescue writer answers" : "past the last useful moment: finalising without another request"}`);
         break;
       }
     }
     // ONE ROUND LEFT. Said once, so the model can build the thing it promised
     // rather than spend the last round on another read and stop silently.
-    if (!warnedTimeBudget && warnBuildNow(deadline)) {
+    if (!warnedTimeBudget && warnBuildNow(deadline, Date.now(), apiModel, round)) {
       warnedTimeBudget = true;
       console.warn(`[Turn] ${Math.round((Date.now() - turnStartedAt) / 1000)}s used at round ${round} — warning the model to build now`);
       anthropicMessages.push({ role: "user", content: TIME_BUDGET_NOTICE } as any);
@@ -10051,7 +10101,11 @@ async function streamAnthropic(
     roundsUsed++;
     // This request's hard-budget signal: the SDK is given it, and so is the
     // stream guard, which is what turns it into a TurnDeadlineError.
-    const roundSignal = hardDeadlineSignal(deadline);
+    // The HARD budget and, at the answer window, the cut of a round that is
+    // not writing the answer (guardRound, lib/ai/turn-deadline.ts): one
+    // signal for the SDK and the stream guard both.
+    const roundGuard = guardRound(deadline, Date.now(), apiModel);
+    const roundSignal = roundGuard.signal;
     const stream = anthropic.messages.stream({
       model: apiModel,
       max_tokens: anthropicMaxTokens(apiModel, config.maxTokens),
@@ -10092,12 +10146,14 @@ async function streamAnthropic(
       if (event.type === "content_block_start") {
         const block = (event as any).content_block;
         if (block?.type === "server_tool_use" && block?.name === "web_search") {
+          roundGuard.tool("web_search");
           controller.enqueue(
             encoder.encode(`data: ${JSON.stringify({ searching: true })}\n\n`)
           );
         }
         // Detect our custom tool_use blocks (e.g. generate_image)
         if (block?.type === "tool_use") {
+          roundGuard.tool(block.name);
           currentToolId = block.id;
           currentToolName = block.name;
           currentToolInput = "";
@@ -10168,6 +10224,7 @@ async function streamAnthropic(
         (event.delta as any).type === "text_delta"
       ) {
         const token = (event.delta as any).text;
+        roundGuard.text();
         fullText += token;
         controller.enqueue(
           encoder.encode(`data: ${JSON.stringify({ token })}\n\n`)
@@ -10176,7 +10233,15 @@ async function streamAnthropic(
     }
 
     } catch (e) {
-      if (e instanceof StreamStallError) {
+      if (isWindowCut(e, roundGuard)) {
+        // THE ANSWER WINDOW OPENED ON A ROUND THAT WAS NOT WRITING IT. What
+        // is on screen stays; the answer path below writes the answer from
+        // everything gathered (see the xAI chain, where this was measured).
+        console.warn(`[Anthropic] Round ${round} cut at the answer window (${Math.round((Date.now() - turnStartedAt) / 1000)}s)${currentToolName ? ` while writing ${currentToolName}` : ""} — ${String((e as any)?.message || e).slice(0, 160)}; the answer is written from what was gathered`);
+        deadlineCut = { kind: "window", tool: currentToolName || undefined };
+        closeCutRound(roundTextStart);
+        stalled = true;
+      } else if (e instanceof StreamStallError) {
         console.warn(`[Anthropic] Round ${round} stalled mid-stream${currentToolName ? ` while writing ${currentToolName}` : ""} — ${e.diagnosis}${currentToolInput ? `; ${currentToolInput.length} chars of arguments written` : ""} — aborting tool loop, forcing final answer from gathered context`);
         stalled = true;
         stalledOut = true;
@@ -10192,6 +10257,7 @@ async function streamAnthropic(
         throw e;
       }
     }
+    roundGuard.done();
     if (stalled) break;
 
     // Get usage from this round
@@ -10288,8 +10354,8 @@ async function streamAnthropic(
       // TOO LATE TO START IT (toolTooLate, lib/ai/turn-deadline.ts): no request
       // can follow to read the result, and an executor cannot be aborted once
       // it runs. The result keeps the conversation valid; the notice says why.
-      if (toolTooLate(deadline)) {
-        deadlineCut = skippedToolCut(deadlineCut, tool.name);
+      if (toolTooLate(deadline, Date.now(), tool.name, apiModel)) {
+        deadlineCut = skippedToolCut(deadlineCut, tool.name, Date.now(), deadline);
         console.warn(`[Anthropic] ${Math.round((Date.now() - turnStartedAt) / 1000)}s into the turn — too late to start ${tool.name}; not run`);
         toolResults.push({ type: "tool_result", tool_use_id: tool.id, content: toolOutOfTimeResult(tool.name), is_error: true });
         continue;
@@ -11362,85 +11428,124 @@ async function streamAnthropic(
   //
   // A SOFT CUT ALWAYS OWES THE ANSWER. The round before it ended in tool calls
   // that RAN, and the model has not seen their results — whatever it wrote
-  // earlier, however long, was said before them. And the final pass only runs
-  // with time for it: too late, and the deadline notice speaks instead.
-  const owesFinal = deadlineCut?.kind === "soft" || needsForcedFinal(loopEndedCleanly, fullText);
-  const finalAllowed = roundPlan(deadline) !== "none";
+  // earlier, however long, was said before them. So does a WINDOW CUT: the
+  // round it cut was not writing one. And the final pass only runs with time
+  // for it: too late, and the deadline notice speaks instead.
+  //
+  // WHO WRITES IT — see the xAI chain. On this provider the rescue writer is
+  // the model itself unless it always thinks (Opus 5.x, Fable, Mythos), which
+  // hands the answer to Sonnet 5 with thinking disabled: 1–2s to its first
+  // word at 150k tokens. Anthropic either way — a turn that read the mailbox
+  // keeps it on the processor the mailbox contract names.
+  const owesFinal = deadlineCut?.kind === "soft" || deadlineCut?.kind === "window" || needsForcedFinal(loopEndedCleanly, fullText);
+  const finalAllowed = roundPlan(deadline, Date.now(), apiModel) !== "none";
   // A stall already has its own notice (stallOutcome, below); one is enough.
   if (owesFinal && !finalAllowed && !stalledOut) deadlineCut = { kind: "hard", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted };
   if (owesFinal && finalAllowed && (anthropicMessages.length > 1 || deadlineCut !== null)) {
     console.log(`[Anthropic] Tool loop ended without a natural stop (text=${fullText.trim().length} chars) — forcing final answer`);
-    // Its own hard-budget signal, read by the catch below as well as the SDK.
-    const finalSignal = hardDeadlineSignal(deadline);
-    try {
-      // Keep roles alternating: append the nudge to the trailing user message
-      // (tool results) if there is one, else push a fresh user message.
-      const nudgeBlock = { type: "text" as const, text: FORCED_FINAL_NUDGE };
-      const lastMsg: any = anthropicMessages[anthropicMessages.length - 1];
-      if (lastMsg?.role === "user" && Array.isArray(lastMsg.content)) lastMsg.content.push(nudgeBlock);
-      else anthropicMessages.push({ role: "user", content: [nudgeBlock] } as any);
-      if (fullText.trim() && !fullText.endsWith("\n")) {
-        fullText += "\n\n";
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
+    // Keep roles alternating: append the nudge to the trailing user message
+    // (tool results) if there is one, else push a fresh user message.
+    const nudgeBlock = { type: "text" as const, text: FORCED_FINAL_NUDGE };
+    const lastMsg: any = anthropicMessages[anthropicMessages.length - 1];
+    if (lastMsg?.role === "user" && Array.isArray(lastMsg.content)) lastMsg.content.push(nudgeBlock);
+    else anthropicMessages.push({ role: "user", content: [nudgeBlock] } as any);
+    if (fullText.trim() && !fullText.endsWith("\n")) {
+      fullText += "\n\n";
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
+    }
+    const narrowed = config.sawUntrustedContent === true
+      ? tools.filter((t: any) => POST_TAINT_READ_TOOLS.has(t?.name))
+      : tools;
+    const finalTools = narrowed.length > 0 ? narrowed : tools;
+    // ONE REQUEST PER STEP (answerStep, lib/ai/turn-deadline.ts): this model
+    // while its window is shut, then the rescue writers in order — each cut
+    // at its own point if it has written nothing by then, else at HARD.
+    let stage = 0;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const step = answerStep(deadline, Date.now(), apiModel, stage);
+      if (!step) {
+        if (!stalledOut && roundPlan(deadline, Date.now(), apiModel) === "none") deadlineCut = { kind: "hard", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted };
+        break;
       }
-      const narrowed = config.sawUntrustedContent === true
-        ? tools.filter((t: any) => POST_TAINT_READ_TOOLS.has(t?.name))
-        : tools;
-      const finalTools = narrowed.length > 0 ? narrowed : tools;
-      const finalLayout = anthropicCacheLayout({
-        systemText,
-        tools: finalTools,
-        messages: anthropicMessages,
-        // This request sets tool_choice where every round before it did not,
-        // and a tool_choice change invalidates the MESSAGES cache. A rolling
-        // marker here would buy a 1.25x write on the last request of the turn
-        // that nothing would ever read.
-        toolChoiceSet: true,
-      });
-      roundsUsed++;
-      const finalStream = anthropic.messages.stream({
-        model: apiModel,
-        max_tokens: anthropicMaxTokens(apiModel, config.maxTokens),
-        ...anthropicModelParams(apiModel, config),
-        system: finalLayout.system,
-        messages: finalLayout.messages,
-        // tools MUST be passed when the history contains tool_use/tool_result
-        // blocks — the API 400s otherwise. tool_choice "none" is what actually
-        // forces a text-only response.
-        //
-        // Narrowed on a tainted turn as well. Nothing can be called from here,
-        // so this is belt and braces; the braces are there because a list that
-        // is merely unreachable today is a list somebody trusts tomorrow. The
-        // fallback to the full set covers the API's refusal of an empty array.
-        ...(tools.length > 0 ? { tools: finalLayout.tools, tool_choice: { type: "none" as const } } : {}),
-      }, { signal: finalSignal });
+      stage = step.stage + 1;
+      const rescue = step.named;
+      const writer: AnswerWriter = step.writer;
+      const guard = guardRound(deadline, Date.now(), apiModel, step.cutAt);
+      const finalSignal = guard.signal;
+      const before = fullText.length;
+      const startedWriting = Date.now();
+      try {
+        const finalLayout = anthropicCacheLayout({
+          systemText,
+          tools: finalTools,
+          messages: anthropicMessages,
+          // This request sets tool_choice where every round before it did not,
+          // and a tool_choice change invalidates the MESSAGES cache. A rolling
+          // marker here would buy a 1.25x write on the last request of the turn
+          // that nothing would ever read.
+          toolChoiceSet: true,
+        });
+        roundsUsed++;
+        const finalStream = anthropic.messages.stream({
+          model: writer.model,
+          max_tokens: anthropicMaxTokens(writer.model, config.maxTokens),
+          ...anthropicModelParams(writer.model, config),
+          system: finalLayout.system,
+          messages: finalLayout.messages,
+          // tools MUST be passed when the history contains tool_use/tool_result
+          // blocks — the API 400s otherwise. tool_choice "none" is what actually
+          // forces a text-only response.
+          //
+          // Narrowed on a tainted turn as well. Nothing can be called from here,
+          // so this is belt and braces; the braces are there because a list that
+          // is merely unreachable today is a list somebody trusts tomorrow. The
+          // fallback to the full set covers the API's refusal of an empty array.
+          ...(tools.length > 0 ? { tools: finalLayout.tools, tool_choice: { type: "none" as const } } : {}),
+        }, { signal: finalSignal });
 
-      for await (const event of withStallGuard(finalStream, undefined, finalSignal)) {
-        if (
-          event.type === "content_block_delta" &&
-          (event.delta as any).type === "text_delta"
-        ) {
-          const token = (event.delta as any).text;
-          fullText += token;
-          controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ token })}\n\n`)
-          );
+        for await (const event of withStallGuard(finalStream, undefined, finalSignal)) {
+          if (
+            event.type === "content_block_delta" &&
+            (event.delta as any).type === "text_delta"
+          ) {
+            const token = (event.delta as any).text;
+            guard.text();
+            fullText += token;
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ token })}\n\n`)
+            );
+          }
         }
-      }
 
-      const finalMsg = await finalStream.finalMessage();
-      totalInputTokens += finalMsg.usage?.input_tokens || 0;
-      totalOutputTokens += finalMsg.usage?.output_tokens || 0;
-      totalCacheReadTokens += (finalMsg.usage as any)?.cache_read_input_tokens || 0;
-      totalCacheWriteTokens += (finalMsg.usage as any)?.cache_creation_input_tokens || 0;
-      console.log(`[Anthropic] Forced final response: ${fullText.length} chars`);
-    } catch (err: any) {
-      if (isTurnDeadlineError(err, deadline, finalSignal)) {
-        console.warn(`[Anthropic] Forced final aborted at the turn's hard deadline — ${fullText.trim().length} chars on screen`);
-        deadlineCut = { kind: "hard" };
-      } else {
-        console.error(`[Anthropic] Forced final response failed:`, err.message);
+        const finalMsg = await finalStream.finalMessage();
+        totalInputTokens += finalMsg.usage?.input_tokens || 0;
+        totalOutputTokens += finalMsg.usage?.output_tokens || 0;
+        totalCacheReadTokens += (finalMsg.usage as any)?.cache_read_input_tokens || 0;
+        totalCacheWriteTokens += (finalMsg.usage as any)?.cache_creation_input_tokens || 0;
+        if (rescue) console.log(`[Anthropic] Rescue: the answer was written by ${writer.model} in ${Math.round((Date.now() - startedWriting) / 1000)}s, ${fullText.length - before} chars, ${Math.round((Date.now() - turnStartedAt) / 1000)}s into the turn`);
+        else console.log(`[Anthropic] Forced final response: ${fullText.length} chars`);
+      } catch (err: any) {
+        if (isWindowCut(err, guard)) {
+          console.warn(`[Anthropic] The answer request on ${writer.model} had written nothing by ${Math.round((Date.now() - turnStartedAt) / 1000)}s — cut, and the next writer answers`);
+          deadlineCut = { kind: "window" };
+          continue;
+        }
+        if (isTurnDeadlineError(err, deadline, finalSignal)) {
+          console.warn(`[Anthropic] ${rescue ? `Rescue (${writer.model})` : "Forced final"} aborted at the turn's hard deadline — ${fullText.trim().length} chars on screen`);
+          deadlineCut = { kind: "hard" };
+          break;
+        }
+        console.error(`[Anthropic] ${rescue ? `Rescue (${writer.model})` : "Forced final"} response failed:`, err.message);
+        // Nothing written: the next writer gets one try.
+        if (fullText.length === before) continue;
+        break;
+      } finally {
+        guard.done();
       }
+      const wrote = fullText.slice(before).trim() !== "";
+      if (wrote && rescue) deadlineCut = { kind: "window", writer: describeWriter(writer), lastResort: step.lastResort };
+      if (wrote) break;
+      console.warn(`[Anthropic] The answer request on ${writer.model} returned no text — the next writer gets one try`);
     }
   }
 
@@ -11525,7 +11630,7 @@ async function streamAnthropic(
   {
     const lastToolRoundEnd = narrationSpans.length ? narrationSpans[narrationSpans.length - 1].end : 0;
     const answered = spokenText.slice(lastToolRoundEnd).trim() !== "";
-    const closing = summarisedTranscriptsNotice(transcriptBudget) + turnDeadlineNotice(deadlineCut, answered);
+    const closing = summarisedTranscriptsNotice(transcriptBudget) + turnDeadlineNotice(deadlineCut, answered, gatheredSubjects(toolLoopGuard.usage()));
     if (closing) {
       fullText += closing;
       try {
@@ -11539,7 +11644,7 @@ async function streamAnthropic(
   // ledger row records the turn's totals; this records how many requests those
   // totals were spread across, which is what decides whether caching the loop
   // is worth anything at all.
-  console.log(`[Anthropic] Turn: rounds=${roundsUsed} model=${apiModel} in=${totalInputTokens} cache_r=${totalCacheReadTokens} cache_w=${totalCacheWriteTokens} out=${totalOutputTokens} elapsed=${Math.round((Date.now() - turnStartedAt) / 1000)}s deadline=${deadlineCut ? deadlineCut.kind : "none"} transcripts_held=${transcriptBudget.withheld().length}`);
+  console.log(`[Anthropic] Turn: rounds=${roundsUsed} model=${apiModel} in=${totalInputTokens} cache_r=${totalCacheReadTokens} cache_w=${totalCacheWriteTokens} out=${totalOutputTokens} elapsed=${Math.round((Date.now() - turnStartedAt) / 1000)}s deadline=${deadlineCut ? deadlineCut.kind : "none"}${deadlineCut?.writer ? ` writer="${deadlineCut.writer}"` : ""} transcripts_held=${transcriptBudget.withheld().length}`);
 
   return {
     fullText,
@@ -11770,6 +11875,17 @@ async function streamXAIChatCompletions(
   // untouched. See lib/ai/round-text.ts for why spans rather than a second
   // accumulator.
   const narrationSpans: RoundSpan[] = [];
+  // A ROUND CUT AT THE ANSWER WINDOW spoke before any result existed, like a
+  // round that ended in tool calls: its words stay on screen, leave the saved
+  // copy, and the answer follows them rather than jamming into them.
+  const closeCutRound = (start: number) => {
+    if (fullText.length <= start) return;
+    if (!fullText.endsWith("\n")) {
+      fullText += "\n\n";
+      try { controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`)); } catch { /* client gone; the text is still on the row */ }
+    }
+    narrationSpans.push({ start, end: fullText.length });
+  };
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCacheReadTokens = 0;
@@ -11819,22 +11935,25 @@ async function streamXAIChatCompletions(
     // Where this round's text starts, so a retry replays this round's words as
     // the assistant turn and not everything the turn has said.
     const roundTextStart = fullText.length;
-    // PAST SOFT, NO FURTHER TOOL ROUND STARTS. The warning below used to be
-    // the only thing standing between a turn and the platform's kill, and on
-    // 2026-09-28 the model read it and opened four more transcripts. Leaving
-    // the loop hands the turn to the forced-final path: the answer, tools off.
-    // Too close to HARD for even that, and the turn finalises as it stands.
+    // A TOOL ROUND STARTS ONLY IF IT CAN FINISH BEFORE THE ANSWER WINDOW —
+    // this model's measured p90 round (lib/ai/turn-deadline.ts). On 2026-09-28
+    // a grok-4.7 round started at 141s, 29s inside the old soft budget, and
+    // was still thinking at 275s: the turn ended with no answer at all.
+    // Later than that, leaving the loop hands the turn to the answer path:
+    // tools off, on this model while the window is shut ("final"), by the
+    // rescue writer once it is open ("rescue"). Too close to HARD for either,
+    // and the turn finalises as it stands.
     {
-      const plan = roundPlan(deadline);
+      const plan = roundPlan(deadline, Date.now(), apiModel);
       if (plan !== "tools") {
-        deadlineCut = plan === "final" ? { kind: "soft" } : { kind: "hard", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted };
-        console.warn(`[Turn] ${Math.round((Date.now() - turnStartedAt) / 1000)}s used at round ${round} — ${plan === "final" ? "past the soft budget: no further tool rounds, answering with tools off" : "past the last useful moment: finalising without another request"}`);
+        deadlineCut = plan === "final" ? { kind: "soft" } : plan === "rescue" ? { kind: "window", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted } : { kind: "hard", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted };
+        console.warn(`[Turn] ${Math.round((Date.now() - turnStartedAt) / 1000)}s used at round ${round} — ${plan === "final" ? `too late for a ${apiModel} tool round (p90 ${Math.round(roundP90Ms(apiModel) / 1000)}s) to finish before the answer window: answering with tools off` : plan === "rescue" ? "the answer window is open: the rescue writer answers" : "past the last useful moment: finalising without another request"}`);
         break;
       }
     }
     // ONE ROUND LEFT. Said once, so the model can build the thing it promised
     // rather than spend the last round on another read and stop silently.
-    if (!warnedTimeBudget && warnBuildNow(deadline)) {
+    if (!warnedTimeBudget && warnBuildNow(deadline, Date.now(), apiModel, round)) {
       warnedTimeBudget = true;
       console.warn(`[Turn] ${Math.round((Date.now() - turnStartedAt) / 1000)}s used at round ${round} — warning the model to build now`);
       openaiMessages.push({ role: "user", content: TIME_BUDGET_NOTICE } as any);
@@ -11853,7 +11972,11 @@ async function streamXAIChatCompletions(
     // request cut by the deadline while still waiting for its headers — a
     // 100k-token prompt can wait a long time — is handled like a cut stream.
     // This request's hard-budget signal, for the SDK and the stream guard both.
-    const roundSignal = hardDeadlineSignal(deadline);
+    // The HARD budget and, at the answer window, the cut of a round that is
+    // not writing the answer (guardRound, lib/ai/turn-deadline.ts): one
+    // signal for the SDK and the stream guard both.
+    const roundGuard = guardRound(deadline, Date.now(), apiModel);
+    const roundSignal = roundGuard.signal;
     const streamRequest = xai.chat.completions.create({
       model: apiModel,
       ...tokenParam,
@@ -11899,6 +12022,7 @@ async function streamXAIChatCompletions(
       // Stream text content
       const token = choice.delta?.content;
       if (token) {
+        roundGuard.text();
         fullText += token;
         controller.enqueue(
           encoder.encode(`data: ${JSON.stringify({ token })}\n\n`)
@@ -11915,6 +12039,7 @@ async function streamXAIChatCompletions(
           const existing = toolCalls.get(idx)!;
           if (tc.id) existing.id = tc.id;
           if (tc.function?.name) existing.name = tc.function.name;
+          if (existing.name) roundGuard.tool(existing.name);
           if (tc.function?.arguments) existing.arguments += tc.function.arguments;
           if (existing.name === "generate_slides" && tc.function?.arguments) {
             const n = slidesWritten(existing.arguments);
@@ -11982,7 +12107,17 @@ async function streamXAIChatCompletions(
       }
     }
     } catch (e) {
-      if (isTurnDeadlineError(e, deadline, roundSignal)) {
+      if (isWindowCut(e, roundGuard)) {
+        // THE ANSWER WINDOW OPENED ON A ROUND THAT WAS NOT WRITING IT — the
+        // 2026-09-28 QA turn: grok-4.7's round 2 started at 141s and had said
+        // nothing by 275s. Cut here, at the window, the rescue writer below
+        // still has the time to write the answer from what was gathered.
+        const writing = Array.from(toolCalls.values()).map((t) => t.name).filter(Boolean).pop();
+        console.warn(`[xAI] Round ${round} cut at the answer window (${Math.round((Date.now() - turnStartedAt) / 1000)}s)${writing ? ` while writing ${writing}` : ""} — ${String((e as any)?.message || e).slice(0, 160)}; the answer is written from what was gathered`);
+        deadlineCut = { kind: "window", tool: writing };
+        closeCutRound(roundTextStart);
+        stalled = true;
+      } else if (isTurnDeadlineError(e, deadline, roundSignal)) {
         // OUT OF TIME, at any round: never rethrown into a fallback that could
         // not finish either. What is on screen stays; the notice says the rest.
         const writing = Array.from(toolCalls.values()).map((t) => t.name).filter(Boolean).pop();
@@ -12000,6 +12135,7 @@ async function streamXAIChatCompletions(
         throw e;
       }
     }
+    roundGuard.done();
     if (stalled) break;
 
     // Add web_search indicator detection (xAI specific)
@@ -12068,8 +12204,8 @@ async function streamXAIChatCompletions(
     const taintedBeforeBatch = config.sawUntrustedContent === true;
     for (const tc of toolCallsArray) {
       // Too late to start it — see the Anthropic chain.
-      if (toolTooLate(deadline)) {
-        deadlineCut = skippedToolCut(deadlineCut, tc.function.name);
+      if (toolTooLate(deadline, Date.now(), tc.function.name, apiModel)) {
+        deadlineCut = skippedToolCut(deadlineCut, tc.function.name, Date.now(), deadline);
         console.warn(`[xAI] ${Math.round((Date.now() - turnStartedAt) / 1000)}s into the turn — too late to start ${tc.function.name}; not run`);
         openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: toolOutOfTimeResult(tc.function.name) } as any);
         continue;
@@ -12707,61 +12843,109 @@ async function streamXAIChatCompletions(
   // Forced final answer: fires when the loop ended ANY way other than a natural
   // stop, or produced no text — turns gathered tool context into an actual
   // answer instead of a dangling "let me pull the details…".
-  // A SOFT CUT ALWAYS OWES THE ANSWER, and only with time for it — see the
-  // Anthropic chain.
-  const owesFinal = deadlineCut?.kind === "soft" || needsForcedFinal(loopEndedCleanly, fullText);
-  const finalAllowed = roundPlan(deadline) !== "none";
-  if (owesFinal && !finalAllowed) deadlineCut = { kind: "hard", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted };
-  if (owesFinal && finalAllowed && (openaiMessages.length > 1 || deadlineCut !== null)) {
+  // A SOFT CUT OR A WINDOW CUT ALWAYS OWES THE ANSWER, and only with time for
+  // it — see the Anthropic chain.
+  //
+  // WHO WRITES IT (answerStep, lib/ai/turn-deadline.ts). With time to spare,
+  // this model at its own setting, tools off, cut if it has written nothing
+  // when its window opens. Late in the turn, once the window is open, or once
+  // that has failed: the RESCUE WRITERS. For grok-4.7 that is grok-4.7 itself
+  // at "low" — its window opens at 175s, 100s before HARD, to give it the
+  // 23–56s it thought before a word on the incident's request — and, only if it has
+  // not started writing by 245s, grok-4.3 at "none". grok-4.3 used to be the
+  // first choice because it is fast; on the incident prompt it credited Rob's
+  // and Gabi's pasted posts to the user in 6 real rescues of 6, where
+  // grok-4.7 at "low" kept the three apart in 8 of 8. Same provider, always:
+  // the gathered text goes nowhere it has not already been.
+  const owesFinal = deadlineCut?.kind === "soft" || deadlineCut?.kind === "window" || needsForcedFinal(loopEndedCleanly, fullText);
+  if (owesFinal && roundPlan(deadline, Date.now(), apiModel) === "none") deadlineCut = { kind: "hard", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted };
+  else if (owesFinal && (openaiMessages.length > 1 || deadlineCut !== null)) {
     console.log(`[xAI] Tool loop ended without a natural stop (text=${fullText.trim().length} chars) — forcing final answer`);
-    // Its own hard-budget signal, read by the catch below as well as the SDK.
-    const finalSignal = hardDeadlineSignal(deadline);
-    try {
-      openaiMessages.push({ role: "user", content: FORCED_FINAL_NUDGE } as any);
-      if (fullText.trim() && !fullText.endsWith("\n")) {
-        fullText += "\n\n";
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
+    openaiMessages.push({ role: "user", content: FORCED_FINAL_NUDGE } as any);
+    if (fullText.trim() && !fullText.endsWith("\n")) {
+      fullText += "\n\n";
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
+    }
+    // ONE REQUEST PER STEP (answerStep, lib/ai/turn-deadline.ts): this model
+    // while its window is shut, then the rescue writers in order — each cut
+    // at its own point if it has written nothing by then, else at HARD.
+    let stage = 0;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      // This model's own rounds send its registry effort, and so does its own
+      // answer step; the forced final used to leave it out, so a "none" model
+      // reasoned on its last request.
+      const step = answerStep(deadline, Date.now(), apiModel, stage, effort);
+      if (!step) {
+        if (roundPlan(deadline, Date.now(), apiModel) === "none") deadlineCut = { kind: "hard", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted };
+        break;
       }
-      // Use max_completion_tokens for Grok-4 (same logic as main loop)
-      const finalTokenParam = apiModel.startsWith("grok-4")
-        ? { max_completion_tokens: config.maxTokens || 4096 }
-        : { max_tokens: config.maxTokens || 4096 };
-      roundsUsed++;
-      const finalStream = await xai.chat.completions.create({
-        model: apiModel,
-        temperature: config.temperature ?? DEFAULT_CHAT_TEMPERATURE,
-        ...finalTokenParam,
-        messages: openaiMessages as any,
-        stream: true,
-        // THE FINAL PASS IS BILLED TOO. Without this no usage chunk arrives and
-        // the round every soft cut now ends on was missing from the ledger.
-        stream_options: { include_usage: true },
-        // History contains tool_calls/tool messages — keep tools declared but
-        // forbid calling them so this round must produce text.
-        ...(tools.length > 0 ? { tools, tool_choice: "none" } : {}),
-      } as any, xaiRequestOptions(xaiCacheKey, finalSignal)) as unknown as AsyncIterable<any>;
-      for await (const chunk of withStallGuard(finalStream, undefined, finalSignal)) {
-        const token = chunk.choices?.[0]?.delta?.content;
-        if (token) {
-          fullText += token;
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`));
+      stage = step.stage + 1;
+      const rescue = step.named;
+      const writer: AnswerWriter = step.writer;
+      const writerEffort = writer.reasoningEffort;
+      const guard = guardRound(deadline, Date.now(), apiModel, step.cutAt);
+      const finalSignal = guard.signal;
+      const before = fullText.length;
+      const startedWriting = Date.now();
+      try {
+        // Use max_completion_tokens for Grok-4 (same logic as main loop)
+        const finalTokenParam = writer.model.startsWith("grok-4")
+          ? { max_completion_tokens: config.maxTokens || 4096 }
+          : { max_tokens: config.maxTokens || 4096 };
+        roundsUsed++;
+        const finalStream = await xai.chat.completions.create({
+          model: writer.model,
+          temperature: config.temperature ?? DEFAULT_CHAT_TEMPERATURE,
+          ...finalTokenParam,
+          ...(writerEffort ? { reasoning_effort: writerEffort } : {}),
+          messages: openaiMessages as any,
+          stream: true,
+          // THE FINAL PASS IS BILLED TOO. Without this no usage chunk arrives and
+          // the round every soft cut now ends on was missing from the ledger.
+          stream_options: { include_usage: true },
+          // History contains tool_calls/tool messages — keep tools declared but
+          // forbid calling them so this round must produce text.
+          ...(tools.length > 0 ? { tools, tool_choice: "none" } : {}),
+        } as any, xaiRequestOptions(xaiCacheKey, finalSignal)) as unknown as AsyncIterable<any>;
+        for await (const chunk of withStallGuard(finalStream, undefined, finalSignal)) {
+          const token = chunk.choices?.[0]?.delta?.content;
+          if (token) {
+            guard.text();
+            fullText += token;
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`));
+          }
+          if ((chunk as any).usage) {
+            const u = (chunk as any).usage;
+            const cached = u.prompt_tokens_details?.cached_tokens || 0;
+            totalInputTokens += Math.max(0, (u.prompt_tokens || 0) - cached);
+            totalOutputTokens += xaiBilledOutputTokens(u);
+            totalCacheReadTokens += cached;
+          }
         }
-        if ((chunk as any).usage) {
-          const u = (chunk as any).usage;
-          const cached = u.prompt_tokens_details?.cached_tokens || 0;
-          totalInputTokens += Math.max(0, (u.prompt_tokens || 0) - cached);
-          totalOutputTokens += xaiBilledOutputTokens(u);
-          totalCacheReadTokens += cached;
+        if (rescue) console.log(`[xAI] Rescue: the answer was written by ${writer.model}${writerEffort ? ` (reasoning ${writerEffort})` : ""} in ${Math.round((Date.now() - startedWriting) / 1000)}s, ${fullText.length - before} chars, ${Math.round((Date.now() - turnStartedAt) / 1000)}s into the turn`);
+        else console.log(`[xAI] Forced final response: ${fullText.length} chars`);
+      } catch (err: any) {
+        if (isWindowCut(err, guard)) {
+          console.warn(`[xAI] The answer request on ${writer.model} had written nothing by ${Math.round((Date.now() - turnStartedAt) / 1000)}s — cut, and the next writer answers`);
+          deadlineCut = { kind: "window" };
+          continue;
         }
+        if (isTurnDeadlineError(err, deadline, finalSignal)) {
+          console.warn(`[xAI] ${rescue ? `Rescue (${writer.model})` : "Forced final"} aborted at the turn's hard deadline — ${fullText.trim().length} chars on screen`);
+          deadlineCut = { kind: "hard" };
+          break;
+        }
+        console.error(`[xAI] ${rescue ? `Rescue (${writer.model})` : "Forced final"} response failed:`, err.message);
+        // Nothing written: the next writer gets one try.
+        if (fullText.length === before) continue;
+        break;
+      } finally {
+        guard.done();
       }
-      console.log(`[xAI] Forced final response: ${fullText.length} chars`);
-    } catch (err: any) {
-      if (isTurnDeadlineError(err, deadline, finalSignal)) {
-        console.warn(`[xAI] Forced final aborted at the turn's hard deadline — ${fullText.trim().length} chars on screen`);
-        deadlineCut = { kind: "hard" };
-      } else {
-        console.error(`[xAI] Forced final response failed:`, err.message);
-      }
+      const wrote = fullText.slice(before).trim() !== "";
+      if (wrote && rescue) deadlineCut = { kind: "window", writer: describeWriter({ model: writer.model, reasoningEffort: writerEffort }), lastResort: step.lastResort };
+      if (wrote) break;
+      console.warn(`[xAI] The answer request on ${writer.model} returned no text — the next writer gets one try`);
     }
   }
 
@@ -12828,7 +13012,7 @@ async function streamXAIChatCompletions(
   {
     const lastToolRoundEnd = narrationSpans.length ? narrationSpans[narrationSpans.length - 1].end : 0;
     const answered = spokenText.slice(lastToolRoundEnd).trim() !== "";
-    const closing = summarisedTranscriptsNotice(transcriptBudget) + turnDeadlineNotice(deadlineCut, answered);
+    const closing = summarisedTranscriptsNotice(transcriptBudget) + turnDeadlineNotice(deadlineCut, answered, gatheredSubjects(toolLoopGuard.usage()));
     if (closing) {
       fullText += closing;
       try {
@@ -12842,7 +13026,7 @@ async function streamXAIChatCompletions(
   // ledger row records the turn's totals; this records how many requests those
   // totals were spread across, which is what decides whether caching the loop
   // is worth anything at all.
-  console.log(`[xAI] Turn: rounds=${roundsUsed} model=${apiModel} in=${totalInputTokens} cache_r=${totalCacheReadTokens} cache_w=${totalCacheWriteTokens} out=${totalOutputTokens} elapsed=${Math.round((Date.now() - turnStartedAt) / 1000)}s deadline=${deadlineCut ? deadlineCut.kind : "none"} transcripts_held=${transcriptBudget.withheld().length}`);
+  console.log(`[xAI] Turn: rounds=${roundsUsed} model=${apiModel} in=${totalInputTokens} cache_r=${totalCacheReadTokens} cache_w=${totalCacheWriteTokens} out=${totalOutputTokens} elapsed=${Math.round((Date.now() - turnStartedAt) / 1000)}s deadline=${deadlineCut ? deadlineCut.kind : "none"}${deadlineCut?.writer ? ` writer="${deadlineCut.writer}"` : ""} transcripts_held=${transcriptBudget.withheld().length}`);
 
   return {
     fullText,
@@ -13078,6 +13262,17 @@ async function streamGemini(
   // untouched. See lib/ai/round-text.ts for why spans rather than a second
   // accumulator.
   const narrationSpans: RoundSpan[] = [];
+  // A ROUND CUT AT THE ANSWER WINDOW spoke before any result existed, like a
+  // round that ended in tool calls: its words stay on screen, leave the saved
+  // copy, and the answer follows them rather than jamming into them.
+  const closeCutRound = (start: number) => {
+    if (fullText.length <= start) return;
+    if (!fullText.endsWith("\n")) {
+      fullText += "\n\n";
+      try { controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`)); } catch { /* client gone; the text is still on the row */ }
+    }
+    narrationSpans.push({ start, end: fullText.length });
+  };
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCacheReadTokens = 0;
@@ -13120,22 +13315,25 @@ async function streamGemini(
     // Where this round's text starts, so a retry replays this round's words as
     // the assistant turn and not everything the turn has said.
     const roundTextStart = fullText.length;
-    // PAST SOFT, NO FURTHER TOOL ROUND STARTS. The warning below used to be
-    // the only thing standing between a turn and the platform's kill, and on
-    // 2026-09-28 the model read it and opened four more transcripts. Leaving
-    // the loop hands the turn to the forced-final path: the answer, tools off.
-    // Too close to HARD for even that, and the turn finalises as it stands.
+    // A TOOL ROUND STARTS ONLY IF IT CAN FINISH BEFORE THE ANSWER WINDOW —
+    // this model's measured p90 round (lib/ai/turn-deadline.ts). On 2026-09-28
+    // a grok-4.7 round started at 141s, 29s inside the old soft budget, and
+    // was still thinking at 275s: the turn ended with no answer at all.
+    // Later than that, leaving the loop hands the turn to the answer path:
+    // tools off, on this model while the window is shut ("final"), by the
+    // rescue writer once it is open ("rescue"). Too close to HARD for either,
+    // and the turn finalises as it stands.
     {
-      const plan = roundPlan(deadline);
+      const plan = roundPlan(deadline, Date.now(), apiModel);
       if (plan !== "tools") {
-        deadlineCut = plan === "final" ? { kind: "soft" } : { kind: "hard", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted };
-        console.warn(`[Turn] ${Math.round((Date.now() - turnStartedAt) / 1000)}s used at round ${round} — ${plan === "final" ? "past the soft budget: no further tool rounds, answering with tools off" : "past the last useful moment: finalising without another request"}`);
+        deadlineCut = plan === "final" ? { kind: "soft" } : plan === "rescue" ? { kind: "window", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted } : { kind: "hard", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted };
+        console.warn(`[Turn] ${Math.round((Date.now() - turnStartedAt) / 1000)}s used at round ${round} — ${plan === "final" ? `too late for a ${apiModel} tool round (p90 ${Math.round(roundP90Ms(apiModel) / 1000)}s) to finish before the answer window: answering with tools off` : plan === "rescue" ? "the answer window is open: the rescue writer answers" : "past the last useful moment: finalising without another request"}`);
         break;
       }
     }
     // ONE ROUND LEFT. Said once, so the model can build the thing it promised
     // rather than spend the last round on another read and stop silently.
-    if (!warnedTimeBudget && warnBuildNow(deadline)) {
+    if (!warnedTimeBudget && warnBuildNow(deadline, Date.now(), apiModel, round)) {
       warnedTimeBudget = true;
       console.warn(`[Turn] ${Math.round((Date.now() - turnStartedAt) / 1000)}s used at round ${round} — warning the model to build now`);
       geminiMessages.push({ role: "user", content: TIME_BUDGET_NOTICE } as any);
@@ -13147,7 +13345,11 @@ async function streamGemini(
     roundsUsed++;
     // Awaited inside the try below, so a request cut by the deadline while it
     // waits for its headers is handled like a cut stream (see the xAI chain).
-    const roundSignal = hardDeadlineSignal(deadline);
+    // The HARD budget and, at the answer window, the cut of a round that is
+    // not writing the answer (guardRound, lib/ai/turn-deadline.ts): one
+    // signal for the SDK and the stream guard both.
+    const roundGuard = guardRound(deadline, Date.now(), apiModel);
+    const roundSignal = roundGuard.signal;
     const streamRequest = client.chat.completions.create({
       model: apiModel,
       max_tokens: config.maxTokens || 4096,
@@ -13192,6 +13394,7 @@ async function streamGemini(
       // Stream text content
       const token = choice.delta?.content;
       if (token) {
+        roundGuard.text();
         fullText += token;
         controller.enqueue(
           encoder.encode(`data: ${JSON.stringify({ token })}\n\n`)
@@ -13208,6 +13411,7 @@ async function streamGemini(
           const existing = toolCalls.get(idx)!;
           if (tc.id) existing.id = tc.id;
           if (tc.function?.name) existing.name = tc.function.name;
+          if (existing.name) roundGuard.tool(existing.name);
           if (tc.function?.arguments) existing.arguments += tc.function.arguments;
           if (existing.name === "generate_slides" && tc.function?.arguments) {
             const n = slidesWritten(existing.arguments);
@@ -13273,7 +13477,14 @@ async function streamGemini(
       }
     }
     } catch (e) {
-      if (isTurnDeadlineError(e, deadline, roundSignal)) {
+      if (isWindowCut(e, roundGuard)) {
+        // Cut at the answer window — see the xAI chain.
+        const writing = Array.from(toolCalls.values()).map((t) => t.name).filter(Boolean).pop();
+        console.warn(`[Chain] ${apiModel} round ${round} cut at the answer window (${Math.round((Date.now() - turnStartedAt) / 1000)}s)${writing ? ` while writing ${writing}` : ""} — ${String((e as any)?.message || e).slice(0, 160)}; the answer is written from what was gathered`);
+        deadlineCut = { kind: "window", tool: writing };
+        closeCutRound(roundTextStart);
+        stalled = true;
+      } else if (isTurnDeadlineError(e, deadline, roundSignal)) {
         // OUT OF TIME, at any round — see the xAI chain.
         const writing = Array.from(toolCalls.values()).map((t) => t.name).filter(Boolean).pop();
         console.warn(`[Chain] ${apiModel} round ${round} aborted at the turn's hard deadline (${Math.round((Date.now() - turnStartedAt) / 1000)}s)${writing ? ` while writing ${writing}` : ""} — finalising with ${fullText.trim().length} chars on screen`);
@@ -13289,6 +13500,7 @@ async function streamGemini(
         throw e;
       }
     }
+    roundGuard.done();
     if (stalled) break;
 
     // If no tool calls, we're done — UNLESS the round was cut off rather than
@@ -13349,8 +13561,8 @@ async function streamGemini(
     const taintedBeforeBatch = config.sawUntrustedContent === true;
     for (const tc of toolCallsArray) {
       // Too late to start it — see the Anthropic chain.
-      if (toolTooLate(deadline)) {
-        deadlineCut = skippedToolCut(deadlineCut, tc.function.name);
+      if (toolTooLate(deadline, Date.now(), tc.function.name, apiModel)) {
+        deadlineCut = skippedToolCut(deadlineCut, tc.function.name, Date.now(), deadline);
         console.warn(`[Chain] ${apiModel}: ${Math.round((Date.now() - turnStartedAt) / 1000)}s into the turn — too late to start ${tc.function.name}; not run`);
         geminiMessages.push({ role: "tool", tool_call_id: tc.id, content: toolOutOfTimeResult(tc.function.name) } as any);
         continue;
@@ -13971,56 +14183,91 @@ async function streamGemini(
   // Forced final answer: fires when the loop ended ANY way other than a natural
   // stop, or produced no text — turns gathered tool context into an actual
   // answer instead of a dangling "let me pull the details…".
-  // A SOFT CUT ALWAYS OWES THE ANSWER, and only with time for it — see the
-  // Anthropic chain.
-  const owesFinal = deadlineCut?.kind === "soft" || needsForcedFinal(loopEndedCleanly, fullText);
-  const finalAllowed = roundPlan(deadline) !== "none";
-  if (owesFinal && !finalAllowed) deadlineCut = { kind: "hard", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted };
-  if (owesFinal && finalAllowed && (geminiMessages.length > 1 || deadlineCut !== null)) {
+  // A SOFT CUT OR A WINDOW CUT ALWAYS OWES THE ANSWER, and only with time for
+  // it — see the Anthropic chain. Who writes it — see the xAI chain. Here the
+  // rescue writer is this model itself: the Gemini key cannot be exercised
+  // from a laptop (402), so no cheaper setting is claimed without a
+  // measurement, and a second tools-off pass at the window is still an answer
+  // where there was none.
+  const owesFinal = deadlineCut?.kind === "soft" || deadlineCut?.kind === "window" || needsForcedFinal(loopEndedCleanly, fullText);
+  if (owesFinal && roundPlan(deadline, Date.now(), apiModel) === "none") deadlineCut = { kind: "hard", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted };
+  else if (owesFinal && (geminiMessages.length > 1 || deadlineCut !== null)) {
     console.log(`[Gemini] Tool loop ended without a natural stop (text=${fullText.trim().length} chars) — forcing final answer`);
-    // Its own hard-budget signal, read by the catch below as well as the SDK.
-    const finalSignal = hardDeadlineSignal(deadline);
-    try {
-      geminiMessages.push({ role: "user", content: FORCED_FINAL_NUDGE } as any);
-      if (fullText.trim() && !fullText.endsWith("\n")) {
-        fullText += "\n\n";
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
+    geminiMessages.push({ role: "user", content: FORCED_FINAL_NUDGE } as any);
+    if (fullText.trim() && !fullText.endsWith("\n")) {
+      fullText += "\n\n";
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
+    }
+    // ONE REQUEST PER STEP (answerStep, lib/ai/turn-deadline.ts): this model
+    // while its window is shut, then the rescue writers in order — each cut
+    // at its own point if it has written nothing by then, else at HARD.
+    let stage = 0;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const step = answerStep(deadline, Date.now(), apiModel, stage);
+      if (!step) {
+        if (roundPlan(deadline, Date.now(), apiModel) === "none") deadlineCut = { kind: "hard", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted };
+        break;
       }
-      roundsUsed++;
-      const finalStream = await client.chat.completions.create({
-        model: apiModel,
-        temperature: config.temperature ?? DEFAULT_CHAT_TEMPERATURE,
-        max_tokens: config.maxTokens || 4096,
-        messages: geminiMessages as any,
-        stream: true,
-        // The final pass is billed too — see the xAI chain.
-        stream_options: { include_usage: true },
-        // History contains tool_calls/tool messages — keep tools declared but
-        // forbid calling them so this round must produce text.
-        ...(tools.length > 0 ? { tools, tool_choice: "none" } : {}),
-      } as any, { signal: finalSignal }) as unknown as AsyncIterable<any>;
-      for await (const chunk of withStallGuard(finalStream, undefined, finalSignal)) {
-        const token = chunk.choices?.[0]?.delta?.content;
-        if (token) {
-          fullText += token;
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`));
+      stage = step.stage + 1;
+      const rescue = step.named;
+      const writer: AnswerWriter = step.writer;
+      const guard = guardRound(deadline, Date.now(), apiModel, step.cutAt);
+      const finalSignal = guard.signal;
+      const before = fullText.length;
+      const startedWriting = Date.now();
+      try {
+        roundsUsed++;
+        const finalStream = await client.chat.completions.create({
+          model: writer.model,
+          temperature: config.temperature ?? DEFAULT_CHAT_TEMPERATURE,
+          max_tokens: config.maxTokens || 4096,
+          messages: geminiMessages as any,
+          stream: true,
+          // The final pass is billed too — see the xAI chain.
+          stream_options: { include_usage: true },
+          // History contains tool_calls/tool messages — keep tools declared but
+          // forbid calling them so this round must produce text.
+          ...(tools.length > 0 ? { tools, tool_choice: "none" } : {}),
+        } as any, { signal: finalSignal }) as unknown as AsyncIterable<any>;
+        for await (const chunk of withStallGuard(finalStream, undefined, finalSignal)) {
+          const token = chunk.choices?.[0]?.delta?.content;
+          if (token) {
+            guard.text();
+            fullText += token;
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`));
+          }
+          if ((chunk as any).usage) {
+            const u = (chunk as any).usage;
+            const cached = u.prompt_tokens_details?.cached_tokens || 0;
+            totalInputTokens += Math.max(0, (u.prompt_tokens || 0) - cached);
+            totalOutputTokens += u.completion_tokens || 0;
+            totalCacheReadTokens += cached;
+          }
         }
-        if ((chunk as any).usage) {
-          const u = (chunk as any).usage;
-          const cached = u.prompt_tokens_details?.cached_tokens || 0;
-          totalInputTokens += Math.max(0, (u.prompt_tokens || 0) - cached);
-          totalOutputTokens += u.completion_tokens || 0;
-          totalCacheReadTokens += cached;
+        if (rescue) console.log(`[Gemini] Rescue: the answer was written by ${writer.model} in ${Math.round((Date.now() - startedWriting) / 1000)}s, ${fullText.length - before} chars, ${Math.round((Date.now() - turnStartedAt) / 1000)}s into the turn`);
+        else console.log(`[Gemini] Forced final response: ${fullText.length} chars`);
+      } catch (err: any) {
+        if (isWindowCut(err, guard)) {
+          console.warn(`[Gemini] The answer request on ${writer.model} had written nothing by ${Math.round((Date.now() - turnStartedAt) / 1000)}s — cut, and the next writer answers`);
+          deadlineCut = { kind: "window" };
+          continue;
         }
+        if (isTurnDeadlineError(err, deadline, finalSignal)) {
+          console.warn(`[Gemini] ${rescue ? `Rescue (${writer.model})` : "Forced final"} aborted at the turn's hard deadline — ${fullText.trim().length} chars on screen`);
+          deadlineCut = { kind: "hard" };
+          break;
+        }
+        console.error(`[Gemini] ${rescue ? `Rescue (${writer.model})` : "Forced final"} response failed:`, err.message);
+        // Nothing written: the next writer gets one try.
+        if (fullText.length === before) continue;
+        break;
+      } finally {
+        guard.done();
       }
-      console.log(`[Gemini] Forced final response: ${fullText.length} chars`);
-    } catch (err: any) {
-      if (isTurnDeadlineError(err, deadline, finalSignal)) {
-        console.warn(`[Gemini] Forced final aborted at the turn's hard deadline — ${fullText.trim().length} chars on screen`);
-        deadlineCut = { kind: "hard" };
-      } else {
-        console.error(`[Gemini] Forced final response failed:`, err.message);
-      }
+      const wrote = fullText.slice(before).trim() !== "";
+      if (wrote && rescue) deadlineCut = { kind: "window", writer: describeWriter(writer), lastResort: step.lastResort };
+      if (wrote) break;
+      console.warn(`[Gemini] The answer request on ${writer.model} returned no text — the next writer gets one try`);
     }
   }
 
@@ -14087,7 +14334,7 @@ async function streamGemini(
   {
     const lastToolRoundEnd = narrationSpans.length ? narrationSpans[narrationSpans.length - 1].end : 0;
     const answered = spokenText.slice(lastToolRoundEnd).trim() !== "";
-    const closing = summarisedTranscriptsNotice(transcriptBudget) + turnDeadlineNotice(deadlineCut, answered);
+    const closing = summarisedTranscriptsNotice(transcriptBudget) + turnDeadlineNotice(deadlineCut, answered, gatheredSubjects(toolLoopGuard.usage()));
     if (closing) {
       fullText += closing;
       try {
@@ -14101,7 +14348,7 @@ async function streamGemini(
   // ledger row records the turn's totals; this records how many requests those
   // totals were spread across, which is what decides whether caching the loop
   // is worth anything at all.
-  console.log(`[Gemini] Turn: rounds=${roundsUsed} model=${apiModel} in=${totalInputTokens} cache_r=${totalCacheReadTokens} cache_w=${totalCacheWriteTokens} out=${totalOutputTokens} elapsed=${Math.round((Date.now() - turnStartedAt) / 1000)}s deadline=${deadlineCut ? deadlineCut.kind : "none"} transcripts_held=${transcriptBudget.withheld().length}`);
+  console.log(`[Gemini] Turn: rounds=${roundsUsed} model=${apiModel} in=${totalInputTokens} cache_r=${totalCacheReadTokens} cache_w=${totalCacheWriteTokens} out=${totalOutputTokens} elapsed=${Math.round((Date.now() - turnStartedAt) / 1000)}s deadline=${deadlineCut ? deadlineCut.kind : "none"}${deadlineCut?.writer ? ` writer="${deadlineCut.writer}"` : ""} transcripts_held=${transcriptBudget.withheld().length}`);
 
   return {
     fullText,
@@ -14262,6 +14509,17 @@ async function streamOpenAI(
   // untouched. See lib/ai/round-text.ts for why spans rather than a second
   // accumulator.
   const narrationSpans: RoundSpan[] = [];
+  // A ROUND CUT AT THE ANSWER WINDOW spoke before any result existed, like a
+  // round that ended in tool calls: its words stay on screen, leave the saved
+  // copy, and the answer follows them rather than jamming into them.
+  const closeCutRound = (start: number) => {
+    if (fullText.length <= start) return;
+    if (!fullText.endsWith("\n")) {
+      fullText += "\n\n";
+      try { controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`)); } catch { /* client gone; the text is still on the row */ }
+    }
+    narrationSpans.push({ start, end: fullText.length });
+  };
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCacheReadTokens = 0;
@@ -14304,22 +14562,25 @@ async function streamOpenAI(
     // Where this round's text starts, so a retry replays this round's words as
     // the assistant turn and not everything the turn has said.
     const roundTextStart = fullText.length;
-    // PAST SOFT, NO FURTHER TOOL ROUND STARTS. The warning below used to be
-    // the only thing standing between a turn and the platform's kill, and on
-    // 2026-09-28 the model read it and opened four more transcripts. Leaving
-    // the loop hands the turn to the forced-final path: the answer, tools off.
-    // Too close to HARD for even that, and the turn finalises as it stands.
+    // A TOOL ROUND STARTS ONLY IF IT CAN FINISH BEFORE THE ANSWER WINDOW —
+    // this model's measured p90 round (lib/ai/turn-deadline.ts). On 2026-09-28
+    // a grok-4.7 round started at 141s, 29s inside the old soft budget, and
+    // was still thinking at 275s: the turn ended with no answer at all.
+    // Later than that, leaving the loop hands the turn to the answer path:
+    // tools off, on this model while the window is shut ("final"), by the
+    // rescue writer once it is open ("rescue"). Too close to HARD for either,
+    // and the turn finalises as it stands.
     {
-      const plan = roundPlan(deadline);
+      const plan = roundPlan(deadline, Date.now(), apiModel);
       if (plan !== "tools") {
-        deadlineCut = plan === "final" ? { kind: "soft" } : { kind: "hard", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted };
-        console.warn(`[Turn] ${Math.round((Date.now() - turnStartedAt) / 1000)}s used at round ${round} — ${plan === "final" ? "past the soft budget: no further tool rounds, answering with tools off" : "past the last useful moment: finalising without another request"}`);
+        deadlineCut = plan === "final" ? { kind: "soft" } : plan === "rescue" ? { kind: "window", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted } : { kind: "hard", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted };
+        console.warn(`[Turn] ${Math.round((Date.now() - turnStartedAt) / 1000)}s used at round ${round} — ${plan === "final" ? `too late for a ${apiModel} tool round (p90 ${Math.round(roundP90Ms(apiModel) / 1000)}s) to finish before the answer window: answering with tools off` : plan === "rescue" ? "the answer window is open: the rescue writer answers" : "past the last useful moment: finalising without another request"}`);
         break;
       }
     }
     // ONE ROUND LEFT. Said once, so the model can build the thing it promised
     // rather than spend the last round on another read and stop silently.
-    if (!warnedTimeBudget && warnBuildNow(deadline)) {
+    if (!warnedTimeBudget && warnBuildNow(deadline, Date.now(), apiModel, round)) {
       warnedTimeBudget = true;
       console.warn(`[Turn] ${Math.round((Date.now() - turnStartedAt) / 1000)}s used at round ${round} — warning the model to build now`);
       openaiMessages.push({ role: "user", content: TIME_BUDGET_NOTICE } as any);
@@ -14331,7 +14592,11 @@ async function streamOpenAI(
     roundsUsed++;
     // Awaited inside the try below, so a request cut by the deadline while it
     // waits for its headers is handled like a cut stream (see the xAI chain).
-    const roundSignal = hardDeadlineSignal(deadline);
+    // The HARD budget and, at the answer window, the cut of a round that is
+    // not writing the answer (guardRound, lib/ai/turn-deadline.ts): one
+    // signal for the SDK and the stream guard both.
+    const roundGuard = guardRound(deadline, Date.now(), apiModel);
+    const roundSignal = roundGuard.signal;
     const streamRequest = client.chat.completions.create({
       model: apiModel,
       ...requestParams,
@@ -14372,6 +14637,7 @@ async function streamOpenAI(
       // Stream text content
       const token = choice.delta?.content;
       if (token) {
+        roundGuard.text();
         fullText += token;
         controller.enqueue(
           encoder.encode(`data: ${JSON.stringify({ token })}\n\n`)
@@ -14388,6 +14654,7 @@ async function streamOpenAI(
           const existing = toolCalls.get(idx)!;
           if (tc.id) existing.id = tc.id;
           if (tc.function?.name) existing.name = tc.function.name;
+          if (existing.name) roundGuard.tool(existing.name);
           if (tc.function?.arguments) existing.arguments += tc.function.arguments;
           if (existing.name === "generate_slides" && tc.function?.arguments) {
             const n = slidesWritten(existing.arguments);
@@ -14454,7 +14721,14 @@ async function streamOpenAI(
       }
     }
     } catch (e) {
-      if (isTurnDeadlineError(e, deadline, roundSignal)) {
+      if (isWindowCut(e, roundGuard)) {
+        // Cut at the answer window — see the xAI chain.
+        const writing = Array.from(toolCalls.values()).map((t) => t.name).filter(Boolean).pop();
+        console.warn(`[Chain] ${apiModel} round ${round} cut at the answer window (${Math.round((Date.now() - turnStartedAt) / 1000)}s)${writing ? ` while writing ${writing}` : ""} — ${String((e as any)?.message || e).slice(0, 160)}; the answer is written from what was gathered`);
+        deadlineCut = { kind: "window", tool: writing };
+        closeCutRound(roundTextStart);
+        stalled = true;
+      } else if (isTurnDeadlineError(e, deadline, roundSignal)) {
         // OUT OF TIME, at any round — see the xAI chain.
         const writing = Array.from(toolCalls.values()).map((t) => t.name).filter(Boolean).pop();
         console.warn(`[Chain] ${apiModel} round ${round} aborted at the turn's hard deadline (${Math.round((Date.now() - turnStartedAt) / 1000)}s)${writing ? ` while writing ${writing}` : ""} — finalising with ${fullText.trim().length} chars on screen`);
@@ -14470,6 +14744,7 @@ async function streamOpenAI(
         throw e;
       }
     }
+    roundGuard.done();
     if (stalled) break;
 
     // If no tool calls, we're done — UNLESS the round was cut off rather than
@@ -14530,8 +14805,8 @@ async function streamOpenAI(
     const taintedBeforeBatch = config.sawUntrustedContent === true;
     for (const tc of toolCallsArray) {
       // Too late to start it — see the Anthropic chain.
-      if (toolTooLate(deadline)) {
-        deadlineCut = skippedToolCut(deadlineCut, tc.function.name);
+      if (toolTooLate(deadline, Date.now(), tc.function.name, apiModel)) {
+        deadlineCut = skippedToolCut(deadlineCut, tc.function.name, Date.now(), deadline);
         console.warn(`[Chain] ${apiModel}: ${Math.round((Date.now() - turnStartedAt) / 1000)}s into the turn — too late to start ${tc.function.name}; not run`);
         openaiMessages.push({ role: "tool", tool_call_id: tc.id, content: toolOutOfTimeResult(tc.function.name) } as any);
         continue;
@@ -15149,55 +15424,90 @@ async function streamOpenAI(
   // Forced final answer: fires when the loop ended ANY way other than a natural
   // stop, or produced no text — turns gathered tool context into an actual
   // answer instead of a dangling "let me pull the details…".
-  // A SOFT CUT ALWAYS OWES THE ANSWER, and only with time for it — see the
-  // Anthropic chain.
-  const owesFinal = deadlineCut?.kind === "soft" || needsForcedFinal(loopEndedCleanly, fullText);
-  const finalAllowed = roundPlan(deadline) !== "none";
-  if (owesFinal && !finalAllowed) deadlineCut = { kind: "hard", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted };
-  if (owesFinal && finalAllowed && (openaiMessages.length > 1 || deadlineCut !== null)) {
-    console.log(`[${options?.providerLabel ?? "OpenAI"}] Tool loop ended without a natural stop (text=${fullText.trim().length} chars) — forcing final answer`);
-    // Its own hard-budget signal, read by the catch below as well as the SDK.
-    const finalSignal = hardDeadlineSignal(deadline);
-    try {
-      openaiMessages.push({ role: "user", content: FORCED_FINAL_NUDGE } as any);
-      if (fullText.trim() && !fullText.endsWith("\n")) {
-        fullText += "\n\n";
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
+  // A SOFT CUT OR A WINDOW CUT ALWAYS OWES THE ANSWER, and only with time for
+  // it — see the Anthropic chain. Who writes it — see the xAI chain. Every
+  // model on this chain already runs at reasoning_effort "none" (the only
+  // value Chat Completions allows with tools), so the rescue writer is the
+  // model itself: gpt-6-sol wrote 1,650 tokens at 98k in 33s.
+  const label = options?.providerLabel ?? "OpenAI";
+  const owesFinal = deadlineCut?.kind === "soft" || deadlineCut?.kind === "window" || needsForcedFinal(loopEndedCleanly, fullText);
+  if (owesFinal && roundPlan(deadline, Date.now(), apiModel) === "none") deadlineCut = { kind: "hard", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted };
+  else if (owesFinal && (openaiMessages.length > 1 || deadlineCut !== null)) {
+    console.log(`[${label}] Tool loop ended without a natural stop (text=${fullText.trim().length} chars) — forcing final answer`);
+    openaiMessages.push({ role: "user", content: FORCED_FINAL_NUDGE } as any);
+    if (fullText.trim() && !fullText.endsWith("\n")) {
+      fullText += "\n\n";
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "\n\n" })}\n\n`));
+    }
+    // ONE REQUEST PER STEP (answerStep, lib/ai/turn-deadline.ts): this model
+    // while its window is shut, then the rescue writers in order — each cut
+    // at its own point if it has written nothing by then, else at HARD.
+    let stage = 0;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const step = answerStep(deadline, Date.now(), apiModel, stage);
+      if (!step) {
+        if (roundPlan(deadline, Date.now(), apiModel) === "none") deadlineCut = { kind: "hard", tool: deadlineCut?.tool, unstarted: deadlineCut?.unstarted };
+        break;
       }
-      roundsUsed++;
-      const finalStream = await client.chat.completions.create({
-        model: apiModel,
-        ...requestParams,
-        messages: openaiMessages as any,
-        stream: true,
-        // The final pass is billed too — see the xAI chain.
-        stream_options: { include_usage: true },
-        // History contains tool_calls/tool messages — keep tools declared but
-        // forbid calling them so this round must produce text.
-        ...(tools.length > 0 ? { tools, tool_choice: "none" } : {}),
-      } as any, { signal: finalSignal }) as unknown as AsyncIterable<any>;
-      for await (const chunk of withStallGuard(finalStream, undefined, finalSignal)) {
-        const token = chunk.choices?.[0]?.delta?.content;
-        if (token) {
-          fullText += token;
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`));
+      stage = step.stage + 1;
+      const rescue = step.named;
+      const writer: AnswerWriter = step.writer;
+      const guard = guardRound(deadline, Date.now(), apiModel, step.cutAt);
+      const finalSignal = guard.signal;
+      const before = fullText.length;
+      const startedWriting = Date.now();
+      try {
+        roundsUsed++;
+        const finalStream = await client.chat.completions.create({
+          model: writer.model,
+          ...requestParams,
+          messages: openaiMessages as any,
+          stream: true,
+          // The final pass is billed too — see the xAI chain.
+          stream_options: { include_usage: true },
+          // History contains tool_calls/tool messages — keep tools declared but
+          // forbid calling them so this round must produce text.
+          ...(tools.length > 0 ? { tools, tool_choice: "none" } : {}),
+        } as any, { signal: finalSignal }) as unknown as AsyncIterable<any>;
+        for await (const chunk of withStallGuard(finalStream, undefined, finalSignal)) {
+          const token = chunk.choices?.[0]?.delta?.content;
+          if (token) {
+            guard.text();
+            fullText += token;
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`));
+          }
+          if ((chunk as any).usage) {
+            const u = (chunk as any).usage;
+            const cached = u.prompt_tokens_details?.cached_tokens || 0;
+            totalInputTokens += Math.max(0, (u.prompt_tokens || 0) - cached);
+            totalOutputTokens += u.completion_tokens || 0;
+            totalCacheReadTokens += cached;
+          }
         }
-        if ((chunk as any).usage) {
-          const u = (chunk as any).usage;
-          const cached = u.prompt_tokens_details?.cached_tokens || 0;
-          totalInputTokens += Math.max(0, (u.prompt_tokens || 0) - cached);
-          totalOutputTokens += u.completion_tokens || 0;
-          totalCacheReadTokens += cached;
+        if (rescue) console.log(`[${label}] Rescue: the answer was written by ${writer.model} in ${Math.round((Date.now() - startedWriting) / 1000)}s, ${fullText.length - before} chars, ${Math.round((Date.now() - turnStartedAt) / 1000)}s into the turn`);
+        else console.log(`[${label}] Forced final response: ${fullText.length} chars`);
+      } catch (err: any) {
+        if (isWindowCut(err, guard)) {
+          console.warn(`[${label}] The answer request on ${writer.model} had written nothing by ${Math.round((Date.now() - turnStartedAt) / 1000)}s — cut, and the next writer answers`);
+          deadlineCut = { kind: "window" };
+          continue;
         }
+        if (isTurnDeadlineError(err, deadline, finalSignal)) {
+          console.warn(`[${label}] ${rescue ? `Rescue (${writer.model})` : "Forced final"} aborted at the turn's hard deadline — ${fullText.trim().length} chars on screen`);
+          deadlineCut = { kind: "hard" };
+          break;
+        }
+        console.error(`[${label}] ${rescue ? `Rescue (${writer.model})` : "Forced final"} response failed:`, err.message);
+        // Nothing written: the next writer gets one try.
+        if (fullText.length === before) continue;
+        break;
+      } finally {
+        guard.done();
       }
-      console.log(`[${options?.providerLabel ?? "OpenAI"}] Forced final response: ${fullText.length} chars`);
-    } catch (err: any) {
-      if (isTurnDeadlineError(err, deadline, finalSignal)) {
-        console.warn(`[${options?.providerLabel ?? "OpenAI"}] Forced final aborted at the turn's hard deadline — ${fullText.trim().length} chars on screen`);
-        deadlineCut = { kind: "hard" };
-      } else {
-        console.error(`[${options?.providerLabel ?? "OpenAI"}] Forced final response failed:`, err.message);
-      }
+      const wrote = fullText.slice(before).trim() !== "";
+      if (wrote && rescue) deadlineCut = { kind: "window", writer: describeWriter({ model: writer.model, reasoningEffort: writer.reasoningEffort ?? (requestParams as any).reasoning_effort }), lastResort: step.lastResort };
+      if (wrote) break;
+      console.warn(`[${label}] The answer request on ${writer.model} returned no text — the next writer gets one try`);
     }
   }
 
@@ -15264,7 +15574,7 @@ async function streamOpenAI(
   {
     const lastToolRoundEnd = narrationSpans.length ? narrationSpans[narrationSpans.length - 1].end : 0;
     const answered = spokenText.slice(lastToolRoundEnd).trim() !== "";
-    const closing = summarisedTranscriptsNotice(transcriptBudget) + turnDeadlineNotice(deadlineCut, answered);
+    const closing = summarisedTranscriptsNotice(transcriptBudget) + turnDeadlineNotice(deadlineCut, answered, gatheredSubjects(toolLoopGuard.usage()));
     if (closing) {
       fullText += closing;
       try {
@@ -15278,7 +15588,7 @@ async function streamOpenAI(
   // ledger row records the turn's totals; this records how many requests those
   // totals were spread across, which is what decides whether caching the loop
   // is worth anything at all.
-  console.log(`[${options?.providerLabel ?? "OpenAI"}] Turn: rounds=${roundsUsed} model=${apiModel} in=${totalInputTokens} cache_r=${totalCacheReadTokens} cache_w=${totalCacheWriteTokens} out=${totalOutputTokens} elapsed=${Math.round((Date.now() - turnStartedAt) / 1000)}s deadline=${deadlineCut ? deadlineCut.kind : "none"} transcripts_held=${transcriptBudget.withheld().length}`);
+  console.log(`[${options?.providerLabel ?? "OpenAI"}] Turn: rounds=${roundsUsed} model=${apiModel} in=${totalInputTokens} cache_r=${totalCacheReadTokens} cache_w=${totalCacheWriteTokens} out=${totalOutputTokens} elapsed=${Math.round((Date.now() - turnStartedAt) / 1000)}s deadline=${deadlineCut ? deadlineCut.kind : "none"}${deadlineCut?.writer ? ` writer="${deadlineCut.writer}"` : ""} transcripts_held=${transcriptBudget.withheld().length}`);
 
   return {
     fullText,

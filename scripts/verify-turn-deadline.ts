@@ -9,6 +9,27 @@
  * row, still pending thirteen days later. The time handling was one sentence
  * of advice to the model; nothing stopped a turn.
  *
+ * AND THE SECOND WHY, the one this check now leads with. 2026-09-28 13:34Z,
+ * thread d949e94b, the QA re-run of that prompt on the fix: the row WAS
+ * finalised — with no answer. grok-4.7's round 2 started at 141s, inside the
+ * old 170s soft budget and so with tools on, and reasoned past the 275s hard
+ * abort without a word. Ending a turn is not the goal; ending it with the
+ * answer is. Sections 12–15b drive exactly that shape on every chain — a round
+ * that keeps sending events (so no stall guard fires) none of which is text —
+ * and assert the ANSWER TEXT is on the row, not merely that a row exists:
+ * cut at the model's answer window (225s; 175s on grok-4.7), written by the
+ * rescue writer (grok-4.7 itself at "low", the model itself or Sonnet 5 on
+ * Claude), never on another provider, and said in a line that names who
+ * wrote it.
+ *
+ * AND THE THIRD. The first rescue writer for grok-4.7 was grok-4.3 at
+ * "none", chosen because it fits a 50s window. It fitted, and in 6 real
+ * rescues of 6 it wrote the wrong summary: the colleagues' pasted posts
+ * listed as the user's own work. A check that asserts the answer is PRESENT
+ * cannot see that; it can only pin who is asked to write it. Section 12b does:
+ * grok-4.7 at "low" first, from a window opened 90s before hard, and grok-4.3
+ * only for the last 30s and only if grok-4.7 has not started writing.
+ *
  * WHAT IS DRIVEN. The app's REAL createStreamingResponse and the four REAL
  * provider chains, through the REAL openai and @anthropic-ai/sdk clients, over
  * real HTTP, to a fake provider on 127.0.0.1: fetch is shimmed only to point
@@ -49,6 +70,105 @@
  * timer, the finalised row's wording and the SSE tap that reads what was
  * shown are exercised as functions below, and the route is only checked for
  * CALLING them (section 9). That is a presence check and is labelled as one.
+ *
+ * MUTATION LOG (2026-09-30, third pass — the warning on round 0). Section
+ * 17 was written first and run against the unfixed code, then the fix; the
+ * second mutation in a scratch copy (scratchpad/wt-mut-warn).
+ *   KILLED  W1  no round guard in warnBuildNow (the reviewed defect) → 4 red,
+ *               one per chain: round 0 of a 120s turn carried the warning
+ *   KILLED  W2  the Anthropic chain passes 0 instead of its round → 1 red:
+ *               claude-sonnet-5's last buildable round is never warned
+ *
+ * MUTATION LOG (2026-09-30, second pass — the writer that got it wrong).
+ * Same method, in a scratch copy synced from the worktree; the unmutated copy
+ * passed before the batch and again before the re-run. 35 mutations, 33
+ * killed, 2 survivors — both equivalent.
+ *   KILLED  S1  grok-4.7 rescued first by grok-4.3 at "none" again (the
+ *               defect this pass fixes) → 24 red
+ *   KILLED  S2  grok-4.5+ window back to 50s → 6 red (unit, and 12b's
+ *               literal 175s — every scenario that reads the window back
+ *               through writeAtFor moves with it, which is why 12b pins the
+ *               seconds)
+ *   KILLED  S3  the round-start policy reads the default window → 2 red (unit)
+ *   KILLED  S4  roundPlan's window ignores the model → 1 red (unit: either
+ *               side of it the answer path is the same; only the label moves)
+ *   KILLED  S5  guardRound's window ignores the model → 13 red
+ *   KILLED  S6x the xAI tool round's guard is not given the model → 13 red
+ *   KILLED  S7x the xAI chain's toolTooLate is not given the model → 1 red
+ *   KILLED  S8  the last resort never takes over → 13 red
+ *   KILLED  S9  the reasoning writer is never cut for the last resort → 10
+ *   KILLED  S10 grok-4.7 at its own effort stays the answer round until the
+ *               window → 8 red
+ *   KILLED  S11 the line drops "at low reasoning effort" → 5 red
+ *   KILLED  S15x the xAI answer step sends the turn's effort, not its own → 13
+ *   KILLED  S17 answerStep ignores fromStage (the ladder restarts) → 3 red
+ *   KILLED  S18 a reasoning model's window capped at a quarter → 6 red
+ *   KILLED  S19 the reasoning writer's time to its first word cut to 20s → 6
+ *   KILLED  S20 grok's last resort moved to Claude → 8 red
+ *   KILLED  S21 the last resort never flagged as such → 2 red
+ *   KILLED  S21x the xAI chain drops the flag on its way to the line → 2 red
+ *   KILLED  S22 the last resort's line loses its caveat → 4 red (7 in the
+ *               batch, which shared the machine with real runs; one of them
+ *               was a timing flake — re-run alone: 4, every one on the line)
+ *   Per chain (Anthropic / xAI / Gemini / OpenAI), each alone:
+ *   KILLED  S12 an answer step's guard not given its own cut → 23/28/15/15
+ *   KILLED  S13 an answer step that was cut not handed on → 4/8/4/4 red
+ *   KILLED  S14 an answer step that came back EMPTY not handed on → 1 each —
+ *               SURVIVED on all four chains at first: no scenario had an
+ *               answer request finish with no text. Section 13b added.
+ *   KILLED  S16A/S16x the answer request sent on the turn's model → 2/3 red
+ *   SURVIVED S16G/S16O the same on Gemini and OpenAI: EQUIVALENT — every
+ *               writer on those chains is the turn's model.
+ * WHAT NO MUTATION HERE CAN SHOW: whether the writer's summary is RIGHT. The
+ * check pins who is asked; the real runs are the evidence that grok-4.7 at
+ * "low" keeps colleagues' items out of the user's lists, and that grok-4.3 at
+ * "none" does not.
+ *
+ * MUTATION LOG (2026-09-30, the answer window). Same method: each mutation
+ * applied alone to a scratch COPY of the tree (never the worktree), this
+ * check run there, the file restored; the unmutated copy passed first, twice.
+ * 46 mutations, 44 killed, 2 survivors — both equivalent, recorded as such.
+ *   KILLED  R1  the window timer never cuts → 52 red (the QA shape: the
+ *               thinking round runs to HARD and nothing is left to write with)
+ *   KILLED  R2  a round that began an artefact is cut at the window like any
+ *               other → 9 red — found as a LIVE defect by section 7b before
+ *               this log existed: a deck call written in full and followed by
+ *               a lookup was thrown away with the lookup
+ *   KILLED  R3  no round-start policy (tool rounds start until the window)
+ *               → 31 red
+ *   KILLED  R4  the policy ignores the model (slowest p90 for all) → 3 red
+ *   KILLED  R5  grok-4.7 rescued by itself → 6 red
+ *   KILLED  R6  grok-4.7 rescued on ANOTHER provider (Claude) → 7 red
+ *   KILLED  R7  an always-thinking Claude rescued by itself → 3 red
+ *   KILLED  R8  lookups still start after the window opens → 3 red (1 of them
+ *               unit-only at first; the straddling-read scenario was added)
+ *   KILLED  R9  the fallback gate ignores the fallback's model → 2 red (the
+ *               same: unit-only at first; the 180s fallback was added)
+ *   KILLED  R10 the rescued line does not name the writer → 9 red
+ *   KILLED  R11 "ask again, narrower" restored → 6 red
+ *   KILLED  R12 guardRound's HARD timer removed → 34 red
+ *   KILLED  R13 gathered subjects count refused calls → 2 red
+ *   KILLED  R14 the notices are not told what was gathered → 4 red
+ *   KILLED  R15 Anthropic's rescue drops the taint narrowing → 1 red
+ *   KILLED  R16 xAI's rescue does not send its effort → 2 red
+ *   KILLED  R17 prose after a server-side web search still reads as writing
+ *               the call → 1 red — a LIVE defect too: a Claude round that
+ *               searched and went on writing was cut at the window
+ *   KILLED  R18 the window shrinks to 20s → 87 red
+ *   Per chain (Anthropic / xAI / Gemini / OpenAI), each alone:
+ *   KILLED  C1  the answer round not guarded by the window → 3 red each
+ *   KILLED  C2  a window cut treated as the hard budget → 3 red each
+ *   KILLED  C3  the cut round's words not closed off as narration → 2 each
+ *   KILLED  C4  a round's text not reported to its guard → 7/1/6/6 red
+ *   KILLED  C5  a rescued answer not recorded as the writer's → 4 red each
+ *   KILLED  C6A/C6x the rescue request sent on the turn's model → 2, 3 red
+ *   KILLED  C7  an answer round cut at the window not handed to the rescue
+ *               → 4 red each
+ *   SURVIVED C6G/C6O the same on Gemini and OpenAI: EQUIVALENT — on those
+ *               chains the rescue writer IS the turn's model.
+ * A check that asserted the ROW rather than the ANSWER would have passed the
+ * QA turn: its row was 'complete'. Every scenario in 12–15b asserts the
+ * answer's own words on the saved row.
  *
  * MUTATION LOG (2026-09-28, second version — real SDKs). Each mutation
  * applied alone to a separate scratch copy of the tree, the check run there,
@@ -186,18 +306,30 @@ interface Round {
    *  the client hangs up — a slow answer, never a silent one, so the stall
    *  guard cannot be what ends it. "drip-tool": the same, inside a
    *  generate_slides call's arguments. */
-  hang?: "headers" | "stream" | "drip" | "drip-tool";
+  hang?: "headers" | "stream" | "drip" | "drip-tool" | "think";
+  /** With hang "drip": once the VIRTUAL clock passes `at`, a call to `name`
+   *  begins mid-drip — a round that was writing and then reached for a tool. */
+  toolAt?: { at: number; name: string };
+  /** Anthropic, with hang "drip": the text is followed by a SERVER-side web
+   *  search (its call and its result, inside the stream) and then the answer
+   *  goes on dripping — prose after a search is still the answer. */
+  serverSearch?: boolean;
   /** Sent mid-stream after the text, in the provider's own error format. */
   error?: string;
 }
 /** What arrived at the fake. `abortedAt`: the client closed the connection
  *  before the fake had finished answering — the SDK request was cancelled. */
-interface Sent { provider: string; body: any; headers: http.IncomingHttpHeaders; abortedAt: number; finished: boolean }
+interface Sent { provider: string; body: any; headers: http.IncomingHttpHeaders; abortedAt: number; finished: boolean; abortedVirtual: number }
 let script: Round[] = [];
 let sent: Sent[] = [];
 /** Non-streaming requests (none are expected in these turns). */
 const aux: string[] = [];
 function newTurnScript(rounds: Round[]) { script = rounds.slice(); sent = []; }
+
+/** How far from the window a cut may land and still count as "at the window"
+ *  — 10 virtual seconds, 100ms of real time, for event-loop jitter on a busy
+ *  machine. The window and HARD are 50s apart, so it cannot blur the two. */
+const WINDOW_SLACK_MS = 10_000;
 
 /** Virtual ms between drips. */
 const DRIP_MS = 2_000;
@@ -226,6 +358,18 @@ function answerOpenAI(res: http.ServerResponse, round: Round, body: any, finish:
     return;
   }
   if (round.hang === "stream") return;
+  // A REASONING model thinking: events keep coming, so no stall guard fires,
+  // and not one of them is answer text — the 2026-09-28 QA round, 134s of it.
+  if (round.hang === "think") { drip(res, () => oaChunk({ reasoning_content: "…" })); return; }
+  if (round.hang === "drip" && round.toolAt) {
+    const at = round.toolAt;
+    let began = false;
+    drip(res, () => {
+      if (!began && Date.now() >= at.at) { began = true; return oaChunk({ tool_calls: [{ index: 0, id: "call_late", type: "function", function: { name: at.name, arguments: "{\"report\":" } }] }); }
+      return began ? oaChunk({ tool_calls: [{ index: 0, function: { arguments: " " } }] }) : oaChunk({ content: " …" });
+    });
+    return;
+  }
   if (round.hang === "drip") { drip(res, () => oaChunk({ content: " …" })); return; }
   if (round.hang === "drip-tool") {
     res.write(oaChunk({ tool_calls: [{ index: 0, id: "call_deck", type: "function", function: { name: "generate_slides", arguments: "{\"title\":\"Weekly" } }] }));
@@ -252,6 +396,25 @@ function anEvent(type: string, data: any): string {
 function answerAnthropic(res: http.ServerResponse, round: Round, finish: () => void) {
   res.write(anEvent("message_start", { message: { id: "msg_verify", type: "message", role: "assistant", model: "verify", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1000, output_tokens: 0 } } }));
   const text = round.text || [];
+  if (round.hang === "think") {
+    res.write(anEvent("content_block_start", { index: 0, content_block: { type: "thinking", thinking: "", signature: "" } }));
+    drip(res, () => anEvent("content_block_delta", { index: 0, delta: { type: "thinking_delta", thinking: "…" } }));
+    return;
+  }
+  if (round.hang === "drip" && round.serverSearch) {
+    res.write(anEvent("content_block_start", { index: 0, content_block: { type: "text", text: "" } }));
+    for (let i = 0; i < text.length; i++) res.write(anEvent("content_block_delta", { index: 0, delta: { type: "text_delta", text: text[i] } }));
+    res.write(anEvent("content_block_stop", { index: 0 }));
+    res.write(anEvent("content_block_start", { index: 1, content_block: { type: "server_tool_use", id: "srvtoolu_verify", name: "web_search", input: {} } }));
+    res.write(anEvent("content_block_delta", { index: 1, delta: { type: "input_json_delta", partial_json: "{\"query\":\"Siemens ITM\"}" } }));
+    res.write(anEvent("content_block_stop", { index: 1 }));
+    res.write(anEvent("content_block_start", { index: 2, content_block: { type: "web_search_tool_result", tool_use_id: "srvtoolu_verify", content: [] } }));
+    res.write(anEvent("content_block_stop", { index: 2 }));
+    res.write(anEvent("content_block_start", { index: 3, content_block: { type: "text", text: "" } }));
+    res.write(anEvent("content_block_delta", { index: 3, delta: { type: "text_delta", text: "After the search, the summary goes on: " } }));
+    drip(res, () => anEvent("content_block_delta", { index: 3, delta: { type: "text_delta", text: " …" } }));
+    return;
+  }
   const textBlock = text.length > 0 || round.hang === "drip";
   if (textBlock) {
     res.write(anEvent("content_block_start", { index: 0, content_block: { type: "text", text: "" } }));
@@ -263,6 +426,18 @@ function answerAnthropic(res: http.ServerResponse, round: Round, finish: () => v
     return;
   }
   if (round.hang === "stream") return;
+  if (round.hang === "drip" && round.toolAt) {
+    const at = round.toolAt;
+    let began = false;
+    drip(res, () => {
+      if (!began && Date.now() >= at.at) {
+        began = true;
+        return anEvent("content_block_stop", { index: 0 }) + anEvent("content_block_start", { index: 1, content_block: { type: "tool_use", id: "toolu_late", name: at.name, input: {} } });
+      }
+      return began ? anEvent("content_block_delta", { index: 1, delta: { type: "input_json_delta", partial_json: " " } }) : anEvent("content_block_delta", { index: 0, delta: { type: "text_delta", text: " …" } });
+    });
+    return;
+  }
   if (round.hang === "drip") { drip(res, () => anEvent("content_block_delta", { index: 0, delta: { type: "text_delta", text: " …" } })); return; }
   let next = 0;
   if (textBlock) { res.write(anEvent("content_block_stop", { index: 0 })); next = 1; }
@@ -301,9 +476,9 @@ const server = http.createServer((req, res) => {
         : { id: "chatcmpl-verify", object: "chat.completion", created: 1, model: "verify", choices: [{ index: 0, message: { role: "assistant", content: "OK" }, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } }));
       return;
     }
-    const rec: Sent = { provider, body, headers: req.headers, abortedAt: 0, finished: false };
+    const rec: Sent = { provider, body, headers: req.headers, abortedAt: 0, finished: false, abortedVirtual: 0 };
     sent.push(rec);
-    res.on("close", () => { if (!rec.finished && !rec.abortedAt) rec.abortedAt = realNow(); });
+    res.on("close", () => { if (!rec.finished && !rec.abortedAt) { rec.abortedAt = realNow(); rec.abortedVirtual = Date.now(); } });
     const round = script.shift() || { text: ["(unscripted reply)"] };
     if (round.before) round.before();
     if (round.hang === "headers") return;
@@ -341,6 +516,9 @@ const strayFetches: string[] = [];
 let mbCalls = 0;
 /** When set, get_meeting_details never answers — a tool executor that hangs. */
 let mbHang = false;
+/** When set, each get_meeting_details call "takes" this long: the clock jumps
+ *  by it before the answer comes back — a slow read straddling the window. */
+let mbTakesMs = 0;
 const realFetch = globalThis.fetch;
 let port = 0;
 const PROVIDER_ROUTES: [string, string][] = [
@@ -360,6 +538,7 @@ function installFetch() {
       if (url.indexOf("/rpc/get_meeting_details") >= 0) {
         mbCalls++;
         if (mbHang) return new Promise<Response>(() => { /* never answers */ });
+        if (mbTakesMs) skew += mbTakesMs;
         let id = "";
         try { id = JSON.parse(String(init?.body ?? "{}")).p_meeting_id || ""; } catch { /* none */ }
         let m: Meeting | null = null;
@@ -498,17 +677,64 @@ async function main() {
     const t = 1_000_000;
     const d = td.deadlineForRoute(t, 300);
     check(d.hardAt - t === 275_000, "hard budget for the 300s chat route is 275s", `${(d.hardAt - t) / 1000}s`);
-    check(d.softAt - t === 170_000, "soft budget for the 300s chat route is 170s", `${(d.softAt - t) / 1000}s`);
+    check(d.writeAt - t === 225_000, "the answer window opens at 225s: 50s reserved for writing", `${(d.writeAt - t) / 1000}s`);
     check(td.backstopAt(d) - t === 290_000, "the route's backstop fires at 290s", `${(td.backstopAt(d) - t) / 1000}s`);
-    check(d.softAt < d.hardAt && d.hardAt < td.backstopAt(d) && td.backstopAt(d) < d.endsAt, "soft < hard < backstop < the platform's kill");
-    // Measured: grok's single-answer-round p90 was 83s, claude's 35s.
-    check(d.hardAt - d.softAt >= 83_000, "a final round gets at least grok's measured single-round p90 (83s)", `${(d.hardAt - d.softAt) / 1000}s`);
+    check(d.softAt < d.writeAt && d.writeAt < d.hardAt && d.hardAt < td.backstopAt(d) && td.backstopAt(d) < d.endsAt, "last tool start < window < hard < backstop < the platform's kill");
+    // THE WINDOW FITS THE RESCUE WRITER, measured (turn-deadline.ts header):
+    // claude-sonnet-5 wrote a 2,000-token answer at 150k tokens in ≤28s,
+    // gpt-6-sol in 40s — the 50s window every model but grok-4.5+ gets.
+    const wGrok = td.writeAtFor(d, "grok-4.7"), wClaude = td.writeAtFor(d, "claude-sonnet-5");
+    check(d.hardAt - wClaude >= 40_000 && d.hardAt - wClaude < 55_000 && wClaude === d.writeAt, "claude-sonnet-5's window holds the slowest measured writer that needs no thinking (gpt-6-sol, 40s): 225s", `${(d.hardAt - wClaude) / 1000}s`);
+    // grok-4.7 MUST THINK BEFORE IT WRITES, and grok-4.3 — which does not —
+    // wrote the wrong summary. So its window holds grok-4.7 at "low" reaching
+    // its first word (worst of 12 replays 56s; one real rescue of thirteen
+    // still silent at 60s) AND the last resort's 30s after it: 100s, from 175s.
+    const resort = td.lastResortAt(d, "grok-4.7");
+    check(wGrok - t === 175_000 && resort !== null && resort - wGrok >= 60_000 && d.hardAt - resort === td.LAST_RESORT_MS && td.LAST_RESORT_MS >= 30_000,
+      "grok-4.7's window opens at 175s: 70s for grok-4.7 at low to start writing (worst measured 56s, one real case >60s), then 30s for the last resort", `window ${(wGrok - t) / 1000}s, last resort ${resort === null ? "none" : (resort - t) / 1000}s`);
+    // THE ROUND-START POLICY, per model: a tool round starts only with its
+    // measured p90 round left before ITS window.
+    const lastGrok = td.lastToolRoundAt(d, "grok-4.7") - t, lastClaude = td.lastToolRoundAt(d, "claude-sonnet-5") - t;
+    check(lastGrok === 87_500 && lastClaude === 190_000, "the last tool-round start: grok-4.7 87.5s (p90 round 90s, capped at half the 175s before its window), claude-sonnet-5 190s (35s before 225s)", `grok ${lastGrok / 1000}s, claude ${lastClaude / 1000}s`);
+    // 2026-09-28 13:34Z: grok-4.7's round 2 started at 141s WITH TOOLS ON.
+    check(td.roundPlan(d, t + 141_000, "grok-4.7") === "final", "the QA turn's round 2, started at 141s on grok-4.7, is now the tools-off answer round", td.roundPlan(d, t + 141_000, "grok-4.7"));
+    check(td.roundPlan(d, t + 141_000, "claude-sonnet-5") === "tools", "the same moment still has room for a claude-sonnet-5 tool round");
+    check(td.roundPlan(d, t + 87_499, "grok-4.7") === "tools" && td.roundPlan(d, wGrok - 1, "grok-4.7") === "final" && td.roundPlan(d, wGrok, "grok-4.7") === "rescue", "grok-4.7: tools → answer round → rescue, at its last start and at its window");
+    check(td.roundPlan(d, t + 189_999, "claude-sonnet-5") === "tools" && td.roundPlan(d, wClaude - 1, "claude-sonnet-5") === "final" && td.roundPlan(d, wClaude, "claude-sonnet-5") === "rescue", "claude-sonnet-5: the same, at 190s and 225s");
+    check(td.roundPlan(d, d.hardAt - td.MIN_FINAL_ROUND_MS + 1, "grok-4.7") === "none", "and no request at all when even the rescue cannot land");
+    check(d.softAt === td.lastToolRoundAt(d, null) && d.softAt - t === 135_000, "a caller that names no model: the slowest p90 round (90s) before the 50s window — 135s");
     const short = td.deadlineForRoute(t, 120);
-    check(short.softAt > t + 30_000 && short.hardAt - t === 95_000, "a 120s route still gets tool rounds, and stops at 95s", `soft ${(short.softAt - t) / 1000}s hard ${(short.hardAt - t) / 1000}s`);
-    check(td.roundPlan(d, d.softAt - 1) === "tools" && td.roundPlan(d, d.softAt) === "final", "the plan turns to a tools-off final at soft");
-    check(td.roundPlan(d, d.hardAt - td.MIN_FINAL_ROUND_MS + 1) === "none", "and to no request at all when a final round cannot land");
-    check(td.canStartFallback(d, d.softAt - 1) && !td.canStartFallback(d, d.softAt), "a provider fallback is started only before soft");
-    check(!td.toolTooLate(d, d.hardAt - td.MIN_FINAL_ROUND_MS) && td.toolTooLate(d, d.hardAt - td.MIN_FINAL_ROUND_MS + 1), "a tool call stops being started when no request could follow it");
+    check(short.hardAt - t === 95_000 && td.lastToolRoundAt(short, "claude-sonnet-5") > t + 30_000 && short.writeAt - t > 60_000, "a 120s route still gets tool rounds and a window, and stops at 95s", `last start ${(td.lastToolRoundAt(short, "claude-sonnet-5") - t) / 1000}s window ${(short.writeAt - t) / 1000}s hard ${(short.hardAt - t) / 1000}s`);
+    // A 120s route cannot hold grok-4.7's thinking: its window is capped at 40%
+    // of the route, and once it is open the answer is the last resort's.
+    const shortStep = td.answerStep(short, td.writeAtFor(short, "grok-4.7"), "grok-4.7", 0);
+    check(short.hardAt - td.writeAtFor(short, "grok-4.7") === 38_000 && !!shortStep && shortStep.writer.model === "grok-4.3" && shortStep.writer.reasoningEffort === "none",
+      "on a 120s route grok-4.7's window is capped (38s of 95), and the answer at it goes to the last resort", `window ${(short.hardAt - td.writeAtFor(short, "grok-4.7")) / 1000}s, ${shortStep ? `${shortStep.writer.model} ${shortStep.writer.reasoningEffort}` : "none"}`);
+    check(td.canStartFallback(d, t + 87_499, "grok-4.7") && !td.canStartFallback(d, t + 87_500, "grok-4.7") && td.canStartFallback(d, t + 180_000, "claude-sonnet-5"), "a fallback starts only while ITS model can still run a tool round");
+    check(!td.toolTooLate(d, d.hardAt - td.MIN_FINAL_ROUND_MS) && td.toolTooLate(d, d.hardAt - td.MIN_FINAL_ROUND_MS + 1), "a generator stops being started when no request could follow it");
+    check(!td.toolTooLate(d, d.writeAt - 1, "query_meetingbrain", "claude-sonnet-5") && td.toolTooLate(d, d.writeAt, "query_meetingbrain", "claude-sonnet-5") && !td.toolTooLate(d, d.writeAt, "generate_slides", "claude-sonnet-5"), "a LOOKUP stops being started when the window opens; a generator does not");
+    check(!td.toolTooLate(d, wGrok - 1, "query_meetingbrain", "grok-4.7") && td.toolTooLate(d, wGrok, "query_meetingbrain", "grok-4.7"), "…at the TURN's window: 175s on grok-4.7");
+    // THE ANSWER STEPS (answerStep), grok-4.7 and the others.
+    const st = (now: number, model: string, from: number) => {
+      const x = td.answerStep(d, t + now, model, from);
+      return x ? `${x.stage}:${x.writer.model}/${x.writer.reasoningEffort || "own"}/${x.cutAt === null ? "hard" : (x.cutAt - t) / 1000}${x.named ? "/named" : ""}` : "none";
+    };
+    const ladder = [
+      [st(50_000, "grok-4.7", 0), "0:grok-4.7/own/175"],
+      [st(141_000, "grok-4.7", 0), "1:grok-4.7/low/245/named"],
+      [st(185_000, "grok-4.7", 1), "1:grok-4.7/low/245/named"],
+      [st(224_999, "grok-4.7", 1), "1:grok-4.7/low/245/named"],
+      [st(226_000, "grok-4.7", 0), "2:grok-4.3/none/hard/named"],
+      [st(245_000, "grok-4.7", 2), "2:grok-4.3/none/hard/named"],
+      [st(256_000, "grok-4.7", 0), "none"],
+      [st(200_000, "claude-sonnet-5", 0), "0:claude-sonnet-5/own/225"],
+      [st(225_000, "claude-sonnet-5", 0), "1:claude-sonnet-5/own/hard/named"],
+      [st(225_000, "claude-opus-5-5", 0), "1:claude-sonnet-5/own/hard/named"],
+      [st(200_000, "claude-opus-5-5", 1), "1:claude-sonnet-5/own/hard/named"],
+    ];
+    const wrong: string[] = [];
+    for (let i = 0; i < ladder.length; i++) if (ladder[i][0] !== ladder[i][1]) wrong.push(`${ladder[i][1]} → got ${ladder[i][0]}`);
+    check(wrong.length === 0, "the answer steps: grok-4.7 at its own setting only while a tool round could start, then grok-4.7 at low until 225s (cut at 245s), then grok-4.3; Sonnet/Opus as before", wrong.join("; "));
     // NOTHING PROMISES A NEXT TURN (tool-loop-guard.ts struck "it WILL be
     // fetched" for the same reason): every line the clock can write, checked.
     const cuts: any[] = [
@@ -555,8 +781,10 @@ async function main() {
     const deadline = td.deadlineForRoute(Date.now(), 300);
     newTurnScript([
       // Round 0: long narration and a tool call, and the round "takes" until
-      // 180s — which is where the incident's round 3 began (184s).
-      { text: [LONG_NARRATION], toolCalls: [{ name: "query_content_score", args: { text: "A short draft to score." } }], before: () => clockTo(deadline.startedAt, 180_000) },
+      // 170s — the incident's round 3 began at 184s; 170s is past grok-4.7's
+      // last tool-round start (87.5s) and still before its window (175s), so
+      // the call is written and RUN, and nothing else may start.
+      { text: [LONG_NARRATION], toolCalls: [{ name: "query_content_score", args: { text: "A short draft to score." } }], before: () => clockTo(deadline.startedAt, 170_000) },
       // Whatever comes next must be the final answer — the fake answers it.
       { text: ["Here is the weekly summary: three client calls, two proposals out."] },
     ]);
@@ -569,7 +797,10 @@ async function main() {
     check(!!second && second.body.tool_choice === "none", "the second request is the forced final, tool_choice none", JSON.stringify(second && second.body.tool_choice));
     check(!!out.completion, "the completion ran — the route would have finalised the row");
     check(out.kept.indexOf("Here is the weekly summary") >= 0, "the answer is on the saved row");
-    check(out.kept.indexOf("Stopped looking things up at this turn's time limit") >= 0, "and the row says the lookup stopped at the time limit", out.kept.slice(-200));
+    // At 170s the answer is grok-4.7's at "low": its own effort is not the
+    // answer round this late (single answer round p90 167s).
+    check(!!second && second.body.model === "grok-4.7" && second.body.reasoning_effort === "low", "the answer is asked of grok-4.7 at reasoning effort low", second ? `${second.body.model} ${second.body.reasoning_effort}` : "none");
+    check(out.kept.indexOf("Written quickly at this turn's time limit") >= 0 && out.kept.indexOf("written by Grok 4.7 at low reasoning effort") >= 0, "and the row says it was written quickly, by Grok 4.7 at low reasoning effort", out.kept.slice(-240));
     check(!out.fallback, "no provider fallback was started");
     check(out.done, "the stream closed with [DONE]");
     // THE CACHE KEY, read off the wire: every request of the turn, the final one too.
@@ -584,7 +815,7 @@ async function main() {
     // last WARN_LEAD_MS before soft — the one round that can still build.
     const dw = td.deadlineForRoute(Date.now(), 300);
     newTurnScript([
-      { text: ["Reading."], toolCalls: [{ name: "query_content_score", args: { text: "x" } }], before: () => clockTo(dw.startedAt, dw.softAt - dw.startedAt - 40_000) },
+      { text: ["Reading."], toolCalls: [{ name: "query_content_score", args: { text: "x" } }], before: () => clockTo(dw.startedAt, td.lastToolRoundAt(dw, "grok-4.7") - dw.startedAt - 40_000) },
       { text: ["Built."] },
     ]);
     quiet();
@@ -593,7 +824,7 @@ async function main() {
     const warnedMsgs = sent[1] ? sent[1].body.messages : [];
     let warned = false;
     for (let i = 0; i < warnedMsgs.length; i++) if (warnedMsgs[i].role === "user" && String(warnedMsgs[i].content).indexOf("Build any artefact you have promised NOW") >= 0) warned = true;
-    check(warned && sent.length === 2 && sent[1].body.tool_choice !== "none", "a round starting 40s before soft is warned to build, with its tools still on");
+    check(warned && sent.length === 2 && sent[1].body.tool_choice !== "none", "a round starting 40s before grok-4.7's last tool-round start is warned to build, with its tools still on");
   }
 
   // ── 3. HARD, mid-stream, on every chain ──────────────────────────────
@@ -615,14 +846,16 @@ async function main() {
     check(out.kept.indexOf("Here is the first half") >= 0, `${model}: what was written before the abort is on the row`);
     check(out.kept.indexOf('say "continue" and it will pick up from there') >= 0, `${model}: and one line says it was cut off and how to continue`, out.kept.slice(-220));
     check(!out.fallback, `${model}: no fallback leg was started at 275s`);
+    check(sent[0] && sent[0].abortedVirtual >= d.hardAt - 1_000, `${model}: a round WRITING its answer is not cut at the window — at HARD`, sent[0] ? `cut at ${Math.round((sent[0].abortedVirtual - d.startedAt) / 1000)}s` : "none");
   }
 
   // ── 3b. HARD while a deck is being written ───────────────────────────
-  console.log("\n3b. Every chain — a deck still being written at the hard budget is named as not created");
+  console.log("\n3b. Every chain — a deck still being written at the window is NOT cut there; at the hard budget it is named as not created");
   for (let c = 0; c < CHAINS.length; c++) {
     const model = CHAINS[c];
     const d = td.deadlineForRoute(Date.now(), 300);
-    clockTo(d.startedAt, 150_000);
+    // 80s: a tool round on every chain (grok-4.7's last start is 87.5s).
+    clockTo(d.startedAt, 80_000);
     newTurnScript([{ text: ["Building the weekly deck now. "], hang: "drip-tool" }]);
     quiet();
     const out = await runTurn(providers, { ...BASE, model, conversationId: `conv-deck-${model}`, turnDeadline: d });
@@ -630,6 +863,9 @@ async function main() {
     check(out.finished && !!out.completion && out.kept.indexOf("the deck was still being written, so it was not created") >= 0, `${model}: the row says the deck was not created`, out.completion ? out.kept.slice(-200) : `no completion: ${out.error}`);
     const [inTime3b, when3b] = beforeBackstop(out, d);
     check(inTime3b, `${model}:   …finalised before the backstop`, when3b);
+    // A DECK BEING WRITTEN IS THE ANSWER: the window does not cut it, and no
+    // rescue writer is sent to write prose over it.
+    check(sent.length === 1 && sent[0].abortedVirtual >= d.hardAt - 1_000, `${model}:   …it ran through the window and was cut at HARD, with no rescue request`, `${sent.length} requests, cut at ${Math.round((sent[0].abortedVirtual - d.startedAt) / 1000)}s`);
   }
 
   // ── 3c. HARD after a billed round: its usage still reaches the ledger ─
@@ -667,25 +903,29 @@ async function main() {
     check(out.kept.indexOf("Out of time") >= 0, `${model}: a turn with nothing written says it ran out of time`, out.completion ? out.kept.slice(0, 200) : out.error);
     check(!out.fallback, `${model}: and does not start a fallback it has no time for`);
   }
-  // The same wait on a TOOL round: started inside soft, the SDK request is
-  // the only thing waiting, and only its signal can end it.
+  // The same wait on a TOOL round: started at 60s, the SDK request is the
+  // only thing waiting, and only its signal can end it — at grok-4.7's WINDOW
+  // now, so the rescue writer still has the time to answer.
   {
     const d = td.deadlineForRoute(Date.now(), 300);
-    clockTo(d.startedAt, 160_000);
-    newTurnScript([{ hang: "headers" }]);
+    clockTo(d.startedAt, 60_000);
+    newTurnScript([{ hang: "headers" }, { text: ["Answer written after the wait."] }]);
     quiet();
     const out = await runTurn(providers, { ...BASE, model: "grok-4-7", conversationId: "conv-headers-tools", turnDeadline: d });
     loud();
-    check(out.finished && !!out.completion && out.kept.indexOf("Out of time") >= 0 && sent.length === 1 && sent[0].abortedAt > 0, "grok-4-7: a TOOL round waiting 115s for headers is cut at hard and finalised", out.completion ? out.kept.slice(0, 160) : out.error);
+    check(out.finished && sent.length === 2 && sent[0].abortedAt > 0 && Math.abs(sent[0].abortedVirtual - td.writeAtFor(d, "grok-4.7")) < WINDOW_SLACK_MS, "grok-4-7: a TOOL round waiting from 60s for headers is cut at grok-4.7's window (175s)", sent[0] ? `cut at ${Math.round((sent[0].abortedVirtual - d.startedAt) / 1000)}s, ${sent.length} requests` : "none");
+    check(!!out.completion && out.kept.indexOf("Answer written after the wait.") >= 0, "and the rescue writer's answer is on the row", out.completion ? out.kept.slice(0, 200) : out.error);
   }
 
   // ── 5. SOFT on the other chains ──────────────────────────────────────
-  console.log("\n5. Every chain — past soft, the next request is the tools-off answer");
+  console.log("\n5. Every chain — past its last tool-round start, the next request is the tools-off answer");
   for (let c = 1; c < CHAINS.length; c++) {
     const model = CHAINS[c];
     const d = td.deadlineForRoute(Date.now(), 300);
     newTurnScript([
-      { text: [LONG_NARRATION], toolCalls: [{ name: "query_content_score", args: { text: "Draft." } }], before: () => clockTo(d.startedAt, 181_000) },
+      // 200s: past every chain's last tool-round start (claude 190s, gemini
+      // and gpt 185s), before the window.
+      { text: [LONG_NARRATION], toolCalls: [{ name: "query_content_score", args: { text: "Draft." } }], before: () => clockTo(d.startedAt, 200_000) },
       { text: ["Answer from what was gathered."] },
     ]);
     quiet();
@@ -693,7 +933,7 @@ async function main() {
     loud();
     const tc = sent[1] ? sent[1].body.tool_choice : undefined;
     const off = model === "claude-sonnet-5" ? !!tc && tc.type === "none" : tc === "none";
-    check(sent.length === 2 && off, `${model}: past soft, the next request is the tools-off answer`, `${sent.length} requests, tool_choice ${JSON.stringify(tc)}`);
+    check(sent.length === 2 && off, `${model}: past its last tool-round start, the next request is the tools-off answer`, `${sent.length} requests, tool_choice ${JSON.stringify(tc)}`);
     check(out.kept.indexOf("Answer from what was gathered.") >= 0 && out.kept.indexOf("Stopped looking things up") >= 0, `${model}: the answer and the soft notice are on the row`, out.kept.slice(-160));
   }
 
@@ -735,18 +975,32 @@ async function main() {
     check(row.status_message === "failed", "the row is finalised as a failure, not left pending");
     check(row.document_message.indexOf("Here is what I have so far.") >= 0 && row.document_message.indexOf("at capacity") >= 0, "it keeps what was shown and says what failed", row.document_message);
 
-    // A soft cut whose tools-off answer then fails on its own account: the
-    // row must not vouch for an "answer above" that never came.
+    // A soft cut whose tools-off answer fails on its own account gets ONE
+    // more try, from the rescue writer — the answer is what the turn owes.
+    const d5 = td.deadlineForRoute(Date.now(), 300);
+    newTurnScript([
+      { text: [LONG_NARRATION], toolCalls: [{ name: "query_content_score", args: { text: "Draft." } }], before: () => clockTo(d5.startedAt, 181_000) },
+      { error: "The model is currently at capacity due to high demand." },
+      { text: ["The summary, from the rescue writer."] },
+    ]);
+    quiet();
+    const out5 = await runTurn(providers, { ...BASE, model: "grok-4-7", conversationId: "conv-soft-retry", turnDeadline: d5 });
+    loud();
+    check(sent.length === 3 && sent[1].body.model === "grok-4.7" && sent[1].body.reasoning_effort === "low" && sent[2].body.model === "grok-4.3" && sent[2].body.reasoning_effort === "none" && !!out5.completion && out5.kept.indexOf("The summary, from the rescue writer.") >= 0,
+      "an answer round (grok-4.7 at low) that fails is followed by the last resort (grok-4.3 at none), which answers", `${sent.length} requests: ${sent.map((x) => `${x.body.model}/${x.body.reasoning_effort}`).join(", ")}`);
+    // And when that fails too, the row must not vouch for an "answer above"
+    // that never came — nor call a provider failure running out of time.
     const d4 = td.deadlineForRoute(Date.now(), 300);
     newTurnScript([
       { text: [LONG_NARRATION], toolCalls: [{ name: "query_content_score", args: { text: "Draft." } }], before: () => clockTo(d4.startedAt, 181_000) },
+      { error: "The model is currently at capacity due to high demand." },
       { error: "The model is currently at capacity due to high demand." },
     ]);
     quiet();
     const out4 = await runTurn(providers, { ...BASE, model: "grok-4-7", conversationId: "conv-soft-fail", turnDeadline: d4 });
     loud();
-    check(!!out4.completion && out4.kept.indexOf("the answer that should have followed did not arrive") >= 0 && out4.kept.indexOf("the answer above uses what was gathered") < 0,
-      "a soft cut whose answer then failed says so, and does not vouch for an answer above", out4.completion ? out4.kept.slice(-200) : out4.error);
+    check(!!out4.completion && out4.kept.indexOf("the answer that should have followed did not arrive") >= 0 && out4.kept.indexOf("the answer above uses what was gathered") < 0 && out4.kept.indexOf("Out of time") < 0,
+      "a soft cut whose answer then failed says so, and does not vouch for an answer above or blame the clock", out4.completion ? out4.kept.slice(-200) : out4.error);
 
     // Before soft, the fallback still runs — the gate is on time, not on error.
     const d2 = td.deadlineForRoute(Date.now(), 300);
@@ -758,6 +1012,18 @@ async function main() {
     const out2 = await runTurn(providers, { ...BASE, model: "grok-4-7", conversationId: "conv-err-2", turnDeadline: d2 });
     loud();
     check(out2.fallback && out2.kept.indexOf("Claude answered instead.") >= 0, "before soft, a failed leg still falls back and answers", out2.error);
+    // The gate reads the FALLBACK's model: at 180s grok-4.7 could not start a
+    // tool round (its last start is 135s), but Claude, the leg xAI falls back
+    // to, still can (190s) — so the fallback runs.
+    const d6 = td.deadlineForRoute(Date.now(), 300);
+    newTurnScript([
+      { error: "The model is currently at capacity due to high demand.", before: () => clockTo(d6.startedAt, 180_000) },
+      { text: ["Claude answered at 180s."] },
+    ]);
+    quiet();
+    const out6 = await runTurn(providers, { ...BASE, model: "grok-4-7", conversationId: "conv-err-180", turnDeadline: d6 });
+    loud();
+    check(out6.fallback && out6.kept.indexOf("Claude answered at 180s.") >= 0, "at 180s an xAI failure still falls back to Claude, whose tool round still fits", `fallback=${out6.fallback} ${out6.error}`);
 
     // The same gate on the other two fallback paths: Claude→Grok, and the
     // shared withGrokFallback the Gemini and OpenAI chains run through.
@@ -841,6 +1107,25 @@ async function main() {
     ]);
     loud();
     check(sent.length >= 1 && sent[0].body.tool_choice === "none", "a run whose caller is past soft makes no tool round", `${sent.length} requests, first tool_choice ${JSON.stringify(sent[0] && sent[0].body.tool_choice)}`);
+  }
+  // THE RESCUE REACHES THE RUNNER TOO: a scheduled grok-4-7 run whose tool
+  // round is still thinking at the window is cut there, and the rescue writer
+  // is asked for the brief — the same chain code, on the caller's clock.
+  {
+    const d = td.deadlineForRoute(Date.now(), 300);
+    newTurnScript([
+      { text: ["Reading."], toolCalls: [{ name: "query_content_score", args: { text: "Draft." } }], before: () => clockTo(d.startedAt, 60_000) },
+      { text: [], hang: "think" },
+      { text: ["Brief: the ITM report-out landed; two proposals out this week."] },
+    ]);
+    quiet();
+    const r = await Promise.race([
+      runner.runScheduledPrompt(task, { deadline: d }),
+      new Promise<null>((res) => realSetTimeout(() => res(null), 8_000)),
+    ]);
+    loud();
+    check(r !== null && sent.length === 3 && Math.abs(sent[1].abortedVirtual - td.writeAtFor(d, "grok-4.7")) < WINDOW_SLACK_MS && sent[2].body.model === "grok-4.7" && sent[2].body.reasoning_effort === "low" && sent[2].body.tool_choice === "none",
+      "a scheduled run's thinking round is cut at the window and the rescue writer is asked for the brief", `${sent.length} requests: ${sent.map((x) => x.body.model).join(", ")}${sent[1] ? `, cut at ${Math.round((sent[1].abortedVirtual - d.startedAt) / 1000)}s` : ""}`);
   }
   // A TOOL EXECUTOR THAT HANGS: the chain cannot abort it, the stream never
   // ends and no completion comes. The runner's own backstop is all there is.
@@ -1019,6 +1304,411 @@ async function main() {
       keys.push(a);
     }
     check(keys[0] !== keys[1], "and two turns do not share one");
+  }
+
+  // ── 12. THE QA INCIDENT: a tool round still thinking at the window ────
+  // 2026-09-28 13:34Z, thread d949e94b, production cdd15fb: grok-4.7's round
+  // 2 started at 141s with tools on and reasoned past 275s without a word; the
+  // row was finalised with no answer. Here a tool round starts at 60s — a
+  // legitimate start on every chain (the real grok-4.7 run that reproduced
+  // the incident at production timing started its round 2 at 66.6s) — and
+  // THINKS: events keep coming (so no stall guard fires), none of them text.
+  // The window must cut it, and the rescue writer must write the answer,
+  // which must be on the row.
+  console.log("\n12. Every chain — a tool round still thinking when the window opens is cut, and the rescue writer answers (d949e94b)");
+  // grok-4.7 is rescued by ITSELF at "low": grok-4.3 at "none", the first
+  // version's writer, credited colleagues' pasted posts to the user in 6 of 6
+  // real rescues (turn-deadline.ts header).
+  const RESCUE_EXPECT: Record<string, { model: string; effort?: string; label: string }> = {
+    "grok-4-7": { model: "grok-4.7", effort: "low", label: "Grok 4.7 at low reasoning effort" },
+    "claude-sonnet-5": { model: "claude-sonnet-5", label: "Claude Sonnet 5" },
+    "gemini-3.8-flash": { model: "gemini-3.8-flash", label: "Gemini 3.8 Flash" },
+    "gpt-6-luna": { model: "gpt-6-luna", effort: "none", label: "GPT-6 Luna without reasoning" },
+  };
+  const ANSWER = "Weekly summary — W39 achievements: Siemens ITM report-out delivered; NatureFinance kickoff held. W40 priorities: offsite on 1 October.";
+  /** The API model each chain id runs — the window is the model's. */
+  const API: Record<string, string> = { "grok-4-7": "grok-4.7", "claude-sonnet-5": "claude-sonnet-5", "gemini-3.8-flash": "gemini-3.8-flash", "gpt-6-luna": "gpt-6-luna" };
+  for (let c = 0; c < CHAINS.length; c++) {
+    const model = CHAINS[c];
+    const want = RESCUE_EXPECT[model];
+    const d = td.deadlineForRoute(Date.now(), 300);
+    newTurnScript([
+      { text: ["Pulling the week's meetings first."], toolCalls: [{ name: "query_content_score", args: { text: "Draft." } }], before: () => clockTo(d.startedAt, 60_000) },
+      { text: [], hang: "think" },
+      { text: [ANSWER] },
+    ]);
+    const w12 = td.writeAtFor(d, API[model]);
+    const logStart = logs.length;
+    quiet();
+    const out = await runTurn(providers, { ...BASE, model, conversationId: `conv-window-${model}`, turnDeadline: d });
+    loud();
+    const turnLog = logs.slice(logStart).join("\n");
+    const toolsOn = (b: any) => Array.isArray(b.tools) && b.tools.length > 0 && !(b.tool_choice === "none" || (b.tool_choice && b.tool_choice.type === "none"));
+    check(out.finished && sent.length === 3, `${model}: three requests — the gathering round, the round that thought, the rescue`, `${sent.length}`);
+    check(!!sent[1] && toolsOn(sent[1].body) && sent[1].abortedAt > 0, `${model}: the thinking round had tools on and was ABORTED`);
+    check(!!sent[1] && Math.abs(sent[1].abortedVirtual - w12) < WINDOW_SLACK_MS, `${model}:   …at ITS window (${(w12 - d.startedAt) / 1000}s), not at hard (275s)`, sent[1] ? `cut at ${Math.round((sent[1].abortedVirtual - d.startedAt) / 1000)}s` : "none");
+    const r = sent[2] ? sent[2].body : {};
+    const effortSent = r.reasoning_effort;
+    check(!!sent[2] && !toolsOn(r) && r.model === want.model && (want.effort ? effortSent === want.effort : effortSent === undefined), `${model}: the rescue is tools-off, on ${want.model}${want.effort ? ` at effort ${want.effort}` : ""}`, `${r.model} effort=${effortSent} tool_choice=${JSON.stringify(r.tool_choice)}`);
+    if (model === "claude-sonnet-5") check(!!r.thinking && r.thinking.type === "disabled", `${model}:   …with thinking disabled`, JSON.stringify(r.thinking));
+    // THE ANSWER, not merely a finalised row.
+    check(!!out.completion && out.kept.indexOf(ANSWER) >= 0, `${model}: THE ANSWER IS ON THE SAVED ROW`, out.completion ? out.kept.slice(0, 240) : out.error);
+    check(out.shown.indexOf(ANSWER) >= 0 && out.shown.indexOf("Pulling the week's meetings first.") === 0, `${model}: and on screen, after the narration the user already saw`, out.shown.slice(0, 160));
+    check(out.kept.indexOf("Written quickly at this turn's time limit") >= 0 && out.kept.indexOf(`written by ${want.label}`) >= 0 && out.kept.indexOf("check names and owners") < 0, `${model}: the line says it was written quickly, and by which model — not the last resort's caveat`, out.kept.slice(-260));
+    check(out.kept.indexOf("narrower") < 0, `${model}: and never tells a summary to ask again narrower`);
+    check(turnLog.indexOf("cut at the answer window") >= 0 && turnLog.indexOf(`Rescue: the answer was written by ${want.model}`) >= 0 && turnLog.indexOf(`writer="${want.label}"`) >= 0, `${model}: the log names the cut, the writer, and carries it on the Turn line`);
+    const [inTime12, when12] = beforeBackstop(out, d);
+    check(inTime12 && out.completedAt <= d.hardAt, `${model}: finalised by hard, well inside the platform's 300s`, when12);
+    // THE PROVIDER NEVER CHANGES: every request of the turn went to one.
+    let same = true;
+    for (let i = 1; i < sent.length; i++) if (sent[i].provider !== sent[0].provider) same = false;
+    check(same, `${model}: every request of the turn went to one provider`, sent.map((x) => x.provider).join(", "));
+  }
+
+  // ── 12b. grok-4.7: the last resort, and only as one ────────────────────
+  // The tool round thinks past the window (175s) and grok-4.7 at "low" — the
+  // rescue writer — ALSO thinks, past 245s: only then is the answer handed to
+  // grok-4.3 at "none", with the last 30s. And a grok-4.7 at "low" that has
+  // STARTED writing by 245s is left to write: no grok-4.3 request at all.
+  console.log("\n12b. grok-4-7 — the last resort writes only what grok-4.7 at low did not start in time");
+  {
+    const d = td.deadlineForRoute(Date.now(), 300);
+    newTurnScript([
+      { text: ["Pulling the week's meetings first."], toolCalls: [{ name: "query_content_score", args: { text: "Draft." } }], before: () => clockTo(d.startedAt, 60_000) },
+      { text: [], hang: "think" },
+      { text: [], hang: "think" },
+      { text: [ANSWER] },
+    ]);
+    const logStart = logs.length;
+    quiet();
+    const out = await runTurn(providers, { ...BASE, model: "grok-4-7", conversationId: "conv-last-resort", turnDeadline: d });
+    loud();
+    const turnLog = logs.slice(logStart).join("\n");
+    const resortAt = td.lastResortAt(d, "grok-4.7") || 0;
+    const shape = sent.map((x) => `${x.body.model}/${x.body.reasoning_effort || "default"}${x.abortedAt ? `@${Math.round((x.abortedVirtual - d.startedAt) / 1000)}s` : ""}`).join(", ");
+    // LITERAL SECONDS, not writeAtFor: a window moved consistently everywhere
+    // would pass every assertion that reads it back.
+    check(sent.length === 4 && sent[1].body.model === "grok-4.7" && Math.abs(sent[1].abortedVirtual - (d.startedAt + 175_000)) < WINDOW_SLACK_MS, "grok-4-7: the thinking tool round is cut at the window (175s)", shape);
+    check(!!sent[2] && sent[2].body.model === "grok-4.7" && sent[2].body.reasoning_effort === "low" && sent[2].body.tool_choice === "none" && Math.abs(sent[2].abortedVirtual - resortAt) < WINDOW_SLACK_MS && Math.abs(resortAt - (d.startedAt + 245_000)) < 1,
+      "  …grok-4.7 at low, tools off, still thinking at 245s, is cut there", shape);
+    check(!!sent[3] && sent[3].body.model === "grok-4.3" && sent[3].body.reasoning_effort === "none" && sent[3].body.tool_choice === "none" && sent[3].provider === "xai",
+      "  …and only then does grok-4.3 at none write, on xAI, tools off", shape);
+    check(!!out.completion && out.kept.indexOf(ANSWER) >= 0 && out.kept.indexOf("written by Grok 4.3 without reasoning") >= 0 && turnLog.indexOf('writer="Grok 4.3 without reasoning"') >= 0,
+      "  …THE ANSWER IS ON THE ROW, and the line and the log name grok-4.3 as its writer", out.completion ? out.kept.slice(-240) : out.error);
+    // The last resort misattributed in every real rescue it wrote: its line
+    // says to check names and owners, and no other rescued line does.
+    check(out.kept.indexOf("Written in the last seconds") >= 0 && out.kept.indexOf("check names and owners before you use it") >= 0 && out.kept.indexOf("Written quickly") < 0,
+      "  …and its line says it was the last resort, and to check whose work is whose", out.kept.slice(-300));
+    const [inTime12b, when12b] = beforeBackstop(out, d);
+    check(inTime12b && out.completedAt <= d.hardAt, "  …finalised by hard", when12b);
+
+    // STARTED WRITING BY 245s: kept, never handed over.
+    const d2 = td.deadlineForRoute(Date.now(), 300);
+    newTurnScript([
+      { text: ["Pulling the week's meetings first."], toolCalls: [{ name: "query_content_score", args: { text: "Draft." } }], before: () => clockTo(d2.startedAt, 60_000) },
+      { text: [], hang: "think" },
+      { text: ["Weekly summary, written slowly: "], hang: "drip" },
+      { text: ["A last-resort answer that must never be asked for."] },
+    ]);
+    quiet();
+    const out2 = await runTurn(providers, { ...BASE, model: "grok-4-7", conversationId: "conv-low-writes", turnDeadline: d2 });
+    loud();
+    const shape2 = sent.map((x) => `${x.body.model}/${x.body.reasoning_effort || "default"}${x.abortedAt ? `@${Math.round((x.abortedVirtual - d2.startedAt) / 1000)}s` : ""}`).join(", ");
+    check(sent.length === 3 && sent[2].body.reasoning_effort === "low" && sent[2].abortedVirtual >= d2.hardAt - 1_000 && out2.kept.indexOf("Weekly summary, written slowly:") >= 0 && out2.kept.indexOf("must never be asked for") < 0,
+      "grok-4-7: grok-4.7 at low that is WRITING at 245s is left to write, to hard — the last resort is never asked", shape2);
+  }
+
+  // ── 13. The round-start policy, and the answer round's own window ─────
+  console.log("\n13. Every chain — too late for a tool round to finish: the next round is the answer, and it is guarded too");
+  const LATE_START: Record<string, number> = { "grok-4-7": 141_000, "claude-sonnet-5": 195_000, "gemini-3.8-flash": 190_000, "gpt-6-luna": 190_000 };
+  for (let c = 0; c < CHAINS.length; c++) {
+    const model = CHAINS[c];
+    const d = td.deadlineForRoute(Date.now(), 300);
+    newTurnScript([
+      { text: ["Reading."], toolCalls: [{ name: "query_content_score", args: { text: "Draft." } }], before: () => clockTo(d.startedAt, LATE_START[model]) },
+      { text: ["The answer, written by the turn's own model."] },
+    ]);
+    quiet();
+    const out = await runTurn(providers, { ...BASE, model, conversationId: `conv-policy-${model}`, turnDeadline: d });
+    loud();
+    const tc = sent[1] ? sent[1].body.tool_choice : undefined;
+    const off = model === "claude-sonnet-5" ? !!tc && tc.type === "none" : tc === "none";
+    const own = sent[1] ? sent[1].body.model : "";
+    check(sent.length === 2 && off && own === API[model], `${model}: a round starting at ${LATE_START[model] / 1000}s is tools-off, on the turn's own model`, `${sent.length} requests, model ${own}, tool_choice ${JSON.stringify(tc)}`);
+    if (model === "grok-4-7") {
+      // grok-4.7 at its own effort is not the answer round this late: its
+      // single answer round has a p90 of 167s. It is asked at "low", and the
+      // line says so.
+      check(sent[1].body.reasoning_effort === "low" && out.kept.indexOf("The answer, written by the turn's own model.") >= 0 && out.kept.indexOf("written by Grok 4.7 at low reasoning effort") >= 0,
+        `${model}:   …at reasoning effort low, and the line names it`, `${sent[1].body.reasoning_effort}; ${out.kept.slice(-200)}`);
+    } else {
+      check(out.kept.indexOf("The answer, written by the turn's own model.") >= 0 && out.kept.indexOf("Stopped looking things up at this turn's time limit") >= 0 && out.kept.indexOf("Written quickly") < 0, `${model}: its answer is on the row with the soft line, not the rescue line`, out.kept.slice(-200));
+    }
+  }
+  // The answer round itself thinks past the window: cut, and rescued — on
+  // every chain, because each chain guards its own answer round. On grok-4.7
+  // that round IS the rescue writer (grok-4.7 at low), so the window does not
+  // cut it: it keeps its time to 245s, and the last resort writes.
+  for (let c = 0; c < CHAINS.length; c++) {
+    const model = CHAINS[c];
+    const want = RESCUE_EXPECT[model];
+    const d = td.deadlineForRoute(Date.now(), 300);
+    newTurnScript([
+      { text: ["Reading."], toolCalls: [{ name: "query_content_score", args: { text: "Draft." } }], before: () => clockTo(d.startedAt, LATE_START[model]) },
+      { text: [], hang: "think" },
+      { text: [ANSWER] },
+    ]);
+    quiet();
+    const out = await runTurn(providers, { ...BASE, model, conversationId: `conv-policy-think-${model}`, turnDeadline: d });
+    loud();
+    const tc1 = sent[1] ? sent[1].body.tool_choice : undefined;
+    const off1 = model === "claude-sonnet-5" ? !!tc1 && tc1.type === "none" : tc1 === "none";
+    const grok = model === "grok-4-7";
+    const cutWant = grok ? (td.lastResortAt(d, "grok-4.7") || 0) : d.writeAt;
+    const then = grok ? { model: "grok-4.3", label: "Grok 4.3 without reasoning" } : want;
+    check(sent.length === 3 && sent[1].body.model === API[model] && off1 && Math.abs(sent[1].abortedVirtual - cutWant) < WINDOW_SLACK_MS,
+      `${model}: the tools-off answer round started at ${LATE_START[model] / 1000}s, still thinking at ${(cutWant - d.startedAt) / 1000}s, is cut there`, sent[1] ? `${sent.length} requests, cut at ${Math.round((sent[1].abortedVirtual - d.startedAt) / 1000)}s` : `${sent.length} requests`);
+    check(!!sent[2] && sent[2].body.model === then.model && out.kept.indexOf(ANSWER) >= 0 && out.kept.indexOf(`written by ${then.label}`) >= 0,
+      `${model}:   …and ${then.label} writes the answer, which is on the row`, out.kept.slice(-240));
+  }
+
+  // ── 13b. An answer request that comes back EMPTY hands on too ─────────
+  // Not cut, not failed: finished, with no text (a model that only thought).
+  // The next writer answers; a turn does not end on an empty answer.
+  console.log("\n13b. Every chain — an answer request that finishes with no text is followed by the next writer");
+  for (let c = 0; c < CHAINS.length; c++) {
+    const model = CHAINS[c];
+    const d = td.deadlineForRoute(Date.now(), 300);
+    newTurnScript([
+      { text: ["Reading."], toolCalls: [{ name: "query_content_score", args: { text: "Draft." } }], before: () => clockTo(d.startedAt, LATE_START[model]) },
+      { text: [] },
+      { text: [ANSWER] },
+    ]);
+    quiet();
+    const out = await runTurn(providers, { ...BASE, model, conversationId: `conv-empty-${model}`, turnDeadline: d });
+    loud();
+    const grok = model === "grok-4-7";
+    const then = grok ? { model: "grok-4.3", line: "check names and owners before you use it" } : { model: RESCUE_EXPECT[model].model, line: `written by ${RESCUE_EXPECT[model].label}` };
+    check(sent.length === 3 && !sent[1].abortedAt && sent[2].body.model === then.model && out.kept.indexOf(ANSWER) >= 0 && out.kept.indexOf(then.line) >= 0,
+      `${model}: the empty answer request is followed by ${then.model}, whose answer is on the row`, `${sent.length} requests: ${sent.map((x) => `${x.body.model}/${x.body.reasoning_effort || "default"}`).join(", ")}; ${out.kept.slice(-160)}`);
+  }
+
+  // ── 14. A lookup that begins after the window opens is cut as it begins ─
+  console.log("\n14. A round writing at the window that then reaches for a lookup is cut the moment it does");
+  // Longer than what the cut round wrote: round-text.ts never cuts narration
+  // that outweighs the answer it would leave behind.
+  const LONG_ANSWER = `${ANSWER} ${ANSWER}`;
+  for (let c = 0; c < CHAINS.length; c++) {
+    const model = CHAINS[c];
+    const d = td.deadlineForRoute(Date.now(), 300);
+    newTurnScript([
+      { text: ["Reading."], toolCalls: [{ name: "query_content_score", args: { text: "Draft." } }], before: () => clockTo(d.startedAt, 60_000) },
+      { text: ["Here is a first pass at the summary. "], hang: "drip", toolAt: { at: d.startedAt + 240_000, name: "query_meetingbrain" } },
+      { text: [LONG_ANSWER] },
+    ]);
+    quiet();
+    const out = await runTurn(providers, { ...BASE, ...MB_CONFIG, model, conversationId: `conv-late-lookup-${model}`, turnDeadline: d });
+    loud();
+    const cutAt = sent[1] ? sent[1].abortedVirtual - d.startedAt : 0;
+    check(sent.length === 3 && cutAt >= 239_000 && cutAt < 240_000 + WINDOW_SLACK_MS, `${model}: the round was left running past the window while it wrote, and cut when query_meetingbrain began (~240s)`, `${sent.length} requests, cut at ${Math.round(cutAt / 1000)}s`);
+    // At 240s grok-4.7 at low could not start writing before 245s, so the
+    // last resort writes — and its line says to check it.
+    const line14 = model === "grok-4-7" ? "check names and owners before you use it" : "Written quickly";
+    check(out.kept.indexOf(LONG_ANSWER) >= 0 && out.kept.indexOf(line14) >= 0, `${model}: the rescue writer answered${model === "grok-4-7" ? " (the last resort, at 240s, with its caveat)" : ""}`, out.kept.slice(-200));
+    // What the cut round said was said before any result: on screen, it
+    // stays; on the saved row — what later turns are rebuilt from — it goes.
+    check(out.shown.indexOf("Here is a first pass at the summary.") >= 0 && out.kept.indexOf("Here is a first pass at the summary.") < 0, `${model}: the cut round's words stay on screen and leave the saved copy`, out.kept.slice(0, 120));
+  }
+
+  // A LOOKUP DOES NOT START ONCE THE WINDOW IS OPEN. Two reads written just
+  // before it — the TURN's window: 175s on grok-4.7, 225s on Claude; the
+  // first takes 4s and the window opens while it runs, so the second is
+  // refused, and the rescue writes from what the first returned.
+  for (const model of ["grok-4-7", "claude-sonnet-5"]) {
+    const d = td.deadlineForRoute(Date.now(), 300);
+    const writeAt14 = td.writeAtFor(d, API[model]);
+    const before = mbCalls;
+    newTurnScript([
+      { text: ["Reading two meetings."], toolCalls: [
+        { name: "query_meetingbrain", args: { report: "meeting_details", meeting_id: INCIDENT_MEETINGS[0].id } },
+        { name: "query_meetingbrain", args: { report: "meeting_details", meeting_id: INCIDENT_MEETINGS[2].id } },
+      ], before: () => clockTo(d.startedAt, writeAt14 - d.startedAt - 3_000) },
+      { text: [ANSWER] },
+    ]);
+    mbTakesMs = 4_000;
+    quiet();
+    const out = await runTurn(providers, { ...BASE, ...MB_CONFIG, model, conversationId: `conv-straddle-${model}`, turnDeadline: d });
+    loud();
+    mbTakesMs = 0;
+    const tr = toolResults();
+    check(mbCalls - before === 1 && tr.length === 2 && tr[1].indexOf("NOT RUN") === 0, `${model}: the read that would start after the window is not started`, `${mbCalls - before} calls; second result: ${(tr[1] || "").slice(0, 60)}`);
+    check(sent.length === 2 && out.kept.indexOf(ANSWER) >= 0 && out.kept.indexOf("Written quickly") >= 0, `${model}:   …and the rescue writer answers from what the first returned`, out.kept.slice(-200));
+  }
+
+  // PROSE AFTER A SERVER-SIDE SEARCH IS STILL THE ANSWER: a Claude round
+  // that searched and went on writing is not "still writing a call" at the
+  // window, and runs to HARD like any round writing its answer.
+  {
+    const d = td.deadlineForRoute(Date.now(), 300);
+    newTurnScript([
+      { text: ["Reading."], toolCalls: [{ name: "query_content_score", args: { text: "Draft." } }], before: () => clockTo(d.startedAt, 150_000) },
+      { text: ["Checking one fact first. "], hang: "drip", serverSearch: true },
+    ]);
+    quiet();
+    const out = await runTurn(providers, { ...BASE, model: "claude-sonnet-5", webSearch: true, conversationId: "conv-search-prose", turnDeadline: d });
+    loud();
+    check(sent.length === 2 && sent[1].abortedVirtual >= d.hardAt - 1_000 && out.kept.indexOf("After the search, the summary goes on:") >= 0,
+      "claude-sonnet-5: a round writing prose after a server-side web search is not cut at the window — at HARD, with its text kept", sent[1] ? `${sent.length} requests, cut at ${Math.round((sent[1].abortedVirtual - d.startedAt) / 1000)}s` : `${sent.length} requests`);
+  }
+
+  // ── 15. The rescue never moves provider — mailbox, taint, every model ──
+  console.log("\n15. The rescue writer stays on the turn's provider, for every registered model and on a tainted turn");
+  {
+    const reg: Record<string, { apiModel: string }> = (providers as any).MODEL_REGISTRY;
+    const moved: string[] = [];
+    const ids = Object.keys(reg);
+    let writersSeen = 0;
+    for (let i = 0; i < ids.length; i++) {
+      const m = reg[ids[i]].apiModel;
+      const ws = td.rescueWritersFor(m);
+      for (let j = 0; j < ws.length; j++) {
+        const w = ws[j];
+        writersSeen++;
+        if (td.providerOf(w.model) !== td.providerOf(m)) moved.push(`${m} → ${w.model}`);
+        if (!reg[Object.keys(reg).find((k) => reg[k].apiModel === w.model) || ""]) moved.push(`${m} → ${w.model} (not a registered model)`);
+      }
+    }
+    check(ids.length > 10 && writersSeen > ids.length && moved.length === 0, `no registered model (${ids.length}) is rescued, by any of its ${writersSeen} writers, on another provider or by an unregistered id`, moved.join("; "));
+    const gw = td.rescueWritersFor("grok-4.7");
+    check(gw.length === 2 && gw[0].model === "grok-4.7" && gw[0].reasoningEffort === "low" && gw[1].model === "grok-4.3" && gw[1].reasoningEffort === "none",
+      "grok-4.7 is rescued by itself at low first, and by grok-4.3 at none only as the last resort", JSON.stringify(gw));
+    check(td.rescueWriterFor("claude-opus-5-5").model === "claude-sonnet-5" && td.rescueWriterFor("claude-fable-5-1").model === "claude-sonnet-5",
+      "the always-thinking Claude models hand the answer to Sonnet 5, thinking off");
+    // A HARD-TAINTED Claude turn (mailbox read): the rescue is Anthropic,
+    // and its tool list is still narrowed to the post-taint reads. Run twice,
+    // untainted first, so the narrowing is shown to REMOVE something — with
+    // web search and the generators registered, the untainted rescue carries
+    // them, and the tainted one must not.
+    const forbidden = (n: string) => n === "web_search" || n === "create_scheduled_task" || n.indexOf("generate_") === 0;
+    const rescueTools: string[][] = [];
+    const rescueOut: TurnOutcome[] = [];
+    for (let k = 0; k < 2; k++) {
+      const d = td.deadlineForRoute(Date.now(), 300);
+      newTurnScript([
+        { text: ["Reading."], toolCalls: [{ name: "query_content_score", args: { text: "Draft." } }], before: () => clockTo(d.startedAt, 100_000) },
+        { text: [], hang: "think" },
+        { text: [ANSWER] },
+      ]);
+      quiet();
+      const out = await runTurn(providers, { ...BASE, ...MB_CONFIG, webSearch: true, imageGeneration: true, model: "claude-opus-5-5", conversationId: `conv-taint-${k}`, turnDeadline: d, sawUntrustedContent: k === 1, allowPersonalData: true, gmailAccess: true });
+      loud();
+      rescueOut.push(out);
+      const r = sent.length === 3 ? sent[2] : null;
+      rescueTools.push(r && Array.isArray(r.body.tools) ? r.body.tools.map((t: any) => String(t.name || "")) : []);
+      check(!!r && r.provider === "anthropic" && r.body.model === "claude-sonnet-5" && out.kept.indexOf(ANSWER) >= 0,
+        `a ${k === 1 ? "HARD-TAINTED " : ""}claude-opus-5-5 turn is rescued on Anthropic (Sonnet 5), and answers`, `${sent.length} requests, rescue ${r ? `${r.provider}/${r.body.model}` : "none"}`);
+    }
+    check(rescueTools[0].some(forbidden), "  (precondition) untainted, the rescue request carries web_search and the generators", rescueTools[0].join(","));
+    check(rescueTools[1].length > 0 && !rescueTools[1].some(forbidden), "  …tainted, its tools are narrowed to the post-taint reads", rescueTools[1].join(","));
+    // A soft-tainted grok turn (Slack, MeetingBrain) is rescued on xAI.
+    const d2 = td.deadlineForRoute(Date.now(), 300);
+    newTurnScript([
+      { text: ["Reading."], toolCalls: [{ name: "query_content_score", args: { text: "Draft." } }], before: () => clockTo(d2.startedAt, 60_000) },
+      { text: [], hang: "think" },
+      { text: [ANSWER] },
+    ]);
+    quiet();
+    const out2 = await runTurn(providers, { ...BASE, model: "grok-4-7", conversationId: "conv-soft-taint", turnDeadline: d2, sawThirdPartyContent: true });
+    loud();
+    check(sent.length === 3 && sent[2].provider === "xai" && out2.kept.indexOf(ANSWER) >= 0, "a soft-tainted grok-4-7 turn is rescued on xAI", sent.map((x) => x.provider).join(", "));
+  }
+
+  // ── 15b. When even the rescue cannot write ────────────────────────────
+  console.log("\n15b. Every chain — the answer round AND the rescue both silent: the line says what was read and offers to continue");
+  for (let c = 0; c < CHAINS.length; c++) {
+    const model = CHAINS[c];
+    const d = td.deadlineForRoute(Date.now(), 300);
+    newTurnScript([
+      // A real read 5s before the turn's window — so it runs — then silence.
+      { text: ["Reading the ITM report-out."], toolCalls: [{ name: "query_meetingbrain", args: { report: "meeting_details", meeting_id: INCIDENT_MEETINGS[0].id } }], before: () => clockTo(d.startedAt, td.writeAtFor(d, API[model]) - d.startedAt - 5_000) },
+      { hang: "headers" },
+      { hang: "headers" },
+    ]);
+    quiet();
+    const out = await runTurn(providers, { ...BASE, ...MB_CONFIG, model, conversationId: `conv-norescue-${model}`, turnDeadline: d });
+    loud();
+    check(sent.length === 3 && sent[1].abortedAt > 0 && sent[2].abortedAt > 0, `${model}: the answer round was cut (at the window, or at 245s on grok-4.7) and the last writer at hard`, `${sent.length} requests`);
+    check(!!out.completion && out.kept.indexOf("Out of time before the answer was written") >= 0 && out.kept.indexOf("read your meeting records") >= 0 && out.kept.indexOf('Reply "continue"') >= 0 && out.kept.indexOf("narrower") < 0,
+      `${model}: the row says what was read and offers to continue — never "narrower"`, out.completion ? out.kept.slice(-240) : out.error);
+    const [inTime15, when15] = beforeBackstop(out, d);
+    check(inTime15, `${model}: finalised before the backstop`, when15);
+  }
+
+  // ── 16. The line, by case ─────────────────────────────────────────────
+  console.log("\n16. The deadline line says what happened, and never \"ask again, narrower\"");
+  {
+    const gathered = (providers as any).gatheredSubjects([
+      { name: "query_meetingbrain", calls: 3, blockedBudget: 0, blockedRepeat: 0 },
+      { name: "query_slack", calls: 3, blockedBudget: 0, blockedRepeat: 0 },
+      { name: "query_engine", calls: 1, blockedBudget: 0, blockedRepeat: 0 },
+      { name: "search_memory", calls: 1, blockedBudget: 1, blockedRepeat: 0 },
+      { name: "query_content_score", calls: 1, blockedBudget: 0, blockedRepeat: 0 },
+    ]) as string[];
+    check(gathered.join("|") === "your meeting records|Slack|the Engine database", "what the incident turn read, in the notices' own words — refused calls and the scorer left out", gathered.join(" | "));
+    const rescued = td.turnDeadlineNotice({ kind: "window", writer: "Grok 4.3 without reasoning" }, true, gathered);
+    check(/Written quickly at this turn's time limit/.test(rescued) && rescued.indexOf("written by Grok 4.3 without reasoning, with tools off, from what had been gathered by then") >= 0, "rescued: says it was written quickly, by which model, from what was gathered", rescued);
+    const low = (providers as any).describeWriter({ model: "grok-4.7", reasoningEffort: "low" });
+    const rescuedLow = td.turnDeadlineNotice({ kind: "window", writer: low }, true, gathered);
+    check(low === "Grok 4.7 at low reasoning effort" && rescuedLow.indexOf("written by Grok 4.7 at low reasoning effort, with tools off") >= 0, "rescued by grok-4.7 at low: the line names the model AND the effort it was asked for", rescuedLow);
+    const resortLine = td.turnDeadlineNotice({ kind: "window", writer: "Grok 4.3 without reasoning", lastResort: true }, true, gathered);
+    check(resortLine.indexOf("written by Grok 4.3 without reasoning, a fast model") >= 0 && resortLine.indexOf("check names and owners before you use it") >= 0 && resortLine.indexOf('reply "continue"') >= 0 && resortLine.indexOf("Written quickly") < 0,
+      "rescued by the LAST RESORT: says so, names it, and says to check whose work is whose", resortLine);
+    const noAnswer = td.turnDeadlineNotice({ kind: "hard" }, false, gathered);
+    check(noAnswer.indexOf("Out of time before the answer was written") >= 0 && noAnswer.indexOf("read your meeting records, Slack and the Engine database") >= 0 && noAnswer.indexOf('Reply "continue"') >= 0, "not written: says what was read, and offers to continue", noAnswer);
+    const failed = td.turnDeadlineNotice({ kind: "window" }, false, gathered);
+    check(failed.indexOf("did not arrive") >= 0 && failed.indexOf("Out of time") < 0 && failed.indexOf("read your meeting records") >= 0, "an answer request that FAILED is not called running out of time", failed);
+    const own = td.turnDeadlineNotice({ kind: "soft" }, true, gathered);
+    check(own.indexOf("the answer above uses what was gathered by then") >= 0 && own.indexOf("Written quickly") < 0, "answered by the turn's own model after tools went off: the soft line", own);
+    const every: any[] = [
+      { kind: "soft" }, { kind: "window" }, { kind: "hard" }, { kind: "window", writer: "X" }, { kind: "window", writer: "X", lastResort: true }, { kind: "hard", tool: "generate_slides" },
+      { kind: "hard", tool: "generate_slides", unstarted: true }, { kind: "hard", tool: "query_meetingbrain", unstarted: true }, { kind: "window", tool: "query_meetingbrain", unstarted: true },
+    ];
+    const bad: string[] = [];
+    for (let i = 0; i < every.length; i++) for (let a = 0; a < 2; a++) for (let g = 0; g < 2; g++) {
+      const line = td.turnDeadlineNotice(every[i], a === 1, g ? gathered : []);
+      if (/narrower|one meeting, one week/.test(line)) bad.push(line.slice(0, 120));
+      if (/will be fetched|will be read|will fit|will be (created|built)/.test(line)) bad.push(line.slice(0, 120));
+    }
+    check(bad.length === 0, "no line, in any case, says \"narrower\" or guarantees what a follow-up will get", bad.join(" | "));
+  }
+
+  // ── 17. The build-now warning never goes out before anything was read ──
+  // Review of the answer-window change (2026-09-30): the warning is aimed at
+  // the round 45s before the last tool-round start, and on a 120s route that
+  // start is 36s in — so the window reached back to 0s and ROUND 0 was told
+  // "most of this turn's time budget is gone… stop gathering". A fact-check
+  // or an optimiser discussion was told to stop before its only search. Under
+  // cdd15fb the window began at 5s and round 0 escaped by a few seconds. The
+  // assertion is on what each chain SENT, round by round; the second half
+  // pins that the warning still reaches the round that can build.
+  console.log("\n17. Every chain — the build-now warning never reaches round 0, and still reaches the last round that can build");
+  const WARN_TEXT = "most of this turn's time budget is gone";
+  for (let c = 0; c < CHAINS.length; c++) {
+    const model = CHAINS[c];
+    const d = td.deadlineForRoute(Date.now(), 120);
+    newTurnScript([
+      { text: ["Checking that."], toolCalls: [{ name: "query_content_score", args: { text: "A claim to check." } }] },
+      // 20s: inside every chain's warning window on a 120s route, before its
+      // last tool-round start — the round that can still build.
+      { text: ["Checked."], toolCalls: [{ name: "query_content_score", args: { text: "Another claim." } }], before: () => clockTo(d.startedAt, 20_000) },
+      { text: ["The answer."] },
+    ]);
+    quiet();
+    const out = await runTurn(providers, { ...BASE, model, conversationId: `conv-warn0-${model}`, turnDeadline: d });
+    loud();
+    const warned = (i: number) => !!sent[i] && JSON.stringify(sent[i].body).indexOf(WARN_TEXT) >= 0;
+    check(out.finished && sent.length >= 2 && !warned(0), `${model}: on a 120s route, round 0 carries no build-now warning`, `${sent.length} requests, round 0 warned=${warned(0)}`);
+    check(warned(1), `${model}:   …and the round starting at 20s — the last that can build — does`, `${sent.length} requests, round 1 warned=${warned(1)}`);
   }
 
   check(strayFetches.length === 0, "nothing reached the network", strayFetches.slice(0, 3).join(", "));
