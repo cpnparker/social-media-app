@@ -21,6 +21,8 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useSettledDateRange, useLatestRequest } from "@/lib/use-settled-date-range";
+import { UnappliedRangeNote } from "@/components/operations/UnappliedRangeNote";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
 import { categorizeContentType, CATEGORY_ORDER, CATEGORY_ICONS } from "@/lib/content-type-utils";
@@ -177,6 +179,10 @@ export default function TimelineResourcingPage() {
   // Custom date pickers
   const [customFrom, setCustomFrom] = useState(() => format(startOfMonth(new Date()), "yyyy-MM-dd"));
   const [customTo, setCustomTo] = useState(() => format(endOfMonth(new Date()), "yyyy-MM-dd"));
+  // The custom window only follows the pickers once they hold a whole range.
+  // Mid-typing a year reads 0002-01-01, which drew ~740,000 day columns.
+  const custom = useSettledDateRange(customFrom, customTo, { requireBoth: true });
+  const beginRequest = useLatestRequest();
 
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [expandedContent, setExpandedContent] = useState<Set<string>>(new Set());
@@ -189,23 +195,23 @@ export default function TimelineResourcingPage() {
   /* ─── Window end date ─── */
   const windowEnd = useMemo(() => {
     if (timeWindow === "custom") {
-      return new Date(customTo);
+      return new Date(custom.to);
     }
     if (timeWindow === "2weeks") return addDays(windowStart, 13);
     if (timeWindow === "6weeks") return addDays(windowStart, 41);
     return endOfWeek(endOfMonth(addDays(windowStart, 7)), { weekStartsOn: 1 });
-  }, [windowStart, timeWindow, customTo]);
+  }, [windowStart, timeWindow, custom.to]);
 
   // Effective window start (for custom mode)
   const effectiveStart = useMemo(() => {
-    if (timeWindow === "custom") return startOfWeek(new Date(customFrom), { weekStartsOn: 1 });
+    if (timeWindow === "custom") return startOfWeek(new Date(custom.from), { weekStartsOn: 1 });
     return windowStart;
-  }, [timeWindow, customFrom, windowStart]);
+  }, [timeWindow, custom.from, windowStart]);
 
   const effectiveEnd = useMemo(() => {
-    if (timeWindow === "custom") return endOfWeek(new Date(customTo), { weekStartsOn: 1 });
+    if (timeWindow === "custom") return endOfWeek(new Date(custom.to), { weekStartsOn: 1 });
     return windowEnd;
-  }, [timeWindow, customTo, windowEnd]);
+  }, [timeWindow, custom.to, windowEnd]);
 
   const days = useMemo(() => {
     const d: Date[] = [];
@@ -219,21 +225,24 @@ export default function TimelineResourcingPage() {
 
   /* ─── Fetch ─── */
   const fetchTasks = useCallback(async () => {
+    const req = beginRequest();
     setLoading(true);
     try {
       const from = format(subDays(effectiveStart, 60), "yyyy-MM-dd");
       const to = format(addDays(effectiveEnd, 14), "yyyy-MM-dd");
       const params = new URLSearchParams({ from, to });
       if (excludeTestClients) params.set("excludeClients", EXCLUDE_CLIENT_IDS);
-      const res = await fetch(`/api/operations/timeline-resourcing?${params.toString()}`);
+      const res = await fetch(`/api/operations/timeline-resourcing?${params.toString()}`, { signal: req.signal });
       const data = await res.json();
+      if (!req.isCurrent()) return;
       setTasks(data.tasks || []);
     } catch (err) {
+      if (!req.isCurrent()) return;
       console.error("Failed to fetch:", err);
     } finally {
-      setLoading(false);
+      if (req.isCurrent()) setLoading(false);
     }
-  }, [effectiveStart, effectiveEnd, excludeTestClients]);
+  }, [effectiveStart, effectiveEnd, excludeTestClients, beginRequest]);
 
   useEffect(() => {
     fetchTasks();
@@ -663,6 +672,7 @@ export default function TimelineResourcingPage() {
               <label className="text-xs text-muted-foreground">From</label>
               <input
                 type="date"
+                ref={custom.fromRef}
                 value={customFrom}
                 onChange={(e) => setCustomFrom(e.target.value)}
                 className="h-7 text-xs rounded-md border border-input bg-background px-2 focus:outline-none focus:ring-1 focus:ring-ring"
@@ -670,9 +680,17 @@ export default function TimelineResourcingPage() {
               <label className="text-xs text-muted-foreground">To</label>
               <input
                 type="date"
+                ref={custom.toRef}
                 value={customTo}
                 onChange={(e) => setCustomTo(e.target.value)}
                 className="h-7 text-xs rounded-md border border-input bg-background px-2 focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+              <UnappliedRangeNote
+                invalid={custom.invalid}
+                inputFrom={customFrom}
+                inputTo={customTo}
+                appliedFrom={custom.from}
+                appliedTo={custom.to}
               />
               <button onClick={goToToday} className="px-2.5 py-1 rounded-md text-xs font-medium bg-muted/50 hover:bg-muted transition-colors">
                 Today

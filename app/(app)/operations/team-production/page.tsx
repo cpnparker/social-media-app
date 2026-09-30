@@ -23,6 +23,8 @@ import {
 import { cn } from "@/lib/utils";
 import { isExpiredCUWriteOff } from "@/lib/expired-cus";
 import { formatLocalDate } from "@/lib/date-utils";
+import { useSettledDateRange, useLatestRequest } from "@/lib/use-settled-date-range";
+import { UnappliedRangeNote } from "@/components/operations/UnappliedRangeNote";
 import { downloadCSV } from "@/lib/csv-utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
@@ -277,6 +279,10 @@ export default function TeamProductionPage() {
   const [dateFrom, setDateFrom] = useState(initRange.from);
   const [dateTo, setDateTo] = useState(initRange.to);
   const [activePreset, setActivePreset] = useState<string | null>("This Month");
+  // What the data is actually for: the inputs only once they settle into a
+  // usable range (see useSettledDateRange). Everything but the inputs reads this.
+  const applied = useSettledDateRange(dateFrom, dateTo);
+  const beginRequest = useLatestRequest();
   const [searchQuery, setSearchQuery] = useState("");
 
   // Global customer filter from the TopBar selector
@@ -422,28 +428,34 @@ export default function TeamProductionPage() {
 
   /* ─── Fetch data ─── */
   const fetchData = useCallback(async () => {
+    // Taken before the early return too, so leaving the view or clearing the
+    // selection also retires a production request still in flight.
+    const req = beginRequest();
     if (view !== "production" || selectedUserIds.size === 0) {
       setTasks([]);
+      setLoading(false);
       return;
     }
     setLoading(true);
     try {
       const params = new URLSearchParams({
-        from: dateFrom,
-        to: dateTo,
+        from: applied.from,
+        to: applied.to,
         // Fetch every account of each selected person (see ACCOUNT_ALIASES)
         userIds: expandAliases(Array.from(selectedUserIds)).join(","),
       });
       if (excludeTestClients) params.set("excludeClients", EXCLUDE_CLIENT_IDS);
-      const res = await fetch(`/api/operations/team-production?${params.toString()}`);
+      const res = await fetch(`/api/operations/team-production?${params.toString()}`, { signal: req.signal });
       const data = await res.json();
+      if (!req.isCurrent()) return;
       setTasks(data.tasks || []);
     } catch (err) {
+      if (!req.isCurrent()) return;
       console.error("Failed to fetch team production:", err);
     } finally {
-      setLoading(false);
+      if (req.isCurrent()) setLoading(false);
     }
-  }, [view, dateFrom, dateTo, selectedUserIds, excludeTestClients]);
+  }, [view, applied.from, applied.to, selectedUserIds, excludeTestClients, beginRequest]);
 
   useEffect(() => {
     fetchData();
@@ -488,18 +500,18 @@ export default function TeamProductionPage() {
   const assignedTasks = useMemo(() => {
     return filteredTasks.filter((t) => {
       if (t.completedAt) return false;
-      const deadlineInPeriod = t.deadline && t.deadline >= dateFrom && t.deadline <= dateTo + "T23:59:59.999Z";
-      const createdInPeriod = t.createdAt && t.createdAt >= dateFrom && t.createdAt <= dateTo + "T23:59:59.999Z";
+      const deadlineInPeriod = t.deadline && t.deadline >= applied.from && t.deadline <= applied.to + "T23:59:59.999Z";
+      const createdInPeriod = t.createdAt && t.createdAt >= applied.from && t.createdAt <= applied.to + "T23:59:59.999Z";
       return deadlineInPeriod || createdInPeriod || !t.deadline;
     });
-  }, [filteredTasks, dateFrom, dateTo]);
+  }, [filteredTasks, applied.from, applied.to]);
 
   const deliveredTasks = useMemo(() => {
     return filteredTasks.filter((t) => {
       if (!t.completedAt) return false;
-      return t.completedAt >= dateFrom && t.completedAt <= dateTo + "T23:59:59.999Z";
+      return t.completedAt >= applied.from && t.completedAt <= applied.to + "T23:59:59.999Z";
     });
-  }, [filteredTasks, dateFrom, dateTo]);
+  }, [filteredTasks, applied.from, applied.to]);
 
   /* ─── Per-user summary ─── */
   const userSummary = useMemo(() => {
@@ -604,6 +616,7 @@ export default function TeamProductionPage() {
             <CalendarDays className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
             <input
               type="date"
+              ref={applied.fromRef}
               value={dateFrom}
               onChange={(e) => { setDateFrom(e.target.value); setActivePreset(null); }}
               className="h-7 text-xs rounded-md border border-input bg-background px-2 focus:outline-none focus:ring-1 focus:ring-ring"
@@ -611,11 +624,19 @@ export default function TeamProductionPage() {
             <span className="text-xs text-muted-foreground">to</span>
             <input
               type="date"
+              ref={applied.toRef}
               value={dateTo}
               onChange={(e) => { setDateTo(e.target.value); setActivePreset(null); }}
               className="h-7 text-xs rounded-md border border-input bg-background px-2 focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
+          <UnappliedRangeNote
+            invalid={applied.invalid}
+            inputFrom={dateFrom}
+            inputTo={dateTo}
+            appliedFrom={applied.from}
+            appliedTo={applied.to}
+          />
           </>)}
 
           {view === "workload" && (

@@ -297,6 +297,43 @@ work today. "Today" comes from `workspaceTodayISO()` (Europe/Zurich); from
 that mutant with a 22:30Z fixture. Week buckets are Monday–Sunday and are
 tested on a Sunday, a Monday, the year boundary and both DST changes.
 
+## Operations date-input checks
+
+One script guards how every operations page turns its date inputs into a
+query — `lib/use-settled-date-range.ts` and `isCompleteDate` /
+`isUsableRange` / `settleAction` in `lib/date-utils.ts`. Run it before
+shipping anything that adds a date input to an operations page or reads one:
+
+```
+npx tsx scripts/verify-ops-date-inputs.ts --self-test
+```
+
+2026-09-30: Jan–Feb 2026 on commissioned-cus read 747.17 CU against a true
+320.60. A native date input fires onChange on every segment, so typing
+01.01.2026 passes through 0002-01-01, 0020-01-01 and 0202-01-01 — each a
+valid date string and an all-of-history query — and every page fetched on
+each one. Nothing cancelled or ordered them, so the LAST response to arrive
+was drawn, and the all-history ones are the slowest. The boxes and the
+numbers disagreed with nothing on screen to say so.
+
+The rule the wiring check enforces: a page reads its raw input state ONLY
+in the input. Queries, memos, export links and CSV names read the settled
+range (`applied.from/to`), which moves only to a usable range once typing
+pauses — a preset or Clear changes both ends at once and applies
+immediately. Each fetch goes through `useLatestRequest`, so only the newest
+request writes state. Profitability is exempt because it fetches on Apply,
+and the check asserts that stays true.
+
+Every date input also carries the hook's `fromRef` / `toRef`. A half-typed
+field reports its value as "", exactly like an emptied one, and "" is an
+open end — so without the element's `validity.badInput`, pausing mid-edit
+queried all of history with no note. The element is read when the values
+change, never remembered from its last onChange: a preset fills the box
+without firing one, and a remembered "half-typed" flag held the range
+forever. The timing lives in `createRangeSettler`, which the check drives
+for real on a fake clock; its first version replayed a MODEL of the hook
+instead, and review found two broken hooks that model passed.
+
 ## Content Optimizer checks
 
 A growing set of scripts guards `lib/optimizer/`, the import/export paths and

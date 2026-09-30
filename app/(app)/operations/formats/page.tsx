@@ -19,6 +19,8 @@ import {
 import { cn } from "@/lib/utils";
 import { isExpiredCUWriteOff } from "@/lib/expired-cus";
 import { formatLocalDate } from "@/lib/date-utils";
+import { useSettledDateRange, useLatestRequest } from "@/lib/use-settled-date-range";
+import { UnappliedRangeNote } from "@/components/operations/UnappliedRangeNote";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { CustomerDropdownFilter } from "@/components/operations/CustomerDropdownFilter";
 import {
@@ -191,6 +193,10 @@ export default function FormatsPage() {
   const [dateFrom, setDateFrom] = useState(initRange.from);
   const [dateTo, setDateTo] = useState(initRange.to);
   const [activePreset, setActivePreset] = useState<string | null>("This Month");
+  // What the data is actually for: the inputs only once they settle into a
+  // usable range (see useSettledDateRange). Everything but the inputs reads this.
+  const applied = useSettledDateRange(dateFrom, dateTo);
+  const beginRequest = useLatestRequest();
 
   const [searchQuery, setSearchQuery] = useState("");
   const [excludeTestClients, setExcludeTestClients] = useState(true);
@@ -215,27 +221,30 @@ export default function FormatsPage() {
 
   /* ─── Fetch ─── */
   const fetchTasks = useCallback(async (from: string, to: string, excludeClients: boolean) => {
+    const req = beginRequest();
     setLoading(true);
     try {
       const params = new URLSearchParams();
       if (from) params.set("from", from);
       if (to) params.set("to", to);
       if (excludeClients) params.set("excludeClients", EXCLUDE_CLIENT_IDS);
-      const res = await fetch(`/api/operations/formats?${params.toString()}`);
+      const res = await fetch(`/api/operations/formats?${params.toString()}`, { signal: req.signal });
       const data = await res.json();
+      if (!req.isCurrent()) return;
       setTasks(data.tasks || []);
       setSelectedFormat(null);
       setSelectedCustomerId(null);
     } catch (err) {
+      if (!req.isCurrent()) return;
       console.error("Failed to fetch:", err);
     } finally {
-      setLoading(false);
+      if (req.isCurrent()) setLoading(false);
     }
-  }, []);
+  }, [beginRequest]);
 
   useEffect(() => {
-    fetchTasks(dateFrom, dateTo, excludeTestClients);
-  }, [dateFrom, dateTo, excludeTestClients, fetchTasks]);
+    fetchTasks(applied.from, applied.to, excludeTestClients);
+  }, [applied.from, applied.to, excludeTestClients, fetchTasks]);
 
   const applyPreset = (preset: (typeof presets)[0]) => {
     const range = preset.getRange();
@@ -486,7 +495,7 @@ export default function FormatsPage() {
     return sortRows(Object.values(map), customerDetailSort.currentSort, customerDetailSort.currentAsc);
   }, [filtered, selectedCustomerId, customerDetailSort.currentSort, customerDetailSort.currentAsc]);
 
-  const isFiltered = dateFrom || dateTo;
+  const isFiltered = applied.from || applied.to;
   const selectedCustomerName = customerFormatData.find((c) => c.id === selectedCustomerId)?.name;
 
   /* ─────────────── Render ─────────────── */
@@ -510,7 +519,7 @@ export default function FormatsPage() {
                 <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">From</label>
                 <div className="relative">
                   <CalendarDays className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/50 pointer-events-none" />
-                  <Input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setActivePreset(null); }} className="h-8 text-xs pl-7" />
+                  <Input type="date" ref={applied.fromRef} value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setActivePreset(null); }} className="h-8 text-xs pl-7" />
                 </div>
               </div>
               <span className="text-muted-foreground/30 pb-1.5 text-xs">&ndash;</span>
@@ -518,7 +527,7 @@ export default function FormatsPage() {
                 <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">To</label>
                 <div className="relative">
                   <CalendarDays className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/50 pointer-events-none" />
-                  <Input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setActivePreset(null); }} className="h-8 text-xs pl-7" />
+                  <Input type="date" ref={applied.toRef} value={dateTo} onChange={(e) => { setDateTo(e.target.value); setActivePreset(null); }} className="h-8 text-xs pl-7" />
                 </div>
               </div>
               {isFiltered && (
@@ -559,6 +568,13 @@ export default function FormatsPage() {
               </label>
             </div>
           </div>
+          <UnappliedRangeNote
+            invalid={applied.invalid}
+            inputFrom={dateFrom}
+            inputTo={dateTo}
+            appliedFrom={applied.from}
+            appliedTo={applied.to}
+          />
           <div className="flex flex-wrap items-end gap-3">
             <CustomerDropdownFilter />
           </div>
@@ -621,7 +637,7 @@ export default function FormatsPage() {
                       <button
                         onClick={() => downloadCSV(
                           formatList.map((f) => ({ Format: f.type.replace(/_/g, " "), Category: f.category, CUs: (f.cus).toFixed(2), Tasks: f.count })),
-                          `formats-commissioned-${dateFrom || "all"}-to-${dateTo || "all"}.csv`
+                          `formats-commissioned-${applied.from || "all"}-to-${applied.to || "all"}.csv`
                         )}
                         className="text-muted-foreground hover:text-foreground transition-colors"
                         title="Download CSV"
@@ -731,7 +747,7 @@ export default function FormatsPage() {
                     <button
                       onClick={() => downloadCSV(
                         formatContent.map((c) => ({ Content: c.name, Client: c.clientName, Contract: c.contractName || "", CUs: (c.cus).toFixed(2), Commissioned: fmtDate(c.dateCreated) })),
-                        `content-${(selectedFormat || "all").replace(/_/g, "-")}-${dateFrom || "all"}-to-${dateTo || "all"}.csv`
+                        `content-${(selectedFormat || "all").replace(/_/g, "-")}-${applied.from || "all"}-to-${applied.to || "all"}.csv`
                       )}
                       className="text-muted-foreground hover:text-foreground transition-colors"
                       title="Download CSV"
@@ -845,7 +861,7 @@ export default function FormatsPage() {
                     <button
                       onClick={() => downloadCSV(
                         customerFormatData.map((c) => ({ Customer: c.name, Written: (c.Written).toFixed(2), Video: (c.Video).toFixed(2), Visual: (c.Visual).toFixed(2), Strategy: (c.Strategy).toFixed(2), "Total CUs": (c.total).toFixed(2) })),
-                        `customer-format-breakdown-${dateFrom || "all"}-to-${dateTo || "all"}.csv`
+                        `customer-format-breakdown-${applied.from || "all"}-to-${applied.to || "all"}.csv`
                       )}
                       className="text-muted-foreground hover:text-foreground transition-colors"
                       title="Download CSV"

@@ -24,6 +24,8 @@ import {
 import { cn } from "@/lib/utils";
 import { isExpiredCUWriteOff } from "@/lib/expired-cus";
 import { formatLocalDate } from "@/lib/date-utils";
+import { useSettledDateRange, useLatestRequest } from "@/lib/use-settled-date-range";
+import { UnappliedRangeNote } from "@/components/operations/UnappliedRangeNote";
 import { downloadCSV } from "@/lib/csv-utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { MultiSelectFilter } from "@/components/operations/MultiSelectFilter";
@@ -203,6 +205,10 @@ export default function DeliveredPage() {
   const [dateFrom, setDateFrom] = useState(initRange.from);
   const [dateTo, setDateTo] = useState(initRange.to);
   const [activePreset, setActivePreset] = useState<string | null>("This Month");
+  // What the data is actually for: the inputs only once they settle into a
+  // usable range (see useSettledDateRange). Everything but the inputs reads this.
+  const applied = useSettledDateRange(dateFrom, dateTo);
+  const beginRequest = useLatestRequest();
 
   const [searchQuery, setSearchQuery] = useState("");
   const [excludeTestClients, setExcludeTestClients] = useState(true);
@@ -235,6 +241,7 @@ export default function DeliveredPage() {
 
   /* ─── Fetch ─── */
   const fetchTasks = useCallback(async (from: string, to: string, excludeClients: boolean, clientId: string | null) => {
+    const req = beginRequest();
     setLoading(true);
     try {
       const params = new URLSearchParams();
@@ -247,8 +254,9 @@ export default function DeliveredPage() {
       // Delivered means completed IN the period, not "created in the period
       // and finished at some point" — see the basis param in the API route.
       params.set("basis", "completed");
-      const res = await fetch(`/api/operations/commissioned-cus?${params.toString()}`);
+      const res = await fetch(`/api/operations/commissioned-cus?${params.toString()}`, { signal: req.signal });
       const data = await res.json();
+      if (!req.isCurrent()) return;
       setAllTasks(data.tasks || []);
       setContracts(data.contracts || []);
       setMediaByContent(data.mediaByContent || {});
@@ -257,15 +265,16 @@ export default function DeliveredPage() {
       autoSelectedTaxonomyRef.current = { categories: false, formats: false };
       setSelectedCommissioner(null);
     } catch (err) {
+      if (!req.isCurrent()) return;
       console.error("Failed to fetch:", err);
     } finally {
-      setLoading(false);
+      if (req.isCurrent()) setLoading(false);
     }
-  }, []);
+  }, [beginRequest]);
 
   useEffect(() => {
-    fetchTasks(dateFrom, dateTo, excludeTestClients, globalCustomerId);
-  }, [dateFrom, dateTo, excludeTestClients, globalCustomerId, fetchTasks]);
+    fetchTasks(applied.from, applied.to, excludeTestClients, globalCustomerId);
+  }, [applied.from, applied.to, excludeTestClients, globalCustomerId, fetchTasks]);
 
   const applyPreset = (preset: (typeof presets)[0]) => {
     const range = preset.getRange();
@@ -504,7 +513,7 @@ export default function DeliveredPage() {
   const csvName = (base: string) =>
     `${base}${hideExpiredCUs && expiredExcluded.count > 0 ? "-ex-writeoffs" : ""}.csv`;
 
-  const isFiltered = dateFrom || dateTo;
+  const isFiltered = applied.from || applied.to;
   const selectionLabel = useMemo(() => {
     const n = selectedCustomerIds.size;
     if (n === 0) return "";
@@ -528,7 +537,7 @@ export default function DeliveredPage() {
         </div>
         {globalCustomerId && (
           <a
-            href={`/api/operations/client-export?clientId=${globalCustomerId}${dateFrom ? `&from=${dateFrom}` : ""}${dateTo ? `&to=${dateTo}` : ""}`}
+            href={`/api/operations/client-export?clientId=${globalCustomerId}${applied.from ? `&from=${applied.from}` : ""}${applied.to ? `&to=${applied.to}` : ""}`}
             className="shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-foreground text-background text-xs font-medium hover:opacity-90 transition-opacity"
             title="Two-sheet workbook: content COMMISSIONED in the selected date range (not completed-in-range), with doc links and 1-year media download URLs"
           >
@@ -546,7 +555,7 @@ export default function DeliveredPage() {
                 <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">From</label>
                 <div className="relative">
                   <CalendarDays className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/50 pointer-events-none" />
-                  <Input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setActivePreset(null); }} className="h-8 text-xs pl-7" />
+                  <Input type="date" ref={applied.fromRef} value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setActivePreset(null); }} className="h-8 text-xs pl-7" />
                 </div>
               </div>
               <span className="text-muted-foreground/30 pb-1.5 text-xs">&ndash;</span>
@@ -554,7 +563,7 @@ export default function DeliveredPage() {
                 <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">To</label>
                 <div className="relative">
                   <CalendarDays className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/50 pointer-events-none" />
-                  <Input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setActivePreset(null); }} className="h-8 text-xs pl-7" />
+                  <Input type="date" ref={applied.toRef} value={dateTo} onChange={(e) => { setDateTo(e.target.value); setActivePreset(null); }} className="h-8 text-xs pl-7" />
                 </div>
               </div>
               {isFiltered && (
@@ -595,6 +604,13 @@ export default function DeliveredPage() {
               </label>
             </div>
           </div>
+          <UnappliedRangeNote
+            invalid={applied.invalid}
+            inputFrom={dateFrom}
+            inputTo={dateTo}
+            appliedFrom={applied.from}
+            appliedTo={applied.to}
+          />
 
           {/* Row 2: Customer + Category + Format filters */}
           <div className="flex flex-wrap items-end gap-3">

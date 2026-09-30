@@ -49,3 +49,49 @@ export function weekdayMon0(dateStr: string): number {
 export function mondayOf(dateStr: string): string {
   return addDays(dateStr, -weekdayMon0(dateStr));
 }
+
+// A date input's value is only worth querying once it is a whole, real
+// YYYY-MM-DD in a plausible year.
+//
+// A native <input type="date"> reports every segment as it is typed. Typing
+// 01.01.2026 into it produces 0002-01-01, 0020-01-01 and 0202-01-01 on the way
+// to 2026-01-01 — each a valid date string, each an all-of-history query — and
+// clearing a segment produces "". Treating those as ranges is how the
+// commissioned page showed 747.17 CU for a January–February that was 320.60.
+export function isCompleteDate(s: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const year = Number(s.slice(0, 4));
+  if (year < 2000 || year > 2100) return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+}
+
+// Each end either empty (open) or a complete date, and not reversed. Pages
+// that cannot draw an open-ended range pass requireBoth.
+export function isUsableRange(from: string, to: string, requireBoth = false): boolean {
+  if (requireBoth && (from === "" || to === "")) return false;
+  if (from !== "" && !isCompleteDate(from)) return false;
+  if (to !== "" && !isCompleteDate(to)) return false;
+  return from === "" || to === "" || from <= to;
+}
+
+// What a page should do with a change to its date inputs (see
+// useSettledDateRange): hold the previous range while the inputs are not a
+// usable one; apply at once when BOTH ends changed in one go, which is a
+// preset or Clear and never typing (typing edits one field); otherwise wait
+// for typing to pause.
+//
+// `partial` is the input's own validity.badInput. A half-typed field reports
+// its value as "", exactly like a deliberately emptied one, and "" is an open
+// end — so without it, pausing mid-edit on 01/mm/2026 queried all of history.
+export type SettleAction = "apply" | "debounce" | "hold";
+export function settleAction(
+  prev: { from: string; to: string },
+  from: string,
+  to: string,
+  requireBoth = false,
+  partial = false
+): SettleAction {
+  if (partial || !isUsableRange(from, to, requireBoth)) return "hold";
+  return prev.from !== from && prev.to !== to ? "apply" : "debounce";
+}

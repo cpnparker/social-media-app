@@ -17,6 +17,8 @@ import {
   Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useSettledDateRange, useLatestRequest } from "@/lib/use-settled-date-range";
+import { UnappliedRangeNote } from "@/components/operations/UnappliedRangeNote";
 import { formatLocalDate } from "@/lib/date-utils";
 import { downloadCSV } from "@/lib/csv-utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
@@ -172,6 +174,11 @@ export default function ContractsGridPage() {
   const [loading, setLoading] = useState(true);
 
   const [endAfter, setEndAfter] = useState(today);
+  // One date, so an open range from it: follows the picker only once it holds
+  // a whole date (see useSettledDateRange).
+  const endAfterRange = useSettledDateRange(endAfter, "");
+  const appliedEndAfter = endAfterRange.from;
+  const beginRequest = useLatestRequest();
   const [searchQuery, setSearchQuery] = useState("");
   const [excludeTestClients, setExcludeTestClients] = useState(true);
   const EXCLUDE_CLIENT_IDS = "1,2";
@@ -183,25 +190,28 @@ export default function ContractsGridPage() {
 
   /* ─── Fetch ─── */
   const fetchContracts = useCallback(async (endAfterDate: string, excludeClients: boolean) => {
+    const req = beginRequest();
     setLoading(true);
     try {
       const params = new URLSearchParams();
       if (endAfterDate) params.set("endAfter", endAfterDate);
       if (excludeClients) params.set("excludeClients", EXCLUDE_CLIENT_IDS);
-      const res = await fetch(`/api/operations/contracts-grid?${params.toString()}`);
+      const res = await fetch(`/api/operations/contracts-grid?${params.toString()}`, { signal: req.signal });
       const data = await res.json();
+      if (!req.isCurrent()) return;
       const enriched = (data.contracts || []).map(enrichContract);
       setContracts(enriched);
     } catch (err) {
+      if (!req.isCurrent()) return;
       console.error("Failed to fetch contracts:", err);
     } finally {
-      setLoading(false);
+      if (req.isCurrent()) setLoading(false);
     }
-  }, []);
+  }, [beginRequest]);
 
   useEffect(() => {
-    fetchContracts(endAfter, excludeTestClients);
-  }, [endAfter, excludeTestClients, fetchContracts]);
+    fetchContracts(appliedEndAfter, excludeTestClients);
+  }, [appliedEndAfter, excludeTestClients, fetchContracts]);
 
   /* ─── Filtered contracts ─── */
   const filtered = useMemo(() => {
@@ -267,11 +277,19 @@ export default function ContractsGridPage() {
                   <CalendarDays className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/50 pointer-events-none" />
                   <Input
                     type="date"
+                    ref={endAfterRange.fromRef}
                     value={endAfter}
                     onChange={(e) => setEndAfter(e.target.value)}
                     className="h-8 text-xs pl-7"
                   />
                 </div>
+                <UnappliedRangeNote
+                  invalid={endAfterRange.invalid}
+                  inputFrom={endAfter}
+                  inputTo=""
+                  appliedFrom={endAfterRange.from}
+                  appliedTo=""
+                />
               </div>
             </div>
             <div className="flex items-center gap-3 flex-1 lg:justify-end">

@@ -24,6 +24,8 @@ import {
 import { cn } from "@/lib/utils";
 import { isExpiredCUWriteOff } from "@/lib/expired-cus";
 import { formatLocalDate } from "@/lib/date-utils";
+import { useSettledDateRange, useLatestRequest } from "@/lib/use-settled-date-range";
+import { UnappliedRangeNote } from "@/components/operations/UnappliedRangeNote";
 import { downloadCSV } from "@/lib/csv-utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import { MultiSelectFilter, type MultiSelectOption } from "@/components/operations/MultiSelectFilter";
@@ -199,6 +201,10 @@ export default function AllContentPage() {
   const [dateFrom, setDateFrom] = useState(initRange.from);
   const [dateTo, setDateTo] = useState(initRange.to);
   const [activePreset, setActivePreset] = useState<string | null>("This Quarter");
+  // What the data is actually for: the inputs only once they settle into a
+  // usable range (see useSettledDateRange). Everything but the inputs reads this.
+  const applied = useSettledDateRange(dateFrom, dateTo);
+  const beginRequest = useLatestRequest();
 
   const [searchQuery, setSearchQuery] = useState("");
   const [excludeTestClients, setExcludeTestClients] = useState(true);
@@ -221,26 +227,29 @@ export default function AllContentPage() {
 
   /* ─── Fetch ─── */
   const fetchTasks = useCallback(async (from: string, to: string, excludeClients: boolean) => {
+    const req = beginRequest();
     setLoading(true);
     try {
       const params = new URLSearchParams();
       if (from) params.set("from", from);
       if (to) params.set("to", to);
       if (excludeClients) params.set("excludeClients", EXCLUDE_CLIENT_IDS);
-      const res = await fetch(`/api/operations/commissioned-cus?${params.toString()}`);
+      const res = await fetch(`/api/operations/commissioned-cus?${params.toString()}`, { signal: req.signal });
       const data = await res.json();
+      if (!req.isCurrent()) return;
       setAllTasks(data.tasks || []);
       autoSelectedRef.current = { customers: false, categories: false, formats: false, assignees: false };
     } catch (err) {
+      if (!req.isCurrent()) return;
       console.error("Failed to fetch:", err);
     } finally {
-      setLoading(false);
+      if (req.isCurrent()) setLoading(false);
     }
-  }, []);
+  }, [beginRequest]);
 
   useEffect(() => {
-    fetchTasks(dateFrom, dateTo, excludeTestClients);
-  }, [dateFrom, dateTo, excludeTestClients, fetchTasks]);
+    fetchTasks(applied.from, applied.to, excludeTestClients);
+  }, [applied.from, applied.to, excludeTestClients, fetchTasks]);
 
   const applyPreset = (preset: (typeof presets)[0]) => {
     const range = preset.getRange();
@@ -503,7 +512,7 @@ export default function AllContentPage() {
     };
   }, [filtered]);
 
-  const isDateFiltered = dateFrom || dateTo;
+  const isDateFiltered = applied.from || applied.to;
 
   /* ─────────────── Render ─────────────── */
   const statusBadge = (s: ContentStatus) => {
@@ -533,7 +542,7 @@ export default function AllContentPage() {
                 <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">From</label>
                 <div className="relative">
                   <CalendarDays className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/50 pointer-events-none" />
-                  <Input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setActivePreset(null); }} className="h-8 text-xs pl-7" />
+                  <Input type="date" ref={applied.fromRef} value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setActivePreset(null); }} className="h-8 text-xs pl-7" />
                 </div>
               </div>
               <span className="text-muted-foreground/30 pb-1.5 text-xs">&ndash;</span>
@@ -541,7 +550,7 @@ export default function AllContentPage() {
                 <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">To</label>
                 <div className="relative">
                   <CalendarDays className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/50 pointer-events-none" />
-                  <Input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setActivePreset(null); }} className="h-8 text-xs pl-7" />
+                  <Input type="date" ref={applied.toRef} value={dateTo} onChange={(e) => { setDateTo(e.target.value); setActivePreset(null); }} className="h-8 text-xs pl-7" />
                 </div>
               </div>
               {isDateFiltered && (
@@ -582,6 +591,13 @@ export default function AllContentPage() {
               </label>
             </div>
           </div>
+          <UnappliedRangeNote
+            invalid={applied.invalid}
+            inputFrom={dateFrom}
+            inputTo={dateTo}
+            appliedFrom={applied.from}
+            appliedTo={applied.to}
+          />
 
           {/* Row 2: Multi-selects + CU range */}
           <div className="flex flex-wrap items-end gap-3">
@@ -683,7 +699,7 @@ export default function AllContentPage() {
                         Created: fmtDate(r.firstCreatedAt),
                         Completed: fmtDate(r.lastCompletedAt),
                       })),
-                      `all-content-${dateFrom || "all"}-to-${dateTo || "all"}.csv`
+                      `all-content-${applied.from || "all"}-to-${applied.to || "all"}.csv`
                     )}
                     className="text-muted-foreground hover:text-foreground transition-colors"
                     title="Download CSV"

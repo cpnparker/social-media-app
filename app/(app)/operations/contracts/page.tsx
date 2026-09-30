@@ -24,6 +24,8 @@ import {
   Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useSettledDateRange, useLatestRequest } from "@/lib/use-settled-date-range";
+import { UnappliedRangeNote } from "@/components/operations/UnappliedRangeNote";
 import { downloadCSV } from "@/lib/csv-utils";
 import { useCustomerSafe } from "@/lib/contexts/CustomerContext";
 import {
@@ -165,6 +167,10 @@ export default function ContractsPage() {
   // Filters — no date filter on initial load to show all contracts
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  // What the list is actually for: the pickers only once they settle into a
+  // usable range (see useSettledDateRange).
+  const applied = useSettledDateRange(dateFrom, dateTo);
+  const beginRequest = useLatestRequest();
   const [statusFilter, setStatusFilter] = useState<"1" | "0" | "all">("1");
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [clientSearch, setClientSearch] = useState("");
@@ -203,17 +209,19 @@ export default function ContractsPage() {
 
   // ── Fetch base data ──
   const fetchBase = useCallback(async () => {
+    const req = beginRequest();
     setLoading(true);
     setError(null);
     try {
       const params = new URLSearchParams();
       if (selectedClientId) params.set("clientId", selectedClientId);
-      if (dateFrom) params.set("from", dateFrom);
-      if (dateTo) params.set("to", dateTo);
+      if (applied.from) params.set("from", applied.from);
+      if (applied.to) params.set("to", applied.to);
       params.set("active", statusFilter);
 
-      const res = await fetch(`/api/operations/contracts?${params}`);
+      const res = await fetch(`/api/operations/contracts?${params}`, { signal: req.signal });
       const data = await res.json();
+      if (!req.isCurrent()) return;
       if (!res.ok) {
         setError(data.error || `API error ${res.status}`);
         return;
@@ -221,12 +229,13 @@ export default function ContractsPage() {
       setClients(data.clients || []);
       setContracts(data.contracts || []);
     } catch (err: any) {
+      if (!req.isCurrent()) return;
       console.error("Failed to fetch contracts:", err);
       setError(err.message || "Failed to fetch contracts");
     } finally {
-      setLoading(false);
+      if (req.isCurrent()) setLoading(false);
     }
-  }, [selectedClientId, dateFrom, dateTo, statusFilter]);
+  }, [selectedClientId, applied.from, applied.to, statusFilter, beginRequest]);
 
   // ── Fetch contract detail ──
   const fetchDetail = useCallback(async (cId: string) => {
@@ -449,12 +458,19 @@ export default function ContractsPage() {
             {/* Date range */}
             <div>
               <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">From</label>
-              <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="h-8 text-xs w-[140px]" />
+              <Input type="date" ref={applied.fromRef} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="h-8 text-xs w-[140px]" />
             </div>
             <div>
               <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider block mb-1">To</label>
-              <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="h-8 text-xs w-[140px]" />
+              <Input type="date" ref={applied.toRef} value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="h-8 text-xs w-[140px]" />
             </div>
+            <UnappliedRangeNote
+              invalid={applied.invalid}
+              inputFrom={dateFrom}
+              inputTo={dateTo}
+              appliedFrom={applied.from}
+              appliedTo={applied.to}
+            />
 
             {/* Status toggle */}
             <div>
